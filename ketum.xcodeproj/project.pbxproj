@@ -91,6 +91,14 @@
 			knownRegions = (
 				en,
 				Base,
+				tr,
+				"zh-Hans",
+				ja,
+				es,
+				de,
+				fr,
+				ko,
+				"pt-BR",
 			);
 			mainGroup = 2F36AC18300C3732000458FA;
 			minimizedProjectReferenceProxies = 1;
@@ -256,6 +264,10 @@
 				DEVELOPMENT_TEAM = 8T42RFKX8Z;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = sirr;
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "sirr takvimini yalnızca senin istediğin anda, bu cihazda okur ve etkinlik ekler. Veri cihazdan çıkmaz.";
+				INFOPLIST_KEY_NSContactsUsageDescription = "sirr kişilerinde yalnızca senin istediğin anda, bu cihazda arama yapar. Veri cihazdan çıkmaz.";
+				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "sirr hatırlatıcıları yalnızca senin istediğin anda, bu cihazda kurar ve okur. Veri cihazdan çıkmaz.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -288,6 +300,10 @@
 				DEVELOPMENT_TEAM = 8T42RFKX8Z;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = sirr;
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "sirr takvimini yalnızca senin istediğin anda, bu cihazda okur ve etkinlik ekler. Veri cihazdan çıkmaz.";
+				INFOPLIST_KEY_NSContactsUsageDescription = "sirr kişilerinde yalnızca senin istediğin anda, bu cihazda arama yapar. Veri cihazdan çıkmaz.";
+				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "sirr hatırlatıcıları yalnızca senin istediğin anda, bu cihazda kurar ve okur. Veri cihazdan çıkmaz.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
