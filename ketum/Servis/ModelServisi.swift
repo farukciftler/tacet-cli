@@ -79,6 +79,12 @@ final class ModelServisi {
     let veriDeposu = VeriDeposu()
     /// Nöbet (zamanlanmış ajan) kurma bağlamı — NobetAraci buraya erişir.
     let nobetBaglami = NobetBaglami()
+    /// Kod çalıştırma deneme sayacı (kod-spec §5.4): tur başına en fazla 2
+    /// gerçek çalıştırma. Sayaç araçta değil burada yaşar ve `init` içinde
+    /// `yurutucu.turKancasi`na bağlanır — sıfırlama spec'in dediği yerde,
+    /// AracYurutucu.yeniTur içinde TEK noktadan olur; çağrı noktalarında elle
+    /// eşleme yoktur, unutulan bir yol tavanı oturum ömürlü yapamaz.
+    let kodDurumu = KodDurumu()
 
     /// Turun seyri (seyir-spec §5.2). SALT GÖZLEMCİ: buradaki hiçbir metin
     /// isteme ya da talimata girmez, modelden hiçbir durum bildirimi istenmez.
@@ -227,6 +233,10 @@ final class ModelServisi {
         // Uzak çıktı da 4096 bütçesine göre işlenir (§5.5): büyük sonuç modelden
         // geçmeden veri deposuna konur, modele özet + kaynakRef gider.
         baglantiKopru.veriDeposu = veriDeposu
+        // Kod deneme sayacı tur yaşam döngüsüne buradan bağlanır (kod-spec
+        // §5.4: sıfırlama AracYurutucu.yeniTur'dadır). sohbetiSifirla da
+        // yeniTur'u içeriden çağırdığı için tüm yollar tek kancadan geçer.
+        yurutucu.turKancasi = { [kodDurumu] in kodDurumu.yeniTur() }
         availabilityKontrol()
     }
 
@@ -268,7 +278,10 @@ final class ModelServisi {
 
     // MARK: - Oturum ve profiller
 
-    /// Gündelik profil (spec §8, v1): Takvim, Hatırlatıcı, Kişi, Arama, Hesap, Zaman.
+    /// Gündelik profil (spec §8, v1): Takvim, Hatırlatıcı, Kişi, Arama, Hesap,
+    /// Zaman, Nöbet + Kod (kod-spec §7). 8 araçla tavan ZORLANIYOR — cihaz
+    /// ölçümü kötü çıkarsa `zaman` düşürülür ya da kod niyeti ayrı profil olur
+    /// (kod-spec §9 açık soru 2).
     private func gundelikAraclar() -> [any Tool] {
         var takvim = TakvimAraci();          takvim.raporlayici = yurutucu; takvim.veriDeposu = veriDeposu
         var hatirlatici = HatirlaticiAraci(); hatirlatici.raporlayici = yurutucu; hatirlatici.veriDeposu = veriDeposu
@@ -277,7 +290,8 @@ final class ModelServisi {
         var hesap = HesapAraci();            hesap.raporlayici = yurutucu
         var zaman = ZamanAraci();            zaman.raporlayici = yurutucu
         var nobet = NobetAraci();            nobet.raporlayici = yurutucu; nobet.baglam = nobetBaglami
-        return [takvim, hatirlatici, kisi, arama, hesap, zaman, nobet]
+        var kod = KodCalistirAraci();        kod.raporlayici = yurutucu; kod.durum = kodDurumu
+        return [takvim, hatirlatici, kisi, arama, hesap, zaman, nobet, kod]
     }
 
     /// Belge/üretim profili (spec §7.3.1): Oluştur, Oku, Düzenle + veri kaynağı ve yardımcılar.
@@ -356,6 +370,31 @@ final class ModelServisi {
     /// Sıra: önce hafıza (kullanıcı hakkında olgular), sonra beceri (nasıl
     /// yapılacağı), en sonda sorunun kendisi — soru istemin SONUNDA kalır,
     /// küçük modelde son bloğun ağırlığı en yüksektir.
+    /// Paket becerilerinin araç gerektirdiği profiller. Kılavuz, aracı
+    /// oturumda OLMAYAN bir profile enjekte edilirse model var olmayan aracı
+    /// çağırmaya yönlendirilir (kod-spec §10 dağıtım notunun profil düzeyindeki
+    /// eşi — ör. belge kilidindeyken "kodla…" isteği kod.md'yi tetiklerdi ama
+    /// kod_calistir belge setinde yok). Listede olmayan beceriler (hesap,
+    /// kullanıcı becerileri) her profilde serbesttir.
+    private static let beceriProfilleri: [String: Set<Profil>] = [
+        "kod":           [.gundelik],           // kod_calistir yalnız gündelik sette
+        "web-sayfa":     [.belge],              // belge_olustur yalnız belge setinde
+        "belge-olustur": [.belge],
+        "belge-oku":     [.belge],
+        "belge-duzenle": [.belge],
+        "kisi":          [.gundelik],           // KisiAraci yalnız gündelik sette
+        "takvim":        [.gundelik, .belge],
+        "hatirlatici":   [.gundelik, .belge],
+        "arama":         [.gundelik, .belge],   // Spotlight araması iki sette de var
+    ]
+
+    /// Beceri bu profilde enjekte edilebilir mi. Uymayan beceri o tura girmez
+    /// ve İŞARETLENMEZ — doğru profile geçildiğinde yeniden denenir.
+    private static func beceriUygun(_ beceri: Beceri, profil: Profil) -> Bool {
+        guard let izinli = beceriProfilleri[beceri.ad] else { return true }
+        return izinli.contains(profil)
+    }
+
     private func istemZenginlestir(_ soru: String) -> String {
         var bloklar: [String] = []
 
@@ -370,7 +409,8 @@ final class ModelServisi {
             }
         }
 
-        if let beceri = BeceriDeposu.eslesen(soru), !enjekteBeceriler.contains(beceri.ad) {
+        if let beceri = BeceriDeposu.eslesen(soru), !enjekteBeceriler.contains(beceri.ad),
+           Self.beceriUygun(beceri, profil: aktifProfil) {
             enjekteBeceriler.insert(beceri.ad)
             bloklar.append(BeceriDeposu.enjeksiyonMetni(beceri))
             // Seyir'de beceri GÖRÜNÜR, hafıza GÖRÜNMEZ (seyir-spec §8.1 kararı):
@@ -492,7 +532,7 @@ final class ModelServisi {
         // GERÇEK sohbet sıfırlaması: `yeniTur()` değil. Kirli oturum bayrağı ve
         // ret önbelleği oturum ömürlüdür (mcp §5.6, §3.3) ve ancak burada biter;
         // `yeniTur()` çağırmak yeni sohbeti eski sohbetin kirliliğiyle başlatırdı.
-        yurutucu.sohbetiSifirla()
+        yurutucu.sohbetiSifirla()   // turKancasi kod deneme sayacını da sıfırlar
         seyir.sifirla()
         // Sıfırlama saptanan dili unutur ama kullanıcının açık seçimini EZMEZ.
         aktifDil = secilenDilAdi ?? ""
@@ -585,7 +625,13 @@ final class ModelServisi {
     /// Hatırlatıcı/arama niyeti (gündelik profil) — tr/en/zh/ja/es/de/fr/ko/pt.
     private static let gundelikIzleri = [
         "hatırlat", "hatirlat", "anımsat", "notlarım", "notlarda",          // tr
+        "dosyalarımda", "dosyam var mı", "dosyalarım",                      // tr — yerel dosya ARAMASI
         "remind", "reminder", "my note", "notes", "search my",              // en
+        // Kişisel-veri İngilizce kalıpları: gündelik izler arama izlerinden
+        // ÖNCE bakıldığı için "What is John's phone number?" burada yakalanır
+        // ve KisiAraci oturumda kalır (aksi halde web aramasına kaçıyordu).
+        "phone number", "'s number", "contact", "email address",
+        "my calendar", "my schedule", "my files",
         "提醒", "备忘", "笔记", "搜索",                                          // zh
         "リマインド", "思い出させ", "メモ", "検索",                                // ja
         "recuérda", "recordar", "recordatorio", "mis notas", "buscar",      // es
@@ -596,9 +642,27 @@ final class ModelServisi {
     ]
 
     /// Belge/dosya niyeti (belge profil) — biçim adları + 8 dilde ad-fiiller.
+    /// "site/html/sayfa/landing" izleri kod-spec §7: .html biçimi araç
+    /// eklemez, `belge_olustur` zaten belge profilindedir.
+    ///
+    /// "site" BİLEREK çıplak değil: arama alt-dizgeyledir ve çıplak "site",
+    /// "üniversite(si)/kapasite/opposite" gibi sözcüklerin içinde geçip soruyu
+    /// belgeye kilitlerdi ("Boğaziçi Üniversitesi nedir?" aramaya gidemezdi) —
+    /// "kur " izindeki sondaki boşlukla aynı tuzak. " site" sözcük başını
+    /// arar; "site yap/kur" cümle başını, "websit" bitişik yazımı kapsar.
     private static let belgeIzleri = [
         "excel", "xlsx", "pdf", "word", "docx", "markdown", ".md",          // dil-nötr
+        "html", " site", "site yap", "site kur", "websit", "landing",       // web sayfası (kod-spec §7)
         "belge", "dosya", "tablo", "çizelge", "rapor", "döküm", "dök",      // tr
+        "sayfa",                                                            // tr — web sayfası
+        // Tablo/belge YAPI sözcükleri: bunlar olmadan "Çarşamba Köfte satırını
+        // ekle" gündelikte kalıp TakvimAraci'na kaçıyordu (belge_duzenle
+        // oturumda hiç bulunmuyordu).
+        "satır", "sütun", "kolon", "hücre", "row", "column", "cell",
+        // Not olarak KAYDETME — üretim isteği. Çıplak "not"/"kaydet" BİLEREK
+        // yok: "kur " izindeki alt-dizge tuzağı ("nota"→"nokta" değil ama
+        // "not"→"nota/nokta/motor" bol yanlış pozitif verirdi).
+        "nota kaydet", "nota yaz", "not olarak", "as a note", "save this as",
         "document", "file", "spreadsheet", "table", "report", "export",     // en
         "文档", "文件", "表格", "报告", "列表",                                   // zh
         "ドキュメント", "ファイル", "表", "レポート", "リスト",                     // ja
@@ -615,11 +679,21 @@ final class ModelServisi {
     /// çıkarıp "hatırlatıcı kuramadım"a yol açar. Genel bilgi kalıpları
     /// ("nedir", "kimdir") burada, kişisel içerik kalıpları gündelik listede.
     private static let aramaIzleri = [
-        "hava durumu", "hava nasıl", "dolar", "euro", "kur ", "borsa",
-        "haber", "fiyat", "kaç para", "kaça", "maç", "skor", "puan durumu",
+        "hava durumu", "hava nasıl", "hava kaç", "derece", "yağmur", "kar yağ",
+        "sıcaklık", "dolar", "euro", "kur ", "borsa", "endeks", "bist",
+        "gram altın", "kaç tl",
+        "haber", "ne oldu", "fiyat", "kaç para", "kaça", "maç", "skor",
+        "puan durumu", "kimler kazandı", "kim kazandı",
         "nedir", "kimdir", "ne demek", "kim oldu", "son dakika", "web'de",   // tr
-        "weather", "forecast", "exchange rate", "stock", "news", "price",
-        "how much is", "score", "who is", "what is", "search the web",       // en
+        "weather", "forecast", "temperature", "rain", "exchange rate",
+        "stock", "news", "price", "how much is", "score", "who won",
+        "search the web",                                                    // en
+        // ÇIPLAK "what is"/"who is" BİLEREK YOK: İngilizce'de neredeyse her
+        // soru bu kalıpla başlıyor ve "What is John's phone number?" gibi
+        // KİŞİSEL veri sorularını arama profiline atıp KisiAraci'yı oturumdan
+        // düşürüyordu. Yalnız daraltılmış hâlleri alınır.
+        "what is the price", "what is the weather", "what is the exchange",
+        "who is the president", "who is the ceo",
         "天气", "汇率", "新闻", "价格", "比分", "是什么", "是谁",                  // zh
         "天気", "為替", "ニュース", "値段", "とは", "誰",                         // ja
         "clima", "tiempo", "noticias", "precio", "cuánto cuesta", "quién es",// es
@@ -743,7 +817,7 @@ final class ModelServisi {
         defer { if uretimNo == benimTur { uretiyor = false } }
         // Sinyaller ÖNCEKİ turun çiplerinden okunur; çipler sıfırlanmadan önce.
         turSinyalleriniGuncelle()
-        yurutucu.yeniTur()
+        yurutucu.yeniTur()   // turKancasi kod deneme sayacını da sıfırlar (kod-spec §5.4)
         seyir.sifirla()
 
         // Profil + dil yönlendirmesi: oturum yoksa ya da profil/dil değişince tek seferde kur.
@@ -775,12 +849,22 @@ final class ModelServisi {
         // (her ikisi de oturum başına bir kez).
         let istem = istemZenginlestir(soru)
         do {
-            let sonMetin = try await akisYut(oturum, soru: istem, akis: akis)
+            let ham = try await akisYut(oturum, soru: istem, akis: akis)
+            // Ayrıştırılamamış araç çağrısı kullanıcıya GİTMEZ.
+            let sonMetin = Self.aracSizintisiniTemizle(ham)
             // Normal tamamlanma ya da iptal (yarım metin) — ikisi de hata DEĞİL.
             // İptal edilmiş turda `durdur()` seyri zaten kesti; `bitir()` kapalı
             // kaydediciye dokunmaz.
             seyriEsitle()
             seyir.bitir()
+            // Geriye yalnız sızıntı kalmışsa turda söylenecek bir şey yok:
+            // yarım JSON göstermektense tekrar denenebilir hata daha dürüst.
+            if sonMetin.isEmpty, !ham.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                akis("")
+                return YanitSonucu(metin: Yerel.tekrarDene, izler: yurutucu.izler,
+                                   hataMi: true, tekrarDenenebilir: true)
+            }
+            if sonMetin != ham { akis(sonMetin) }
             return YanitSonucu(metin: sonMetin, izler: yurutucu.izler)
         } catch {
             let sonuc = await hataKurtar(error, soru: istem, akis: akis)
@@ -933,7 +1017,9 @@ final class ModelServisi {
             let m = duz(p.segments)
             return m.isEmpty ? nil : "Kullanıcı: " + kirp(m, 400)
         case .response(let r):
-            let m = duz(r.segments)
+            // Sızıntı ÖZETE de girmemeli: girerse model onu kendi geçmişinde
+            // geçerli çıktı sanıp bir sonraki oturumda tekrarlıyor.
+            let m = aracSizintisiniTemizle(duz(r.segments))
             return m.isEmpty ? nil : "Asistan: " + kirp(m, 400)
         default:
             return nil
@@ -942,6 +1028,39 @@ final class ModelServisi {
 
     private static func kirp(_ metin: String, _ sinir: Int) -> String {
         metin.count <= sinir ? metin : String(metin.suffix(sinir))
+    }
+
+    // MARK: - Araç-çağrısı sızıntısı süzgeci
+
+    /// Ayrıştırılamamış araç-çağrısı yükünü metinden ayıklar.
+    ///
+    /// FoundationModels çağrı bloğunu tanıyamadığında onu düz METİN segmenti
+    /// olarak geçiriyor; süzgeç olmadan `{"name": "hesapla", …}<executable_end>`
+    /// doğrudan kullanıcıya gidiyordu. Daha kötüsü kendini besliyordu: sızıntı
+    /// bir `.response` metni olduğu için `ozetle()` onu özete taşıyor, model
+    /// yeni oturumda kendi geçmişinde araç-çağrısı sözdizimini "geçerli asistan
+    /// çıktısı" olarak görüp ALAKASIZ yükleri kopyalıyordu (laktoz sorusuna
+    /// `hesapla`, gizlilik sorusuna `kisi("Ali")`). Bu yüzden süzgeç hem
+    /// kullanıcıya giden metne hem `turMetni`ye uygulanır.
+    ///
+    /// Boş dönebilir — çağıran bunu "tur boşa gitti" olarak ele almalı.
+    static func aracSizintisiniTemizle(_ metin: String) -> String {
+        var m = metin
+        // 1) ```function … ``` / … <executable_end> blokları (gövdesiyle birlikte).
+        m = sil("(?s)```[ \\t]*function\\b.*?(?:```|<executable_end>|\\z)", m)
+        // 2) Çıplak JSON araç çağrısı, tekil ya da [ … ] dizisi içinde.
+        m = sil("(?s)\\[?\\s*\\{\\s*\"name\"\\s*:\\s*\"[^\"]*\"\\s*,\\s*\"arguments\"\\s*:\\s*\\{.*?\\}\\s*\\}\\s*\\]?", m)
+        // 3) Blok soyulduktan sonra kalan yetim işaretçiler ve kapanış artıkları.
+        m = sil("<executable_(?:end|start)>", m)
+        m = sil("(?m)^\\s*(?:\\]|```)\\s*$", m)
+        return m.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func sil(_ desen: String, _ metin: String) -> String {
+        guard let re = try? NSRegularExpression(pattern: desen) else { return metin }
+        return re.stringByReplacingMatches(in: metin,
+                                           range: NSRange(metin.startIndex..., in: metin),
+                                           withTemplate: "")
     }
 }
 

@@ -40,7 +40,7 @@ Ayarlar → "Bağlantılar" → "Sunucu ekle". Form alanları:
 | Ad | Serbest metin, ör. "ev sunucusu" |
 | URL | Streamable HTTP endpoint'i (`https://…`). Düz `http://` yalnızca yerel ağ adreslerinde kabul edilir. |
 | Erişim anahtarı (isteğe bağlı) | Bearer token; Keychain'de saklanır, arayüzde bir daha gösterilmez. |
-| Cihaz verisi | **"hiçbir zaman"** (varsayılan) / **"her seferinde sor"**. "Her zaman izin ver" v1'de bilinçli olarak yoktur. |
+| Cihaz verisi | **"hiçbir zaman"** (varsayılan) / **"her seferinde sor"** / **"her zaman izin ver"**. Üçüncüsü onay kapısını kapatır ve **yalnızca uyarı modalı üzerinden** seçilebilir (bkz. 3.6). |
 
 Kaydetmeden önce "Bağlantıyı dene" zorunlu adımdır: `initialize` + `tools/list` çağrılır, dönen araç listesi ad + tek satır açıklamayla gösterilir. Kullanıcı sunucunun ne yapabildiğini eklemeden önce görür. Bağlantı kurulamazsa neden (zaman aşımı, yetki, TLS) düz dille yazılır.
 
@@ -82,6 +82,18 @@ Instructions'a eklenen tek satır:
 > "Paylaşım reddi hata değil kısıttır: reddedilen veriyi tekrar isteme, onsuz yapabildiğini yap, yapamadığını tek cümleyle söyle."
 
 Örnek yanıt: "Issue'yu açtım; toplantı saatini paylaşmadığın için başlığa yazamadım."
+
+### 3.6 "Her zaman izin ver" (kapı kapatma)
+
+**Sürüm notu:** v0.1 bu modu bilinçli olarak dışarıda bırakmıştı ("onay kapısı devre dışı bırakılabilir olsaydı §3.3'teki savunma anlamını yitirirdi"). Kullanıcı kararıyla geri alındı. Karar ve gerekçesi karar kaydında.
+
+Üçüncü mod seçildiğinde kirli oturumda da onay sorulmaz; çağrı doğrudan gider.
+
+**Ne düşer, ne kalır.** §5.8 üç savunma sayar: (a) profil ayrımı, (b) kirli oturumda onay kapısı, (c) onayda gerçek içeriğin gösterilmesi. Bu mod **(b) ve (c)'yi düşürür**; (a) aynen durur — kişisel veri araçları bağlantı profiline hâlâ girmez. Yani "model argümana takvim içeriği yazabilir" riski sürer ama "aynı turda takvimi okuyup aynı turda gönderir" riski yapısal olarak kapalı kalır.
+
+**Şeffaflık düşmez.** Kalkan yalnızca ÖN ONAYDIR. Giden içerik çipin ham girdisinde durmaya devam eder ve kirli oturumda gönderilmişse çip detayında bunun sorulmadan gönderildiği ayrıca yazılır. §2.2'nin "sirr yaptığını gizlemez" ilkesi bu modda da geçerlidir — kullanıcı sonradan "ne çıktı" sorusunu her zaman yanıtlayabilir.
+
+**Seçim kapısı.** Mod, seçici üzerinden sessizce seçilemez: seçildiği anda uyarı modalı açılır ve vazgeçilirse ayar eski değerinde kalır. Modal ne olduğunu somut anlatır (kişisel veri araçlarının içeriği görülmeden gidebilir; ele geçirilmiş sunucu modeli daha fazla veri göndermeye yönlendirebilir; çipten sonradan görülebilir; geri alınabilir). Kısıtlayıcı yöne geçişte modal çıkmaz. Mod seçiliyken bağlantı ekranında kalıcı bir durum satırı bunu söyler.
 
 ### 3.5 Bağlantı yönetimi
 
@@ -174,7 +186,9 @@ MCP çıktıları asla ham haliyle bağlama girmez; mevcut `VeriDeposu` + `kayna
 
 **v2 / macOS:** Yerel stdio sunucular (ağa çıkmayan süreçler); "senin cihazlarında kalır" anlatısı.
 
-**Bilinçli dışarıda:** Hazır connector kataloğu; "her zaman izin ver"; otonom çok-turlu uzak operasyon; MCP `resources`/`prompts` yetenekleri (yalnızca `tools`).
+**Bilinçli dışarıda:** Hazır connector kataloğu; otonom çok-turlu uzak operasyon; MCP `resources`/`prompts` yetenekleri (yalnızca `tools`).
+
+*(v0.1'de "her zaman izin ver" de bu listedeydi; §3.6 ile kapsama alındı.)*
 
 ---
 
@@ -198,7 +212,26 @@ Seçenekler: A (MCP yok, App Intents) · B-ham (açık kanal) · B-izinli (bu sp
         · C (yalnız macOS yerel stdio)
 Seçilen: B-izinli — veri çıkışının her örneği deterministik bir kapıdan ve
         kullanıcının gözü önünden geçer; C, macOS hedefiyle birlikte ayrıca gelir.
-Bilinçli ertelenenler: "her zaman izin ver", hatırlanan onay, hazır katalog.
+Bilinçli ertelenenler: hatırlanan onay (kaynak başına), hazır katalog.
+```
+
+```
+Karar: "Her zaman izin ver" modu eklendi (v0.1'in kararı geri alındı).
+Bağlam: Onay yorgunluğu, kendi sunucusuna sık iş yaptıran kullanıcıda ilk
+        günden hissedildi; v0.1'in "onay nadirse okunur" varsayımı bu
+        kullanım için tutmadı.
+Seçenekler: A (v0.1'de kal — iki mod) · B (kaynak başına hatırlanan onay,
+        v1.1 adayıydı) · C (bağlantı başına kapı kapatma + uyarı modalı)
+Seçilen: C — B'den daha kaba ama anlaşılması kolay ve geri alınabilir; kararın
+        maliyeti seçim anında tek bir yerde, somut olarak anlatılıyor.
+        Şeffaflık (çip + ham girdi) korunduğu için "sirr yaptığını gizlemez"
+        ilkesi delinmiyor; delinen yalnızca ÖN ONAY.
+Bilinçli ertelenenler: kaynak başına hatırlanan onay (C'yi gereksiz kılabilir),
+        modun oturum/süre sınırlı hâli ("bugünlük sorma").
+Yeniden değerlendirme tetikleyicisi: kullanıcıların çoğunluğu bu modu
+        açıyorsa kapı tasarımı yanlış demektir — B'ye (ince taneli hatırlama)
+        geçilir; ya da bu modda gönderilen içeriğin sonradan hiç okunmadığı
+        gözlenirse şeffaflık yüzeyi (çip detayı) yeniden tasarlanır.
 Yeniden değerlendirme tetikleyicisi: onay yorgunluğu sinyali (oturum başına
         2+ onay çipi) veya üçüncü taraf sunucu talebinin baskınlaşması.
 ```

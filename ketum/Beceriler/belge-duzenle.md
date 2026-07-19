@@ -1,6 +1,6 @@
 ---
 ad: belge-duzenle
-tetikler: düzenle, değiştir, güncelle, satır ekle, satır sil, düzelt, revize, ekle şunu
+tetikler: düzenle, değiştir, güncelle, satır, satırı, satırını, satırlarını, sütun, kolon, hücre, düzelt, revize, ekle şunu
 ---
 # Editing documents
 

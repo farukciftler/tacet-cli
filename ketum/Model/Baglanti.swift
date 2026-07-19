@@ -18,13 +18,28 @@ import Foundation
 import SwiftData
 
 /// Bu bağlantıya cihaz verisi gönderilebilir mi (spec §3.1).
-/// "her zaman izin ver" v1'de BİLİNÇLİ OLARAK YOKTUR — onay kapısı devre dışı
-/// bırakılabilir olsaydı §3.3'teki savunma anlamını yitirirdi.
+///
+/// Spec v0.1 yalnızca iki mod tanımlıyordu ve "her zaman izin ver"i bilinçli
+/// olarak dışarıda bırakmıştı. Kullanıcı kararıyla üçüncü mod eklendi; karşılığı
+/// spec §3.1'e ve karar kaydına işlendi. Kapıyı kapatan seçenek, seçilirken
+/// neyin devre dışı kaldığını anlatan bir uyarı modalına bağlıdır — sessizce
+/// erişilebilir DEĞİLDİR.
 enum CihazVerisiAyari: String, Codable, CaseIterable {
     /// Varsayılan: kirli oturumda çağrı hiç yapılmaz.
     case hicbirZaman
     /// Kirli oturumda her çağrı onay sayfasına düşer.
     case herSeferindeSor
+    /// Onay kapısı atlanır — kirli oturumda bile sorulmadan gönderilir.
+    ///
+    /// Spec §3.1 bunu v1'de bilinçli olarak dışarıda bırakmıştı; kullanıcı
+    /// kararıyla geri alındı ve seçilirken uyarı modalına bağlandı.
+    /// Seçildiğinde §5.8'deki üç savunmadan ikisi düşer: onay kapısı ve
+    /// gerçek içeriğin gösterilmesi. Geriye yalnızca profil ayrımı kalır —
+    /// kişisel veri araçları MCP ile aynı profile hâlâ girmez.
+    case herZaman
+
+    /// Onay kapısını atlayan mod mu — çağrı yolunda ve arayüzde ayrı ele alınır.
+    var kapiyiAtlarMi: Bool { self == .herZaman }
 }
 
 /// Sunucudan içe aktarılmış tek araç: adı + sıkıştırılmış açıklaması.

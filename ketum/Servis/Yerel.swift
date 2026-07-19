@@ -68,6 +68,24 @@ enum Yerel {
     static var dilDesteklenmiyor: String { String(localized: "Bu dili şu an tam desteklemiyorum.") }
     static var tekrarDene: String { String(localized: "Şu an bunu yapamadım. Bir daha sorar mısın?") }
 
+    // MARK: - Kod çalıştırma (kod-spec §5)
+    static var kodCalisiyor: String { String(localized: "Kod çalıştırılıyor…") }
+    static func kodCalisti(_ ms: Int) -> String { String(localized: "Kod çalıştırıldı · \(ms) ms") }
+    static var kodYenidenDeneniyor: String { String(localized: "Hata · yeniden deneniyor") }
+    static var kodCalistirilamadi: String { String(localized: "Kod çalıştırılamadı") }
+    static var kodZamanAsimi: String { String(localized: "Kod zaman aşımına uğradı") }
+    static var kodZamanAsimiNeden: String { String(localized: "Kod 3 saniyede tamamlanmadı.") }
+    static var kodDenemeSiniri: String { String(localized: "Deneme sınırına ulaşıldı") }
+    static var kodIkiDeneme: String { String(localized: "Kod iki denemede çalışmadı.") }
+    static var kodCiktiKirpildi: String { String(localized: "… çıktı 10.000 karakterde kırpıldı.") }
+
+    // MARK: - Sayfa doğrulama (kod-spec §4.3)
+    static var sayfaDogrulanamadi: String { String(localized: "Sayfa doğrulanamadı") }
+    static var sayfaYuklenmedi: String { String(localized: "Sayfa 3 saniye içinde yüklenmedi") }
+    static var sayfaDisIstek: String { String(localized: "Sayfa dosya dışı bir adrese istek yaptı") }
+    static func sayfaYuklenemedi(_ hata: String) -> String { String(localized: "Sayfa yüklenemedi: \(hata)") }
+    static func sayfaBetikHatasi(_ mesaj: String) -> String { String(localized: "Sayfada betik hatası: \(mesaj)") }
+
     // MARK: - Nöbet (zamanlanmış ajan)
     static var nobetKuruluyor: String { String(localized: "Nöbet kuruluyor…") }
     static var nobetKuruldu: String { String(localized: "Nöbet kuruldu · her gün") }

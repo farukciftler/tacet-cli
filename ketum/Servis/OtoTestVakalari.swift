@@ -124,6 +124,33 @@ enum OtoTestVakalari {
                                  varolanMetinler: [], kayitliSayi: 0).first?.tur,
                .tercih, "tür kırpılıp küçültülerek okunur")
 
+        // 2b. Soru / emir kipi düşer. Aşağıdakiler sahada hafızaya YAZILMIŞ
+        //     gerçek notlar — her biri regresyon vakası.
+        for kotu in ["Bugünün tarihi ne.",
+                     "Serverime erişebiliyor musun",
+                     "Serverim ne kadar dolu disk açısından",
+                     "Bugünki hava durumu hakkında bilgi almak istiyorum.",
+                     "Kişilerimden 10 kişi getir",
+                     "Hangi filmleri izlemeliyim",
+                     "Bana kitap önerisi göster",
+                     "What is today's date?"] {
+            d.esit(HafizaServisi.suz([aday("olgu", kotu, ["a"])],
+                                     varolanMetinler: [], kayitliSayi: 0).count,
+                   0, "soru/emir kipi reddedilir: \(kotu)")
+        }
+
+        // 2c. Kip filtresi doğru notları DÜŞÜRMEZ — alt dizge değil sözcük
+        //     eşleşmesi ("server"da "ver", "araba"da "ara" geçer).
+        for iyi in ["İstanbul Ortaköy'deki evimde yaşıyorum.",
+                    "Kullanıcı kendi serverını yönetiyor.",
+                    "Kullanıcının kırmızı bir arabası var.",
+                    "Kullanıcı sabahları verimli çalışır.",
+                    "Kullanıcı vegan beslenir."] {
+            d.esit(HafizaServisi.suz([aday("olgu", iyi, ["a"])],
+                                     varolanMetinler: [], kayitliSayi: 0).count,
+                   1, "olgu cümlesi kip filtresinden geçer: \(iyi)")
+        }
+
         // 3. Anahtarsız not düşer (boş dizi ve yalnızca boşluktan oluşan anahtar).
         d.esit(HafizaServisi.suz([aday("olgu", "Kullanıcı İzmir'de yaşıyor.", [])],
                                  varolanMetinler: [], kayitliSayi: 0).count,
@@ -616,11 +643,9 @@ enum OtoTestVakalari {
                                                  sonuclar: enKotu)
         // Spec §5.5 tavanı ~300 token; ~4 karakter ≈ 1 token kabulüyle 1200 karakter.
         //
-        // BİLİNEN AÇIK: `modeleMetin` BAŞLIĞA TAVAN KOYMAZ. Özetler 200'de kesilir
-        // (5 × 200 = 1000 karakter ≈ 250 token) ama başlık ham gelir, dolayısıyla
-        // uzun başlıklı beş sonuçta bütçe aşılır. Çözüm ayrıştırma tarafında tek
-        // satırdır: `baslik` alanı da `kirp(_:sinir:)` ile (ör. 80) kırpılmalı.
-        // Bu iddia bilerek spec değerinde bırakıldı — kod düzelene dek KIRMIZI kalır.
+        // (Eski bilinen açık kapatıldı: bütçe artık `modeleMetin`de SATIR başına
+        // zorlanır — `satirTavani`. Başlığı tek başına kırpmak yetmezdi: uzun
+        // başlık + uzun alan adı + tavan özet birlikte de bütçeyi aşıyordu.)
         d.dogru(metin.count <= 1200,
                 "en kötü modele dönen metin ~300 token (1200 karakter) bütçesinde",
                 "\(metin.count) karakter ≈ \(metin.count / 4) token — başlıkta kırpma yok")

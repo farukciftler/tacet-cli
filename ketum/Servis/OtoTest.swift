@@ -36,6 +36,7 @@ enum OtoTest {
             (.docx, "ototest-word", false),
             (.pdf,  "ototest-pdf",  false),
             (.md,   "ototest-markdown", false),
+            (.html, "ototest-sayfa", false),   // kod-spec §4: sayfa da belge kanalıdır
         ]
 
         for (bicim, ad, tabloMu) in isler {
@@ -99,7 +100,10 @@ enum OtoTest {
 
         // Beceri (SKILL.md) katmanı testi.
         kayit.append("--- BECERİLER (SKILL.md) ---")
-        kayit.append("Bundle'dan yüklenen beceri: \(BeceriDeposu.paket.count)")
+        // kod + web-sayfa aktifleşince (kod-spec adım 7) paket 10 beceriye çıktı.
+        let paketSayisi = BeceriDeposu.paket.count
+        kayit.append("Bundle'dan yüklenen beceri: \(paketSayisi) "
+                     + "\(paketSayisi == 10 ? "✓" : "✗ (beklenen: 10)")")
         let denemeler = [
             ("bir excel yap haftalık", "belge-olustur"),
             ("yarın ne var takvimimde", "takvim"),
@@ -113,6 +117,10 @@ enum OtoTest {
             // Genel kelime hâlâ doğru beceriye gitmeli — özgüllük kuralı bunu bozmamalı.
             ("haftalık yemek tablosu yap", "belge-olustur"),
             ("takvimimi göster", "takvim"),
+            // kod-spec §8: yeni beceriler. "python ile" tetikleyicisi olmasa
+            // "hesapla" (7) "python"u (6) yenerdi — özgüllük kuralının gereği.
+            ("python ile hesaplar mısın", "kod"),
+            ("kahve dükkanım için site yap", "web-sayfa"),
         ]
         for (soru, beklenen) in denemeler {
             let bulunan = BeceriDeposu.eslesen(soru)?.ad ?? "yok"
@@ -156,7 +164,9 @@ enum OtoTest {
 
         // Dört spec'in model/ağ gerektirmeyen kabul ölçütleri. Bunlar "gözle bak"
         // değil ASSERT'tir: başarısızlık satırda işaretlenir ve sonda sayılır.
-        let defter = OtoTestVakalari.calistir()
+        var defter = OtoTestVakalari.calistir()
+        // kod-spec §8: HtmlMotor vakaları (saf motor, model/ağ/WKWebView gerekmez).
+        defter.ekle(htmlVakalari(klasor: klasor))
         kayit.append(contentsOf: defter.satirlar)
         kayit.append("=== İDDİA: \(defter.iddia) · BAŞARISIZ: \(defter.hata) "
                      + "\(defter.hata == 0 ? "✓" : "✗") ===")
@@ -167,7 +177,10 @@ enum OtoTest {
         // Askıya alma gerektiren vakalar (onay kapısı) senkron init içinde
         // çalışamaz; ilk run loop turunda çalışıp sonucu aynı dosyaya ekler.
         Task { @MainActor in
-            let ek = await OtoTestVakalari.asenkronCalistir()
+            var ek = await OtoTestVakalari.asenkronCalistir()
+            // kod-spec §8: KodMotoru + deneme sayacı vakaları (await gerektirir;
+            // zaman aşımı vakası ~3 sn sürer, launch-anı senkron akışına sığmaz).
+            ek.ekle(await kodVakalari())
             var tam = kayit
             tam.append(contentsOf: ek.satirlar)
             tam.append("=== ASENKRON İDDİA: \(ek.iddia) · BAŞARISIZ: \(ek.hata) "
@@ -177,6 +190,171 @@ enum OtoTest {
                        + "\(toplamHata == 0 ? "✓ HEPSİ GEÇTİ" : "✗ BAŞARISIZ") ===")
             yaz(tam, klasor: klasor)
         }
+    }
+
+    // MARK: - kod-spec §8: HtmlMotor
+
+    /// Markdown → HTML dökümü + `oku` geri çıkarımı. SayfaDogrulayici BİLEREK
+    /// çağrılmaz (WKWebView launch-anı senkron akışında güvenilmez) — buradaki
+    /// iddialar doğrulamanın koruduğu şeyin ta kendisini (markdown ayrıştırması
+    /// ve şablonun kendine yeterliği) statik olarak sınar.
+    @MainActor
+    private static func htmlVakalari(klasor: URL) -> OtoTestDefteri {
+        var d = OtoTestDefteri()
+        d.baslik("HTML MOTOR (kod-spec §4)")
+
+        let markdown = """
+        # Köşe Kahve
+        Taze kavrulmuş & günlük.
+
+        ## Menü
+        | Kahve | Fiyat |
+        | --- | --- |
+        | Filtre | 90 |
+        | <Espresso> | 120 |
+
+        ## Özellikler
+        - Hızlı servis
+        - **Taze** çekirdek
+
+        ### Adres
+        Mah. Cad. No 3
+        """
+
+        let motor = HtmlMotor()
+        do {
+            let url = try motor.yaz(dosyaAdi: "ototest-html-vaka", baslik: nil,
+                                    govde: markdown, tablo: nil, klasor: klasor)
+            defer { try? FileManager.default.removeItem(at: url) }
+            let ham = try String(contentsOf: url, encoding: .utf8)
+
+            // Kendine yeterlik: şablonda ve üretimde HİÇBİR harici istek izi yok.
+            // "http" araması boş dönmeli — sayfa da ağ vaadi taşır (kod-spec §4.2).
+            d.dogru(!ham.contains("http"), "üretilen HTML'de 'http' geçmez (harici istek yok)")
+            d.dogru(!ham.contains("<script"), "üretilen HTML betik içermez")
+
+            // Markdown → şablon eşlemesinin izleri.
+            d.dogru(ham.contains("<header class=\"hero\">"), "ilk '# ' hero bölümü olur")
+            d.dogru(ham.contains("<h1>Köşe Kahve</h1>"), "hero başlığı h1 taşır")
+            d.dogru(ham.contains("class=\"tagline\""), "hero altındaki paragraf tagline olur")
+            d.dogru(ham.contains("<title>Köşe Kahve</title>"), "sayfa başlığı hero'dan gelir")
+            d.dogru(ham.contains("<h2>Menü</h2>"), "'## ' bölüm başlığı olur")
+            d.dogru(ham.contains("<h3>Adres</h3>"), "'### ' bölüm içi alt başlık olur")
+            d.dogru(ham.contains("<table>"), "markdown tablosu <table> olur")
+            d.dogru(ham.contains("class=\"kartlar\""), "'- ' listesi kart grid'i olur")
+            d.dogru(ham.contains("&lt;Espresso&gt;"), "içerikteki < > kaçışlanır")
+            d.dogru(ham.contains("&amp; günlük"), "içerikteki & kaçışlanır")
+            d.dogru(ham.contains("<strong>Taze</strong>"), "**kalın** strong olur")
+
+            // Round-trip: oku etiketleri ayıklayıp markdown öneklerine geri çevirir —
+            // "siteye bölüm ekle" akışı (belge_oku → belge_duzenle) buna dayanır.
+            let geri = try motor.oku(url: url).metin
+            d.dogru(geri.contains("# Köşe Kahve"), "oku: hero '# ' önekiyle geri döner")
+            d.dogru(geri.contains("Taze kavrulmuş & günlük."), "oku: & kaçışı geri alınır")
+            d.dogru(geri.contains("## Menü"), "oku: bölüm '## ' önekiyle geri döner")
+            d.dogru(geri.contains("### Adres"), "oku: alt başlık '### ' önekiyle geri döner")
+            d.dogru(geri.contains("| Filtre | 90 |"), "oku: tablo markdown satırına geri döner")
+            d.dogru(geri.contains("| <Espresso> | 120 |"), "oku: hücre kaçışları geri alınır")
+            d.dogru(geri.contains("- Hızlı servis"), "oku: kart '- ' maddesine geri döner")
+            d.dogru(!geri.contains("<style"), "oku: stil bloğu tamamen ayıklanır")
+            d.dogru(!geri.contains("</"), "oku: hiçbir kapanış etiketi sızmaz")
+        } catch {
+            d.dogru(false, "HtmlMotor yaz/oku turu", "\(error)")
+        }
+        return d
+    }
+
+    // MARK: - kod-spec §8: KodMotoru + deneme sayacı
+
+    @MainActor
+    private static func kodVakalari() async -> OtoTestDefteri {
+        var d = OtoTestDefteri()
+        d.baslik("KOD MOTORU (kod-spec §5)")
+
+        // print(6*7) → "42".
+        switch await KodMotoru.calistir("print(6*7)") {
+        case .basarili(let cikti, _):
+            d.esit(cikti, "42", "print(6*7) çıktısı 42")
+        default:
+            d.dogru(false, "print(6*7) çıktısı 42", "başarılı sonuç dönmedi")
+        }
+
+        // print çağrılmadıysa son ifadenin değeri çıktı sayılır.
+        switch await KodMotoru.calistir("6*7") {
+        case .basarili(let cikti, _):
+            d.esit(cikti, "42", "son ifade biçimi (6*7) de 42 verir")
+        default:
+            d.dogru(false, "son ifade biçimi (6*7) de 42 verir", "başarılı sonuç dönmedi")
+        }
+
+        // Sözdizimi hatası → error + satır numarası.
+        switch await KodMotoru.calistir("let a=1;\nlet x = ;") {
+        case .hata(let mesaj):
+            d.dogru(true, "sözdizimi hatası hata döner")
+            d.dogru(mesaj.contains("line"), "hata satır numarası taşır", mesaj)
+        default:
+            d.dogru(false, "sözdizimi hatası hata döner", "hata dönmedi")
+        }
+
+        // Sonsuz döngü → ~3 sn'de zaman aşımı; sessiz donma yok.
+        let baslangic = Date()
+        let dongu = await KodMotoru.calistir("while(true){}")
+        let gecen = Date().timeIntervalSince(baslangic)
+        if case .zamanAsimi = dongu {
+            d.dogru(true, "sonsuz döngü zaman aşımı döner")
+        } else {
+            d.dogru(false, "sonsuz döngü zaman aşımı döner", "\(dongu)")
+        }
+        d.dogru(gecen >= 2.5 && gecen < 10,
+                "zaman aşımı ~3 sn'de gerçekleşir", String(format: "%.1f sn", gecen))
+
+        // 10k üstü çıktı kırpılır ve kırpıldığı söylenir.
+        switch await KodMotoru.calistir("let s='x'.repeat(20000); print(s)") {
+        case .basarili(let cikti, _):
+            d.dogru(cikti.contains(Yerel.kodCiktiKirpildi), "kırpma notu çıktıya eklenir")
+            d.dogru(cikti.count <= KodMotoru.ciktiTavani + Yerel.kodCiktiKirpildi.count + 1,
+                    "kırpılan çıktı tavanı aşmaz", "\(cikti.count)")
+        default:
+            d.dogru(false, "10k üstü çıktı kırpılarak döner", "başarılı sonuç dönmedi")
+        }
+
+        // Sandbox: fetch/require tanımsızdır — hata döner, ÇALIŞMAZ.
+        switch await KodMotoru.calistir("fetch('https://ornek.com')") {
+        case .hata(let mesaj):
+            d.dogru(mesaj.contains("fetch"), "fetch tanımsız (ağ köprüsü yok)", mesaj)
+        default:
+            d.dogru(false, "fetch tanımsız (ağ köprüsü yok)", "hata dönmedi")
+        }
+        switch await KodMotoru.calistir("require('fs')") {
+        case .hata(let mesaj):
+            d.dogru(mesaj.contains("require"), "require tanımsız (dosya köprüsü yok)", mesaj)
+        default:
+            d.dogru(false, "require tanımsız (dosya köprüsü yok)", "hata dönmedi")
+        }
+
+        // Deneme sayacı (kod-spec §5.4): 3. çağrı motoru HİÇ görmeden reddedilir.
+        d.baslik("KOD ARACI · DENEME SAYACI (kod-spec §5.4)")
+        let durum = KodDurumu()
+        var arac = KodCalistirAraci()
+        arac.durum = durum
+
+        let a1 = await arac.call(arguments: .init(kod: "print(1)", dil: "js"))
+        d.dogru(a1.hasPrefix("ok"), "1. çağrı çalışır", a1)
+        let a2 = await arac.call(arguments: .init(kod: "print(2)", dil: "js"))
+        d.dogru(a2.hasPrefix("ok"), "2. çağrı çalışır", a2)
+        d.esit(durum.deneme, 2, "sayaç iki denemeyi saydı")
+        let a3 = await arac.call(arguments: .init(kod: "print(3)", dil: "js"))
+        d.dogru(a3.hasPrefix("error_final"), "3. çağrı error_final ile reddedilir", a3)
+        d.dogru(!a3.contains("ok ("), "3. çağrıda motor çalıştırılmaz")
+
+        // Canlıda sıfırlama ModelServisi.yanitSonucu turu, hataKurtar retry
+        // dalları ve sohbetiSifirla'dadır — burada sözleşme doğrulanır.
+        durum.yeniTur()
+        d.esit(durum.deneme, 0, "yeniTur() sayacı sıfırlar")
+        let a4 = await arac.call(arguments: .init(kod: "print(4)", dil: "js"))
+        d.dogru(a4.hasPrefix("ok"), "yeni turda çağrı yeniden çalışır", a4)
+
+        return d
     }
 
     /// Sonucu yalnız print'e ve Caches altındaki test dosyasına yazar.

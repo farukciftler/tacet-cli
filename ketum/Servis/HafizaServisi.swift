@@ -115,9 +115,20 @@ final class HafizaServisi {
             You extract durable facts from a user's own messages for a personal \
             memory store. Extract only durable facts the user states about \
             themselves: identity, stable preferences, relationships, or lasting \
-            circumstances. Ignore questions, tasks, transient details, moods, \
-            and anything the user asks you to do. Do not infer or generalise — \
-            use only what is explicitly stated. When in doubt, extract nothing.
+            circumstances. Do not infer or generalise — use only what is \
+            explicitly stated. When in doubt, extract nothing.
+
+            Most messages contain NOTHING to extract. A message is not a fact \
+            just because the user wrote it. Never copy a message that asks a \
+            question, gives you an instruction, or requests something — those \
+            are never facts, no matter what they are about.
+
+            "What is today's date?" -> nothing
+            "Can you reach my server?" -> nothing
+            "Get me 10 of my contacts" -> nothing
+            "I want today's weather" -> nothing
+            "I'm searching the web" -> nothing
+            "I live in Istanbul" -> fact: the user lives in Istanbul
             """
         }
 
@@ -125,7 +136,9 @@ final class HafizaServisi {
         User messages:
         \(govde)
 
-        Extract at most 2 durable facts. If there are none, return an empty list.
+        Extract at most 2 durable facts. Most message sets yield none — \
+        return an empty list unless the user plainly stated something \
+        lasting about themselves.
         """
 
         guard let sonuc = try? await oturum.respond(to: istem, generating: AyiklamaSonucu.self).content else {
@@ -197,6 +210,12 @@ final class HafizaServisi {
             //    model türü uyduruyorsa notun kendisi de şüphelidir).
             guard let tur = HafizaTuru(rawValue: aday.tur.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) else { continue }
 
+            // 2b. Soru / emir / talep kipindeki metin → düş. Sistem istemi bunu
+            //     zaten yasaklar ama bu boyuttaki model istem satırlarını olduğu
+            //     gibi kopyalıyor ("Bugünün tarihi ne.", "Kişilerimden 10 kişi
+            //     getir"). Kip koddan bakılır — §4.3'ün gerekçesi tam olarak bu.
+            guard !kipiGecersiz(metin) else { continue }
+
             // 3. Anahtarlar boş → düş.
             let anahtarlar = aday.anahtarlar
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
@@ -215,6 +234,58 @@ final class HafizaServisi {
         }
         return kabul
     }
+
+    // MARK: - Kip filtresi
+
+    /// Soru işareti ile biten / soru sözcüğü ya da soru eki taşıyan / emir-talep
+    /// kipindeki metinleri eler. Kalıcı olgu cümlesi bunların hiçbirini taşımaz.
+    ///
+    /// Eşleşme SÖZCÜK bazlıdır, alt dizge bazlı değil: "ara" alt dizgesi
+    /// "araba"da, "ver" ise "server"da geçer — alt dizge araması doğru notları
+    /// düşürürdü. Türkçe eklemeli olduğu için fiil gövdeleri ÖN EK olarak
+    /// aranır ("getir" → "getirir", "getirebilir misin").
+    ///
+    /// Yanlış negatif tarafına eğimlidir: kararsız kalınan yerde not düşer,
+    /// spec'in "when in doubt, extract nothing" duruşuyla aynı yön.
+    static func kipiGecersiz(_ metin: String) -> Bool {
+        if metin.contains("?") { return true }
+
+        let sozcukler = metin
+            .lowercased(with: Locale(identifier: "tr_TR"))
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map(String.init)
+
+        for sozcuk in sozcukler {
+            // Tam eşleşme: soru sözcükleri ve ayrı yazılan soru eki.
+            if soruSozcukleri.contains(sozcuk) { return true }
+            // Ön ek: emir / talep gövdeleri (en az 5 harf — kısa gövdeler
+            // masum sözcüklerin başına denk gelir).
+            if gorevGovdeleri.contains(where: { sozcuk.hasPrefix($0) }) { return true }
+        }
+        return false
+    }
+
+    /// Soru sözcükleri + Türkçede AYRI yazılan soru eki ("erişebiliyor musun").
+    private static let soruSozcukleri: Set<String> = [
+        "ne", "neden", "niye", "niçin", "nasıl", "kaç", "hangi", "hangisi",
+        "nerede", "nereye", "nereden", "neresi", "kim", "kime", "kimin", "kimler",
+        "mi", "mı", "mu", "mü",
+        "misin", "mısın", "musun", "müsün",
+        "miyim", "mıyım", "muyum", "müyüm",
+        "miyiz", "mıyız", "muyuz", "müyüz",
+        "midir", "mıdır", "mudur", "müdür",
+        "what", "when", "where", "who", "why", "how", "which", "whose",
+    ]
+
+    /// Emir / talep gövdeleri. Yalnızca yeterince uzun ve ayırt edici olanlar:
+    /// "yap", "aç", "bul", "ver" gibi kısa gövdeler masum sözcüklerin başında
+    /// geçtiği için BİLEREK dışarıda bırakıldı.
+    private static let gorevGovdeleri: [String] = [
+        "getir", "göster", "listele", "gönder", "hesapla", "özetle",
+        "çalıştır", "kontrol", "araştır", "açıkla", "hatırlat", "oluştur",
+        "istiyorum", "isterim", "istiyoruz", "lütfen",
+        "please", "show", "list", "find", "tell", "give", "search", "explain",
+    ]
 
     // MARK: - İstem gövdesi
 

@@ -179,6 +179,21 @@ struct MCPAraci: KetumAraci {
                 return "kullanıcı bu veriyi paylaşmayı reddetti"
             }
 
+            // "Her zaman izin ver": kapı atlanır. Kullanıcı bu kararı bağlantı
+            // ayarında bir kez, uyarı modalını okuyarak verdi.
+            //
+            // GİZLEME YOK (§2.2): kapı atlansa da giden içerik çipin ham
+            // girdisinde DURUR ve kirli oturumda gönderildiyse bunun onay
+            // sorulmadan olduğu ayrıca yazılır. Kullanıcı sonradan "ne çıktı"
+            // sorusunu yanıtlayabilmeli; atlanan şey ONAY, ŞEFFAFLIK DEĞİL.
+            if cihazVerisi.kapiyiAtlarMi {
+                let not = kirli
+                    ? String(localized: "onay sorulmadan gönderildi · bağlantı ayarı: her zaman izin ver")
+                    : String(localized: "gönderildi · oturumda kişisel veri aracı kullanılmamıştı")
+                return await uzagaCagir(argumanlar: "\(not)\n\n\(argumanlar)",
+                                        gonderilen: argumanlar)
+            }
+
             let onay = await kapi.onayIste(kaynak: baglantiAdi,
                                            aracAdi: uzakAd,
                                            icerik: argumanlar)
@@ -189,13 +204,24 @@ struct MCPAraci: KetumAraci {
             }
         }
 
+        return await uzagaCagir(argumanlar: argumanlar, gonderilen: argumanlar)
+    }
+
+    /// Uzak çağrının tek gövdesi. Onaylı yol ve kapı-atlanan yol AYNI kodu
+    /// kullanır; ikisi ayrı yazılırsa biri güncellenip diğeri unutulur.
+    ///
+    /// - Parameters:
+    ///   - argumanlar: çipin ham girdisinde GÖRÜNEN metin. Kapı atlandığında
+    ///     başına açıklayıcı bir not eklenir; kullanıcı sonradan okur.
+    ///   - gonderilen: sunucuya GERÇEKTEN giden JSON. Nota asla karışmaz.
+    private func uzagaCagir(argumanlar: String, gonderilen: String) async -> String {
         return await cipliCalis(ikon: "arrow.up.forward.app",
                                 calisiyorMetni: "\(baglantiAdi) · çalışıyor…",
                                 hamGirdi: argumanlar) {
             do {
                 let sonuc = try await cagirici.cagir(baglantiID: baglantiID,
                                                      aracAdi: uzakAd,
-                                                     argumanlarJSON: argumanlar)
+                                                     argumanlarJSON: gonderilen)
                 return AracSonucu(
                     cipMetni: "\(baglantiAdi) · \(sonuc.cipDetayi)",
                     // Uzak çağrı cihazda bir şey değiştirmez; `.yazildi` yerel

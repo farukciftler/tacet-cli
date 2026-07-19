@@ -65,12 +65,39 @@ enum BeceriDeposu {
         let s = soru.lowercased()
         var enIyi: (beceri: Beceri, skor: Int)?
         for b in hepsi {
-            let skor = b.tetikler.reduce(0) { $0 + (s.contains($1) ? $1.count : 0) }
+            let skor = b.tetikler.reduce(0) { $0 + (icerir(s, $1) ? $1.count : 0) }
             if skor > 0, skor > (enIyi?.skor ?? 0) {
                 enIyi = (b, skor)
             }
         }
         return enIyi?.beceri
+    }
+
+    /// Tetikleyici aramasında SÖZCÜK BAŞI şartı arar (ham alt-dizgi değil).
+    ///
+    /// Ham `contains` kısa tetikleyicileri sık sözcüklerin İÇİNDE buluyordu:
+    /// "alfabetik" içindeki "betik" kod becerisini, "yüzde"nin içindeki "yüz"ü
+    /// hesap becerisini çağırıyordu; yanlış kılavuz enjekte edilince model o
+    /// becerinin aracını zorlayıp şemaya uymayan bir çağrı üretiyordu. Türkçe
+    /// SONA ek aldığı için yalnızca sözcük BAŞI sınırlanır — "satır" hâlâ
+    /// "satırını" ile eşleşir, ki istenen budur.
+    ///
+    /// Boşluk kullanmayan yazılarda (CJK, Korece) sözcük sınırı diye bir şey
+    /// yok; oradaki tetikleyiciler için ham alt-dizgiye düşülür, aksi hâlde
+    /// hiç eşleşmezlerdi.
+    private static func icerir(_ metin: String, _ tetik: String) -> Bool {
+        guard let ilk = tetik.unicodeScalars.first, ilk.value < 0x0590 else {
+            return metin.contains(tetik)   // CJK/Korece: sınır kavramı yok
+        }
+        var alan = metin.startIndex..<metin.endIndex
+        while let r = metin.range(of: tetik, range: alan) {
+            if r.lowerBound == metin.startIndex { return true }
+            let onceki = metin[metin.index(before: r.lowerBound)]
+            if !onceki.isLetter && !onceki.isNumber { return true }
+            guard r.lowerBound < metin.endIndex else { break }
+            alan = metin.index(after: r.lowerBound)..<metin.endIndex
+        }
+        return false
     }
 
     /// Modele verilecek biçim: sınırlanmış gövde + "bunu anlatma" çitleri.

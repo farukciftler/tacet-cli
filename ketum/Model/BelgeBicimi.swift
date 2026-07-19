@@ -14,6 +14,7 @@ enum BelgeBicimi: String, CaseIterable, Sendable {
     case docx   // Word
     case md     // Markdown
     case txt    // düz metin
+    case html   // tek dosyalık web sayfası (kod-spec §4)
 
     var uzanti: String { rawValue }
 
@@ -25,6 +26,7 @@ enum BelgeBicimi: String, CaseIterable, Sendable {
         case .docx: return "Word"
         case .md:   return "Not"
         case .txt:  return "Metin"
+        case .html: return "Sayfa"
         }
     }
 
@@ -36,6 +38,7 @@ enum BelgeBicimi: String, CaseIterable, Sendable {
         case .docx: return "doc.text"
         case .md:   return "text.alignleft"
         case .txt:  return "doc.plaintext"
+        case .html: return "doc.text.image" // "globe" değil — ağ çağrışımı yapar (kod-spec §4.2)
         }
     }
 
@@ -52,6 +55,8 @@ enum BelgeBicimi: String, CaseIterable, Sendable {
             self = .pdf
         case s.contains("doc"), s.contains("word"):
             self = .docx
+        case s.contains("html"), s.contains("site"), s.contains("sayfa"), s.contains("web"):
+            self = .html
         case s.contains("md"), s.contains("markdown"):
             self = .md
         default:
@@ -67,6 +72,7 @@ enum BelgeBicimi: String, CaseIterable, Sendable {
         case "docx": self = .docx
         case "md", "markdown": self = .md
         case "txt", "text": self = .txt
+        case "html", "htm": self = .html
         default: return nil
         }
     }

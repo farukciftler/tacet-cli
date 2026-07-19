@@ -80,25 +80,13 @@ struct BaglantiDetayi: View {
 
     private var cihazVerisiBolumu: some View {
         bolum("CİHAZ VERİSİ") {
-            VStack(alignment: .leading, spacing: Olcek.s2) {
-                Picker("Cihaz verisi", selection: Binding(
-                    get: { baglanti.cihazVerisi },
+            CihazVerisiSecici(
+                secim: Binding(
+                    get: { baglanti.isDeleted ? .hicbirZaman : baglanti.cihazVerisi },
                     set: { ayarla($0) }
-                )) {
-                    Text("hiçbir zaman").tag(CihazVerisiAyari.hicbirZaman)
-                    Text("her seferinde sor").tag(CihazVerisiAyari.herSeferindeSor)
-                }
-                .pickerStyle(.segmented)
-                .disabled(baglanti.isDeleted)
-                .accessibilityLabel(Text("Cihaz verisi paylaşımı"))
-
-                Text(baglanti.cihazVerisi == .hicbirZaman
-                     ? "Cihazından okunan veri bu sunucuya hiç gönderilmez."
-                     : "Cihazından okunan veri gönderilmeden önce her seferinde sana gösterilir.")
-                    .font(Yazi.cip())
-                    .foregroundStyle(Renk.gri)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+                ),
+                kapali: baglanti.isDeleted
+            )
         }
     }
 

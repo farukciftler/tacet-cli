@@ -128,6 +128,13 @@ final class AracYurutucu: AracRaporlayici {
 
     // MARK: - Tur yaşam döngüsü
 
+    /// Tur başına sıfırlanan dış sayaçların kancası (kod-spec §5.4: kod deneme
+    /// sayacı `AracYurutucu.yeniTur`'da sıfırlanır). Sahibi (ModelServisi)
+    /// kurar; jenerik tutulur — bu sınıf sayaç türlerini tanımaz. Kanca TEK
+    /// noktadan tetiklendiği için `yeniTur` çağıran gelecekteki bir yol
+    /// sayaç sıfırlamayı unutamaz.
+    var turKancasi: (() -> Void)?
+
     /// Yeni tur — önceki turun çipleri Mesaj'a taşındıktan sonra sıfırlanır.
     /// `yanEtkiyiUnut: false` ile çağrılırsa çipler temizlenir ama yan etki
     /// bayrağı korunur (aynı turun içindeki kurtarma denemeleri için).
@@ -138,6 +145,7 @@ final class AracYurutucu: AracRaporlayici {
         bekleyenOnayiCoz()
         izler = []
         if yanEtkiyiUnut { dunyaDegisti = false }
+        turKancasi?()
     }
 
     /// Gerçek sohbet sıfırlaması: oturum ömürlü ne varsa burada biter —

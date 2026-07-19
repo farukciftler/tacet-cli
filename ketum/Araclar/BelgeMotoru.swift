@@ -83,6 +83,7 @@ enum BelgeMotorlari {
         case .pdf:  return PdfMotor()
         case .docx: return DocxMotor()
         case .md, .txt: return MetinMotor(bicim: bicim)
+        case .html: return HtmlMotor()
         }
     }
 }

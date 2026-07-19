@@ -22,6 +22,19 @@ struct ketumApp: App {
         if CommandLine.arguments.contains("--dil") {
             DilTesti.calistir()
         }
+        // Kapsamlı eval: "--eval [--shard N] [--shards M]". Paralel koşum
+        // ajanları aynı ikiliyi farklı shard'larla açar; dilim deterministiktir.
+        if CommandLine.arguments.contains("--eval") {
+            let argumanlar = CommandLine.arguments
+            func sayi(_ bayrak: String, _ varsayilan: Int) -> Int {
+                guard let yer = argumanlar.firstIndex(of: bayrak),
+                      yer + 1 < argumanlar.count,
+                      let deger = Int(argumanlar[yer + 1]) else { return varsayilan }
+                return deger
+            }
+            Degerlendirme.kapsamliCalistir(shard: sayi("--shard", 0),
+                                           toplam: sayi("--shards", 1))
+        }
         #endif
         konteyner = Self.konteynerKur()
         #if DEBUG

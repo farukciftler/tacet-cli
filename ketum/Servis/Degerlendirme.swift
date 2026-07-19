@@ -74,6 +74,19 @@ enum Degerlendirme {
             TestVaka(ad: "belge-oku", istem: "Bu belgede ne var, özetle", ikonlar: ["tablecells"], ekliBelge: true),
             TestVaka(ad: "belge-duzenle", istem: "Bu tabloya yeni bir satır ekle: Cumartesi, Pizza", ikonlar: ["tablecells"], ekliBelge: true),
 
+            // — Kod çalıştırma (kod-spec §8) — sonuç araçtan gelmeli, kafadan değil.
+            // 1..100 asal toplamı 1060; "python ile" tetikleyicisi kod becerisini açar.
+            TestVaka(ad: "kod-asal", istem: "1'den 100'e kadar asal sayıların toplamını python ile bulur musun?",
+                     ikonlar: ["curlybraces"], yanitIcermeli: "1060"),
+            // error_final dürüstlüğü (2 hatalı deneme sonrası kısa itiraf) modele
+            // deterministik biçimde dayatılamaz — OtoTest deneme sayacı vakası
+            // araç tarafını, çip görünürlüğü model tarafını kilitler.
+
+            // — Web sayfası (kod-spec §8) — belge profiline "site" iziyle yönlenmeli,
+            // tek belge_olustur çağrısı, çipte .html (ikon: doc.text.image).
+            TestVaka(ad: "sayfa-site", istem: "Kahve dükkanım için bir site yap",
+                     ikonlar: ["doc.text.image"]),
+
             // — Zincir: cihaz verisi → dosya (bağlam bütçesi) —
             TestVaka(ad: "zincir-takvim-excel", istem: "Bu haftaki etkinliklerimi excel'e dök", ikonlar: ["calendar", "tablecells"]),
         ]
@@ -115,6 +128,13 @@ enum Degerlendirme {
             let hataIzleri = ["yapamadım", "hazır değil", "sorun oldu"]
             if hataIzleri.contains(where: { metin.localizedCaseInsensitiveContains($0) }) {
                 sorunlar.append("hata-yaniti")
+            }
+            // Ham araç çağrısı sızıntısı? Kullanıcıya ayrıştırılamamış bir
+            // çağrı yükü göstermek her zaman FAIL — eskiden ölçülmüyordu ve
+            // böyle turlardan bazıları 100 puan alıyordu.
+            let sizintiIzleri = ["<executable_end>", "\"arguments\"", "```function"]
+            if sizintiIzleri.contains(where: { metin.localizedCaseInsensitiveContains($0) }) {
+                sorunlar.append("ham-arac-cagrisi")
             }
             // Meta sızıntısı?
             if metin.localizedCaseInsensitiveContains("önizle") || metin.localizedCaseInsensitiveContains("paylaşabilir") {
@@ -535,6 +555,235 @@ enum Degerlendirme {
     private static func suGun() -> String {
         let f = DateFormatter(); f.locale = Locale(identifier: "tr_TR"); f.dateFormat = "EEEE"
         return f.string(from: Date())
+    }
+}
+
+// MARK: - Kapsamlı koşu ("--eval")
+
+/// `kosu()` küçük, elle bakılan bir geçti/kaldı listesidir. Kapsamlı koşu ise
+/// EvalVakalari korpusunu (~230 tekil vaka + 16 zincir) puanlayarak Excel/JSON'a
+/// döker ve asıl soruyu ölçer: **aynı adımlar tek oturumda mı, bağımsız
+/// oturumlarda mı daha iyi gidiyor?** Bu yüzden her zincir İKİ kez koşar.
+@MainActor
+extension Degerlendirme {
+
+    /// Vaka başına üst sınır. Aşılırsa tur `durdur()` ile kesilir ve
+    /// "zaman-asimi" sorunuyla kaydedilir — koşu asla kilitlenmez.
+    private static var vakaZamanAsimi: Duration { .seconds(60) }
+    /// Turlar arası kısa nefes: model bağlamını serbest bıraksın.
+    private static var nefes: Duration { .milliseconds(100) }
+
+    nonisolated static func kapsamliCalistir(shard: Int, toplam: Int) {
+        Task { @MainActor in await kapsamliKosu(shard: shard, toplam: toplam) }
+    }
+
+    static func kapsamliKosu(shard: Int, toplam: Int) async {
+        let klasor = BelgeBaglami.testKlasoru()
+        let ek = "shard\(shard)"
+        let ilerlemeURL = klasor.appendingPathComponent("test-sonuc-\(ek).txt")
+        let hamURL = klasor.appendingPathComponent("eval-ham-\(ek).json")
+        let ozetURL = klasor.appendingPathComponent("eval-ozet-\(ek).txt")
+
+        let servis = ModelServisi()
+        guard servis.durum.hazirMi else {
+            try? "MODEL HAZIR DEĞİL: \(servis.durum.etiket)"
+                .write(to: ilerlemeURL, atomically: true, encoding: .utf8)
+            return
+        }
+
+        // — SearXNG'yi programatik aç —
+        // aktifMi getter'ı `kokURL != nil` şartını da içerir; yalnız bayrağı
+        // yazmak YETMEZ, önce adres kurulur. Eski değerler ham UserDefaults
+        // üzerinden saklanır (kokHam getter'ı DEBUG'ta env'e düşebiliyor).
+        let oncekiAktif = UserDefaults.standard.bool(forKey: WebAramaAyari.aktifAnahtar)
+        let oncekiKok = UserDefaults.standard.string(forKey: WebAramaAyari.kokAnahtar)
+        WebAramaAyari.kokHam = "https://abdullahfaruk.com/searxng"
+        WebAramaAyari.aktifMi = true
+        let webAcik = WebAramaAyari.aktifMi
+
+        // Oku/düzenle vakaları için test xlsx.
+        let testBelge = try? ExcelMotor().yaz(
+            dosyaAdi: "test-girdi", baslik: "Test",
+            govde: nil,
+            tablo: Tablo(basliklar: ["Gün", "Yemek"],
+                         satirlar: [Satir(hucreler: ["Pazartesi", "Mercimek"]),
+                                    Satir(hucreler: ["Salı", "Tavuk"])]),
+            klasor: klasor)
+
+        var sonuclar: [EvalSonuc] = []
+        var log: [String] = []
+
+        /// Her vakadan sonra hem okunur metni hem makine JSON'unu diske basar;
+        /// koşu yarıda kalsa da analiz ajanı eldeki satırları okuyabilsin.
+        func diskeBas() {
+            let bas = "=== KAPSAMLI EVAL \(ek) — \(sonuclar.count) vaka · ort "
+                + String(format: "%.1f", sonuclar.isEmpty ? 0
+                         : Double(sonuclar.reduce(0) { $0 + $1.puan }) / Double(sonuclar.count))
+                + " (devam ediyor) ==="
+            try? ([bas, "", "web araması: \(webAcik ? "AÇIK" : "KAPALI")", ""] + log)
+                .joined(separator: "\n")
+                .write(to: ilerlemeURL, atomically: true, encoding: .utf8)
+            let kodlayici = JSONEncoder()
+            kodlayici.outputFormatting = [.prettyPrinted, .sortedKeys]
+            if let veri = try? kodlayici.encode(sonuclar) { try? veri.write(to: hamURL) }
+        }
+
+        // — TEKİL vakalar: her biri bağımsız oturum —
+        for (kategori, vaka) in EvalRapor.shardSec(kategorili(), shard: shard, toplam: toplam) {
+            servis.sohbetiSifirla()
+            if vaka.ekliBelge, let testBelge { servis.belgeBaglami.belgeEkle(url: testBelge) }
+            let tur = await turKos(servis, vaka.istem)
+            var s = EvalSonuc(vakaAd: vaka.ad, kategori: kategori, mod: "tekil",
+                              istem: vaka.istem,
+                              beklenenCipler: vaka.ikonlar,
+                              gercekCipler: tur.izler.map(\.ikon),
+                              yanit: tur.metin,
+                              sureMs: tur.sureMs)
+            s = EvalPuan.puanla(s,
+                                cipYok: vaka.cipYok,
+                                yanitIcermeli: vaka.yanitIcermeli,
+                                yanitIcermemeli: vaka.yanitIcermemeli,
+                                basarisizCipVar: tur.basarisizCip)
+            if tur.zamanAsimi { s.sorunlar.append("zaman-asimi"); s.puan = 0 }
+            sonuclar.append(s)
+            log += satirlar(s)
+            diskeBas()
+            try? await Task.sleep(for: nefes)
+        }
+
+        // — ZİNCİRLER: aynı adımlar iki kez —
+        //   "zincir"   → tek oturum, sıfırlama yalnız başta (bağlam taşınır)
+        //   "bagimsiz" → her adım öncesi sıfırlama (bağlam taşınmaz)
+        // Karşılaştırmanın anlamı budur: bağlam taşımak yardım mı ediyor,
+        // yoksa birikmiş bağlam modeli bozuyor mu?
+        for z in EvalRapor.shardSec(EvalVakalari.zincirler(), shard: shard, toplam: toplam) {
+            let belgeIster = z.ad.contains("belge-oku")
+            for mod in ["zincir", "bagimsiz"] {
+                if mod == "zincir" {
+                    servis.sohbetiSifirla()
+                    if belgeIster, let testBelge { servis.belgeBaglami.belgeEkle(url: testBelge) }
+                }
+                for (i, adim) in z.adimlar.enumerated() {
+                    if mod == "bagimsiz" {
+                        servis.sohbetiSifirla()
+                        if belgeIster, let testBelge { servis.belgeBaglami.belgeEkle(url: testBelge) }
+                    }
+                    let beklenen = i < z.beklenenler.count ? z.beklenenler[i] : []
+                    let tur = await turKos(servis, adim)
+                    var s = EvalSonuc(vakaAd: z.ad, kategori: "zincir", mod: mod,
+                                      adimNo: i + 1,
+                                      istem: adim,
+                                      beklenenCipler: beklenen,
+                                      gercekCipler: tur.izler.map(\.ikon),
+                                      yanit: tur.metin,
+                                      sureMs: tur.sureMs)
+                    s = EvalPuan.puanla(s, basarisizCipVar: tur.basarisizCip)
+                    if tur.zamanAsimi { s.sorunlar.append("zaman-asimi"); s.puan = 0 }
+                    sonuclar.append(s)
+                    log += satirlar(s)
+                    diskeBas()
+                    try? await Task.sleep(for: nefes)
+                }
+            }
+        }
+
+        // — Ayarları geri yükle: eval kullanıcının tercihlerini değiştirmez —
+        UserDefaults.standard.set(oncekiAktif, forKey: WebAramaAyari.aktifAnahtar)
+        if let oncekiKok {
+            UserDefaults.standard.set(oncekiKok, forKey: WebAramaAyari.kokAnahtar)
+        } else {
+            UserDefaults.standard.removeObject(forKey: WebAramaAyari.kokAnahtar)
+        }
+
+        // — Nihai çıktılar —
+        let ozet = EvalRapor.ozet(sonuclar)
+        try? ozet.joined(separator: "\n").write(to: ozetURL, atomically: true, encoding: .utf8)
+        // Motor ad çakışmasında "-2" ekler; üzerine yazmak için önce sil.
+        let excelURL = klasor.appendingPathComponent("eval-sonuc-\(ek).xlsx")
+        try? FileManager.default.removeItem(at: excelURL)
+        _ = try? EvalRapor.excelYaz(sonuclar, klasor: klasor, dosyaAdi: "eval-sonuc-\(ek)")
+
+        let ort = sonuclar.isEmpty ? 0
+            : Double(sonuclar.reduce(0) { $0 + $1.puan }) / Double(sonuclar.count)
+        let bas = "=== KAPSAMLI EVAL \(ek) BİTTİ — \(sonuclar.count) vaka · ort "
+            + String(format: "%.1f", ort) + " ==="
+        try? ([bas, "", "web araması: \(webAcik ? "AÇIK" : "KAPALI")", ""] + log + [""] + ozet)
+            .joined(separator: "\n")
+            .write(to: ilerlemeURL, atomically: true, encoding: .utf8)
+        // NSLog yok (gizlilik): yanıtlar gerçek takvim/kişi verisi içerebilir.
+        print("KAPSAMLI EVAL bitti: \(sonuclar.count) vaka, ort \(String(format: "%.1f", ort))")
+    }
+
+    // MARK: - Yardımcılar
+
+    /// Korpus vakaları + kategori etiketi. Kategori TestVaka'da taşınmadığı için
+    /// ad önekinden tahmin edilmez, kaynak fonksiyondan alınır (adlar kategori
+    /// sınırlarını birebir yansıtmıyor: "belge-*", "oku-*", "duzen-*" karışık).
+    private static func kategorili() -> [(String, TestVaka)] {
+        let gruplar: [(String, [TestVaka])] = [
+            ("sohbet", EvalVakalari.sohbet()),
+            ("hesap", EvalVakalari.hesap()),
+            ("zaman", EvalVakalari.zaman()),
+            ("takvim", EvalVakalari.takvim()),
+            ("hatirlatici", EvalVakalari.hatirlatici()),
+            ("kisi", EvalVakalari.kisi()),
+            ("arama", EvalVakalari.arama()),
+            ("belgeUretimi", EvalVakalari.belgeUretimi()),
+            ("belgeOkuma", EvalVakalari.belgeOkuma()),
+            ("kod", EvalVakalari.kod()),
+            ("webSayfasi", EvalVakalari.webSayfasi()),
+            ("webAramasi", EvalVakalari.webAramasi()),
+            ("guvenlik", EvalVakalari.guvenlik())
+        ]
+        return gruplar.flatMap { kategori, liste in liste.map { (kategori, $0) } }
+    }
+
+    private struct TurSonucu {
+        let metin: String
+        let izler: [AracIzi]
+        let sureMs: Int
+        let zamanAsimi: Bool
+        var basarisizCip: Bool {
+            izler.contains { if case .basarisiz = $0.durum { return true }; return false }
+        }
+    }
+
+    /// Tek tur — zaman aşımı korumalı. Süre dolarsa `durdur()` çağrılır; iptal
+    /// servis tarafında hata SAYILMAZ, o yüzden bayrağı burada kendimiz taşıyoruz.
+    private static func turKos(_ servis: ModelServisi, _ istem: String) async -> TurSonucu {
+        let basla = Date()
+        let gorev = Task { @MainActor in await servis.yanitla(istem) { _ in } }
+        let bekci = Task { @MainActor in
+            try await Task.sleep(for: vakaZamanAsimi)
+            servis.durdur()
+        }
+        let (metin, izler) = await gorev.value
+        bekci.cancel()
+        let gecen = Date().timeIntervalSince(basla)
+        return TurSonucu(metin: metin, izler: izler,
+                         sureMs: Int(gecen * 1000),
+                         zamanAsimi: gecen >= vakaZamanAsimi.saniye)
+    }
+
+    private static func satirlar(_ s: EvalSonuc) -> [String] {
+        let isaret = s.puan >= 80 ? "✓" : (s.puan >= 60 ? "~" : "✗")
+        var c = ["\(isaret) \(s.puan) [\(s.kategori)/\(s.vakaAd)·\(s.mod)#\(s.adimNo)] '\(s.istem)'"]
+        c.append("    çip:\(s.gercekCipler) (bek:\(s.beklenenCipler)) \(s.sureMs)ms")
+        c.append("    yanıt:\"\(kisaltKamu(s.yanit))\"")
+        if !s.sorunlar.isEmpty { c.append("    ⚠︎ \(s.sorunlar.joined(separator: "; "))") }
+        c.append("")
+        return c
+    }
+
+    private static func kisaltKamu(_ metin: String) -> String {
+        String(metin.replacingOccurrences(of: "\n", with: " ").prefix(100))
+    }
+}
+
+private extension Duration {
+    /// Zaman aşımı eşiğini saniyeye çevirir (karşılaştırma için).
+    var saniye: Double {
+        Double(components.seconds) + Double(components.attoseconds) / 1e18
     }
 }
 #endif

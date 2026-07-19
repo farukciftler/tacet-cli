@@ -2,9 +2,11 @@
 //  BelgeOlusturAraci.swift
 //  ketum
 //
-//  Üretim aracı (spec §7.3, §7.3.2). Sohbet verisinden Excel/PDF/Word/Metin
-//  dosyası üretir. Çıktı QuickLook önizleme + paylaşım + Dosyalar'a kayıt.
-//  Yazma eylemi → yeşil çip. Ağ yok.
+//  Üretim aracı (spec §7.3, §7.3.2; kod-spec §4). Sohbet verisinden
+//  Excel/PDF/Word/Metin dosyası ya da tek dosyalık HTML sayfası üretir.
+//  HTML çıktı SayfaDogrulayici ile ekran dışı doğrulanır; geçmeyen sayfa
+//  sunulmaz, dosya silinir. Çıktı QuickLook önizleme + paylaşım +
+//  Dosyalar'a kayıt. Yazma eylemi → yeşil çip. Ağ yok.
 //
 
 import Foundation
@@ -12,7 +14,7 @@ import FoundationModels
 
 struct BelgeOlusturAraci: KetumAraci {
     let name = "belge_olustur"
-    let description = "Creates an Excel/PDF/Word/Markdown file. Call this IMMEDIATELY when the user asks for a file, table, list, or report ('make an excel/pdf/word', in any language) — do not ask or narrate. Write markdown into 'icerik'; for a table write a markdown table (| … |). For device data (e.g. calendar) pass 'kaynakRef' instead of 'icerik'."
+    let description = "Creates an Excel/PDF/Word/Markdown file or an HTML page. Call this IMMEDIATELY when the user asks for a file, table, list, report or web page ('make an excel/pdf/word/site', in any language) — do not ask or narrate. Write markdown into 'icerik'; for a table write a markdown table (| … |). For device data (e.g. calendar) pass 'kaynakRef' instead of 'icerik'."
 
     weak var raporlayici: (any AracRaporlayici)?
     weak var baglam: BelgeBaglami?
@@ -21,7 +23,7 @@ struct BelgeOlusturAraci: KetumAraci {
 
     @Generable
     struct Arguments {
-        @Guide(description: "File format: 'excel', 'pdf', 'word', 'markdown' or 'metin' (plain text). Use these exact values.")
+        @Guide(description: "File format: 'excel', 'pdf', 'word', 'markdown', 'metin' (plain text) or 'html' (single-page website). Use these exact values.")
         var bicim: String
         @Guide(description: "File name without extension, e.g. 'july-meetings'.")
         var dosyaAdi: String
@@ -58,6 +60,23 @@ struct BelgeOlusturAraci: KetumAraci {
                                     govde: govde,
                                     tablo: tablo,
                                     klasor: BelgeBaglami.ciktiKlasoru())
+            // HTML doğrulaması (kod-spec §4.3): sayfa ekran dışı WKWebView'de
+            // yüklenir; yüklenmeyen ya da betik hatası veren sayfa kullanıcıya
+            // SUNULMAZ — dosya silinir, modele kısa neden döner (beceri kılavuzu
+            // modele içeriği sadeleştirip BİR kez daha denemeyi söyler).
+            if bicim == .html {
+                let dogrulama = await SayfaDogrulayici.dogrula(url: url)
+                if !dogrulama.gecti {
+                    try? FileManager.default.removeItem(at: url)
+                    let neden = dogrulama.neden ?? Yerel.sayfaDogrulanamadi
+                    return AracSonucu(
+                        cipMetni: Yerel.sayfaDogrulanamadi,
+                        durum: .basarisiz(neden),
+                        modeleDonen: "verification_failed: the page did not load cleanly. Simplify the content (plain sections, no exotic markdown) and try ONCE more.",
+                        hamCikti: neden
+                    )
+                }
+            }
             await baglam?.ciktiEklendi(url)
             // Cihazda bir dosya oluştu; içeriği kullanıcının verisidir (mcp §5.6).
             return await kirletEgerBasarili(AracSonucu(

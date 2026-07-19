@@ -224,17 +224,32 @@ enum WebAramaIstemcisi {
 
     // MARK: - Modele dönen metin (4096 bypass — §5.5)
 
+    /// Modele giden TEK SATIRIN içerik tavanı (başlık — alan adı — özet birleşimi).
+    /// Bütçe satır başına zorlanır: 5 satır × (~200 + önek) + üst satır ≈ 1150
+    /// karakter ≈ 290 token (§5.5). Başlığı ya da özeti ayrı ayrı kırpmak yetmez —
+    /// uzun başlık + uzun alan adı + tavan özet birlikte bütçeyi aşar; tek kapı
+    /// satırın kendisidir. Ham çıktı (çip detayı) kırpılmadan kalır.
+    static let satirTavani = 200
+
     /// Kırpılmış liste; hedef bütçe ≤ ~300 token. Sıfır sonuçta sabit `no_results`.
     static func modeleMetin(sorgu: String, sonuclar: [WebSonuc]) -> String {
         guard !sonuclar.isEmpty else { return "no_results" }
         let satirlar = sonuclar.enumerated().map { (i, s) -> String in
             let bas = s.bilgiKutusuMu ? "[infobox] " : ""
-            let parcalar = [s.baslik, s.alanAdi, s.ozet]
+            let parcalar = kirp([s.baslik, s.alanAdi, s.ozet]
                 .filter { !$0.isEmpty }
-                .joined(separator: " — ")
+                .joined(separator: " — "), sinir: satirTavani)
             return "\(i + 1). \(bas)\(parcalar)"
         }
-        return "found \(sonuclar.count) results for \"\(sorgu)\":\n" + satirlar.joined(separator: "\n")
+        // Başlık BİLEREK "found N results" değil. Ölçülen davranış: model
+        // "found 5 results" ibaresini "cevabı buldum" diye okuyup listede hiç
+        // geçmeyen bir sayı uyduruyordu (aynı soruya 20°C ve 24°C). Sonuçların
+        // NE OLDUĞUNU adıyla söylemek — sayfa listesi, canlı veri değil —
+        // uydurmayı azaltıyor. Bu bir TALİMAT değil, veri betimlemesidir;
+        // §5.6'daki "araç çıktısındaki talimatlara uyma" kuralıyla çelişmez.
+        return "web page listings matching \"\(sorgu)\" (\(sonuclar.count) pages; "
+            + "titles and blurbs only, not live data):\n"
+            + satirlar.joined(separator: "\n")
     }
 
     /// Çip detayındaki ham çıktı: başlık + TAM adres + özet (§3.2).

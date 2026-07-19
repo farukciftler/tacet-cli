@@ -1,6 +1,6 @@
 ---
 ad: hesap
-tetikler: hesapla, kaç eder, topla, çarp, böl, yüzde, kaç para, toplam ne kadar
+tetikler: hesapla, kaç eder, topla, çarp, bölme, böler, bölersek, yüzde, kaç para, toplam ne kadar
 ---
 # Arithmetic
 

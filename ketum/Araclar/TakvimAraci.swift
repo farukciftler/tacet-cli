@@ -10,6 +10,9 @@ struct TakvimAraci: KetumAraci {
     Reads calendar events and adds new ones. Call this whenever the user asks about \
     their schedule ("what's on tomorrow", "my week", "am I free Friday") or asks to add \
     an event ("add a meeting Friday at 2pm"), in any language. eylem="oku" to read, "ekle" to add.
+    ONLY for real calendar events. If the user is adding or deleting a ROW, COLUMN or \
+    SECTION of a document, table or list, use the document tools instead — a weekday name \
+    on its own ("Wednesday - Pizza") is NOT a calendar request.
     """
     weak var raporlayici: (any AracRaporlayici)?
     /// Büyük veri taşıma kanalı — okunan tüm etkinlikler burada saklanıp modele ref döner.

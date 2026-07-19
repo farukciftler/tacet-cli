@@ -6,8 +6,8 @@
 //
 //  "Bağlantıyı dene" ZORUNLU adımdır: kullanıcı sunucunun ne yapabildiğini
 //  eklemeden ÖNCE görür. Bağlantı kurulamazsa neden düz dille yazılır.
-//  Cihaz verisi varsayılanı "hiçbir zaman"dır; "her zaman izin ver" v1'de
-//  bilinçli olarak yoktur.
+//  Cihaz verisi varsayılanı "hiçbir zaman"dır. "her zaman izin ver" seçilebilir
+//  ama seçildiği anda uyarı modalına düşer — bkz. CihazVerisiSecici.
 //
 
 import SwiftUI
@@ -153,22 +153,7 @@ struct YeniBaglanti: View {
 
     private var cihazVerisiBolumu: some View {
         bolum("CİHAZ VERİSİ") {
-            VStack(alignment: .leading, spacing: Olcek.s2) {
-                Picker("Cihaz verisi", selection: $cihazVerisi) {
-                    Text("hiçbir zaman").tag(CihazVerisiAyari.hicbirZaman)
-                    Text("her seferinde sor").tag(CihazVerisiAyari.herSeferindeSor)
-                }
-                .pickerStyle(.segmented)
-                .accessibilityLabel(Text("Cihaz verisi paylaşımı"))
-                .accessibilityHint(Text("Takvim, kişi ve belge gibi verilerin bu sunucuya gönderilip gönderilmeyeceğini belirler."))
-
-                Text(cihazVerisi == .hicbirZaman
-                     ? "Cihazından okunan veri bu sunucuya hiç gönderilmez."
-                     : "Cihazından okunan veri gönderilmeden önce her seferinde sana gösterilir.")
-                    .font(Yazi.cip())
-                    .foregroundStyle(Renk.gri)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            CihazVerisiSecici(secim: $cihazVerisi)
         }
     }
 
