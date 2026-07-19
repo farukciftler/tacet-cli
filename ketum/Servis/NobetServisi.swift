@@ -55,22 +55,41 @@ final class NobetServisi {
     }
 
     /// Uygulama öne gelince: bugün henüz çalışmamış aktif nöbetleri çalıştırır.
-    func gerekliyseCalistir(_ nobetler: [Nobet], kayit: ModelContext) async {
+    ///
+    /// Bir nöbetin günlüğü yazılamazsa diğerleri yine denenir, ama hata YUTULMAZ:
+    /// ilk hata saklanıp döngü bitince çağırana atılır — UI'ı olan katman gösterir.
+    func gerekliyseCalistir(_ nobetler: [Nobet], kayit: ModelContext) async throws {
+        var ilkHata: Error?
         for nobet in nobetler where nobet.aktif {
             if let son = nobet.sonKayit, Calendar.current.isDateInToday(son.tarih) { continue }
-            await calistir(nobet, baglam: String(localized: "açılışta hazırlandı"), kayit: kayit)
+            do {
+                try await calistir(nobet, baglam: String(localized: "açılışta hazırlandı"), kayit: kayit)
+            } catch {
+                if ilkHata == nil { ilkHata = error }
+            }
         }
+        if let ilkHata { throw ilkHata }
     }
 
     /// Nöbeti bir kez çalıştırır: veriyi toplar, brifing üretir, günlüğe yazar, bildirimi tazeler.
+    ///
+    /// Servis katmanının UI'ı yok, bu yüzden yazma hatasını gizlemez; çağırana atar.
     @discardableResult
-    func calistir(_ nobet: Nobet, baglam: String, kayit: ModelContext) async -> NobetKaydi {
+    func calistir(_ nobet: Nobet, baglam: String, kayit: ModelContext) async throws -> NobetKaydi {
         let (ozet, cipler, okundu) = await brifingUret(nobet)
         let k = NobetKaydi(tarih: Date(), basarili: okundu, baglam: baglam, ozet: ozet, cipler: cipler)
         k.nobet = nobet
         kayit.insert(k)
-        try? kayit.save()
+        // Bildirim yazmadan önce planlanır: günlük satırı diske düşmese bile
+        // kullanıcının kurduğu nöbet sessizce bildirimsiz kalmasın.
         bildirimPlanla(nobet)
+        do {
+            try kayit.save()
+        } catch {
+            // Diske yazılamayan çalışma kaydı bellekte durmasın — günlük dürüst kalmalı.
+            kayit.rollback()
+            throw error
+        }
         return k
     }
 

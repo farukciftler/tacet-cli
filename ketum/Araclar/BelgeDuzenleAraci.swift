@@ -22,9 +22,9 @@ struct BelgeDuzenleAraci: KetumAraci {
 
     @Generable
     struct Arguments {
-        @Guide(description: "Düzenlenmiş TAM içerik markdown olarak (kısmi değil, baştan sona). Excel belgesi ise markdown tablosu (| … |) yaz; yazı belgesi ise düz markdown.")
+        @Guide(description: "The FULL edited content as markdown (the whole document, not just the changed part). For an Excel document write a markdown table (| … |); for a text document write plain markdown.")
         var yeniIcerik: String
-        @Guide(description: "İsteğe bağlı yeni başlık.")
+        @Guide(description: "Optional new title.")
         var baslik: String?
     }
 
@@ -50,13 +50,14 @@ struct BelgeDuzenleAraci: KetumAraci {
                                     tablo: tablo,
                                     klasor: BelgeBaglami.ciktiKlasoru())
             await baglam?.ciktiEklendi(url)
-            return AracSonucu(
+            // Kullanıcının belgesi okunup yeni sürüm yazıldı (mcp §5.6).
+            return await kirletEgerBasarili(AracSonucu(
                 cipMetni: Yerel.belgeDuzenlendi(ekli.bicim.etiket, url.lastPathComponent),
                 durum: .yazildi,
                 modeleDonen: "file_edited: \(url.lastPathComponent)",
                 hamCikti: url.path,
                 dosyaYolu: url.path
-            )
+            ))
         }
     }
 }

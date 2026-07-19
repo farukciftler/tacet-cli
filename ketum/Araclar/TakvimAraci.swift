@@ -16,13 +16,13 @@ struct TakvimAraci: KetumAraci {
     weak var veriDeposu: VeriDeposu?
 
     @Generable struct Arguments {
-        @Guide(description: "Yapılacak işlem: okuma için \"oku\", ekleme için \"ekle\".")
+        @Guide(description: "The operation to perform: \"oku\" to read, \"ekle\" to add. Use these exact values.")
         var eylem: String
-        @Guide(description: "Doğal dil ya da ISO tarih. Oku için aralık başı, ekle için etkinlik zamanı. Örn \"yarın 13:00\" ya da \"2026-07-20T13:00\".")
+        @Guide(description: "Start of the range for \"oku\", or the event time for \"ekle\". ALWAYS give ISO 8601: \"2026-07-20T13:00\". Resolve relative wording ('tomorrow', 'next Friday') into a date yourself and write it as ISO; call the time tool first if you need today's date. Required for \"ekle\".")
         var baslangic: String?
-        @Guide(description: "Aralık ya da etkinlik bitişi. Doğal dil ya da ISO tarih.")
+        @Guide(description: "End of the range or of the event. ALWAYS ISO 8601: \"2026-07-20T14:00\". Leave empty if unknown.")
         var bitis: String?
-        @Guide(description: "Ekle işleminde etkinlik başlığı. Örn \"Diş hekimi\".")
+        @Guide(description: "Event title for \"ekle\", e.g. \"Dentist\".")
         var baslik: String?
     }
 
@@ -53,10 +53,15 @@ struct TakvimAraci: KetumAraci {
                 }
             }
 
+            // Buradan sonrası GERÇEK takvim erişimidir; sonucu kirlilik
+            // bayrağına bağlarız (mcp §5.6). İzin reddi yukarıda döndü —
+            // erişilemeyen veri oturumu kirletmez.
             if ekleMi {
-                return try Self.ekle(depo: depo, arguments: arguments)
+                let eklendi = try Self.ekle(depo: depo, arguments: arguments)
+                return await kirletEgerBasarili(eklendi)
             } else {
-                let (sonuc, tablo) = Self.oku(depo: depo, arguments: arguments)
+                let (ham, tablo) = Self.oku(depo: depo, arguments: arguments)
+                let sonuc = await kirletEgerBasarili(ham)
                 // Toplu veri kanalı: tüm kayıtları depoya koy, modele yalnızca ref döndür.
                 // Böylece "takvimi excel'e dök" gibi işlerde veri bağlam penceresine girmez.
                 if let tablo, tablo.satirlar.count > 1, let depo2 = veriDeposu {
@@ -75,23 +80,38 @@ struct TakvimAraci: KetumAraci {
 
     // Okuma: aralıktaki etkinlikleri özetler (modele) ve tam tabloyu (depo için) döndürür.
     private static func oku(depo: EKEventStore, arguments: Arguments) -> (AracSonucu, Tablo?) {
-        let baslangic = ayristir(arguments.baslangic) ?? Calendar.current.startOfDay(for: Date())
-        let bitis = ayristir(arguments.bitis) ?? Calendar.current.date(byAdding: .day, value: 7, to: baslangic)!
+        // Verilmiş ama çözülemeyen bir zaman varsa YANLIŞ aralığı okuyup
+        // "takvimin boş" demektense hata dön; model ISO ile tekrar dener.
+        let baslangic: Date
+        switch cozZorunlu(arguments.baslangic) {
+        case .hata(let s): return (s, nil)
+        case .tamam(let t): baslangic = t
+        case .yok: baslangic = Calendar.current.startOfDay(for: Date())
+        }
+
+        let bitis: Date
+        switch cozZorunlu(arguments.bitis) {
+        case .hata(let s): return (s, nil)
+        case .tamam(let t): bitis = t
+        case .yok: bitis = Calendar.current.date(byAdding: .day, value: 7, to: baslangic)!
+        }
 
         let yuklem = depo.predicateForEvents(withStart: baslangic, end: bitis, calendars: nil)
         let hepsi = depo.events(matching: yuklem).sorted { $0.startDate < $1.startDate }
 
+        // Biçimler cihaz diline göre — kullanıcı Japonca kullanıyorsa Excel'in
+        // "Tarih" sütununda Türkçe ay adı görmemeli.
         let saatBicim = DateFormatter()
-        saatBicim.locale = Locale(identifier: "tr_TR")
+        saatBicim.locale = Locale.current
         saatBicim.dateFormat = "HH:mm"
 
         let tamBicim = DateFormatter()
-        tamBicim.locale = Locale(identifier: "tr_TR")
-        tamBicim.dateFormat = "d MMM HH:mm"
+        tamBicim.locale = Locale.current
+        tamBicim.setLocalizedDateFormatFromTemplate("d MMM HH:mm")
 
         let gunBicim = DateFormatter()
-        gunBicim.locale = Locale(identifier: "tr_TR")
-        gunBicim.dateFormat = "d MMM yyyy"
+        gunBicim.locale = Locale.current
+        gunBicim.setLocalizedDateFormatFromTemplate("d MMM yyyy")
 
         if hepsi.isEmpty {
             return (AracSonucu(cipMetni: Yerel.takvimOkunduBos,
@@ -130,10 +150,27 @@ struct TakvimAraci: KetumAraci {
 
     // Ekleme: yeni etkinlik oluşturup kaydeder.
     private static func ekle(depo: EKEventStore, arguments: Arguments) throws -> AracSonucu {
-        let baslangic = ayristir(arguments.baslangic) ?? Date()
-        let bitis = ayristir(arguments.bitis)
-            ?? Calendar.current.date(byAdding: .hour, value: 1, to: baslangic)!
-        let baslik = arguments.baslik?.isEmpty == false ? arguments.baslik! : "Etkinlik"
+        // Zaman çözülemezse ETKİNLİĞİ ŞU ANA EKLEME. Kullanıcı "kuruldu" görüp
+        // takvimde yanlış saatte bulmaktansa modelin ISO ile tekrar denemesi iyi.
+        guard let cozum = ZamanCozucu.coz(arguments.baslangic) else {
+            return AracSonucu(
+                cipMetni: zamanAnlasilmadi,
+                durum: .basarisiz(zamanAnlasilmadi),
+                modeleDonen: "error: unparsable_or_missing_start_time"
+                    + (arguments.baslangic.map { " \"\($0)\"" } ?? "")
+                    + ". Nothing was created. Call the tool again with \"baslangic\" as an "
+                    + "ISO 8601 timestamp, e.g. 2026-07-20T13:00."
+            )
+        }
+        let baslangic = cozum.tarih
+
+        let bitis: Date
+        switch cozZorunlu(arguments.bitis) {
+        case .hata(let s): return s
+        case .tamam(let t): bitis = t
+        case .yok: bitis = Calendar.current.date(byAdding: .hour, value: 1, to: baslangic)!
+        }
+        let baslik = arguments.baslik?.isEmpty == false ? arguments.baslik! : String(localized: "Etkinlik")
 
         let etkinlik = EKEvent(eventStore: depo)
         etkinlik.title = baslik
@@ -144,8 +181,8 @@ struct TakvimAraci: KetumAraci {
         try depo.save(etkinlik, span: .thisEvent)
 
         let tamBicim = DateFormatter()
-        tamBicim.locale = Locale(identifier: "tr_TR")
-        tamBicim.dateFormat = "d MMM HH:mm"
+        tamBicim.locale = Locale.current
+        tamBicim.setLocalizedDateFormatFromTemplate("d MMM HH:mm")
 
         return AracSonucu(cipMetni: Yerel.etkinlikEklendi,
                           durum: .yazildi,
@@ -153,42 +190,31 @@ struct TakvimAraci: KetumAraci {
                           hamCikti: "\(baslik) — \(tamBicim.string(from: baslangic))")
     }
 
-    // Basit tarih ayrıştırma: doğal dil ("bugün"/"yarın" + isteğe bağlı saat) ve ISO.
-    private static func ayristir(_ metin: String?) -> Date? {
-        guard let ham = metin?.trimmingCharacters(in: .whitespacesAndNewlines), !ham.isEmpty else {
-            return nil
-        }
-        let kucuk = ham.lowercased()
-        let takvim = Calendar.current
+    // Zaman ayrıştırma ortak `ZamanCozucu`'da (HatirlaticiAraci.swift) —
+    // dilden bağımsız: ISO 8601 → sabit kalıplar → Türkçe kestirme →
+    // Locale.current → NSDataDetector. Hepsi cihaz-üstü, ağ yok.
 
-        // Önce ISO/biçimli deneyelim.
-        let bicimler = ["yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd'T'HH:mm", "yyyy-MM-dd HH:mm", "yyyy-MM-dd"]
-        for kalip in bicimler {
-            let bicim = DateFormatter()
-            bicim.locale = Locale(identifier: "tr_TR")
-            bicim.dateFormat = kalip
-            if let tarih = bicim.date(from: ham) {
-                return tarih
-            }
-        }
-
-        // Doğal dil: gün + isteğe bağlı "HH:mm".
-        var taban = takvim.startOfDay(for: Date())
-        if kucuk.contains("yarın") {
-            taban = takvim.date(byAdding: .day, value: 1, to: taban) ?? taban
-        } else if kucuk.contains("bugün") {
-            // taban zaten bugün.
-        } else {
-            return nil
-        }
-
-        // Metindeki saati yakala (örn "13:00").
-        if let aralik = kucuk.range(of: #"(\d{1,2}):(\d{2})"#, options: .regularExpression) {
-            let parca = kucuk[aralik].split(separator: ":")
-            if let saat = Int(parca[0]), let dakika = Int(parca[1]) {
-                return takvim.date(bySettingHour: saat, minute: dakika, second: 0, of: taban) ?? taban
-            }
-        }
-        return taban
+    /// Boş bırakılabilen ama verilirse çözülmesi ZORUNLU alanlar için.
+    private enum ZorunluSonuc {
+        case yok                    // alan boş — çağıran varsayılanını kullanabilir
+        case tamam(Date)
+        case hata(AracSonucu)
     }
+
+    private static func cozZorunlu(_ metin: String?) -> ZorunluSonuc {
+        guard let ham = metin?.trimmingCharacters(in: .whitespacesAndNewlines), !ham.isEmpty else {
+            return .yok
+        }
+        guard let cozum = ZamanCozucu.coz(ham) else {
+            return .hata(AracSonucu(
+                cipMetni: zamanAnlasilmadi,
+                durum: .basarisiz(zamanAnlasilmadi),
+                modeleDonen: "error: unparsable_time \"\(ham)\". Nothing was read or created. "
+                    + "Call the tool again with ISO 8601 timestamps, e.g. 2026-07-20T13:00."
+            ))
+        }
+        return .tamam(cozum.tarih)
+    }
+
+    static var zamanAnlasilmadi: String { String(localized: "Zaman anlaşılmadı") }
 }

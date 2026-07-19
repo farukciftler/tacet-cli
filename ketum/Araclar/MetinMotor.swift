@@ -4,7 +4,7 @@ import Foundation
 struct MetinMotor: BelgeMotoru {
     var bicim: BelgeBicimi
 
-    func yaz(dosyaAdi: String, baslik: String?, govde: String?, tablo: Tablo?, klasor: URL) throws -> URL {
+    func yazHam(dosyaAdi: String, baslik: String?, govde: String?, tablo: Tablo?, klasor: URL) throws -> URL {
         let markdownMi = bicim == .md
         var parcalar: [String] = []
 

@@ -14,7 +14,7 @@ struct ExcelMotor: BelgeMotoru {
 
     // MARK: - Yazma
 
-    func yaz(dosyaAdi: String, baslik: String?, govde: String?, tablo: Tablo?, klasor: URL) throws -> URL {
+    func yazHam(dosyaAdi: String, baslik: String?, govde: String?, tablo: Tablo?, klasor: URL) throws -> URL {
         // Kaynağı tabloya indir: tablo varsa doğrudan, yoksa govde'yi tek sütuna çevir.
         let basliklar: [String]
         let satirlar: [[String]]

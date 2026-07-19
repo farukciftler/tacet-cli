@@ -16,15 +16,31 @@ final class Sohbet {
     var baslik: String = "Yeni sohbet"
     var olusturulma: Date = Date()
     var guncelleme: Date = Date()
+    /// Başlık hâlâ varsayılan mı (kullanıcı/ilk mesaj tarafından belirlenmedi mi)?
+    /// Metinle karşılaştırma yapmıyoruz: "Yeni sohbet" çevrildiğinde literal
+    /// eşleşmesi bozulur ve başlık hiç güncellenmezdi. Varsayılan değerli olduğu
+    /// için lightweight migration ile eski kayıtlar sorunsuz açılır.
+    var baslikOtomatik: Bool = true
 
     @Relationship(deleteRule: .cascade, inverse: \Mesaj.sohbet)
     var mesajlar: [Mesaj] = []
 
-    init(baslik: String = "Yeni sohbet") {
+    init(baslik: String = "Yeni sohbet", baslikOtomatik: Bool = true) {
         self.id = UUID()
         self.baslik = baslik
+        self.baslikOtomatik = baslikOtomatik
         self.olusturulma = Date()
         self.guncelleme = Date()
+    }
+
+    /// İlk kullanıcı mesajından başlığı türetir. Başlık zaten elle/otomatik
+    /// belirlenmişse dokunmaz.
+    func basligiTuret(_ metin: String) {
+        guard baslikOtomatik else { return }
+        let ozet = metin.trimmingCharacters(in: .whitespacesAndNewlines).prefix(40)
+        guard !ozet.isEmpty else { return }
+        baslik = String(ozet)
+        baslikOtomatik = false
     }
 
     /// Zamana göre sıralı mesajlar (ilişki sırasız gelebilir).

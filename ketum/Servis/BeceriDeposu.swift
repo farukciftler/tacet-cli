@@ -54,13 +54,18 @@ enum BeceriDeposu {
             .joined(separator: "\n\n")
     }
 
-    /// Verilen mesaja en çok tetikleyici eşleşen beceriyi döndürür (yoksa nil).
-    /// Eşit skorda `hepsi` sırası gereği kullanıcının becerisi kazanır.
+    /// Verilen mesaja en iyi uyan beceriyi döndürür (yoksa nil).
+    ///
+    /// Puan, eşleşen tetikleyicilerin UZUNLUKLARI toplamıdır — adet değil. Böylece
+    /// özgül ifade genel kelimeyi yener: "bunu tablo olarak göster" cümlesinde
+    /// belge-oku'nun "tablo olarak"ı, belge-olustur'un "tablo"sunu geçer. Adet
+    /// sayılsaydı ikisi de 1 alır, sıra rastgele belirlerdi.
+    /// Eşit puanda `hepsi` sırası gereği kullanıcının becerisi kazanır.
     static func eslesen(_ soru: String) -> Beceri? {
         let s = soru.lowercased()
         var enIyi: (beceri: Beceri, skor: Int)?
         for b in hepsi {
-            let skor = b.tetikler.reduce(0) { $0 + (s.contains($1) ? 1 : 0) }
+            let skor = b.tetikler.reduce(0) { $0 + (s.contains($1) ? $1.count : 0) }
             if skor > 0, skor > (enIyi?.skor ?? 0) {
                 enIyi = (b, skor)
             }

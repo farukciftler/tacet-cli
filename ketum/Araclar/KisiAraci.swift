@@ -10,7 +10,7 @@ struct KisiAraci: KetumAraci {
     weak var raporlayici: (any AracRaporlayici)?
 
     @Generable struct Arguments {
-        @Guide(description: "Aranacak kişinin adı ya da soyadı")
+        @Guide(description: "First or last name of the contact to look up.")
         var isim: String
     }
 
@@ -50,12 +50,14 @@ struct KisiAraci: KetumAraci {
             let yordam = CNContact.predicateForContacts(matchingName: arguments.isim)
             let kisiler = try store.unifiedContacts(matching: yordam, keysToFetch: anahtarlar)
 
+            // Rehbere gerçekten bakıldı: sonuç boş olsa da oturum kirlenir
+            // (mcp §5.6). Sorgunun kendisi de kişisel veridir.
             if kisiler.isEmpty {
-                return AracSonucu(
+                return await kirletEgerBasarili(AracSonucu(
                     cipMetni: Yerel.kisiArandiYok,
                     durum: .okundu,
                     modeleDonen: "no_contact_found"
-                )
+                ))
             }
 
             // Her kişiyi tek satıra indirger: "Ad Soyad · numara/eposta".
@@ -78,12 +80,12 @@ struct KisiAraci: KetumAraci {
             let ozet = kisiler.prefix(5).map(satir).joined(separator: "; ")
             let tam = kisiler.map(satir).joined(separator: "\n")
 
-            return AracSonucu(
+            return await kirletEgerBasarili(AracSonucu(
                 cipMetni: Yerel.kisiArandi,
                 durum: .okundu,
                 modeleDonen: ozet,
                 hamCikti: tam
-            )
+            ))
         }
     }
 }

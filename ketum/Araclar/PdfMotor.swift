@@ -19,7 +19,7 @@ struct PdfMotor: BelgeMotoru {
     private let sayfaYukseklik: CGFloat = 842
     private let kenar: CGFloat = 48
 
-    func yaz(dosyaAdi: String, baslik: String?, govde: String?, tablo: Tablo?, klasor: URL) throws -> URL {
+    func yazHam(dosyaAdi: String, baslik: String?, govde: String?, tablo: Tablo?, klasor: URL) throws -> URL {
         let url = hedefURL(dosyaAdi: dosyaAdi, klasor: klasor)
 
         let sayfa = CGRect(x: 0, y: 0, width: sayfaGenislik, height: sayfaYukseklik)

@@ -14,7 +14,7 @@ enum OtoTest {
     @MainActor
     static func calistir() {
         var kayit = ["=== KETUM OTOTEST ==="]
-        let klasor = BelgeBaglami.ciktiKlasoru()
+        let klasor = BelgeBaglami.testKlasoru()
 
         // Büyük tablo: 500 satır, sayısal "Tutar" sütunu (Excel'de =SUM tetikler).
         var satirlar: [Satir] = []
@@ -47,11 +47,12 @@ enum OtoTest {
                                         govde: govde,
                                         tablo: tabloMu ? tablo : nil,
                                         klasor: klasor)
-                let boyut = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+                let oznitelikler = try? FileManager.default.attributesOfItem(atPath: url.path)
+                let boyut = (oznitelikler?[.size] as? Int) ?? 0
                 // Geri oku (round-trip).
                 let geri = try motor.oku(url: url)
                 let satirSayi = geri.tablo?.satirlar.count ?? geri.metin.split(separator: "\n").count
-                kayit.append("\(bicim.uzanti): YAZILDI \(url.lastPathComponent) \(boyut ?? 0)B · OKUNDU satır/blok=\(satirSayi)")
+                kayit.append("\(bicim.uzanti): YAZILDI \(url.lastPathComponent) \(boyut)B · OKUNDU satır/blok=\(satirSayi)")
             } catch {
                 kayit.append("\(bicim.uzanti): HATA \(error)")
             }
@@ -79,6 +80,23 @@ enum OtoTest {
         baglam.uretimiUnut()
         kayit.append("Yeni sohbette temizlendi: \(baglam.calisilabilirBelge == nil ? "✓" : "✗")")
 
+        // Modele dönen tablo GEÇERLİ markdown olmalı — sohbette tablo çizilmesi
+        // Tablo.markdownDan'ın bunu ayrıştırabilmesine bağlı.
+        kayit.append("--- MODELE DÖNEN TABLO ---")
+        let mdTam = tablo.markdownKirpik(enFazlaSatir: 30)
+        let geriAyristirilan = Tablo.markdownDan(mdTam)
+        kayit.append("Markdown geri ayrıştırıldı: \(geriAyristirilan != nil ? "✓" : "✗")")
+        kayit.append("  satır: \(geriAyristirilan?.satirlar.count ?? 0)/30 "
+                     + "\(geriAyristirilan?.satirlar.count == 30 ? "✓" : "✗")")
+        kayit.append("  başlık: \(geriAyristirilan?.basliklar.joined(separator: ",") ?? "-") "
+                     + "\(geriAyristirilan?.basliklar == tablo.basliklar ? "✓" : "✗")")
+        kayit.append("  kırpma notu var: \(mdTam.contains("+470 satır daha") ? "✓" : "✗")")
+        // Kırpma gerekmeyen küçük tablo olduğu gibi dönmeli.
+        let kucuk = Tablo(basliklar: ["Gün", "Yemek"],
+                          satirlar: [Satir(hucreler: ["Pazartesi", "Mercimek"])])
+        kayit.append("Küçük tablo kırpılmadı: "
+                     + "\(kucuk.markdownKirpik(enFazlaSatir: 30) == kucuk.markdown ? "✓" : "✗")")
+
         // Beceri (SKILL.md) katmanı testi.
         kayit.append("--- BECERİLER (SKILL.md) ---")
         kayit.append("Bundle'dan yüklenen beceri: \(BeceriDeposu.paket.count)")
@@ -90,6 +108,11 @@ enum OtoTest {
             ("bu belgeyi özetle", "belge-oku"),
             ("cuma satırını düzenle", "belge-duzenle"),
             ("nasılsın", "yok"),
+            // Özgüllük: "tablo olarak" (belge-oku), "tablo" (belge-olustur) genelini yenmeli.
+            ("bunu tablo olarak göster", "belge-oku"),
+            // Genel kelime hâlâ doğru beceriye gitmeli — özgüllük kuralı bunu bozmamalı.
+            ("haftalık yemek tablosu yap", "belge-olustur"),
+            ("takvimimi göster", "takvim"),
         ]
         for (soru, beklenen) in denemeler {
             let bulunan = BeceriDeposu.eslesen(soru)?.ad ?? "yok"
@@ -131,11 +154,37 @@ enum OtoTest {
         kayit.append("  kapalıyken → \(kapali) \(kapali != "fatura-takibi" ? "✓" : "✗")")
         BeceriDeposu.kullaniciyiYenile([])
 
+        // Dört spec'in model/ağ gerektirmeyen kabul ölçütleri. Bunlar "gözle bak"
+        // değil ASSERT'tir: başarısızlık satırda işaretlenir ve sonda sayılır.
+        let defter = OtoTestVakalari.calistir()
+        kayit.append(contentsOf: defter.satirlar)
+        kayit.append("=== İDDİA: \(defter.iddia) · BAŞARISIZ: \(defter.hata) "
+                     + "\(defter.hata == 0 ? "✓" : "✗") ===")
+
         kayit.append("=== BİTTİ · klasör: \(klasor.path) ===")
+        yaz(kayit, klasor: klasor)
+
+        // Askıya alma gerektiren vakalar (onay kapısı) senkron init içinde
+        // çalışamaz; ilk run loop turunda çalışıp sonucu aynı dosyaya ekler.
+        Task { @MainActor in
+            let ek = await OtoTestVakalari.asenkronCalistir()
+            var tam = kayit
+            tam.append(contentsOf: ek.satirlar)
+            tam.append("=== ASENKRON İDDİA: \(ek.iddia) · BAŞARISIZ: \(ek.hata) "
+                       + "\(ek.hata == 0 ? "✓" : "✗") ===")
+            let toplamHata = defter.hata + ek.hata
+            tam.append("=== TOPLAM BAŞARISIZ: \(toplamHata) "
+                       + "\(toplamHata == 0 ? "✓ HEPSİ GEÇTİ" : "✗ BAŞARISIZ") ===")
+            yaz(tam, klasor: klasor)
+        }
+    }
+
+    /// Sonucu yalnız print'e ve Caches altındaki test dosyasına yazar.
+    /// NSLog kullanılmaz: sistem log'una düşen kişisel veri kalıcı olur.
+    @MainActor
+    private static func yaz(_ kayit: [String], klasor: URL) {
         let metin = kayit.joined(separator: "\n")
         print(metin)
-        NSLog("%@", metin)
-        // Sonucu dosyaya da yaz (kapsayıcıdan okunabilsin).
         try? metin.write(to: klasor.appendingPathComponent("ototest-sonuc.txt"),
                          atomically: true, encoding: .utf8)
     }

@@ -6,11 +6,17 @@ import CoreSpotlight
 // Yerel RAG, yalnızca okuma. Ağ yok, yetki gerektirmez.
 struct AramaAraci: KetumAraci {
     let name = "arama"
-    let description = "Searches the user's OWN notes/files on the device (local Spotlight) by keyword. Only for personal-content requests like 'search my notes', 'find that note', in any language. Do NOT use for weather, general/world knowledge, or definitions — for those, say there is no such info on the device."
+    // TEK metin, iki durumu da idare eder (web-arama §3.4). Profil bileşimine
+    // göre DEĞİŞMEZ: arama sunucusu varsa `web_arama` oturumdadır ve model onu
+    // çağırır; yoksa araç ortada yoktur ve cümlenin ikinci yarısı bugünkü
+    // dürüst yanıtı ("cihazında böyle bir bilgi yok") aynen sürdürür. Tanımı
+    // profile göre değiştirmek, aynı aracın iki farklı davranışını ölçmeyi
+    // imkânsız kılardı.
+    let description = "Searches the user's OWN notes/files on the device (local Spotlight) by keyword. Only for personal-content requests like 'search my notes', 'find that note', in any language. Do NOT use for weather, general/world knowledge, or definitions — for those use the 'web_arama' tool if it is available; otherwise say there is no such info on the device."
     weak var raporlayici: (any AracRaporlayici)?
 
     @Generable struct Arguments {
-        @Guide(description: "Aranacak anahtar kelime, örn 'toplantı notları'")
+        @Guide(description: "Keyword to search for, e.g. 'meeting notes'.")
         var anahtar: String
     }
 
@@ -21,22 +27,25 @@ struct AramaAraci: KetumAraci {
             let basliklar = await Self.ara(arguments.anahtar)
 
             // Boş sonuç: hata değil. Model dürüstçe bulamadığını söylesin.
+            // Yine de kullanıcının kendi içeriğinde arama YAPILDI — oturum
+            // kirlenir (mcp §5.6); aranan kelime de kişisel veridir.
             if basliklar.isEmpty {
-                return AracSonucu(cipMetni: Yerel.notArandiYok,
-                                  durum: .okundu,
-                                  modeleDonen: "no_results_found on device")
+                return await kirletEgerBasarili(
+                    AracSonucu(cipMetni: Yerel.notArandiYok,
+                               durum: .okundu,
+                               modeleDonen: "no_results_found on device"))
             }
 
             let liste = basliklar.enumerated()
                 .map { "\($0.offset + 1). \($0.element)" }
                 .joined(separator: "\n")
 
-            return AracSonucu(
+            return await kirletEgerBasarili(AracSonucu(
                 cipMetni: Yerel.notArandi(basliklar.count),
                 durum: .okundu,
                 modeleDonen: "found \(basliklar.count) results: " + basliklar.joined(separator: ", "),
                 hamCikti: liste
-            )
+            ))
         }
     }
 

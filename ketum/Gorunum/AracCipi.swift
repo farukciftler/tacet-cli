@@ -4,11 +4,29 @@ import SwiftUI
 // sirr'in dünyaya dokunuşunu tek satırda, sakin bir çip olarak gösterir.
 struct AracCipi: View {
     let iz: AracIzi
+    /// Canlı turda yürütücü — yalnızca "onay bekleniyor" çipinin kararı için.
+    /// Geçmiş mesajlarda nil'dir; o zaman bekleyen bir karar da yoktur ve çip
+    /// normal detay sayfasını açar.
+    var yurutucu: AracYurutucu? = nil
 
     // Detay sayfası (ham girdi/çıktı) açık mı.
     @State private var detayAcik = false
     // Dosya önizlemesi (QuickLook) açık mı.
     @State private var onizlemeAcik = false
+    // İzin gerektiren çipte açılan "ne yapmalıyım" sayfası.
+    @State private var izinAcik = false
+    // Paylaşım onayı sayfası açık mı (mcp §3.3).
+    @State private var onayAcik = false
+
+    /// Bu çip, şu an kullanıcı kararı bekleyen isteğin çipi mi. Yürütücüde
+    /// bekleyen istek yoksa (ya da başka bir çipe aitse) onay sayfası açılmaz —
+    /// karar verilmiş eski bir çip ikinci kez sormaz.
+    private var bekleyenOnay: AracYurutucu.OnayIstegi? {
+        guard iz.durum == .onayBekleniyor,
+              let istek = yurutucu?.bekleyenOnay,
+              istek.izID == iz.id else { return nil }
+        return istek
+    }
 
     @Environment(\.accessibilityReduceMotion) private var hareketiAzalt
 
@@ -20,13 +38,27 @@ struct AracCipi: View {
 
     var body: some View {
         Button {
-            if dosyaURL != nil { onizlemeAcik = true } else { detayAcik = true }
+            // İzin gerekiyorsa çip çıkmaz sokak olmamalı: ham girdi/çıktı yerine
+            // doğrudan "iOS Ayarlar'a git" yolunu sunan sayfa açılır.
+            if iz.durum == .izinGerekli {
+                izinAcik = true
+            } else if bekleyenOnay != nil {
+                // Karar bekleyen çip: dokunma doğrudan onay sayfasını açar.
+                onayAcik = true
+            } else if dosyaURL != nil {
+                onizlemeAcik = true
+            } else {
+                detayAcik = true
+            }
         } label: {
             cipGovdesi
         }
         .buttonStyle(.plain)
         .accessibilityLabel(iz.seslendirme)
-        .accessibilityHint(dosyaURL != nil ? "Dosyayı önizlemek için dokun" : "Ayrıntı için dokun")
+        .accessibilityHint(ipucu)
+        .sheet(isPresented: $izinAcik) {
+            IzinYonlendirme(baslik: iz.metin)
+        }
         .sheet(isPresented: $detayAcik) {
             AracCipiDetay(iz: iz)
         }
@@ -35,6 +67,26 @@ struct AracCipi: View {
                 BelgeOnizlemeSheet(url: url)
             }
         }
+        .sheet(isPresented: $onayAcik) {
+            if let istek = bekleyenOnay {
+                OnaySayfasi(kaynak: istek.kaynak,
+                            aracAdi: istek.aracAdi,
+                            icerik: istek.icerik) { kabul in
+                    yurutucu?.onayKarariVer(kabul)
+                }
+            }
+        }
+    }
+
+    // Dokunmanın ne yapacağını önceden söyleyen ipucu.
+    private var ipucu: Text {
+        if iz.durum == .izinGerekli {
+            return Text("İzni açmak için dokun")
+        }
+        if bekleyenOnay != nil {
+            return Text("Gönderileni görmek için dokun")
+        }
+        return dosyaURL != nil ? Text("Dosyayı önizlemek için dokun") : Text("Ayrıntı için dokun")
     }
 
     // Çipin kendisi: pill çerçeve, ikon + metin, sola hizalı.
@@ -75,6 +127,12 @@ struct AracCipi: View {
             simge("checkmark")
         case .basarisiz:
             simge("exclamationmark.triangle")
+        case .onayBekleniyor:
+            // Bekleme dürüstçe görünür: spinner değil, kullanıcıyı bekleyen bir el.
+            simge("hand.raised")
+        case .gonderilmedi:
+            // Ret bir hata değil kısıttır — uyarı imi kullanılmaz, dramatize yok.
+            simge("nosign")
         }
     }
 
@@ -91,14 +149,83 @@ struct AracCipi: View {
         switch iz.durum {
         case .calisiyor, .okundu, .izinGerekli:
             return Renk.gri
+        // Onay bekleyen ve gönderilmeyen çip gridir: üstü çizili değil, kırmızı
+        // değil. Sessizce durur, kullanıcının kararını taşır.
+        case .onayBekleniyor, .gonderilmedi:
+            return Renk.gri
         case .yazildi, .basarisiz:
             return Renk.murekkep
         }
     }
 }
 
+// İzin gerekiyor: tek yol iOS Ayarlar. Sayfa kısa, tek düğmeli ve dürüst;
+// izni uygulama kendi kendine açamaz, kararı kullanıcı verir.
+private struct IzinYonlendirme: View {
+    let baslik: String
+    @Environment(\.dismiss) private var kapat
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Olcek.s4) {
+            HStack {
+                Text("İzin gerekiyor")
+                    .font(Yazi.marka())
+                    .foregroundStyle(Renk.murekkep)
+                Spacer()
+                Button { kapat() } label: { Text("Kapat") }
+                    .font(Yazi.cip())
+                    .foregroundStyle(Renk.gri)
+                    .buttonStyle(.plain)
+            }
+
+            Text(baslik)
+                .font(Yazi.kullanici())
+                .foregroundStyle(Renk.murekkep)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("Bu adımı sürdürmek için iOS Ayarlar'dan sirr'e izin vermen gerekiyor. Veri yine cihazdan çıkmaz.")
+                .font(Yazi.cip())
+                .foregroundStyle(Renk.gri)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            } label: {
+                HStack(spacing: Olcek.s2) {
+                    Text("iOS Ayarlar'ı aç")
+                        .font(Yazi.kullanici())
+                        .foregroundStyle(Renk.murekkep)
+                    Image(systemName: "arrow.up.forward")
+                        .font(Yazi.cip())
+                        .foregroundStyle(Renk.soluk)
+                        .accessibilityHidden(true)
+                }
+                .padding(.horizontal, Olcek.s4)
+                .padding(.vertical, Olcek.s3)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Olcek.cipKose, style: .continuous)
+                        .stroke(Renk.cizgi, lineWidth: Olcek.hairline)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: Olcek.cipKose, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .accessibilityElement(children: .combine)
+
+            Spacer()
+        }
+        .padding(Olcek.s5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Renk.zemin)
+        .presentationDetents([.medium])
+    }
+}
+
 // Detay: ham girdi ve çıktı, saydamlığın ikinci katmanı.
-private struct AracCipiDetay: View {
+// Dosya-içi değil çünkü Seyir zaman çizgisi de AYNI sheet'i açar — araç adımının
+// detayı için ikinci bir yüzey yazılmaz (seyir-spec §2.4).
+struct AracCipiDetay: View {
     let iz: AracIzi
     @Environment(\.dismiss) private var kapat
 
@@ -166,6 +293,14 @@ private struct AracCipiDetay: View {
         AracCipi(iz: AracIzi(
             id: UUID(), ikon: "exclamationmark.triangle", metin: "ağ yok",
             durum: .basarisiz("bağlantı yok"), hamGirdi: "istek", hamCikti: nil))
+
+        AracCipi(iz: AracIzi(
+            id: UUID(), ikon: "hand.raised", metin: "ev sunucusu · onay bekleniyor",
+            durum: .onayBekleniyor, hamGirdi: "sorgu: yarınki nöbet", hamCikti: nil))
+
+        AracCipi(iz: AracIzi(
+            id: UUID(), ikon: "hand.raised", metin: "ev sunucusu · gönderilmedi",
+            durum: .gonderilmedi, hamGirdi: "sorgu: yarınki nöbet", hamCikti: nil))
     }
     .padding(Olcek.s5)
     .frame(maxWidth: .infinity, alignment: .leading)

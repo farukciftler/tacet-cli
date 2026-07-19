@@ -18,6 +18,8 @@ struct NobetDetayi: View {
 
     @Environment(\.modelContext) private var kayit
     @State private var silmeSorusu = false
+    /// Yazma hatasının kullanıcıya görünen karşılığı.
+    @State private var uyariMetni: String?
 
     // En yeni üstte, makul bir sayıyla sınırlı.
     private var kayitlar: [NobetKaydi] {
@@ -44,6 +46,14 @@ struct NobetDetayi: View {
         } message: {
             Text("Çalışma günlüğü de silinir.")
         }
+        .alert(Text("Bir sorun oldu"), isPresented: Binding(
+            get: { uyariMetni != nil },
+            set: { if !$0 { uyariMetni = nil } }
+        )) {
+            Button(role: .cancel) { uyariMetni = nil } label: { Text("Tamam") }
+        } message: {
+            if let uyariMetni { Text(uyariMetni) }
+        }
     }
 
     // MARK: - Bölümler
@@ -62,6 +72,10 @@ struct NobetDetayi: View {
                     .foregroundStyle(Renk.soluk)
             }
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Text(verbatim: "\(nobet.ad). \(nobet.ozet)"))
+        .accessibilityValue(nobet.aktif ? Text("Çalışıyor") : Text("Duraklatıldı"))
+        .accessibilityAddTraits(.isHeader)
     }
 
     private var gunluk: some View {
@@ -70,6 +84,7 @@ struct NobetDetayi: View {
                 .font(Yazi.etiket())
                 .tracking(1.2)
                 .foregroundStyle(Renk.soluk)
+                .accessibilityAddTraits(.isHeader)
 
             if kayitlar.isEmpty {
                 Text("Henüz çalışma yok.")
@@ -98,12 +113,15 @@ struct NobetDetayi: View {
         VStack(alignment: .leading, spacing: Olcek.s2) {
             HStack(spacing: Olcek.s2) {
                 // Sonuç renkle değil imle ayrışır.
+                // Sonuç imi görsel; karşılığı aşağıda satırın etiketinde söze dökülür.
                 if k.basarili {
                     OnayImi()
+                        .accessibilityHidden(true)
                 } else {
                     Image(systemName: "exclamationmark.triangle")
                         .font(Yazi.cip())
                         .foregroundStyle(Renk.murekkep)
+                        .accessibilityHidden(true)
                 }
                 Text(NobetBicim.tarihSaat(k.tarih).localizedCapitalized)
                     .font(Yazi.cip())
@@ -131,6 +149,22 @@ struct NobetDetayi: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        // Günlük girişi tek parça okunur: sonuç, zaman, bağlam, özet, çipler.
+        // children: .ignore, çünkü sonuç imi görsel — etiket elde kurulur.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(verbatim: girisEtiketi(k)))
+    }
+
+    /// Günlük girişinin sesli karşılığı. Renk ve im yerine düz cümle.
+    private func girisEtiketi(_ k: NobetKaydi) -> String {
+        var parcalar = [
+            k.basarili ? String(localized: "Başarılı") : String(localized: "Başarısız"),
+            NobetBicim.tarihSaat(k.tarih).localizedCapitalized
+        ]
+        if !k.baglam.isEmpty { parcalar.append(k.baglam) }
+        if !k.ozet.isEmpty { parcalar.append(k.ozet) }
+        if !k.cipler.isEmpty { parcalar.append(k.cipler.joined(separator: ", ")) }
+        return parcalar.joined(separator: ". ")
     }
 
     private var eylemler: some View {
@@ -144,6 +178,15 @@ struct NobetDetayi: View {
                     .labelsHidden()
                     .tint(Renk.murekkep)
             }
+            // labelsHidden anahtarı sessiz bırakıyordu; satır tek denetim olarak okunur.
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(Text("Nöbet"))
+            .accessibilityValue(nobet.aktif ? Text("Çalışıyor") : Text("Duraklatıldı"))
+            .accessibilityHint(nobet.aktif
+                               ? Text("Duraklatmak için çift dokun.")
+                               : Text("Sürdürmek için çift dokun."))
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { cevir() }
             .padding(.vertical, Olcek.s3)
             .padding(.horizontal, Olcek.s4)
             .overlay(
@@ -154,6 +197,7 @@ struct NobetDetayi: View {
             Button("Nöbeti sil") { silmeSorusu = true }
                 .font(Yazi.cip())
                 .foregroundStyle(Renk.gri)
+                .accessibilityHint(Text("Onay sorulur. Çalışma günlüğü de silinir."))
         }
         .padding(.horizontal, Olcek.s5)
         .padding(.top, Olcek.s3)
@@ -165,12 +209,26 @@ struct NobetDetayi: View {
 
     private func cevir() {
         nobet.aktif.toggle()
+        bildirimiEsle()
+        do {
+            try kayit.save()
+        } catch {
+            // Diske yazılamadı: anahtar açık görünüp uygulama kapanınca eski haline
+            // dönerdi. Geri alıp bildirimi gerçek duruma göre yeniden kuruyoruz.
+            kayit.rollback()
+            bildirimiEsle()
+            uyariMetni = String(localized: "Nöbet durumu kaydedilemedi: \(error.localizedDescription)")
+        }
+    }
+
+    /// Bildirim planını nöbetin güncel `aktif` durumuna eşitler.
+    private func bildirimiEsle() {
+        guard !nobet.isDeleted else { return }
         if nobet.aktif {
             servis.bildirimPlanla(nobet)
         } else {
             servis.bildirimIptal(nobet)
         }
-        try? kayit.save()
     }
 }
 

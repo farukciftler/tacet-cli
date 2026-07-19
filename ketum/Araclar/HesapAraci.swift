@@ -18,7 +18,7 @@ struct HesapAraci: KetumAraci {
 
     @Generable
     struct Arguments {
-        @Guide(description: "Değerlendirilecek aritmetik ifade; yalnızca sayılar ve + - * / ( ) . operatörleri. Örn: '(1250+890)*1.20'.")
+        @Guide(description: "The arithmetic expression to evaluate; digits and the operators + - * / ( ) . only. E.g. '(1250+890)*1.20'.")
         var ifade: String
     }
 

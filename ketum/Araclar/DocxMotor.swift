@@ -22,7 +22,7 @@ fileprivate func xmlKac(_ s: String) -> String {
 struct DocxMotor: BelgeMotoru {
     var bicim: BelgeBicimi { .docx }
 
-    func yaz(dosyaAdi: String, baslik: String?, govde: String?, tablo: Tablo?, klasor: URL) throws -> URL {
+    func yazHam(dosyaAdi: String, baslik: String?, govde: String?, tablo: Tablo?, klasor: URL) throws -> URL {
         let url = hedefURL(dosyaAdi: dosyaAdi, klasor: klasor)
 
         var paragraflar = ""

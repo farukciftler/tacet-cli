@@ -59,15 +59,19 @@ struct IzinBolumu: View {
                 .font(Yazi.kullanici())
                 .foregroundStyle(Renk.murekkep)
             Spacer(minLength: Olcek.s3)
+            // İm yalnızca göz için; durumu zaten yanındaki kelime söylüyor.
             Image(systemName: durum.im)
                 .font(Yazi.cip())
                 .foregroundStyle(Renk.soluk)
+                .accessibilityHidden(true)
             Text(durum.ad)
                 .font(Yazi.cip())
                 .foregroundStyle(Renk.gri)
         }
         .padding(.vertical, Olcek.s3)
         .padding(.horizontal, Olcek.s4)
+        // "Takvim, Verilmedi" tek parça okunur; üç ayrı öğe olarak gezilmez.
+        .accessibilityElement(children: .combine)
     }
 
     private var ayarlarSatiri: some View {
@@ -84,12 +88,15 @@ struct IzinBolumu: View {
                 Image(systemName: "arrow.up.forward")
                     .font(Yazi.cip())
                     .foregroundStyle(Renk.soluk)
+                    .accessibilityHidden(true)
             }
             .padding(.vertical, Olcek.s3)
             .padding(.horizontal, Olcek.s4)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityHint(Text("Uygulamadan çıkıp iOS Ayarlar'ı açar"))
     }
 
     // MARK: - Okuma

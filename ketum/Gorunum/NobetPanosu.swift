@@ -19,6 +19,8 @@ struct NobetPanosu: View {
 
     @State private var yol: [Nobet] = []
     @State private var kurulum = false
+    /// Yazma hatasının kullanıcıya görünen karşılığı.
+    @State private var uyariMetni: String?
 
     var body: some View {
         NavigationStack(path: $yol) {
@@ -40,6 +42,14 @@ struct NobetPanosu: View {
                 }
                 .sheet(isPresented: $kurulum) {
                     YeniNobet(baglam: servis.nobetBaglami)
+                }
+                .alert(Text("Bir sorun oldu"), isPresented: Binding(
+                    get: { uyariMetni != nil },
+                    set: { if !$0 { uyariMetni = nil } }
+                )) {
+                    Button(role: .cancel) { uyariMetni = nil } label: { Text("Tamam") }
+                } message: {
+                    if let uyariMetni { Text(uyariMetni) }
                 }
         }
     }
@@ -173,7 +183,15 @@ struct NobetPanosu: View {
         guard !nobet.isDeleted else { return }
         servis.nobetBaglami.servis.bildirimIptal(nobet)
         kayit.delete(nobet)
-        try? kayit.save()
+        do {
+            try kayit.save()
+        } catch {
+            // Silme diske işlenmedi. Geri alıp bildirimini de geri planlıyoruz:
+            // aksi halde listede duran nöbet sessizce bildirimsiz kalırdı.
+            kayit.rollback()
+            if !nobet.isDeleted { servis.nobetBaglami.servis.bildirimPlanla(nobet) }
+            uyariMetni = String(localized: "Nöbet silinemedi: \(error.localizedDescription) Nöbet duruyor.")
+        }
     }
 }
 

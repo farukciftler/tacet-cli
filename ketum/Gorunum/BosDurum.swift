@@ -8,13 +8,31 @@ struct BosDurum: View {
 
     // Ornek istemler — kullanıcının diline yerelleştirilir (String Catalog).
     // Dokununca giriş alanına yazılan metin de o dilde olur → model o dilde yanıtlar.
+    // Örnekler yalnızca "soru sorulur" demiyor; ürünün görünmez yetenekleri
+    // (nöbet, belge, hatırlatıcı, not arama) de buradan keşfediliyor.
     private let ornekler = [
         String(localized: "Yarın neler var?"),
         String(localized: "Beni 18.00'de ara demek için hatırlat"),
         String(localized: "Geçen haftaki toplantı notumu bul"),
+        String(localized: "Her sabah 8'de günümü özetle"),
+        String(localized: "Bu haftanın notlarından bir belge çıkar"),
     ]
 
     var body: some View {
+        // Örnekler çoğaldı ve büyük punto ayarında ekrana sığmayabilir; kaydırma
+        // güvencesi kırpılmayı önler, sığdığında kaydırma hissedilmez.
+        ScrollView {
+            icerik
+                .padding(.horizontal, Olcek.s5)
+                .padding(.vertical, Olcek.s5)
+                .frame(maxWidth: .infinity)
+                .containerRelativeFrame(.vertical, alignment: .center)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var icerik: some View {
         VStack(spacing: Olcek.s4) {
             SirrMark(boyut: 44)
                 .padding(.bottom, Olcek.s1)
@@ -24,10 +42,12 @@ struct BosDurum: View {
                 .foregroundStyle(Renk.murekkep)
                 .multilineTextAlignment(.center)
 
-            Text("sirr tamamen bu cihazda çalışır. Takvimine bakabilir, hatırlatıcı kurabilir, notlarında arayabilir.")
+            // Ürünün ana vaadi: ilk ekranda, dokunmadan, açık sözle.
+            Text("sirr tamamen bu cihazda çalışır. Sorduğun, takvimin, notların cihazdan çıkmaz; internete gitmez.")
                 .font(Yazi.cip())
                 .foregroundStyle(Renk.gri)
                 .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
 
             // Ornek istem cipleri, dar ekranda alt satira sarar.
             VStack(spacing: Olcek.s2) {
@@ -36,9 +56,15 @@ struct BosDurum: View {
                 }
             }
             .padding(.top, Olcek.s2)
+
+            // Görünmeyen iki yetenek sözle duyurulur; ağır bir tanıtım akışı yok.
+            Text("Düzenli işleri nöbete bağlayabilir, kendi yönergelerini beceri olarak kaydedebilirsin. İkisi de soldaki listeden yönetilir.")
+                .font(Yazi.cip())
+                .foregroundStyle(Renk.soluk)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, Olcek.s2)
         }
-        .padding(.horizontal, Olcek.s5)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -52,6 +78,8 @@ private struct Cip: View {
             Text(metin)
                 .font(Yazi.cip())
                 .foregroundStyle(Renk.gri)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, Olcek.s3)
                 .padding(.vertical, Olcek.s2)
                 .overlay(
@@ -60,6 +88,7 @@ private struct Cip: View {
                 )
         }
         .buttonStyle(.plain)
+        .accessibilityHint(Text("Bu örneği giriş alanına yazar"))
     }
 }
 

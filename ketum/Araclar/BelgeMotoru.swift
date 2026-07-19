@@ -35,15 +35,30 @@ enum BelgeMotorHatasi: LocalizedError {
 protocol BelgeMotoru {
     var bicim: BelgeBicimi { get }
 
-    /// Dosya yazar, URL döndürür. `govde`: prose/markdown metin; `tablo`: xlsx için.
-    /// `dosyaAdi` uzantısız temel ad; motor doğru uzantıyı ekler. `klasor`: hedef.
-    func yaz(dosyaAdi: String, baslik: String?, govde: String?, tablo: Tablo?, klasor: URL) throws -> URL
+    /// Ham yazma: dosyayı diske döker, URL döndürür. `govde`: prose/markdown metin;
+    /// `tablo`: xlsx için. `dosyaAdi` uzantısız temel ad; motor doğru uzantıyı ekler.
+    ///
+    /// ÇAĞIRANLAR BUNU KULLANMAZ — `yaz(...)` üzerinden gidilir. `yaz(...)` bunu
+    /// sarar ve dosya koruma sınıfını + yedekten hariç tutmayı uygular. Kural
+    /// yazma yolunun kendisinde olduğu için yeni bir motor eklendiğinde unutulamaz.
+    func yazHam(dosyaAdi: String, baslik: String?, govde: String?, tablo: Tablo?, klasor: URL) throws -> URL
 
     /// Dosyadan içerik çıkarır (okuma/düzenleme için).
     func oku(url: URL) throws -> BelgeIcerik
 }
 
 extension BelgeMotoru {
+    /// Tek yazma kapısı: motorun ham yazımı + dosya koruması. Motorlar bunu
+    /// override etmez; korumayı atlamak mümkün değildir.
+    func yaz(dosyaAdi: String, baslik: String?, govde: String?, tablo: Tablo?, klasor: URL) throws -> URL {
+        // Hedef klasör koruma sınıfıyla hazır olsun (kök ya da "Ekli" gibi alt klasör).
+        BelgeBaglami.klasorHazirla(klasor)
+        let url = try yazHam(dosyaAdi: dosyaAdi, baslik: baslik, govde: govde, tablo: tablo, klasor: klasor)
+        // Klasör kalıtımına güvenme: yazılan dosyaya sınıfı açıkça bas.
+        BelgeBaglami.korumayiUygula(url)
+        return url
+    }
+
     /// Benzersiz, güvenli dosya adı üretir (çakışma olursa sayı ekler).
     func hedefURL(dosyaAdi: String, klasor: URL) -> URL {
         let temiz = dosyaAdi

@@ -86,7 +86,7 @@
 				};
 			};
 			buildConfigurationList = 2F36AC1C300C3732000458FA /* Build configuration list for PBXProject "ketum" */;
-			developmentRegion = en;
+			developmentRegion = tr;
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				en,

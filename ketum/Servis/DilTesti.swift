@@ -95,7 +95,7 @@ enum DilTesti {
 
     static func kosu() async {
         let servis = ModelServisi()
-        let sonucURL = BelgeBaglami.ciktiKlasoru().appendingPathComponent("dil-sonuc.txt")
+        let sonucURL = BelgeBaglami.testKlasoru().appendingPathComponent("dil-sonuc.txt")
         guard servis.durum.hazirMi else {
             try? "MODEL HAZIR DEĞİL".write(to: sonucURL, atomically: true, encoding: .utf8)
             return

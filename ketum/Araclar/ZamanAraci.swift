@@ -18,7 +18,7 @@ struct ZamanAraci: KetumAraci {
 
     @Generable
     struct Arguments {
-        @Guide(description: "İstenen bilgi: 'saat', 'tarih', 'gun' veya 'hepsi'. Emin değilsen 'hepsi'.")
+        @Guide(description: "What to return: 'saat' (time), 'tarih' (date), 'gun' (day of week) or 'hepsi' (all). Use these exact values; if unsure use 'hepsi'.")
         var tur: String
     }
 

@@ -45,7 +45,24 @@ enum Yerel {
     static var paylasilanYok: String { String(localized: "Paylaşılan belge yok") }
 
     // MARK: - Model durum/hata mesajları
-    static var modelHazirDegil: String { String(localized: "Model bu cihazda hazır değil.") }
+    // Her biri "ne oldu + ne yapmalı" söyler; birbiriyle çelişmemesi için
+    // availability nedenine göre AYRILMIŞTIR (hazırlanıyor ≠ hiç çalışmayacak).
+    /// modelNotReady — model indiriliyor; bu geçici, birazdan çalışacak.
+    static var modelHazirlaniyor: String {
+        String(localized: "Model hâlâ indiriliyor. Birkaç dakika sonra tekrar dene.")
+    }
+    /// appleIntelligenceNotEnabled — kullanıcı düzeltebilir, yolu tarif et.
+    static var appleIntelligenceKapali: String {
+        String(localized: "Apple Intelligence kapalı. Ayarlar > Apple Intelligence ve Siri'den açtıktan sonra tekrar dene.")
+    }
+    /// deviceNotEligible — kalıcı; boşuna beklememesi için açıkça söyle.
+    static var cihazUygunDegil: String {
+        String(localized: "Bu cihaz cihaz-üstü modeli çalıştıramıyor; sirr burada yanıt üretemiyor.")
+    }
+    /// Yan etki oluştuktan sonraki hata: retry yapılmadı, çünkü tekrarlardı.
+    static var yazmaSonrasiHata: String {
+        String(localized: "Yanıtı tamamlayamadım ama bu sırada yaptığım değişiklik kaydedildi. Aynı şeyi iki kez yapmamak için yeniden denemedim; kontrol edip gerekirse tekrar sor.")
+    }
     static var oncekiBitiyor: String { String(localized: "Bir saniye, önceki yanıtı bitiriyorum.") }
     static var sinirDisi: String { String(localized: "Bunu yapamam; sınırlarımın dışında.") }
     static var dilDesteklenmiyor: String { String(localized: "Bu dili şu an tam desteklemiyorum.") }

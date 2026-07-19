@@ -2,7 +2,7 @@
 //  HatirlaticiAraci.swift
 //  ketum
 //
-//  Hatırlatıcı aracı (spec §7.3). EventKit Reminders üzerine yazma ağırlıklı.
+//  Hatırlatıcı aracı (spec §7.3). EventKit Reminders üzerine okuma + yazma.
 //  Model serbest metin değil, tip güvenli argüman verir; zamanı Swift parse eder.
 //  Ağ yok — yalnızca yerel EKEventStore.
 //
@@ -11,79 +11,87 @@ import Foundation
 import FoundationModels
 import EventKit
 
-struct HatirlaticiAraci: KetumAraci {
-    let name = "hatirlatici"
-    let description = "Creates a reminder (a to-do / task), with or without a time. Call this whenever the user asks to be reminded of something, in any language (e.g. 'remind me to call at 6pm', 'remind me to buy milk tomorrow'). For a fixed appointment use the calendar tool instead."
+// MARK: - Dilden bağımsız zaman çözümleme
 
-    weak var raporlayici: (any AracRaporlayici)?
-
-    @Generable
-    struct Arguments {
-        @Guide(description: "Hatırlatıcının başlığı; kısa ve eylem odaklı. Örn: 'Ali'yi ara', 'Süt al'.")
-        var baslik: String
-        @Guide(description: "Hatırlatma zamanı; doğal Türkçe ya da ISO. Örn: 'bugün 18:00', 'yarın 09:30', '2026-07-20 14:00'. Zaman yoksa boş bırak.")
-        var zaman: String?
+/// Araçların ortak zaman çözücüsü.
+///
+/// Ürün 9 dilde konuşuyor; tarih ayrıştırma yalnızca Türkçe bilirse diğer
+/// dillerde SESSİZ VERİ HATASI olur (etkinlik yanlış saate kurulur). Bu yüzden
+/// çözümleme katmanlı ve dilden bağımsız:
+///   1. Katı ISO 8601 (modelden beklediğimiz biçim)
+///   2. Dil-nötr sabit kalıplar (en_US_POSIX)
+///   3. Türkçe kestirmeler (ana dil — hızlı yol, tek yol değil)
+///   4. Locale.current ile tarih/saat stilleri (cihaz dili ne ise)
+///   5. NSDataDetector — sistem bileşeni, cihaz-üstü, ağ yok; gizlilik vaadi bozulmaz
+///
+/// Hiçbiri tutmazsa `nil`. Çağıran ASLA sessizce "şimdi"ye düşmez; hata döner.
+enum ZamanCozucu {
+    /// Çözülen an + metinde açık bir saat bilgisi olup olmadığı.
+    struct Cozum {
+        var tarih: Date
+        /// false ise yalnızca gün çözüldü (saat varsayılan/gün başı).
+        var saatVar: Bool
     }
 
-    func call(arguments: Arguments) async -> String {
-        let hamGirdi = arguments.baslik + (arguments.zaman.map { " · \($0)" } ?? "")
-        return await cipliCalis(ikon: "bell", calisiyorMetni: Yerel.hatirlaticiKuruluyor, hamGirdi: hamGirdi) {
-            let store = EKEventStore()
+    /// Metni tarihe çevirir. Çözülemezse nil.
+    static func coz(_ ham: String?) -> Cozum? {
+        guard let metin = ham?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !metin.isEmpty else { return nil }
 
-            // Yetki: iOS 17+ tam erişim iste. Reddedilirse throw etme, izinGerekli dön.
-            let durum = EKEventStore.authorizationStatus(for: .reminder)
-            if durum != .fullAccess {
-                let verildi = (try? await store.requestFullAccessToReminders()) ?? false
-                if !verildi {
-                    return AracSonucu(
-                        cipMetni: Yerel.hatirlaticiIzni,
-                        durum: .izinGerekli,
-                        modeleDonen: "permission_required (user can grant access in Settings)"
-                    )
-                }
-            }
-
-            guard let takvim = store.defaultCalendarForNewReminders() else {
-                throw HatirlaticiHatasi.takvimYok
-            }
-
-            let reminder = EKReminder(eventStore: store)
-            reminder.title = arguments.baslik
-            reminder.calendar = takvim
-
-            // Zaman parse edilebilirse dueDateComponents ata; yoksa zamansız kur.
-            let bilesenler = arguments.zaman.flatMap { Self.zamanParse($0) }
-            reminder.dueDateComponents = bilesenler
-
-            try store.save(reminder, commit: true)
-
-            let saatMetni = Self.saatMetni(bilesenler)
-            let cip = Yerel.hatirlaticiKuruldu(saat: saatMetni)
-            let ham = arguments.baslik + (arguments.zaman.map { " — \($0)" } ?? " — zamansız")
-
-            return AracSonucu(
-                cipMetni: cip,
-                durum: .yazildi,
-                modeleDonen: "reminder_created",
-                hamCikti: ham
-            )
+        // 1) Katı ISO 8601 — "2026-07-20T18:00:00Z" gibi tam biçim.
+        if let tarih = try? Date(metin, strategy: .iso8601) {
+            return Cozum(tarih: tarih, saatVar: true)
         }
+
+        // 2) Dil-nötr sabit kalıplar. Saatli olanlar önce denenir.
+        let bicim = DateFormatter()
+        bicim.locale = Locale(identifier: "en_US_POSIX")
+        bicim.timeZone = Calendar.current.timeZone
+        for kalip in saatliKaliplar {
+            bicim.dateFormat = kalip
+            if let tarih = bicim.date(from: metin) { return Cozum(tarih: tarih, saatVar: true) }
+        }
+        for kalip in saatsizKaliplar {
+            bicim.dateFormat = kalip
+            if let tarih = bicim.date(from: metin) { return Cozum(tarih: tarih, saatVar: false) }
+        }
+
+        // 3) Türkçe kestirmeler — "bugün 18:00", "yarın", "öbür gün 9".
+        if let cozum = turkceKestirme(metin) { return cozum }
+
+        // 4) Cihaz dilinin kendi tarih biçimleri ("7/20/26, 6:00 PM", "20.07.2026" …).
+        if let cozum = yerelBicim(metin) { return cozum }
+
+        // 5) Son çare: sistemin veri algılayıcısı. Yereldir, ağ kullanmaz.
+        if let cozum = algilayici(metin) { return cozum }
+
+        return nil
     }
 
-    enum HatirlaticiHatasi: LocalizedError {
-        case takvimYok
-        var errorDescription: String? { "Hatırlatıcı takvimi bulunamadı" }
+    private static let saatliKaliplar = [
+        "yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd'T'HH:mm",
+        "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm",
+        "yyyy/MM/dd HH:mm", "dd.MM.yyyy HH:mm", "dd/MM/yyyy HH:mm",
+    ]
+    private static let saatsizKaliplar = [
+        "yyyy-MM-dd", "yyyy/MM/dd", "dd.MM.yyyy", "dd/MM/yyyy",
+    ]
+
+    /// Metinde açık saat izi var mı ("18:00", "6 pm", "18.30")?
+    /// Yerel biçim ve algılayıcı sonuçlarında saatin gerçekten verilip
+    /// verilmediğini ayırt etmek için kullanılır.
+    static func saatIzi(_ metin: String) -> Bool {
+        let kucuk = metin.lowercased()
+        if kucuk.range(of: #"\d{1,2}\s*[:.]\s*\d{2}"#, options: .regularExpression) != nil { return true }
+        if kucuk.range(of: #"\d\s*(am|pm|öö|ös)"#, options: .regularExpression) != nil { return true }
+        return false
     }
 
-    /// Doğal Türkçe ya da ISO zamanı DateComponents'a çevirir. Çözülemezse nil.
-    static func zamanParse(_ ham: String) -> DateComponents? {
-        let metin = ham.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !metin.isEmpty else { return nil }
+    /// Türkçe göreli gün + isteğe bağlı saat.
+    private static func turkceKestirme(_ ham: String) -> Cozum? {
+        let metin = ham.lowercased()
+        let takvim = Calendar.current
 
-        let takvim = Calendar(identifier: .gregorian)
-        let simdi = Date()
-
-        // Gün ofsetini yakala: bugün / yarın / öbür gün.
         var gunOfseti = 0
         var gunBelirtildi = false
         if metin.contains("öbür gün") || metin.contains("obur gun") {
@@ -93,43 +101,274 @@ struct HatirlaticiAraci: KetumAraci {
         } else if metin.contains("bugün") || metin.contains("bugun") {
             gunOfseti = 0; gunBelirtildi = true
         }
+        guard gunBelirtildi else { return nil }
 
-        // Saati yakala: "18:00", "18.00", "9" gibi.
+        // Saat: "18:00" / "18.00" ya da gün belirtildiği için güvenle tek sayı ("yarın 9").
         var saat: Int?
         var dakika = 0
         if let aralik = metin.range(of: #"(\d{1,2})[:.](\d{2})"#, options: .regularExpression) {
             let parca = metin[aralik].replacingOccurrences(of: ".", with: ":").split(separator: ":")
             saat = Int(parca[0]); dakika = Int(parca[1]) ?? 0
-        } else if let aralik = metin.range(of: #"(?<!\d)(\d{1,2})(?!\d)"#, options: .regularExpression),
-                  gunBelirtildi {
-            // Yalnızca gün de belirtilmişse tek sayıyı saat say (yanlış eşleşmeyi azalt).
+        } else if let aralik = metin.range(of: #"(?<!\d)(\d{1,2})(?!\d)"#, options: .regularExpression) {
             saat = Int(metin[aralik])
         }
 
-        // ISO denemesi: gün/saat hiç yakalanmadıysa ISO8601 dene.
-        if !gunBelirtildi && saat == nil {
-            let isoFormatlar = ["yyyy-MM-dd'T'HH:mm", "yyyy-MM-dd HH:mm", "yyyy-MM-dd"]
-            let df = DateFormatter()
-            df.locale = Locale(identifier: "en_US_POSIX")
-            df.timeZone = takvim.timeZone
-            for f in isoFormatlar {
-                df.dateFormat = f
-                if let tarih = df.date(from: metin) {
-                    return takvim.dateComponents([.year, .month, .day, .hour, .minute], from: tarih)
+        guard let hedefGun = takvim.date(byAdding: .day, value: gunOfseti, to: Date()) else { return nil }
+        let gunBasi = takvim.startOfDay(for: hedefGun)
+        if let s = saat, (0...23).contains(s) {
+            let tarih = takvim.date(bySettingHour: s, minute: dakika, second: 0, of: gunBasi) ?? gunBasi
+            return Cozum(tarih: tarih, saatVar: true)
+        }
+        return Cozum(tarih: gunBasi, saatVar: false)
+    }
+
+    /// Cihaz dilinin kendi kısa/orta/uzun tarih-saat biçimleri.
+    private static func yerelBicim(_ metin: String) -> Cozum? {
+        let stiller: [(DateFormatter.Style, DateFormatter.Style)] = [
+            (.short, .short), (.medium, .short), (.long, .short), (.full, .short),
+            (.short, .none), (.medium, .none), (.long, .none), (.full, .none),
+        ]
+        let bicim = DateFormatter()
+        bicim.locale = Locale.current
+        bicim.timeZone = Calendar.current.timeZone
+        for (tarihStili, saatStili) in stiller {
+            bicim.dateStyle = tarihStili
+            bicim.timeStyle = saatStili
+            if let tarih = bicim.date(from: metin) {
+                return Cozum(tarih: tarih, saatVar: saatStili != .none)
+            }
+        }
+        return nil
+    }
+
+    /// NSDataDetector: "next friday at 6", "明日 18時", "mañana a las 9" gibi
+    /// serbest ifadeleri sistemin kendi dil verisiyle çözer. Tamamen yerel.
+    private static func algilayici(_ metin: String) -> Cozum? {
+        guard let dedektor = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.date.rawValue)
+        else { return nil }
+        let aralik = NSRange(metin.startIndex..., in: metin)
+        guard let eslesme = dedektor.firstMatch(in: metin, options: [], range: aralik),
+              let tarih = eslesme.date else { return nil }
+        // Algılayıcı saat verilmediğinde varsayılan bir saat uydurur; metinde
+        // saat izi yoksa "saat yok" say ve çağırana bırak.
+        return Cozum(tarih: tarih, saatVar: saatIzi(metin))
+    }
+}
+
+// MARK: - Araç
+
+struct HatirlaticiAraci: KetumAraci {
+    let name = "hatirlatici"
+    let description = """
+    Creates a reminder (a to-do / task) or lists pending reminders. Call this whenever the \
+    user asks to be reminded of something, in any language (e.g. 'remind me to call at 6pm', \
+    'remind me to buy milk tomorrow'), or asks what is on their to-do list ('what are my \
+    pending reminders'). eylem="kur" to create, "oku" to list. For a fixed appointment use \
+    the calendar tool instead.
+    """
+
+    weak var raporlayici: (any AracRaporlayici)?
+    /// Büyük veri taşıma kanalı — listelenen hatırlatıcılar burada saklanıp modele ref döner.
+    weak var veriDeposu: VeriDeposu?
+
+    @Generable
+    struct Arguments {
+        @Guide(description: "The operation to perform: \"kur\" to create a reminder, \"oku\" to list pending ones. Use these exact values.")
+        var eylem: String
+        @Guide(description: "Title of the reminder for \"kur\"; short and action-oriented, e.g. 'Call Ali', 'Buy milk'.")
+        var baslik: String?
+        @Guide(description: "When to be reminded. ALWAYS give ISO 8601: \"2026-07-20T18:00\". Resolve relative wording ('tomorrow', 'tonight') into a date yourself and write it as ISO; call the time tool first if you need today's date. Leave empty if no time was asked for.")
+        var zaman: String?
+    }
+
+    func call(arguments: Arguments) async -> String {
+        let okuMu = arguments.eylem.lowercased().contains("oku")
+            || arguments.eylem.lowercased().contains("liste")
+        let ikon = okuMu ? "checklist" : "bell"
+        let calisiyorMetni = okuMu ? Self.hatirlaticilaraBakiliyor : Yerel.hatirlaticiKuruluyor
+        let hamGirdi = [arguments.eylem, arguments.baslik, arguments.zaman]
+            .compactMap { $0 }
+            .joined(separator: " · ")
+
+        return await cipliCalis(ikon: ikon, calisiyorMetni: calisiyorMetni, hamGirdi: hamGirdi) {
+            let store = EKEventStore()
+
+            // Yetki (spec §7.3): denied/restricted kalıcıdır — her çağrıda yeniden
+            // sormak anlamsız. Yalnızca notDetermined durumunda bir kez iste.
+            let durum = EKEventStore.authorizationStatus(for: .reminder)
+            if durum == .denied || durum == .restricted {
+                return AracSonucu(cipMetni: Yerel.hatirlaticiIzni,
+                                  durum: .izinGerekli,
+                                  modeleDonen: "permission_denied (user must grant access in Settings)")
+            }
+            if durum != .fullAccess {
+                let verildi = try await store.requestFullAccessToReminders()
+                if !verildi {
+                    return AracSonucu(cipMetni: Yerel.hatirlaticiIzni,
+                                      durum: .izinGerekli,
+                                      modeleDonen: "permission_required (user can grant access in Settings)")
                 }
             }
-            return nil
+
+            // İzin geçildi, gerçek hatırlatıcı erişimi burada. Sonuç `.okundu`
+            // ya da `.yazildi` ise oturum kirlenir (mcp §5.6); zaman
+            // çözülemeyip `.basarisiz` dönen yol kirletmez.
+            if okuMu {
+                let okunan = await Self.oku(store: store, veriDeposu: veriDeposu)
+                return await kirletEgerBasarili(okunan)
+            }
+            let kurulan = try Self.kur(store: store, arguments: arguments)
+            return await kirletEgerBasarili(kurulan)
+        }
+    }
+
+    // MARK: Kurma
+
+    private static func kur(store: EKEventStore, arguments: Arguments) throws -> AracSonucu {
+        let baslik = arguments.baslik?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !baslik.isEmpty else {
+            return AracSonucu(cipMetni: baslikEksik,
+                              durum: .basarisiz(baslikEksik),
+                              modeleDonen: "error: missing_title. Call the tool again with a short title in \"baslik\".")
         }
 
-        guard let hedefGun = takvim.date(byAdding: .day, value: gunOfseti, to: simdi) else { return nil }
-        var bilesen = takvim.dateComponents([.year, .month, .day], from: hedefGun)
-        if let s = saat, (0...23).contains(s) {
-            bilesen.hour = s
-            bilesen.minute = dakika
-        } else if !gunBelirtildi {
-            return nil
+        // Zaman verildiyse ÇÖZÜLMEK ZORUNDA. Çözülemeyeni sessizce zamansız
+        // kurmak kullanıcıya "kuruldu" deyip hatırlatmamak demektir.
+        var bilesenler: DateComponents?
+        if let ham = arguments.zaman?.trimmingCharacters(in: .whitespacesAndNewlines), !ham.isEmpty {
+            guard let cozum = ZamanCozucu.coz(ham) else {
+                return AracSonucu(
+                    cipMetni: zamanAnlasilmadi,
+                    durum: .basarisiz(zamanAnlasilmadi),
+                    modeleDonen: "error: unparsable_time \"\(ham)\". Nothing was created. "
+                        + "Call the tool again with \"zaman\" as an ISO 8601 timestamp, e.g. 2026-07-20T18:00."
+                )
+            }
+            let takvim = Calendar.current
+            bilesenler = cozum.saatVar
+                ? takvim.dateComponents([.year, .month, .day, .hour, .minute], from: cozum.tarih)
+                : takvim.dateComponents([.year, .month, .day], from: cozum.tarih)
         }
-        return bilesen
+
+        guard let takvimListesi = store.defaultCalendarForNewReminders() else {
+            throw HatirlaticiHatasi.takvimYok
+        }
+
+        let reminder = EKReminder(eventStore: store)
+        reminder.title = baslik
+        reminder.calendar = takvimListesi
+        reminder.dueDateComponents = bilesenler
+
+        try store.save(reminder, commit: true)
+
+        let saatMetni = saatMetni(bilesenler)
+        let ham = baslik + (arguments.zaman.map { " — \($0)" } ?? " — zamansız")
+        return AracSonucu(cipMetni: Yerel.hatirlaticiKuruldu(saat: saatMetni),
+                          durum: .yazildi,
+                          modeleDonen: "reminder_created",
+                          hamCikti: ham)
+    }
+
+    // MARK: Okuma
+
+    /// EKReminder'ın düz, Sendable karşılığı (EventKit nesneleri aktör sınırını geçemez).
+    private struct Bekleyen: Sendable {
+        var baslik: String
+        var zaman: Date?
+        var liste: String
+    }
+
+    /// Bekleyen (tamamlanmamış) hatırlatıcıları listeler.
+    /// Bağlam bütçesi (spec §7.2): modele yalnızca sayı + ilk birkaç başlık gider,
+    /// tam liste VeriDeposu'na konur ve modele ref döner.
+    private static func oku(store: EKEventStore, veriDeposu: VeriDeposu?) async -> AracSonucu {
+        let yuklem = store.predicateForIncompleteReminders(
+            withDueDateStarting: nil, ending: nil, calendars: nil)
+        // EKReminder Sendable değil — continuation sınırını yalnızca düz veri geçsin.
+        let takvim = Calendar.current
+        let hatirlaticilar: [Bekleyen] = await withCheckedContinuation { devam in
+            store.fetchReminders(matching: yuklem) { sonuc in
+                let duz = (sonuc ?? []).map { r in
+                    Bekleyen(baslik: r.title ?? "-",
+                             zaman: r.dueDateComponents.flatMap { takvim.date(from: $0) },
+                             liste: r.calendar?.title ?? "")
+                }
+                devam.resume(returning: duz)
+            }
+        }
+
+        if hatirlaticilar.isEmpty {
+            return AracSonucu(cipMetni: hatirlaticiOkunduBos,
+                              durum: .okundu,
+                              modeleDonen: "no_pending_reminders",
+                              hamCikti: "Bekleyen hatırlatıcı yok.")
+        }
+
+        // Yakın zamanlı olan önce; zamansızlar sona.
+        let sirali = hatirlaticilar.sorted { ($0.zaman ?? .distantFuture) < ($1.zaman ?? .distantFuture) }
+
+        // Biçim cihaz diline göre — sabit tr_TR yok.
+        let tamBicim = DateFormatter()
+        tamBicim.locale = Locale.current
+        tamBicim.dateStyle = .medium
+        tamBicim.timeStyle = .short
+
+        func zamanMetni(_ r: Bekleyen) -> String {
+            guard let t = r.zaman else { return "" }
+            return tamBicim.string(from: t)
+        }
+
+        // Modele yalnızca ilk ~10'un kısa özeti gider.
+        let onizleme = Array(sirali.prefix(10))
+        let ozet = onizleme
+            .map { r -> String in
+                let z = zamanMetni(r)
+                return z.isEmpty ? r.baslik : "\(r.baslik) (\(z))"
+            }
+            .joined(separator: "; ")
+        let ham = onizleme
+            .map { r -> String in
+                let z = zamanMetni(r)
+                return z.isEmpty ? "• \(r.baslik)" : "• \(r.baslik) — \(z)"
+            }
+            .joined(separator: "\n")
+
+        let sonuc = AracSonucu(cipMetni: hatirlaticiOkundu(sirali.count),
+                               durum: .okundu,
+                               modeleDonen: "\(sirali.count) pending: \(ozet)",
+                               hamCikti: ham)
+
+        // Toplu veri kanalı: tam liste depoya, modele yalnızca ref.
+        if sirali.count > 1, let depo = veriDeposu {
+            let satirlar = sirali.map { r in
+                Satir(hucreler: [r.baslik, zamanMetni(r), r.liste])
+            }
+            let tablo = Tablo(basliklar: ["Başlık", "Zaman", "Liste"], satirlar: satirlar)
+            let ref = await depo.koy(tablo, etiket: "hatirlatici")
+            return AracSonucu(cipMetni: sonuc.cipMetni,
+                              durum: sonuc.durum,
+                              modeleDonen: sonuc.modeleDonen
+                                + " (all \(sirali.count) records ready, data_ref=\(ref))",
+                              hamCikti: sonuc.hamCikti)
+        }
+        return sonuc
+    }
+
+    // MARK: - Metinler
+    // Not: Yerel.swift bu fazda başka bir ajanın dosyası; yeni anahtarlar burada
+    // String(localized:) ile tanımlı — String Catalog'a otomatik girer.
+
+    static var hatirlaticilaraBakiliyor: String { String(localized: "Hatırlatıcılara bakılıyor…") }
+    static func hatirlaticiOkundu(_ n: Int) -> String {
+        String(localized: "Hatırlatıcılar okundu · \(n) bekliyor")
+    }
+    static var hatirlaticiOkunduBos: String { String(localized: "Hatırlatıcılar okundu · boş") }
+    static var zamanAnlasilmadi: String { String(localized: "Zaman anlaşılmadı") }
+    static var baslikEksik: String { String(localized: "Başlık eksik") }
+
+    enum HatirlaticiHatasi: LocalizedError {
+        case takvimYok
+        var errorDescription: String? { String(localized: "Hatırlatıcı listesi bulunamadı") }
     }
 
     /// dueDateComponents içindeki saati "HH.mm" biçiminde döndürür; saat yoksa nil.

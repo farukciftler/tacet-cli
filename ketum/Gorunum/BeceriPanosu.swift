@@ -19,6 +19,8 @@ struct BeceriPanosu: View {
 
     @State private var duzenlenen: KullaniciBecerisi?
     @State private var yeniAcik = false
+    /// Yazma hatasının kullanıcıya görünen karşılığı.
+    @State private var uyariMetni: String?
 
     var body: some View {
         NavigationStack {
@@ -38,6 +40,14 @@ struct BeceriPanosu: View {
                 }
                 .sheet(item: $duzenlenen) { beceri in
                     BeceriDuzenleyici(beceri: beceri, kaydet: guncelle)
+                }
+                .alert(Text("Bir sorun oldu"), isPresented: Binding(
+                    get: { uyariMetni != nil },
+                    set: { if !$0 { uyariMetni = nil } }
+                )) {
+                    Button(role: .cancel) { uyariMetni = nil } label: { Text("Tamam") }
+                } message: {
+                    if let uyariMetni { Text(uyariMetni) }
                 }
         }
     }
@@ -77,6 +87,7 @@ struct BeceriPanosu: View {
                     .font(Yazi.etiket())
                     .foregroundStyle(Renk.soluk)
                     .textCase(.uppercase)
+                    .accessibilityAddTraits(.isHeader)
                     .beceriSatiri()
                 ForEach(BeceriDeposu.paket, id: \.ad) { beceri in
                     VStack(alignment: .leading, spacing: Olcek.s1) {
@@ -89,6 +100,10 @@ struct BeceriPanosu: View {
                             .lineLimit(1)
                     }
                     .padding(.vertical, Olcek.s1)
+                    // "·" ayraçları tek tek okunmasın; tek satır olarak duyulur.
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(Text(verbatim: beceri.ad))
+                    .accessibilityValue(Text("Tetikleyiciler: \(beceri.tetikler.prefix(5).joined(separator: ", "))"))
                     .beceriSatiri()
                 }
             }
@@ -127,12 +142,19 @@ struct BeceriPanosu: View {
             RoundedRectangle(cornerRadius: Olcek.s4, style: .continuous)
                 .stroke(Renk.cizgi, lineWidth: Olcek.hairline)
         )
+        // Üç ayrı metin değil, tek beceri satırı. "kapalı" rozeti duruma dönüşür.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(verbatim: "\(beceri.ad). \(beceri.ozet)"))
+        .accessibilityValue(beceri.aktif ? Text("Açık") : Text("Kapalı"))
+        .accessibilityHint(Text("Düzenlemek için çift dokun."))
+        .accessibilityAddTraits(.isButton)
     }
 
     private var yeniSatir: some View {
         Button { yeniAcik = true } label: {
             HStack(spacing: Olcek.s2) {
                 Image(systemName: "plus")
+                    .accessibilityHidden(true)
                 Text("Yeni beceri")
                 Spacer(minLength: 0)
             }
@@ -146,6 +168,8 @@ struct BeceriPanosu: View {
             )
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(Text("Yeni beceri"))
+        .accessibilityHint(Text("Kendi kılavuzunu yazmak için çift dokun."))
     }
 
     private var bosDurum: some View {
@@ -167,7 +191,7 @@ struct BeceriPanosu: View {
         let yeni = KullaniciBecerisi(ad: taslak.ad, tetiklerHam: taslak.tetikler, govde: taslak.govde)
         yeni.aktif = taslak.aktif
         kayit.insert(yeni)
-        kaydet()
+        kaydet(String(localized: "Beceri kaydedilemedi"))
     }
 
     private func guncelle(_ taslak: BeceriTaslagi) {
@@ -176,18 +200,27 @@ struct BeceriPanosu: View {
         beceri.tetiklerHam = taslak.tetikler
         beceri.govde = taslak.govde
         beceri.aktif = taslak.aktif
-        kaydet()
+        kaydet(String(localized: "Beceri kaydedilemedi"))
     }
 
     private func sil(_ beceri: KullaniciBecerisi) {
         guard !beceri.isDeleted else { return }
         kayit.delete(beceri)
-        kaydet()
+        // Silme yazılamazsa geri alınır: liste gerçeği göstersin, kullanıcı
+        // silindiğini sanıp becerinin hâlâ devrede olduğunu kaçırmasın.
+        kaydet(String(localized: "Beceri silinemedi"), geriAl: true)
     }
 
     /// Diske yazar ve depoyu tazeler — model bir sonraki mesajda yeni hali okur.
-    private func kaydet() {
-        try? kayit.save()
+    /// Yazma hatası artık yutulmuyor: kullanıcı beceri kaydedilmediğini görür.
+    private func kaydet(_ neden: String, geriAl: Bool = false) {
+        do {
+            try kayit.save()
+        } catch {
+            if geriAl { kayit.rollback() }
+            uyariMetni = "\(neden): \(error.localizedDescription)"
+        }
+        // Hata olsa da depoyu bağlamın güncel haliyle eşitle — model ile ekran ayrışmasın.
         BeceriDeposu.kullaniciyiYenile(
             (try? kayit.fetch(FetchDescriptor<KullaniciBecerisi>())) ?? []
         )
@@ -228,6 +261,8 @@ private struct BeceriDuzenleyici: View {
                 Section {
                     TextField("Fatura takibi", text: $ad)
                         .font(Yazi.kullanici())
+                        // Yer tutucu örnek metindir; etiket olarak okunmamalı.
+                        .accessibilityLabel(Text("Beceri adı"))
                 } header: {
                     Text("Ad")
                 }
@@ -236,6 +271,8 @@ private struct BeceriDuzenleyici: View {
                     TextField("fatura, gider, harcama", text: $tetikler, axis: .vertical)
                         .font(Yazi.kullanici())
                         .lineLimit(1...3)
+                        .accessibilityLabel(Text("Tetikleyici kelimeler"))
+                        .accessibilityHint(Text("Virgülle ayır."))
                 } header: {
                     Text("Tetikleyiciler")
                 } footer: {
@@ -247,6 +284,7 @@ private struct BeceriDuzenleyici: View {
                         .font(Yazi.kullanici())
                         .frame(minHeight: 160)
                         .scrollContentBackground(.hidden)
+                        .accessibilityLabel(Text("Kılavuz metni"))
                 } header: {
                     HStack {
                         Text("Kılavuz")
@@ -254,6 +292,9 @@ private struct BeceriDuzenleyici: View {
                         Text("\(max(kalan, 0))")
                             .foregroundStyle(kalan < 0 ? Renk.hata : Renk.soluk)
                             .monospacedDigit()
+                            // Çıplak sayı olarak okunmasın.
+                            .accessibilityLabel(Text("Kalan karakter"))
+                            .accessibilityValue(Text(verbatim: "\(max(kalan, 0))"))
                     }
                 } footer: {
                     Text("Kısa ve emir kipinde yaz — en fazla \(KullaniciBecerisi.govdeSiniri) karakter. Örnek: “Fatura sorulduğunda önce arama aracıyla notlarda ara, sonra tutarı hesapla aracına ver.”")

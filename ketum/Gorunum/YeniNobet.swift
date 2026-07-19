@@ -48,6 +48,9 @@ struct YeniNobet: View {
                         .font(Yazi.cip())
                         .foregroundStyle(kurulabilir ? Renk.murekkep : Renk.soluk)
                         .disabled(!kurulabilir)
+                        .accessibilityHint(kuruluyor
+                                           ? Text("Nöbet kuruluyor, bekle.")
+                                           : Text("Nöbeti kurar ve bu sayfayı kapatır."))
                 }
             }
         }
@@ -69,6 +72,8 @@ struct YeniNobet: View {
                 .padding(.vertical, Olcek.s3)
                 .padding(.horizontal, Olcek.s4)
                 .cerceve()
+                // Yer tutucu ("Sabah brifingi") etiket yerine geçmesin.
+                .accessibilityLabel(Text("Nöbetin adı"))
         }
     }
 
@@ -91,6 +96,10 @@ struct YeniNobet: View {
                 .padding(.vertical, Olcek.s2)
                 .padding(.horizontal, Olcek.s4)
                 .cerceve()
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(Text("Teslimat saati"))
+                .accessibilityValue(Text(verbatim: String(format: "%02d.00", saat)))
+                .accessibilityHint(Text("Saat seçeneklerini açmak için çift dokun."))
 
                 // Dürüstlük: arka planda gece üretimi yok, olduğu gibi yazılır.
                 Text("Bu saatte bildirim planlanır; brifing sirr'i açtığında tazelenir.")
@@ -123,6 +132,7 @@ struct YeniNobet: View {
                 .font(Yazi.etiket())
                 .tracking(1.2)
                 .foregroundStyle(Renk.soluk)
+                .accessibilityAddTraits(.isHeader)
             icerik()
         }
     }
@@ -136,6 +146,7 @@ struct YeniNobet: View {
         .tint(Renk.murekkep)
         .padding(.vertical, Olcek.s3)
         .padding(.horizontal, Olcek.s4)
+        .accessibilityHint(Text("Brifinge bu kaynağın girip girmeyeceğini belirler."))
     }
 
     /// Kurulum tutmadığında sade, tek cümlelik açıklama.
@@ -144,6 +155,9 @@ struct YeniNobet: View {
             .font(Yazi.cip())
             .foregroundStyle(Renk.gri)
             .fixedSize(horizontal: false, vertical: true)
+            // Sessizce görünmesin: ekran okuyucu odağı hataya alsın.
+            .accessibilityLabel(Text("Hata: Nöbet kurulamadı. Bir daha dene."))
+            .accessibilityAddTraits(.isSummaryElement)
     }
 
     private var ayrac: some View {

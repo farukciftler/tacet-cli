@@ -19,15 +19,16 @@ struct SohbetTablo: View {
             Grid(alignment: .leading, horizontalSpacing: Olcek.hairline, verticalSpacing: Olcek.hairline) {
                 // Başlık satırı.
                 GridRow {
-                    ForEach(Array(tablo.basliklar.enumerated()), id: \.offset) { _, b in
-                        hucre(b, baslikMi: true)
+                    ForEach(Array(tablo.basliklar.enumerated()), id: \.offset) { i, b in
+                        hucre(b, sutun: b, satirNo: nil, sutunNo: i, baslikMi: true)
                     }
                 }
                 // Veri satırları.
-                ForEach(Array(tablo.satirlar.enumerated()), id: \.offset) { _, satir in
+                ForEach(Array(tablo.satirlar.enumerated()), id: \.offset) { s, satir in
                     GridRow {
-                        ForEach(Array(tablo.basliklar.enumerated()), id: \.offset) { i, _ in
-                            hucre(i < satir.hucreler.count ? satir.hucreler[i] : "", baslikMi: false)
+                        ForEach(Array(tablo.basliklar.enumerated()), id: \.offset) { i, b in
+                            hucre(i < satir.hucreler.count ? satir.hucreler[i] : "",
+                                  sutun: b, satirNo: s + 1, sutunNo: i, baslikMi: false)
                         }
                     }
                 }
@@ -38,6 +39,9 @@ struct SohbetTablo: View {
                 RoundedRectangle(cornerRadius: 10)
                     .stroke(Renk.cizgi, lineWidth: Olcek.hairline)
             )
+            // Ekran okuyucuda tablonun sınırı ve ölçüsü kaybolmasın.
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(Text("Tablo, \(tablo.basliklar.count) sütun, \(tablo.satirlar.count) satır"))
 
             // Excel indirme düğmesi.
             Button {
@@ -58,7 +62,13 @@ struct SohbetTablo: View {
         }
     }
 
-    private func hucre(_ metin: String, baslikMi: Bool) -> some View {
+    /// Hücre görsel olarak yalnızca değerdir; ekran okuyucuda ise sütun başlığı
+    /// ve konum bağlamıyla birlikte okunur — yoksa tablo yapısı tamamen kaybolur.
+    private func hucre(_ metin: String,
+                       sutun: String,
+                       satirNo: Int?,
+                       sutunNo: Int,
+                       baslikMi: Bool) -> some View {
         Text(metin)
             .font(baslikMi ? Yazi.cip().weight(.medium) : Yazi.cip())
             .foregroundStyle(baslikMi ? Renk.murekkep : Renk.gri)
@@ -66,5 +76,20 @@ struct SohbetTablo: View {
             .padding(.vertical, Olcek.s2)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(baslikMi ? Renk.dolgu : Renk.zemin)
+            .accessibilityLabel(hucreEtiketi(metin, sutun: sutun, satirNo: satirNo,
+                                             sutunNo: sutunNo, baslikMi: baslikMi))
+    }
+
+    private func hucreEtiketi(_ metin: String,
+                              sutun: String,
+                              satirNo: Int?,
+                              sutunNo: Int,
+                              baslikMi: Bool) -> Text {
+        let sutunAdi = sutun.isEmpty ? String(localized: "\(sutunNo + 1). sütun") : sutun
+        guard let satirNo else {
+            return Text("Sütun başlığı: \(sutunAdi)")
+        }
+        let deger = metin.isEmpty ? String(localized: "boş") : metin
+        return Text("\(satirNo). satır, \(sutunAdi): \(deger)")
     }
 }

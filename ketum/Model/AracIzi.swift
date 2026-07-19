@@ -16,6 +16,12 @@ enum AracDurumu: Equatable, Codable, Hashable {
     case yazildi            // onay imi — dünyada bir şey değişti
     case izinGerekli        // gri, dokunulabilir — "Takvim izni gerekli"
     case basarisiz(String)  // hata — kısa neden
+    /// Kirli oturumda dışarı veri çıkacak; kullanıcı kararı bekleniyor
+    /// (mcp §3.3). Gri, dokunulabilir — dokunma onay sayfasını açar.
+    case onayBekleniyor
+    /// Kullanıcı "Gönderme" dedi. Gri, üstü çizili DEĞİL, dramatize edilmez;
+    /// ret bir hata değil kısıttır (mcp §2.4/3).
+    case gonderilmedi
 }
 
 /// Bir tool çağrısının akışta bıraktığı iz. Identifiable — çip listelenir.
@@ -56,6 +62,8 @@ struct AracIzi: Identifiable, Codable, Hashable {
         case .okundu, .yazildi: return "sirr: \(metin)"
         case .izinGerekli:    return "\(metin). İzin vermek için dokun."
         case .basarisiz(let n): return "Başarısız: \(n)"
+        case .onayBekleniyor: return "\(metin). Gönderileni görmek için dokun."
+        case .gonderilmedi:   return "\(metin). Gönderilmedi."
         }
     }
 }

@@ -41,6 +41,16 @@ struct Tablo: Equatable {
         return "\(bas)\n\(ilk)\(fazla)"
     }
 
+    /// Modele dönecek markdown — satır sayısı sınırlı (4096 bağlam bütçesi).
+    /// Düz `ozet` yerine bu kullanılır: model metni neredeyse olduğu gibi aktarır,
+    /// `markdownDan` onu ayrıştırır ve sohbette gerçek tablo çizilir.
+    func markdownKirpik(enFazlaSatir: Int) -> String {
+        guard satirlar.count > enFazlaSatir else { return markdown }
+        let kisa = Tablo(basliklar: basliklar, satirlar: Array(satirlar.prefix(enFazlaSatir)))
+        // Not satırı tablo bloğundan sonra gelir; "|" ile başlamadığı için ayrıştırmayı bozmaz.
+        return kisa.markdown + "\n… (+\(satirlar.count - enFazlaSatir) satır daha)"
+    }
+
     /// Metindeki tüm markdown tablolarını (| … | satırları) çıkarır.
     /// Hem belge üretimi hem de sohbet içi tablo gösterimi bunu kullanır.
     static func markdownTablolari(_ metin: String) -> [Tablo] {

@@ -46,13 +46,37 @@ extension KetumAraci {
                                             hamGirdi: hamGirdi, hamCikti: neden, dosyaYolu: nil)
             }
             // Model akışı kesilmesin diye hata metni String olarak döner.
-            return "Araç başarısız: \(neden)"
+            // Modele giden metin İNGİLİZCE ve sabittir: model bunu yanıtına
+            // olduğu gibi yansıtsa bile ne Türkçe sızar ne de ham hata kodu.
+            return "tool_failed: the action could not be completed. Tell the user briefly, in their own language, that this step did not work."
         }
     }
 
+    /// Çipe yazılacak hata metni — kullanıcı okur, o yüzden yerelleştirilmiş ve
+    /// anlaşılır olmalı. Ham `NSError.localizedDescription` ("EKErrorDomain error 1.")
+    /// asla ekrana çıkmaz; tanınan alanlar insan cümlesine çevrilir.
     static func kisaHata(_ error: Error) -> String {
-        let m = (error as NSError).localizedDescription
-        return m.count > 60 ? String(m.prefix(60)) + "…" : m
+        // Kendi araç hatalarımız zaten String Catalog'dan gelen cümlelerdir.
+        if let yerel = error as? LocalizedError,
+           let metin = yerel.errorDescription, !metin.isEmpty {
+            return metin
+        }
+        let ns = error as NSError
+        switch (ns.domain, ns.code) {
+        case (NSCocoaErrorDomain, NSFileWriteOutOfSpaceError):
+            return String(localized: "Cihazda yer kalmadı.")
+        case (NSCocoaErrorDomain, NSFileNoSuchFileError),
+             (NSCocoaErrorDomain, NSFileReadNoSuchFileError):
+            return String(localized: "Dosya bulunamadı.")
+        case (NSCocoaErrorDomain, _), (NSPOSIXErrorDomain, _), (NSOSStatusErrorDomain, _):
+            return String(localized: "Dosya işlemi tamamlanamadı.")
+        case ("EKErrorDomain", _):
+            return String(localized: "Takvim bu işlemi kabul etmedi.")
+        case ("CNErrorDomain", _):
+            return String(localized: "Kişilere şu an ulaşılamadı.")
+        default:
+            return String(localized: "Bu adım tamamlanamadı.")
+        }
     }
 }
 

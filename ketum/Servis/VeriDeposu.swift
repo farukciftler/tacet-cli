@@ -37,8 +37,13 @@ final class VeriDeposu {
     var bosMu: Bool { depo.isEmpty }
 
     /// Yeni sohbete geçişte depoyu boşaltır.
+    ///
+    /// Sayaç KASITLI olarak sıfırlanmaz: monotonik artmaya devam eder. Sıfırlansaydı
+    /// yeni sohbette yine "takvim-1" üretilirdi ve modelin bağlamında (ya da özet
+    /// metninde) kalmış eski bir referans yepyeni bir tabloya çarpardı — kullanıcı
+    /// başka bir sohbetin verisinden belge üretilmiş olurdu. Sessiz ve teşhisi zor
+    /// bir veri karışması; ID'leri ucuza benzersiz tutmak bunu tümden ortadan kaldırır.
     func temizle() {
         depo.removeAll()
-        sayac = 0
     }
 }

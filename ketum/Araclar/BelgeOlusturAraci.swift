@@ -21,15 +21,15 @@ struct BelgeOlusturAraci: KetumAraci {
 
     @Generable
     struct Arguments {
-        @Guide(description: "Dosya biçimi: 'excel', 'pdf', 'word', 'markdown' ya da 'metin'.")
+        @Guide(description: "File format: 'excel', 'pdf', 'word', 'markdown' or 'metin' (plain text). Use these exact values.")
         var bicim: String
-        @Guide(description: "Uzantısız dosya adı, ör. 'temmuz-toplantilari'.")
+        @Guide(description: "File name without extension, e.g. 'july-meetings'.")
         var dosyaAdi: String
-        @Guide(description: "Belge başlığı (isteğe bağlı).")
+        @Guide(description: "Document title (optional).")
         var baslik: String?
-        @Guide(description: "Belge içeriği MARKDOWN olarak. Tablo gerekiyorsa markdown tablosu yaz: | Başlık1 | Başlık2 | satırı, altına | --- | --- |, sonra veri satırları. Excel bu tablodan üretilir.")
+        @Guide(description: "Document body as MARKDOWN. If a table is needed, write a markdown table: a | Header1 | Header2 | row, then | --- | --- |, then the data rows. Excel files are built from that table.")
         var icerik: String?
-        @Guide(description: "Başka bir aracın (ör. takvim) verdiği veri referansı. Verilirse tüm veri depodan çekilir; icerik'i doldurma.")
+        @Guide(description: "Data reference returned by another tool (e.g. the calendar tool). If given, the full data is pulled from the store — leave 'icerik' empty.")
         var kaynakRef: String?
     }
 
@@ -59,14 +59,15 @@ struct BelgeOlusturAraci: KetumAraci {
                                     tablo: tablo,
                                     klasor: BelgeBaglami.ciktiKlasoru())
             await baglam?.ciktiEklendi(url)
-            return AracSonucu(
+            // Cihazda bir dosya oluştu; içeriği kullanıcının verisidir (mcp §5.6).
+            return await kirletEgerBasarili(AracSonucu(
                 cipMetni: Yerel.belgeOlusturuldu(bicim.etiket, url.lastPathComponent),
                 durum: .yazildi,
                 // Modele yalnızca olgu döner; UI yönergesi (önizle/paylaş) yazma — model papağanlar.
                 modeleDonen: "file_created (\(bicim.etiket)): \(url.lastPathComponent)",
                 hamCikti: url.path,
                 dosyaYolu: url.path
-            )
+            ))
         }
     }
 }

@@ -43,23 +43,35 @@ extension UIColor {
 // MARK: - Tipografi
 
 /// Spec §3.2 — iki ses: kullanıcı SF Pro, sirr yanıtı New York serif.
-/// Boyutlar Dynamic Type'a göreli tanımlanır; sabit px yalnızca referans.
+///
+/// Her token bir sistem metin stiline bağlıdır; parantez içindeki punto
+/// yalnızca o stilin `.large` boyuttaki referans değeridir. Sabit punto
+/// (`.system(size:)`) kullanılmaz — Dynamic Type'ta ölçeklenmez ve
+/// erişilebilirlik boyutlarında ekranın yarısı olduğu yerde kalır.
 enum Yazi {
-    /// Kullanıcı metni — SF Pro 15/1.5.
+    /// Kullanıcı metni — SF Pro (callout ≈ 16).
     static func kullanici() -> Font { .system(.callout, design: .default) }
-    /// sirr yanıtı — New York serif 17/1.6.
+    /// sirr yanıtı — New York serif (body ≈ 17).
     static func ketum() -> Font { .system(.body, design: .serif) }
-    /// Marka — New York medium 19.
+    /// Marka — New York medium (title3 ≈ 20).
     static func marka() -> Font { .system(.title3, design: .serif).weight(.medium) }
-    /// Etiket — SF Pro 10, uppercase, tracking. (Tracking view tarafında uygulanır.)
-    static func etiket() -> Font { .system(size: 11, weight: .regular, design: .default) }
-    /// Çip / meta — SF Pro 11.
-    static func cip() -> Font { .system(size: 12, weight: .regular, design: .default) }
+    /// Etiket — uppercase, tracking (caption2 ≈ 11). Tracking view tarafında uygulanır.
+    static func etiket() -> Font { .system(.caption2, design: .default) }
+    /// Çip / meta / tarih / altyazı (caption ≈ 12).
+    static func cip() -> Font { .system(.caption, design: .default) }
+    /// Satır sonundaki chevron gibi küçük süs ikonları (caption ≈ 12).
+    static func ikonKucuk() -> Font { .system(.caption, design: .default) }
+    /// Satır başındaki anlam taşıyan ikonlar (subheadline ≈ 15).
+    static func ikon() -> Font { .system(.subheadline, design: .default) }
 }
 
 // MARK: - Ölçek
 
 /// Spec §3.3 — boşluk, köşe, çizgi.
+///
+/// Boşluklar bilinçli olarak sabittir: hepsini ölçeklemek düzeni dağıtır.
+/// Metnin yanında duran ya da dokunma hedefi olan ölçüler view tarafında
+/// `@ScaledMetric` ile alınır — başlangıç değeri için buradaki token kullanılır.
 enum Olcek {
     static let s1: CGFloat = 4
     static let s2: CGFloat = 8
@@ -73,6 +85,11 @@ enum Olcek {
     static let hairline: CGFloat = 1
     static let girisKose: CGFloat = 24
     static let cipKose: CGFloat = 20
+
+    /// Metin komşuluğu olan ölçüler — view'da `@ScaledMetric` başlangıcı olarak kullanılır.
+    static let nokta: CGFloat = 6        // liste seçim göstergesi çapı
+    static let ikonSutunu: CGFloat = 18  // satır başı ikon sütunu genişliği
+    static let dokunmaHedefi: CGFloat = 44
 
     static let kullaniciBalonGenislik: CGFloat = 0.80 // ekran genişliği oranı
     static let ketumYanitGenislik: CGFloat = 0.88
