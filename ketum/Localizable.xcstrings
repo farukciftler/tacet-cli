@@ -1,7 +1,6 @@
 {
   "sourceLanguage": "tr",
   "strings": {
-    "": {},
     "%@ düzenlendi · %@": {
       "localizations": {
         "de": {
@@ -160,12 +159,6 @@
     },
     "%@ için araç özetleri kaydedilemedi: %@ Araçlar uzun tanımlarıyla kullanılır.": {
       "localizations": {
-        "tr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$@ için araç özetleri kaydedilemedi: %2$@ Araçlar uzun tanımlarıyla kullanılır."
-          }
-        },
         "de": {
           "stringUnit": {
             "state": "translated",
@@ -208,6 +201,12 @@
             "value": "Não foi possível salvar os resumos de ferramentas de %1$@: %2$@ As ferramentas são usadas com suas descrições longas."
           }
         },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ için araç özetleri kaydedilemedi: %2$@ Araçlar uzun tanımlarıyla kullanılır."
+          }
+        },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
@@ -218,12 +217,6 @@
     },
     "%@ için son kullanım kaydedilemedi: %@": {
       "localizations": {
-        "tr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$@ için son kullanım kaydedilemedi: %2$@"
-          }
-        },
         "de": {
           "stringUnit": {
             "state": "translated",
@@ -264,6 +257,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Não foi possível salvar o último uso de %1$@: %2$@"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ için son kullanım kaydedilemedi: %2$@"
           }
         },
         "zh-Hans": {
@@ -640,12 +639,6 @@
     },
     "%@ silinemedi: %@ Bağlantı olduğu gibi duruyor.": {
       "localizations": {
-        "tr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$@ silinemedi: %2$@ Bağlantı olduğu gibi duruyor."
-          }
-        },
         "de": {
           "stringUnit": {
             "state": "translated",
@@ -686,6 +679,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Não foi possível excluir %1$@: %2$@ A conexão continua lá."
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ silinemedi: %2$@ Bağlantı olduğu gibi duruyor."
           }
         },
         "zh-Hans": {
@@ -854,12 +853,6 @@
     },
     "%@ · %@": {
       "localizations": {
-        "tr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$@ · %2$@"
-          }
-        },
         "de": {
           "stringUnit": {
             "state": "translated",
@@ -897,6 +890,12 @@
           }
         },
         "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ · %2$@"
+          }
+        },
+        "tr": {
           "stringUnit": {
             "state": "translated",
             "value": "%1$@ · %2$@"
@@ -912,12 +911,6 @@
     },
     "%@, %@": {
       "localizations": {
-        "tr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$@, %2$@"
-          }
-        },
         "de": {
           "stringUnit": {
             "state": "translated",
@@ -955,6 +948,12 @@
           }
         },
         "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@, %2$@"
+          }
+        },
+        "tr": {
           "stringUnit": {
             "state": "translated",
             "value": "%1$@, %2$@"
@@ -2430,6 +2429,58 @@
         }
       }
     },
+    "Aranan bilgi bulunamadı": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gesuchte Information nicht gefunden"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Requested information not found"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se encontró la información buscada"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Information recherchée introuvable"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "求めていた情報は見つかりませんでした"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "찾는 정보를 찾지 못했습니다"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Informação procurada não encontrada"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未找到所需信息"
+          }
+        }
+      }
+    },
     "Arandı · %lld sonuç": {
       "localizations": {
         "de": {
@@ -3258,6 +3309,58 @@
           "stringUnit": {
             "state": "translated",
             "value": "今天"
+          }
+        }
+      }
+    },
+    "Bağlam": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kontext"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Context"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Contexto"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Contexte"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文脈"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "맥락"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Contexto"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上下文"
           }
         }
       }
@@ -5816,6 +5919,110 @@
         }
       }
     },
+    "Bulundu · %lld değer": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gefunden · %lld Werte"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Found · %lld values"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Encontrado · %lld valores"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trouvé · %lld valeurs"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 件の値が見つかりました"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "발견됨 · %lld개 값"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Encontrado · %lld valores"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "找到 · %lld 个值"
+          }
+        }
+      }
+    },
+    "Bulundu · %lld değer · güncelliği doğrulanmadı": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gefunden · %lld Werte · Aktualität nicht bestätigt"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Found · %lld values · recency unverified"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Encontrado · %lld valores · actualidad no verificada"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trouvé · %lld valeurs · actualité non vérifiée"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 件の値 · 最新性は未確認"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "발견됨 · %lld개 값 · 최신성 미확인"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Encontrado · %lld valores · atualidade não verificada"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "找到 · %lld 个值 · 时效性未验证"
+          }
+        }
+      }
+    },
     "Bunu yapamam; sınırlarımın dışında.": {
       "localizations": {
         "de": {
@@ -6749,6 +6956,58 @@
           "stringUnit": {
             "state": "translated",
             "value": "不支持。%@"
+          }
+        }
+      }
+    },
+    "Değer": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wert"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Value"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Valor"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Valeur"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "値"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "값"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Valor"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "值"
           }
         }
       }
@@ -8674,6 +8933,110 @@
           "stringUnit": {
             "state": "translated",
             "value": "若不发送，sirr 会跳过此步骤并告知未能完成。"
+          }
+        }
+      }
+    },
+    "Gün sayıldı": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tage gezählt"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Days counted"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Días contados"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Jours comptés"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "日数を計算しました"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "일수 계산됨"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dias contados"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已计算天数"
+          }
+        }
+      }
+    },
+    "Gün sayılıyor…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tage werden gezählt…"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Counting days…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Contando días…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Comptage des jours…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "日数を計算中…"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "일수 계산 중…"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Contando dias…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在计算天数…"
           }
         }
       }
@@ -10859,6 +11222,58 @@
           "stringUnit": {
             "state": "translated",
             "value": "存储"
+          }
+        }
+      }
+    },
+    "Kaynak": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quelle"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Source"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fuente"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Source"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "出典"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "출처"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fonte"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "来源"
           }
         }
       }
@@ -13407,6 +13822,58 @@
           "stringUnit": {
             "state": "translated",
             "value": "例行任务"
+          }
+        }
+      }
+    },
+    "Okunuyor · %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wird gelesen · %@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reading · %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Leyendo · %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lecture · %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "読み込み中 · %@"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "읽는 중 · %@"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lendo · %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在读取 · %@"
           }
         }
       }
@@ -16956,6 +17423,58 @@
         }
       }
     },
+    "Tarih anlaşılmadı": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Datum nicht erkannt"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Date not understood"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fecha no reconocida"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Date non reconnue"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "日付を認識できません"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "날짜를 인식하지 못함"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Data não reconhecida"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法识别日期"
+          }
+        }
+      }
+    },
     "Tek cümle, en fazla %lld karakter. Kendi sözlerinle düzeltebilirsin.": {
       "localizations": {
         "de": {
@@ -19608,6 +20127,58 @@
         }
       }
     },
+    "fiyat": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preis"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "price"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "precio"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "prix"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "価格"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "가격"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "preço"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "价格"
+          }
+        }
+      }
+    },
     "gönderildi · oturumda kişisel veri aracı kullanılmamıştı": {
       "localizations": {
         "de": {
@@ -19760,6 +20331,58 @@
           "stringUnit": {
             "state": "translated",
             "value": "无法建立安全连接"
+          }
+        }
+      }
+    },
+    "hava": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wetter"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "weather"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "clima"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "météo"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "天気"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "날씨"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "clima"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "天气"
           }
         }
       }
@@ -20440,6 +21063,58 @@
         }
       }
     },
+    "kur": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kurs"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "rate"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cambio"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "taux"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "為替"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "환율"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "câmbio"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "汇率"
+          }
+        }
+      }
+    },
     "kurulumda hazırlandı": {
       "localizations": {
         "de": {
@@ -20488,6 +21163,58 @@
           "stringUnit": {
             "state": "translated",
             "value": "设置时已准备"
+          }
+        }
+      }
+    },
+    "mesafe": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Entfernung"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "distance"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "distancia"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "distance"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "距離"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "거리"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "distância"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "距离"
           }
         }
       }
@@ -20592,6 +21319,58 @@
           "stringUnit": {
             "state": "translated",
             "value": "未经询问已发送 · 连接设置：始终允许"
+          }
+        }
+      }
+    },
+    "saat": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uhrzeit"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "time"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "hora"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "heure"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "時刻"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "시각"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "hora"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "时间"
           }
         }
       }
@@ -21378,6 +22157,58 @@
         }
       }
     },
+    "skor": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ergebnis"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "score"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "resultado"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "score"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "スコア"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "점수"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "placar"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "比分"
+          }
+        }
+      }
+    },
     "son kullanım %@": {
       "localizations": {
         "de": {
@@ -21634,6 +22465,58 @@
           "stringUnit": {
             "state": "translated",
             "value": "无法访问服务器"
+          }
+        }
+      }
+    },
+    "tarih": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Datum"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "date"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "fecha"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "date"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "日付"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "날짜"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "data"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "日期"
           }
         }
       }

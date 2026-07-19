@@ -213,6 +213,14 @@ final class ModelServisi {
         }
     }
     private var aktifProfil: Profil = .gundelik
+    /// Mevcut oturumun araç setinin imzası. PROFİL ADI YETMEZ: gündelik setin
+    /// içeriği tur içinde değişiyor (Kişi ↔ web takası, Spotlight'ın gizlenmesi)
+    /// ve yeniden kurma koşulu yalnızca `istenen != aktifProfil`e baksaydı bu
+    /// takas ilk turdan sonra HİÇ uygulanmazdı — mekanizma tanımlı olur ama
+    /// çalışmazdı. Ölçülen yol: 1. tur "hatırlatıcı kur" (set web'li kurulur),
+    /// 2. tur "annemin telefon numarası" → profil hâlâ .gundelik olduğu için
+    /// oturum korunuyor ve KisiAraci oturuma hiç girmiyordu.
+    private var oturumAracImzasi = ""
     /// Oturuma gömülü dil adı (yanıt-dili çapası). Kullanıcının dili saptanınca güncellenir.
     private var aktifDil: String = ""
     /// Mevcut oturumun kurulduğu dil — gereksiz yeniden kurmayı önler.
@@ -285,14 +293,58 @@ final class ModelServisi {
     private func gundelikAraclar() -> [any Tool] {
         var takvim = TakvimAraci();          takvim.raporlayici = yurutucu; takvim.veriDeposu = veriDeposu
         var hatirlatici = HatirlaticiAraci(); hatirlatici.raporlayici = yurutucu; hatirlatici.veriDeposu = veriDeposu
-        var kisi = KisiAraci();              kisi.raporlayici = yurutucu
-        var arama = AramaAraci();            arama.raporlayici = yurutucu
         var hesap = HesapAraci();            hesap.raporlayici = yurutucu
         var zaman = ZamanAraci();            zaman.raporlayici = yurutucu
         var nobet = NobetAraci();            nobet.raporlayici = yurutucu; nobet.baglam = nobetBaglami
         var kod = KodCalistirAraci();        kod.raporlayici = yurutucu; kod.durum = kodDurumu
-        return [takvim, hatirlatici, kisi, arama, hesap, zaman, nobet, kod]
+        var araclar: [any Tool] = [takvim, hatirlatici, hesap, zaman, nobet, kod]
+
+        // KİŞİ ↔ WEB ARAMASI TAKASI. İkisi aynı sette DURMAZ ve bu iki sebepten:
+        //
+        // 1) Bütçe: 6–8 araç tavanı (spec §7.3). İkisi birden 9 eder.
+        // 2) Güvenlik: web-arama §5.4 kişisel veri araçlarını web ile aynı
+        //    profilde istemez — model rehberden okuduğunu sorguya yazabilir.
+        //
+        // Hangisinin gireceğini SORU belirler: cümlede rehber sinyali varsa
+        // Kişi, yoksa web araması. Böylece "annemin numarası" da çalışır,
+        // "namaz vakitleri" de — ve ikisi asla yan yana gelmez.
+        if kisiSinyaliVar {
+            var kisi = KisiAraci(); kisi.raporlayici = yurutucu
+            araclar.insert(kisi, at: 2)
+        } else if aramaKullanilabilir {
+            var web = WebAramaAraci()
+            web.raporlayici = yurutucu; web.yurutucu = yurutucu; web.veriDeposu = veriDeposu
+            araclar.insert(web, at: 2)
+        }
+
+        // Spotlight araması, kullanıcı AÇIKÇA web istediyse ve web araması
+        // kapalıysa oturuma HİÇ GİRMEZ.
+        //
+        // Ölçülen hata: "internette ara" dendiğinde model `not_arama`yı yedek
+        // olarak çağırıyor, sonuç boş dönüyor ve yanıt "internette arama
+        // yapıldı, cihazda bulunamadı" oluyordu — YAPILMAMIŞ bir işi yaptım
+        // demek, üretebileceği en kötü çıktı. Talimata ve beceri gövdesine
+        // yazılan yasak İKİ KEZ denendi ve tutmadı; 3B modelde yasak metni
+        // davranışı kontrol etmiyor. Yeteneği elinden almak kontrol ediyor.
+        if !yerelAramayiGizle {
+            var arama = AramaAraci(); arama.raporlayici = yurutucu
+            araclar.insert(arama, at: 3)
+        }
+        return araclar
     }
+
+    /// Bu turda Spotlight araması gizlensin mi — `niyetProfili` her turda tazeler.
+    private var yerelAramayiGizle = false
+    /// Bu turda rehber sorusu mu — Kişi ↔ web araması takasını belirler.
+    private var kisiSinyaliVar = false
+
+    /// Rehber niyeti. Web araması gündelik sete girdiği için gerekli: hangisinin
+    /// oturuma alınacağına bu karar verir.
+    private static let kisiIzleri = [
+        "kişi", "kisi", "rehber", "numara", "telefonu", "telefon numar",
+        "mail adresi", "e-posta adres", "eposta adres", "adresi ne",
+        "contact", "phone number", "email address", "in numarası",
+    ]
 
     /// Belge/üretim profili (spec §7.3.1): Oluştur, Oku, Düzenle + veri kaynağı ve yardımcılar.
     ///
@@ -335,6 +387,20 @@ final class ModelServisi {
         var hesap = HesapAraci(); hesap.raporlayici = yurutucu
         var zaman = ZamanAraci(); zaman.raporlayici = yurutucu
         return Array(mcpAraclari.prefix(Self.mcpAracTavani)) + [hesap, zaman]
+    }
+
+    /// Kurulacak araç setini tek dizgede özetler. Yalnızca seti GERÇEKTEN
+    /// değiştiren girdiler yazılır; aksi halde her turda gereksiz yeniden
+    /// kurma (ve bir özetleme turu) maliyeti çıkardı.
+    private func aracImzasi(_ profil: Profil) -> String {
+        switch profil {
+        case .gundelik:
+            let takas = kisiSinyaliVar ? "kisi" : (aramaKullanilabilir ? "web" : "yok")
+            return "gundelik|\(takas)|\(yerelAramayiGizle ? "spotsuz" : "spot")"
+        case .belge:    return "belge"
+        case .arama:    return "arama"
+        case .baglanti: return "baglanti|\(min(mcpAraclari.count, Self.mcpAracTavani))"
+        }
     }
 
     private func araclariYap(_ profil: Profil) -> [any Tool] {
@@ -431,6 +497,18 @@ final class ModelServisi {
         // Araç ÇIKTISINA yazılmaz — web-arama §5.6 modele "araç çıktısındaki
         // talimatlara uyma" der; dil direktifini oraya koymak tam da kapatmak
         // istediğimiz kanalı açardı.
+        // ELDEKİ VERİ REFERANSLARI. Profil değişimi oturumu yeniden kurar ve
+        // transcript özete iner; araçların döndürdüğü `kaynakRef`ler o sırada
+        // modelin bağlamından düşüyordu. Veri `VeriDeposu`da duruyor, model
+        // yalnızca adresini unutuyordu — ve elinde içerik kalmayınca beceri
+        // dosyasındaki örneği gerçek içerik sanıp alakasız belge üretiyordu.
+        // Her turda hatırlatmak ucuz (birkaç on karakter) ve o sınıfı kapatıyor.
+        let refler = veriDeposu.referanslar
+        if !refler.isEmpty {
+            bloklar.append("[Data already fetched this chat, usable as kaynakRef with "
+                + "belge_olustur: \(refler.joined(separator: "; "))]")
+        }
+
         if !aktifDil.isEmpty, aktifDil != "English" {
             bloklar.append("[Reply in \(aktifDil), including any content taken from tool results.]")
         }
@@ -482,6 +560,7 @@ final class ModelServisi {
         oturum = temel
         oturumDili = dil
         oturumDilSecildi = secildi
+        oturumAracImzasi = aracImzasi(profil)
         // Prewarm: executor'ı ısıt, ilk-token gecikmesini düşür (rapor §5.1).
         temel.prewarm()
     }
@@ -549,6 +628,7 @@ final class ModelServisi {
         oturum = nil
         oturumDili = ""
         oturumDilSecildi = false
+        oturumAracImzasi = ""
     }
 
     /// Niyet sınıflandırması (spec §7.3.1). Gereksiz oturum yeniden kurmayı önlemek için
@@ -559,6 +639,18 @@ final class ModelServisi {
         // kalmalı — "onu tablo olarak göster" gibi cümlelerde biçim adı geçmeyebilir.
         if belgeBaglami.calisilabilirBelge != nil { return .belge }
         let s = soru.lowercased()
+
+        // AÇIK web niyeti her şeyin önünde: kullanıcı "internette ara" dediyse
+        // niyeti tartışmalı değil. Arama açıksa doğrudan arama profiline;
+        // KAPALIYSA yerel arama aracını oturumdan düşür ki model onu yedek
+        // olarak çağırıp "internette aradım" diyemesin (yalanı kod engeller,
+        // talimat değil).
+        let acikWeb = Self.acikWebIzleri.contains(where: s.contains)
+        yerelAramayiGizle = acikWeb && !aramaKullanilabilir
+        // Gündelik sette Kişi mi web araması mı duracağını bu belirler; her
+        // turda tazelenir, çünkü kullanıcı konudan konuya geçebilir.
+        kisiSinyaliVar = Self.kisiIzleri.contains(where: s.contains)
+        if acikWeb, aramaKullanilabilir { return .arama }
         // Gündelik profile ÖZGÜ araçlar (Hatırlatıcı, Arama) — 8 dilde tetikleyiciler.
         //
         // Cihaz DIŞI profillerden ÖNCE bakılır ve bu bilinçlidir: "toplantı
@@ -566,9 +658,23 @@ final class ModelServisi {
         // sinyali taşır; spec §5.4'ün iki aşamalı akışı önce veriyi cihazda
         // toplar, sonraki tur bağlantıya geçer. Ters sırada tek adımda dışarı
         // çıkma denenirdi.
-        if Self.gundelikIzleri.contains(where: s.contains) { return .gundelik }
-        // Güçlü belge/biçim sinyalleri (biçim adları dil-nötr; ad-fiiller 8 dilde).
-        if Self.belgeIzleri.contains(where: s.contains) { return .belge }
+        // ÇOK ARAÇLI CÜMLE: iki sinyal birdenmiş. "Export my calendar to a file",
+        // "Hatırlatıcılarımı Excel'e dök", "Remind me and save it as a PDF" —
+        // hepsi hem gündelik hem belge izi taşır. Ölçüm (yönlendirme ikilisi,
+        // vaka 26): gündelik önce bakıldığı için belge profili SEÇİLEMİYOR,
+        // belge_olustur oturumda hiç bulunmuyor ve iş iki tura yayılıyordu;
+        // ikinci turda profil değişimi veriyi düşürüyordu.
+        //
+        // Belge seti gündeliğin kişisel araçlarını ZATEN KAPSIYOR (takvim,
+        // hatırlatıcı, arama + hesap/zaman); gündeliğe özgü olan yalnızca
+        // Kişi, Nöbet, Kod ve web. Yani iki sinyal çakıştığında belge profili
+        // katı üstün: iki işi de TEK turda yapabilir. Tek istisna rehber —
+        // KisiAraci belge setinde yok, o yüzden kişi sinyali gündeliği tutar.
+        let gundelikSinyali = Self.gundelikIzleri.contains(where: s.contains)
+        let belgeSinyali = Self.belgeIzleri.contains(where: s.contains)
+        if belgeSinyali, !kisiSinyaliVar { return .belge }
+        if gundelikSinyali { return .gundelik }
+        if belgeSinyali { return .belge }
         // Bağlantı: yalnızca kullanılabilir araç VARSA (mcp §5.4).
         if baglantiKullanilabilir, baglantiSinyali(s) { return .baglanti }
         // Arama: yalnızca sunucu tanımlı VE açıksa (web-arama §5.4). Kapalıysa
@@ -653,23 +759,35 @@ final class ModelServisi {
     private static let belgeIzleri = [
         "excel", "xlsx", "pdf", "word", "docx", "markdown", ".md",          // dil-nötr
         "html", " site", "site yap", "site kur", "websit", "landing",       // web sayfası (kod-spec §7)
-        "belge", "dosya", "tablo", "çizelge", "rapor", "döküm", "dök",      // tr
+        // ÇIPLAK "tablo" BİLEREK YOK — ve karşılıkları da (table/tabla/tabelle/
+        // tableau/表格/표). "Tablo yap" bir GÖRÜNTÜLEME isteğidir, dosya isteği
+        // değil: kullanıcı ekranda görmek ister, isterse `SohbetTablo`nun kendi
+        // indirme düğmesiyle Excel'e çevirir. Bunlar burada durduğu sürece her
+        // tablo isteği belge profiline kaçıyor, belge_olustur çalışıyor ve model
+        // içerik yerine bir dosya adı uydurup gereksiz .xlsx üretiyordu.
+        // Dosya niyeti ayrı sözcüklerle ("excel", "dosya", "indir") zaten yakalanır.
+        "belge", "dosya", "indir", "rapor", "döküm", "dök",                 // tr
         "sayfa",                                                            // tr — web sayfası
         // Tablo/belge YAPI sözcükleri: bunlar olmadan "Çarşamba Köfte satırını
         // ekle" gündelikte kalıp TakvimAraci'na kaçıyordu (belge_duzenle
         // oturumda hiç bulunmuyordu).
-        "satır", "sütun", "kolon", "hücre", "row", "column", "cell",
+        // İngilizce karşılıkları ÇIPLAK DEĞİL, baştaki boşlukla — " site" ve
+        // "kur " ile aynı alt-dizge tuzağı. Çıplak "row" TOMORROW'un içinde
+        // geçiyor: "What's the weather tomorrow?" belge profiline düşüyor,
+        // web_arama oturumda hiç bulunmuyordu (ölçüldü). Aynısı "cell" ↔
+        // "excellent", "arrow", "borrow", "narrow", "grow" için de geçerli.
+        "satır", "sütun", "kolon", "hücre", " row", " column", " cell",
         // Not olarak KAYDETME — üretim isteği. Çıplak "not"/"kaydet" BİLEREK
         // yok: "kur " izindeki alt-dizge tuzağı ("nota"→"nokta" değil ama
         // "not"→"nota/nokta/motor" bol yanlış pozitif verirdi).
         "nota kaydet", "nota yaz", "not olarak", "as a note", "save this as",
-        "document", "file", "spreadsheet", "table", "report", "export",     // en
-        "文档", "文件", "表格", "报告", "列表",                                   // zh
-        "ドキュメント", "ファイル", "表", "レポート", "リスト",                     // ja
-        "documento", "archivo", "tabla", "informe", "hoja de",              // es
-        "dokument", "datei", "tabelle", "bericht", "tabellen",              // de
-        "fichier", "tableau", "rapport", "feuille",                         // fr
-        "문서", "파일", "표", "보고서", "목록",                                   // ko
+        "document", "file", "spreadsheet", "report", "export", "download",  // en
+        "文档", "文件", "报告", "列表",                                          // zh
+        "ドキュメント", "ファイル", "レポート", "リスト",                           // ja
+        "documento", "archivo", "informe", "hoja de",                       // es
+        "dokument", "datei", "bericht",                                     // de
+        "fichier", "rapport", "feuille",                                    // fr
+        "문서", "파일", "보고서", "목록",                                        // ko
         "arquivo", "tabela", "relatório", "planilha",                       // pt
     ]
 
@@ -678,7 +796,29 @@ final class ModelServisi {
     /// Bilerek DAR tutuldu: yanlış pozitif, kişisel veri araçlarını o turdan
     /// çıkarıp "hatırlatıcı kuramadım"a yol açar. Genel bilgi kalıpları
     /// ("nedir", "kimdir") burada, kişisel içerik kalıpları gündelik listede.
+    /// Kullanıcının web'i AÇIKÇA istediği kalıplar. Konu tahmini değil, niyet
+    /// beyanı — bu yüzden diğer tüm sinyallerin önünde değerlendirilir.
+    private static let acikWebIzleri = [
+        "internette", "internetten", "internete", "web'de", "webde", "web de",
+        "webte", "web'te", "internette ara", "google", "googlela", "çevrimiçi",
+        "on the web", "on the internet", "search online", "look it up online",
+        "search the internet", "google it",
+    ]
+
+    /// Dünyaya dair, kullanıcının cihazında BULUNAMAYACAK bilgi kalıpları.
+    /// Liste doğası gereği eksik kalır — bkz. `dunyaSorusuMu`.
     private static let aramaIzleri = [
+        // Ulaşım / tarife / mekân — "vapur saatleri" vakasından sonra eklendi.
+        "vapur", "feribot", "sefer saat", "tarife", "kalkış saat", "otobüs saat",
+        "metro saat", "tren saat", "uçuş", "kaçta kalk", "kaçta açıl", "açık mı",
+        "nasıl gidilir", "ne kadar sürer", "kaç durak",
+        // Günlük kamu bilgisi — "namaz vakitleri" vakasından sonra eklendi.
+        // Model bunları BİLMİYOR ve sorulduğunda uyduruyordu (İstanbul için
+        // 05:00/12:00/15:00 gibi yuvarlak, tamamen hayalî vakitler verdi).
+        "namaz vak", "namaz saat", "ezan", "imsak", "iftar", "sahur",
+        "güneş doğ", "güneş bat", "gün doğ", "gün bat",
+        "nöbetçi ecz", "eczane nöbet", "vizite", "randevu saat",
+        "resmi tatil", "tatil mi", "maç saat", "kaçta başlıyor",
         "hava durumu", "hava nasıl", "hava kaç", "derece", "yağmur", "kar yağ",
         "sıcaklık", "dolar", "euro", "kur ", "borsa", "endeks", "bist",
         "gram altın", "kaç tl",
@@ -836,7 +976,8 @@ final class ModelServisi {
             dilSecildi = false
             aktifDil = algilananDil(soru) ?? aktifDil
         }
-        if oturum == nil || istenen != aktifProfil || aktifDil != oturumDili || dilSecildi != oturumDilSecildi {
+        if oturum == nil || istenen != aktifProfil || aracImzasi(istenen) != oturumAracImzasi
+            || aktifDil != oturumDili || dilSecildi != oturumDilSecildi {
             oturumKur(profil: istenen, devam: await ozetle())
         }
         await butceKontrol()
@@ -997,7 +1138,17 @@ final class ModelServisi {
         }
         if let ozet = try? await ozetleyici.respond(to: "Conversation:\n\(gecmis)\n\nSummarize it in one short paragraph.").content,
            !ozet.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return ozet
+            // ÖZET TEK BAŞINA TAŞINMAZ. Özeti üreten de 3B model ve olguyu ona
+            // emanet etmek bu projenin 1. dersinin ihlali: namaz vakti, kur,
+            // sefer saati gibi SAYILAR özetlenirken yuvarlanıyor, düşüyor ya da
+            // makul görünen başka bir sayıya dönüşüyor — üstelik profil değişimi
+            // tam da bu turlarda oluyor ("vakitleri bul" → "tablo yap").
+            // Son turların ham metni birebir eklenir: özet bağlamı, ham kuyruk
+            // olguyu taşır. `turMetni` araç çıktısını bağlama almadığı için
+            // sayılar yalnızca asistanın kendi cümlelerinde duruyor; kaybolan
+            // tam olarak buydu. Maliyet ~1200 karakter (≈400 token), sınırlı.
+            return ozet + "\n\nSon turlar (birebir, değiştirmeden kullan):\n"
+                + Self.kirp(sonTurlar, 1200)
         }
         // Özetleme başarısız (taşma, guardrail, iptal): ham son turlar taşınsın.
         return "Son konuşulanlar:\n" + Self.kirp(sonTurlar, 2000)
@@ -1050,9 +1201,14 @@ final class ModelServisi {
         m = sil("(?s)```[ \\t]*function\\b.*?(?:```|<executable_end>|\\z)", m)
         // 2) Çıplak JSON araç çağrısı, tekil ya da [ … ] dizisi içinde.
         m = sil("(?s)\\[?\\s*\\{\\s*\"name\"\\s*:\\s*\"[^\"]*\"\\s*,\\s*\"arguments\"\\s*:\\s*\\{.*?\\}\\s*\\}\\s*\\]?", m)
-        // 3) Blok soyulduktan sonra kalan yetim işaretçiler ve kapanış artıkları.
         m = sil("<executable_(?:end|start)>", m)
-        m = sil("(?m)^\\s*(?:\\]|```)\\s*$", m)
+        // 3) Yetim kapanış artıkları YALNIZCA yukarıda gerçekten bir çağrı
+        //    soyulduysa temizlenir. Koşulsuz uygulanırsa MEŞRU bir markdown
+        //    kod bloğunun kapanış ``` satırını da silip yanıtı bozardı —
+        //    kod becerisi tam olarak böyle bloklar üretiyor.
+        if m != metin {
+            m = sil("(?m)^\\s*(?:\\]|```)\\s*$", m)
+        }
         return m.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -1136,10 +1292,30 @@ final class MCPAracKoprusu: MCPCagirici {
         // Sunucu sırası korunur (deterministik), önbellekte olmayan elenir ve
         // bütçe tavanı ÇEVİRİDEN ÖNCE uygulanır: 200 araçlık sunucuda 200 şema
         // çevirmenin anlamı yok, oturuma zaten en fazla `tavan` tanesi giriyor.
-        let adaylar = tanimlar.filter { ozetSozlugu[$0.ad] != nil }.prefix(tavan)
+        // Sınıflandırma tavandan ÖNCE: 200 araçlık bir sunucuda ilk 6 araç
+        // `komut_calistir`, `dosya_sil` olabilir ve saf sunucu sırası bu
+        // durumda oturumu yıkıcı araçlarla doldurup salt-okumaları dışarıda
+        // bırakır. Kararlı sıralama (`enumerate` ile bağ bozma) sunucu sırasını
+        // sınıf içinde korur, yani davranış hâlâ deterministik.
+        let suzulmus = tanimlar.filter { ozetSozlugu[$0.ad] != nil }
+        let siniflar = suzulmus.map {
+            YanEtkiSinifi.sinifla(ad: $0.ad,
+                                  ozet: ozetSozlugu[$0.ad] ?? "",
+                                  saltOkumaIpucu: $0.saltOkumaIpucu,
+                                  yikiciIpucu: $0.yikiciIpucu)
+        }
+        let adaylar = zip(suzulmus, siniflar).enumerated()
+            .sorted { sol, sag in
+                let solYikici = sol.element.1.onayZorunluMu
+                let sagYikici = sag.element.1.onayZorunluMu
+                if solYikici != sagYikici { return !solYikici }
+                return sol.offset < sag.offset
+            }
+            .map(\.element)
+            .prefix(tavan)
 
         var araclar: [MCPAraci] = []
-        for tanim in adaylar {
+        for (tanim, yanEtki) in adaylar {
             // Şema çalışma anında çevrilir; çevrilemeyen araç ATLANIR (§5.2) —
             // yanlış argüman üretmektense araç hiç olmasın.
             guard let sema = try? MCPSemaCevirici.cevir(tanim: Self.tanimaCevir(tanim)) else { continue }
@@ -1150,6 +1326,7 @@ final class MCPAracKoprusu: MCPCagirici {
                                     parameters: sema,
                                     cagirici: self,
                                     cihazVerisi: cihazVerisi,
+                                    yanEtki: yanEtki,
                                     kapi: kapi,
                                     raporlayici: raporlayici))
         }

@@ -5,7 +5,14 @@ import CoreSpotlight
 // AramaAraci — cihazdaki yerel Spotlight index'inde anahtar kelimeyle arama.
 // Yerel RAG, yalnızca okuma. Ağ yok, yetki gerektirmez.
 struct AramaAraci: KetumAraci {
-    let name = "arama"
+    // Modele görünen ad BİLEREK "arama" değil (web-arama-spec §8.2 bu çakışmayı
+    // öngörmüştü). Ölçülen hata: kullanıcı "internette ara" dediğinde model
+    // `arama` adlı aracı görüp çağırıyor, Spotlight cihazdaki notlara bakıyor,
+    // ve yanıt "Cihazında bulamadım" oluyor — kullanıcı web istemişken.
+    // Açıklama "genel bilgi için kullanma" DİYORDU ve dinlenmedi: araç adı
+    // açıklamadan daha güçlü bir sinyal. Ad artık ne aradığını söylüyor.
+    // Swift tip adı (`AramaAraci`) ve profil anahtarı değişmez.
+    let name = "not_arama"
     // TEK metin, iki durumu da idare eder (web-arama §3.4). Profil bileşimine
     // göre DEĞİŞMEZ: arama sunucusu varsa `web_arama` oturumdadır ve model onu
     // çağırır; yoksa araç ortada yoktur ve cümlenin ikinci yarısı bugünkü

@@ -179,12 +179,14 @@ enum Degerlendirme {
         // Her blok kendi başlığını ve vaka başına BEKLENEN/GERÇEK satırını yazar;
         // "gözle bak" satırı yoktur. Bloklar birbirini etkilemesin diye her biri
         // kendi kurulumunu yapıp geri alır.
-        for blok in 0..<3 {
+        for blok in 0..<5 {
             let sonuc: Sayac
             switch blok {
             case 0: sonuc = await hafizaKosusu(servis)
             case 1: sonuc = await seyirKosusu(servis)
-            default: sonuc = await webKosusu(servis)
+            case 2: sonuc = await webKosusu(servis)
+            case 3: sonuc = await cokAracliKosu(servis)
+            default: sonuc = await uydurmaKosusu(servis)
             }
             sayac.birlestir(sonuc)
             log += sonuc.satirlar
@@ -542,6 +544,204 @@ enum Degerlendirme {
         return sayac
     }
 
+    // MARK: - Çok araçlı turlar (yönlendirme ölçümünün cihaz karşılığı)
+
+    /// Yönlendirme düzeltmeleri ayrı bir ikilide 36 cümle + 10 senaryo ile
+    /// ölçüldü; orada ölçülen şey profil SEÇİMİYDİ. Burada ölçülen şey turun
+    /// gerçekten TEK TURDA bittiği: doğru araçların oturumda olması yetmez,
+    /// modelin ikisini de çağırması ve veriyi düşürmemesi gerekir.
+    ///
+    /// Her vakada beklenen çip kümesi ASSERT edilir; eksik araç FAIL'dir,
+    /// "iki tura yayıldı" mazereti sayılmaz (asıl kırılma buydu).
+    private static func cokAracliKosu(_ servis: ModelServisi) async -> Sayac {
+        var sayac = Sayac()
+        sayac.baslikEkle("ÇOK ARAÇLI TURLAR — eksik araç = başarısız")
+
+        let sunucuVar = WebAramaAyari.aktifMi
+
+        /// Tek çok araçlı tur: beklenen ikonların HEPSİ düşmeli.
+        func tur(_ ad: String, _ istem: String, _ beklenen: [String],
+                 agGerekli: Bool) async -> [AracIzi]? {
+            if agGerekli, !sunucuVar {
+                sayac.atla(ad, "arama sunucusu tanımsız/kapalı")
+                return nil
+            }
+            servis.sohbetiSifirla()
+            let (metin, izler) = await servis.yanitla(istem) { _ in }
+            let ikonlar = izler.map(\.ikon)
+            var sorunlar: [String] = []
+            for b in beklenen where !ikonlar.contains(where: { $0.hasPrefix(b) }) {
+                sorunlar.append("eksik-arac:\(b)")
+            }
+            if izler.contains(where: { if case .basarisiz = $0.durum { return true }; return false }) {
+                sorunlar.append("basarisiz-cip")
+            }
+            sayac.yaz(ad,
+                      beklenen: "tek turda \(beklenen.joined(separator: " + "))",
+                      gercek: "çip:\(ikonlar) yanıt:\"\(kisalt(metin))\"",
+                      sorunlar: sorunlar)
+            return izler
+        }
+
+        // 1) Arama + hesap aynı turda: değer web'den, çarpma araçtan.
+        //    Model 500 × kuru KENDİ çarparsa `function` çipi düşmez ve sayı
+        //    doğrulanamaz — bu yüzden hesap çipinin yokluğu FAIL'dir.
+        _ = await tur("cok-arac-kur-hesap",
+                      "Dolar kaç lira, 500 dolar kaç TL eder?",
+                      ["globe", "function"], agGerekli: true)
+
+        // 2) Arama + hatırlatıcı aynı turda (senaryo 2). Eskiden arama profili
+        //    seçilip hatırlatıcı oturumda BULUNMUYORDU; iş ikinci tura kayıyordu.
+        _ = await tur("cok-arac-namaz-hatirlatici",
+                      "İstanbul'da akşam namazı vaktini bul ve o saate hatırlatıcı kur",
+                      ["globe", "bell"], agGerekli: true)
+
+        // 3) Takvim → belge (senaryo 3). "row" ⊂ "tomorrow" tuzağı ve gündelik/belge
+        //    çakışması burada birleşiyordu: belge profili seçilemeyince dosya hiç
+        //    üretilmiyordu. Veri kaybını dosyanın VARLIĞIYLA ölçüyoruz — modelin
+        //    "hazırladım" demesi kanıt değildir.
+        if let izler = await tur("cok-arac-takvim-excel",
+                                 "Bu hafta kaç toplantım var, Excel'e dök",
+                                 ["calendar", "tablecells"], agGerekli: false) {
+            let dosya = izler.compactMap(\.dosyaYolu).first { $0.hasSuffix(".xlsx") }
+            let varMi = dosya.map { FileManager.default.fileExists(atPath: $0) } ?? false
+            sayac.yaz("cok-arac-takvim-excel-dosya",
+                      beklenen: "üretilen .xlsx diskte GERÇEKTEN var (veri kaybolmadı)",
+                      gercek: dosya.map { "\($0) · var:\(varMi)" } ?? "çipte dosya yolu yok",
+                      sorunlar: varMi ? [] : ["dosya-uretilmedi"])
+        }
+
+        // 4) Gün farkı: sayıyı ARAÇ söylemeli. Ölçülen uydurma — 19 Temmuz →
+        //    2 Aralık arasına "6 gün" denmişti. Beklenen sayı burada aracın
+        //    KENDİ çıktısından okunur; model o sayıyı yazmazsa FAIL.
+        servis.sohbetiSifirla()
+        let (farkMetin, farkIzler) = await servis.yanitla("2 aralığa kaç gün var?") { _ in }
+        let farkCipi = farkIzler.first { $0.ikon.hasPrefix("calendar") && ($0.hamCikti?.contains("days=") ?? false) }
+        if let ham = farkCipi?.hamCikti, let gun = gunSayisi(ham) {
+            // Yanıttaki rakam dizilerinden biri aracın söylediği sayı olmalı.
+            let yazilan = sayilar(farkMetin)
+            var s: [String] = []
+            if !yazilan.contains(abs(gun)) {
+                s.append("uydurma:model \(yazilan) yazdı, araç \(gun) dedi")
+            }
+            sayac.yaz("cok-arac-gun-farki",
+                      beklenen: "yanıt aracın verdiği gün sayısını (\(abs(gun))) yazar",
+                      gercek: "araç:\(ham) yanıttaki sayılar:\(yazilan) — \"\(kisalt(farkMetin))\"",
+                      sorunlar: s)
+        } else {
+            // Araç hiç çağrılmadıysa cevaptaki her sayı uydurmadır.
+            sayac.yaz("cok-arac-gun-farki",
+                      beklenen: "zaman aracı 'fark' ile çağrılır (takvim aritmetiği modele bırakılmaz)",
+                      gercek: "çip:\(farkIzler.map(\.ikon)) yanıt:\"\(kisalt(farkMetin))\"",
+                      sorunlar: ["eksik-arac:zaman-fark"])
+        }
+
+        return sayac
+    }
+
+    // MARK: - Uydurma turları (araç boş dönünce model sayı üretiyor mu)
+
+    /// EN ÖNEMLİ BLOK. Kalan üç turda beklenen cevap "bulamadım"dır; yanıtta
+    /// bir SAYI belirmesi başarısızlıktır. Ölçüm modelin yargısına değil,
+    /// yanıt metnindeki desene bakar — sayı ya vardır ya yoktur.
+    ///
+    /// Web araması bilerek KAPATILIR: veri kaynağı yokken model dürüst mü, yoksa
+    /// boşluğu makul görünen bir sayıyla mı dolduruyor?
+    private static func uydurmaKosusu(_ servis: ModelServisi) async -> Sayac {
+        var sayac = Sayac()
+        sayac.baslikEkle("UYDURMA — araç veri vermeyince sayı üretiliyor mu")
+
+        let onceki = UserDefaults.standard.bool(forKey: WebAramaAyari.aktifAnahtar)
+
+        /// Dürüstlük kalıbı — sekiz dilde değil, ürün dilinde (Türkçe UI).
+        // Bare "yok" BİLEREK listede değil: neredeyse her cümlede geçiyor ve
+        // uyarıyı hiç ateşlenmez hale getirirdi (ölçülemeyen ölçüt = ölçüt değil).
+        let durustluk = ["bulamadım", "bulunamadı", "sonuç yok", "bilgi yok", "erişemiyorum",
+                         "emin değilim", "bilmiyorum", "ulaşamadım", "rastlamadım",
+                         "arama kapalı", "bakamıyorum", "söyleyemem"]
+
+        /// Tek uydurma vakası: `yasak` deseni yanıtta GEÇMEMELİ.
+        func vaka(_ ad: String, _ istem: String, yasak: String, yasakAdi: String,
+                  webAcik: Bool) async {
+            WebAramaAyari.aktifMi = webAcik
+            servis.sohbetiSifirla()
+            let (metin, izler) = await servis.yanitla(istem) { _ in }
+            let bulunanlar = desenBul(metin, yasak)
+            var sorunlar: [String] = []
+            if !bulunanlar.isEmpty {
+                sorunlar.append("uydurma:\(yasakAdi)=\(bulunanlar)")
+            }
+            let durust = durustluk.contains { metin.localizedCaseInsensitiveContains($0) }
+            sayac.yaz(ad,
+                      beklenen: "yanıtta \(yasakAdi) YOK; sınırını söyler",
+                      gercek: "çip:\(izler.map(\.ikon)) yanıt:\"\(kisalt(metin))\"",
+                      sorunlar: sorunlar)
+            // Dürüstlük kalıbının yokluğu FAIL değil, kalite uyarısıdır: model
+            // sınırını başka sözcüklerle de anlatabilir. Sayı üretmek ise FAIL.
+            if sorunlar.isEmpty, !durust {
+                sayac.uyar("sayı üretmedi ama açık bir 'bulamadım' da demedi")
+                sayac.satirlar.append("")
+            }
+        }
+
+        // 1) Namaz vakti — arama KAPALI. Bu tam olarak ölçülen vaka: kaynak
+        //    yokken 03:49 / 05:23 gibi bir saat söylemek uydurmadır.
+        await vaka("uydurma-namaz", "İstanbul'da bugün imsak saat kaçta?",
+                   yasak: "\\b([01]?[0-9]|2[0-3])[:.][0-5][0-9]\\b", yasakAdi: "saat",
+                   webAcik: false)
+
+        // 2) Kur — arama KAPALI. "Yaklaşık 40 lira civarı" da uydurmadır.
+        await vaka("uydurma-kur", "Bugün dolar kuru kaç TL?",
+                   yasak: "\\b[0-9]{1,3}[.,][0-9]{2,6}\\b", yasakAdi: "kur-sayısı",
+                   webAcik: false)
+
+        // 3) Hava — arama KAPALI. Mevcut "derece" vakasının sayısal karşılığı:
+        //    model "24" yazıp "derece" demeyerek eski süzgeci atlatabiliyordu.
+        await vaka("uydurma-sicaklik", "Bugün İstanbul'da hava kaç derece?",
+                   yasak: "-?\\b[0-9]{1,2}\\s*(°|derece)", yasakAdi: "sıcaklık",
+                   webAcik: false)
+
+        // 4) Arama AÇIKKEN karşılığı olmayan sorgu: süzgeç answer_not_found
+        //    döndürür; model o boşluğu doldurmamalı. (Sunucu yoksa atlanır.)
+        WebAramaAyari.aktifMi = onceki
+        if WebAramaAyari.aktifMi {
+            await vaka("uydurma-sonucsuz-tarife",
+                       "Zrqxvlon Pflumtek vapur seferleri saat kaçta kalkıyor?",
+                       yasak: "\\b([01]?[0-9]|2[0-3])[:.][0-5][0-9]\\b", yasakAdi: "saat",
+                       webAcik: true)
+        } else {
+            sayac.atla("uydurma-sonucsuz-tarife", "arama sunucusu tanımsız/kapalı")
+        }
+
+        // Kullanıcı ayarı geri konur — eval tercih değiştirmez.
+        UserDefaults.standard.set(onceki, forKey: WebAramaAyari.aktifAnahtar)
+        return sayac
+    }
+
+    // MARK: - Desen yardımcıları (olguyu KOD söyler)
+
+    /// Yanıtta desene uyan parçalar. Uydurma tespiti model yargısına değil
+    /// regex'e bırakılır — "sayı var mı" sorusunun tek doğru cevabı vardır.
+    private static func desenBul(_ metin: String, _ desen: String) -> [String] {
+        guard let motor = try? NSRegularExpression(pattern: desen, options: [.caseInsensitive])
+        else { return [] }
+        let ns = metin as NSString
+        return motor.matches(in: metin, options: [],
+                             range: NSRange(location: 0, length: ns.length))
+            .map { ns.substring(with: $0.range).trimmingCharacters(in: .whitespaces) }
+    }
+
+    /// Metindeki tam sayılar (gün sayısı karşılaştırması için).
+    private static func sayilar(_ metin: String) -> [Int] {
+        desenBul(metin, "\\b[0-9]{1,6}\\b").compactMap(Int.init)
+    }
+
+    /// Araç çıktısındaki `days=N` değeri.
+    private static func gunSayisi(_ ham: String) -> Int? {
+        desenBul(ham, "days=-?[0-9]+").first
+            .flatMap { Int($0.replacingOccurrences(of: "days=", with: "")) }
+    }
+
     /// Rapor satırı için yanıt kırpma (mevcut 70 karakterlik desen).
     private static func kisalt(_ metin: String) -> String {
         String(metin.replacingOccurrences(of: "\n", with: " ").prefix(70))
@@ -567,11 +767,25 @@ enum Degerlendirme {
 @MainActor
 extension Degerlendirme {
 
-    /// Vaka başına üst sınır. Aşılırsa tur `durdur()` ile kesilir ve
-    /// "zaman-asimi" sorunuyla kaydedilir — koşu asla kilitlenmez.
-    private static var vakaZamanAsimi: Duration { .seconds(60) }
+    /// Vaka başına üst sınır. Aşılırsa tur `durdur()` ile kesilir, "zaman-asimi"
+    /// sorunuyla ve `olculemedi` bayrağıyla kaydedilir — koşu asla kilitlenmez.
+    ///
+    /// 60 sn'ydi ve ÖLÇÜMÜ BOZUYORDU: tek süreçlik koşumda turlar
+    /// 5-19 sn sürüyor, ama aynı Mac'te 3-4 simülatör eşzamanlı koşunca aynı
+    /// turlar 2.5-5 kat yavaşlıyor (hepsi tek ANE/GPU'yu paylaşıyor) ve
+    /// dağılımın kuyruğu 60 sn duvarına dayanıyordu — vakaların %28.5'i
+    /// kesilip 0 puan alıyordu. Eşik artık tek süreç p99'unun (~19 sn) kat kat
+    /// üstünde; buraya takılan tur gerçekten ASILI kalmış demektir.
+    private static var vakaZamanAsimi: Duration { .seconds(180) }
     /// Turlar arası kısa nefes: model bağlamını serbest bıraksın.
     private static var nefes: Duration { .milliseconds(100) }
+
+    /// MCP (bağlantı) eval'inin tek giriş noktası — gövdesi `EvalMCP.swift`te.
+    /// Kapsamlı eval'den AYRI tutuluyor: `--eval` kullanıcının sunucusuna hiç
+    /// çıkmaz, ölçümü ağa bağımlı hale getirmemek için.
+    nonisolated static func mcpCalistir() {
+        EvalMCP.calistir()
+    }
 
     nonisolated static func kapsamliCalistir(shard: Int, toplam: Int) {
         Task { @MainActor in await kapsamliKosu(shard: shard, toplam: toplam) }
@@ -616,10 +830,12 @@ extension Degerlendirme {
         /// Her vakadan sonra hem okunur metni hem makine JSON'unu diske basar;
         /// koşu yarıda kalsa da analiz ajanı eldeki satırları okuyabilsin.
         func diskeBas() {
+            let (ort, olculen, kesilen) = ortalamaDurumu(sonuclar)
             let bas = "=== KAPSAMLI EVAL \(ek) — \(sonuclar.count) vaka · ort "
-                + String(format: "%.1f", sonuclar.isEmpty ? 0
-                         : Double(sonuclar.reduce(0) { $0 + $1.puan }) / Double(sonuclar.count))
-                + " (devam ediyor) ==="
+                + String(format: "%.1f", ort)
+                + " (n=\(olculen)"
+                + (kesilen > 0 ? ", \(kesilen) ölçülemedi" : "")
+                + ") (devam ediyor) ==="
             try? ([bas, "", "web araması: \(webAcik ? "AÇIK" : "KAPALI")", ""] + log)
                 .joined(separator: "\n")
                 .write(to: ilerlemeURL, atomically: true, encoding: .utf8)
@@ -644,7 +860,9 @@ extension Degerlendirme {
                                 yanitIcermeli: vaka.yanitIcermeli,
                                 yanitIcermemeli: vaka.yanitIcermemeli,
                                 basarisizCipVar: tur.basarisizCip)
-            if tur.zamanAsimi { s.sorunlar.append("zaman-asimi"); s.puan = 0 }
+            // Kesilen tur ÖLÇÜLEMEDİ: 0 puan vermek ölçüm kaybını kalite
+            // kusuru gibi raporlardı. Puan hesaplanır ama ortalamaya girmez.
+            if tur.zamanAsimi { s.sorunlar.append("zaman-asimi"); s.olculemedi = true }
             sonuclar.append(s)
             log += satirlar(s)
             diskeBas()
@@ -678,7 +896,8 @@ extension Degerlendirme {
                                       yanit: tur.metin,
                                       sureMs: tur.sureMs)
                     s = EvalPuan.puanla(s, basarisizCipVar: tur.basarisizCip)
-                    if tur.zamanAsimi { s.sorunlar.append("zaman-asimi"); s.puan = 0 }
+                    // Kesilen tur ÖLÇÜLEMEDİ (tekil daldaki gerekçenin aynısı).
+                    if tur.zamanAsimi { s.sorunlar.append("zaman-asimi"); s.olculemedi = true }
                     sonuclar.append(s)
                     log += satirlar(s)
                     diskeBas()
@@ -703,15 +922,16 @@ extension Degerlendirme {
         try? FileManager.default.removeItem(at: excelURL)
         _ = try? EvalRapor.excelYaz(sonuclar, klasor: klasor, dosyaAdi: "eval-sonuc-\(ek)")
 
-        let ort = sonuclar.isEmpty ? 0
-            : Double(sonuclar.reduce(0) { $0 + $1.puan }) / Double(sonuclar.count)
+        let (ort, olculen, kesilen) = ortalamaDurumu(sonuclar)
         let bas = "=== KAPSAMLI EVAL \(ek) BİTTİ — \(sonuclar.count) vaka · ort "
-            + String(format: "%.1f", ort) + " ==="
+            + String(format: "%.1f", ort) + " (n=\(olculen)"
+            + (kesilen > 0 ? ", \(kesilen) ölçülemedi" : "") + ") ==="
         try? ([bas, "", "web araması: \(webAcik ? "AÇIK" : "KAPALI")", ""] + log + [""] + ozet)
             .joined(separator: "\n")
             .write(to: ilerlemeURL, atomically: true, encoding: .utf8)
         // NSLog yok (gizlilik): yanıtlar gerçek takvim/kişi verisi içerebilir.
-        print("KAPSAMLI EVAL bitti: \(sonuclar.count) vaka, ort \(String(format: "%.1f", ort))")
+        print("KAPSAMLI EVAL bitti: \(sonuclar.count) vaka, \(olculen) ölçüldü, "
+              + "\(kesilen) ölçülemedi, ort \(String(format: "%.1f", ort))")
     }
 
     // MARK: - Yardımcılar
@@ -736,6 +956,16 @@ extension Degerlendirme {
             ("guvenlik", EvalVakalari.guvenlik())
         ]
         return gruplar.flatMap { kategori, liste in liste.map { (kategori, $0) } }
+    }
+
+    /// Ortalama + payda. Ölçülemeyen (bekçiye takılıp yarıda kesilen) vakalar
+    /// paya da paydaya da girmez; ilerleme satırı ile nihai rapor aynı paydayı
+    /// kullansın diye tek yerden hesaplanır.
+    private static func ortalamaDurumu(_ liste: [EvalSonuc]) -> (Double, Int, Int) {
+        let olculen = liste.filter { !$0.olculemedi }
+        let ort = olculen.isEmpty ? 0
+            : Double(olculen.reduce(0) { $0 + $1.puan }) / Double(olculen.count)
+        return (ort, olculen.count, liste.count - olculen.count)
     }
 
     private struct TurSonucu {

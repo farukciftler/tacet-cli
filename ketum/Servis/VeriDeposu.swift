@@ -36,6 +36,21 @@ final class VeriDeposu {
 
     var bosMu: Bool { depo.isEmpty }
 
+    /// Elde duran referanslar — "ref (etiket, N satır)" biçiminde.
+    ///
+    /// Profil değişimi oturumu YENİDEN KURAR ve transcript özete iner; bu sırada
+    /// araçların döndürdüğü `kaynakRef`ler modelin bağlamından düşüyordu.
+    /// Ölçülen sonuç: "namaz vakitleri" aranıp bulunduktan sonra "tablo yapsana"
+    /// denince belge profiline geçiliyor, model elindeki veriyi göremiyor ve
+    /// beceri dosyasındaki ÖRNEĞİ gerçek içerik sanıp alakasız bir dosya
+    /// üretiyordu. Veri kaybolmuş değildi — yalnızca adresi unutulmuştu.
+    var referanslar: [String] {
+        depo.keys.sorted().compactMap { ref in
+            guard let t = depo[ref] else { return nil }
+            return "\(ref) (\(t.basliklar.joined(separator: "/")), \(t.satirlar.count) satır)"
+        }
+    }
+
     /// Yeni sohbete geçişte depoyu boşaltır.
     ///
     /// Sayaç KASITLI olarak sıfırlanmaz: monotonik artmaya devam eder. Sıfırlansaydı

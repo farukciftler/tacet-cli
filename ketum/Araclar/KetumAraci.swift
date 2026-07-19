@@ -20,6 +20,43 @@ protocol KetumAraci: Tool {
 }
 
 extension KetumAraci {
+    /// `cipliCalis`in ilerleme bildirebilen sürümü: iş sürerken çip metnini
+    /// değiştirir. Uzun süren araçlar (web araması sayfa çekerken) için.
+    ///
+    /// Seyir ilkesiyle tutarlı: gösterilen her adım kodda GERÇEKTEN olan bir
+    /// olaydır — hangi siteye bakıldığı uydurma değil, o an indirilen adres.
+    /// Dramatize yok: "araştırıyor" gibi süslü fiil değil, alan adının kendisi.
+    func cipliCalis(
+        ikon: String,
+        calisiyorMetni: String,
+        hamGirdi: String? = nil,
+        ilerlemeli islem: (@Sendable (String) async -> Void) async throws -> AracSonucu
+    ) async -> String {
+        let id = await raporlayici?.baslat(ikon: ikon, metin: calisiyorMetni)
+        let raporlayici = self.raporlayici
+        let ilerle: @Sendable (String) async -> Void = { metin in
+            guard let id else { return }
+            await raporlayici?.guncelle(id, durum: .calisiyor, metin: metin,
+                                        hamGirdi: nil, hamCikti: nil, dosyaYolu: nil)
+        }
+        do {
+            let s = try await islem(ilerle)
+            if let id {
+                await raporlayici?.guncelle(id, durum: s.durum, metin: s.cipMetni,
+                                            hamGirdi: hamGirdi, hamCikti: s.hamCikti,
+                                            dosyaYolu: s.dosyaYolu)
+            }
+            return s.modeleDonen
+        } catch {
+            let neden = Self.kisaHata(error)
+            if let id {
+                await raporlayici?.guncelle(id, durum: .basarisiz(neden), metin: nil,
+                                            hamGirdi: hamGirdi, hamCikti: neden, dosyaYolu: nil)
+            }
+            return "tool_failed: the action could not be completed. Tell the user briefly, in their own language, that this step did not work."
+        }
+    }
+
     /// Bir aracın işini çip yaşam döngüsüne sarar: başlat → iş → son durum.
     /// - `ikon`: SF Symbol. `calisiyorMetni`: spinner yanındaki metin.
     /// - `is`: gerçek işi yapar; ekranda gösterilecek son çip metnini, durumu

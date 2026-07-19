@@ -29,8 +29,9 @@ protocol OnayKapisi: AnyObject, Sendable {
     /// Araç bunu `cihazVerisi == .hicbirZaman` kararını verebilmek için okur:
     /// o ayarda kirli oturumda çağrı HİÇ yapılmaz, onay bile sorulmaz (§3.1).
     var oturumKirli: Bool { get }
-    /// `false` = gönderme. Kirli olmayan oturumda sormadan `true` döner.
-    func onayIste(kaynak: String, aracAdi: String, icerik: String) async -> Bool
+    /// `false` = gönderme. Kirli olmayan oturumda sormadan `true` döner —
+    /// `zorunlu` true ise oturum temiz olsa da sorulur (yıkıcı uzak araç).
+    func onayIste(kaynak: String, aracAdi: String, icerik: String, zorunlu: Bool) async -> Bool
 }
 
 extension AracYurutucu: OnayKapisi {}
@@ -75,11 +76,76 @@ struct MCPAracTanimi: Hashable, Sendable {
     var aciklama: String
     /// Ham JSON Şema (`inputSchema`) — UTF-8 JSON nesnesi.
     var girdiSemasiJSON: Data
+    /// Sunucunun `annotations.readOnlyHint`i; bildirmediyse nil.
+    var saltOkumaIpucu: Bool?
+    /// Sunucunun `annotations.destructiveHint`i; bildirmediyse nil.
+    var yikiciIpucu: Bool?
 
-    init(ad: String, aciklama: String = "", girdiSemasiJSON: Data = Data()) {
+    init(ad: String, aciklama: String = "", girdiSemasiJSON: Data = Data(),
+         saltOkumaIpucu: Bool? = nil, yikiciIpucu: Bool? = nil) {
         self.ad = ad
         self.aciklama = aciklama
         self.girdiSemasiJSON = girdiSemasiJSON
+        self.saltOkumaIpucu = saltOkumaIpucu
+        self.yikiciIpucu = yikiciIpucu
+    }
+}
+
+/// Uzak aracın yan etki sınıfı (mcp §3.3 genişletmesi).
+///
+/// Onay kapısı bugüne dek YALNIZCA "cihaz verisi dışarı sızmasın" kapısıydı:
+/// oturumda kişisel veri aracı kullanılmadıysa her uzak çağrı sorgusuz geçiyordu.
+/// Ama uzak tarafta yan etki bırakan bir araç (`dosya_sil`, `komut_calistir`,
+/// `eposta_gonder`) için sorulması gereken soru "cihazdan ne çıkıyor" değil
+/// "kullanıcının sunucusunda ne DEĞİŞİYOR"dur — ve bu, oturumun temiz olmasıyla
+/// hiç ilgisiz. Bu tip, o ikinci soruyu kodda görünür kılar.
+enum YanEtkiSinifi: Sendable {
+    /// Sunucu salt-okuma dedi ya da ad/özet hiçbir yıkıcılık sinyali taşımıyor.
+    case saltOkuma
+    /// Sunucu yıkıcı dedi ya da ad/özet yıkıcı bir eylem sinyali taşıyor.
+    case yikici
+
+    var onayZorunluMu: Bool { self == .yikici }
+
+    /// Yıkıcılık sinyali taşıyan eylem kökleri — Türkçe ve İngilizce.
+    ///
+    /// Sözlük SEZGİSELDİR ve tam olduğu iddia edilmiyor: sunucu keyfî adlar
+    /// verebilir. Bu yüzden tek savunma değil, `annotations` ipuçlarının
+    /// ÜSTÜNE binen ikinci kattır.
+    ///
+    /// YALNIZCA ADA bakılır, açıklamaya DEĞİL. İlk sürüm açıklamayı da
+    /// tarıyordu ve bu ölçülebilir bir arıza üretti: salt-okuma `ag_durumu`
+    /// aracının sunucu açıklamasında "command" geçtiği için araç yıkıcı
+    /// sayıldı, her çağrıda onay istedi ve eval koşusunda 250 sn'lik zaman
+    /// aşımlarına düştü. Açıklama sunucunun yazdığı serbest metindir; yıkıcı
+    /// EYLEM adı ile o eylemden BAHSEDEN cümleyi ayırt edemez. Ad ise
+    /// sözleşmedir. Yanlış pozitif burada ucuz değil — gereksiz onay kapı
+    /// yorgunluğu üretir ve kullanıcı hepsini körlemesine onaylamaya başlar.
+    private static let yikiciKokler = [
+        "sil", "delete", "remove", "drop", "destroy", "purge", "wipe",
+        "yaz", "write", "olustur", "create", "kaydet", "save",
+        "degistir", "degisiklik", "modify", "update", "patch", "edit", "rename",
+        "tasi", "kopyala", "move", "copy", "upload", "put",
+        "calistir", "exec", "execute", "run", "shell", "command", "komut",
+        "gonder", "send", "post", "eposta", "email", "mail", "notify",
+        "yonet", "manage", "restart", "stop", "start", "kill", "deploy",
+        "install", "kur", "reboot", "shutdown", "grant", "revoke", "chmod"
+    ]
+
+    /// Ad + özetten sınıf çıkarır. Sıra önemli: sunucunun AÇIK beyanı önce.
+    static func sinifla(ad: String, ozet: String,
+                        saltOkumaIpucu: Bool?, yikiciIpucu: Bool?) -> YanEtkiSinifi {
+        // Sunucu "yıkıcı" dediyse tartışma yok.
+        if yikiciIpucu == true { return .yikici }
+        // Sunucu "salt okuma" dediyse ona güveniriz — ama yalnızca yıkıcı
+        // olduğunu ayrıca söylemediyse (yukarıdaki dal zaten kazandı).
+        if saltOkumaIpucu == true { return .saltOkuma }
+
+        // Sunucu susuyor: ADA bak. `ozet` bilerek kullanılmıyor (yukarıdaki not).
+        _ = ozet
+        let havuz = ad.lowercased()
+            .folding(options: .diacriticInsensitive, locale: Locale(identifier: "tr"))
+        return yikiciKokler.contains(where: havuz.contains) ? .yikici : .saltOkuma
     }
 }
 
@@ -132,6 +198,9 @@ struct MCPAraci: KetumAraci {
     /// `.hicbirZaman` (varsayılan) hiç çağırmaz, `.herSeferindeSor` onay sorar.
     /// Kirli OLMAYAN oturumda ikisi de sorgusuz geçer (§2.4 "onay nadirse okunur").
     let cihazVerisi: CihazVerisiAyari
+    /// Uzak tarafta yan etki bırakıyor mu (§3.3). `.yikici` ise oturum temiz
+    /// olsa DA onay sorulur; bu kapı `cihazVerisi` ayarından bağımsızdır.
+    let yanEtki: YanEtkiSinifi
 
     let cagirici: any MCPCagirici
     weak var kapi: (any OnayKapisi)?
@@ -144,8 +213,10 @@ struct MCPAraci: KetumAraci {
          parameters: GenerationSchema,
          cagirici: any MCPCagirici,
          cihazVerisi: CihazVerisiAyari = .hicbirZaman,
+         yanEtki: YanEtkiSinifi = .saltOkuma,
          kapi: (any OnayKapisi)? = nil,
          raporlayici: (any AracRaporlayici)? = nil) {
+        self.yanEtki = yanEtki
         self.baglantiID = baglantiID
         self.baglantiAdi = baglantiAdi
         self.uzakAd = uzakAd
@@ -186,6 +257,19 @@ struct MCPAraci: KetumAraci {
             // girdisinde DURUR ve kirli oturumda gönderildiyse bunun onay
             // sorulmadan olduğu ayrıca yazılır. Kullanıcı sonradan "ne çıktı"
             // sorusunu yanıtlayabilmeli; atlanan şey ONAY, ŞEFFAFLIK DEĞİL.
+            // Yıkıcı araç: oturum temiz olsa da, kullanıcı "her zaman izin ver"
+            // demiş olsa DA sorulur. O ayar "cihazımdaki veriyi sormadan
+            // gönderebilirsin" demektir; "sunucumda sormadan iş yapabilirsin"
+            // demek değildir. İki karar ayrı, kapı da ayrı.
+            if yanEtki.onayZorunluMu {
+                let onay = await kapi.onayIste(kaynak: baglantiAdi,
+                                               aracAdi: uzakAd,
+                                               icerik: argumanlar,
+                                               zorunlu: true)
+                guard onay else { return "kullanıcı bu veriyi paylaşmayı reddetti" }
+                return await uzagaCagir(argumanlar: argumanlar, gonderilen: argumanlar)
+            }
+
             if cihazVerisi.kapiyiAtlarMi {
                 let not = kirli
                     ? String(localized: "onay sorulmadan gönderildi · bağlantı ayarı: her zaman izin ver")
@@ -196,7 +280,8 @@ struct MCPAraci: KetumAraci {
 
             let onay = await kapi.onayIste(kaynak: baglantiAdi,
                                            aracAdi: uzakAd,
-                                           icerik: argumanlar)
+                                           icerik: argumanlar,
+                                           zorunlu: false)
             guard onay else {
                 // Ret bir hata değil kısıttır: çipi AracYurutucu "gönderilmedi"
                 // durumunda bıraktı, burada ikinci çip düşürülmez.

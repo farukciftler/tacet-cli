@@ -19,6 +19,11 @@ struct ketumApp: App {
         if CommandLine.arguments.contains("--test") {
             Degerlendirme.calistir()
         }
+        // Nihai rapor: ayrı koşumların ham JSON'larını tek Excel'e toplar.
+        // Rapor uygulamanın KENDİ ExcelMotor'uyla üretilir (gerçek =SUM düşsün).
+        if CommandLine.arguments.contains("--eval-birlestir") {
+            EvalRapor.birlestirmeKosusu()
+        }
         if CommandLine.arguments.contains("--dil") {
             DilTesti.calistir()
         }
@@ -34,6 +39,11 @@ struct ketumApp: App {
             }
             Degerlendirme.kapsamliCalistir(shard: sayi("--shard", 0),
                                            toplam: sayi("--shards", 1))
+        }
+        // MCP (bağlantı) eval'i: "--eval-mcp". Ayrı bayrak, çünkü bu koşu
+        // kullanıcının kendi sunucusuna GERÇEKTEN çıkar; "--eval" çıkmaz.
+        if CommandLine.arguments.contains("--eval-mcp") {
+            Degerlendirme.mcpCalistir()
         }
         #endif
         konteyner = Self.konteynerKur()

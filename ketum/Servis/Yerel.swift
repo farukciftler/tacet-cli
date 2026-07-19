@@ -38,6 +38,9 @@ enum Yerel {
     static func notArandi(_ n: Int) -> String { String(localized: "Notlarda arandı · \(n) sonuç") }
     static var notArandiYok: String { String(localized: "Notlarda arandı · sonuç yok") }
     static var hesaplandi: String { String(localized: "Hesaplandı") }
+    static var gunSayiliyor: String { String(localized: "Gün sayılıyor…") }
+    static var gunSayildi: String { String(localized: "Gün sayıldı") }
+    static var tarihAnlasilmadi: String { String(localized: "Tarih anlaşılmadı") }
     static func belgeOlusturuldu(_ b: String, _ ad: String) -> String { String(localized: "\(b) oluşturuldu · \(ad)") }
     static func belgeDuzenlendi(_ b: String, _ ad: String) -> String { String(localized: "\(b) düzenlendi · \(ad)") }
     static func belgeOkundu(_ b: String, _ ad: String) -> String { String(localized: "\(b) okundu · \(ad)") }

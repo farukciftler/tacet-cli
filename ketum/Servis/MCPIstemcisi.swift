@@ -119,6 +119,22 @@ actor MCPIstemcisi {
         /// `inputSchema` (JSON Şeması). MCPAraci bunu çalışma anında
         /// `DynamicGenerationSchema`ya çevirir.
         let sema: JSONDeger?
+        /// MCP `annotations.readOnlyHint` — sunucu "bu araç hiçbir şey
+        /// değiştirmez" diyorsa true. Sunucu söylemediyse nil.
+        let saltOkumaIpucu: Bool?
+        /// MCP `annotations.destructiveHint` — sunucu "bu araç yıkıcı" diyorsa
+        /// true. İPUCUDUR, güvence değil: sunucu yalan söyleyebilir ya da hiç
+        /// bildirmeyebilir, o yüzden `MCPAraci` ayrıca ad sözlüğüne bakar.
+        let yikiciIpucu: Bool?
+
+        init(ad: String, aciklama: String, sema: JSONDeger?,
+             saltOkumaIpucu: Bool? = nil, yikiciIpucu: Bool? = nil) {
+            self.ad = ad
+            self.aciklama = aciklama
+            self.sema = sema
+            self.saltOkumaIpucu = saltOkumaIpucu
+            self.yikiciIpucu = yikiciIpucu
+        }
     }
 
     /// Hata yolları düz dille ayrışır (§3.1): kullanıcıya neden söylenir.
@@ -205,9 +221,12 @@ actor MCPIstemcisi {
             let sonuc = try await cagir(metot: "tools/list", parametre: .nesne(parametre))
             for oge in sonuc["tools"]?.diziMi ?? [] {
                 guard let ad = oge["name"]?.metinMi, !ad.isEmpty else { continue }
+                let notlar = oge["annotations"]
                 toplam.append(AracTanimi(ad: ad,
                                          aciklama: oge["description"]?.metinMi ?? "",
-                                         sema: oge["inputSchema"]))
+                                         sema: oge["inputSchema"],
+                                         saltOkumaIpucu: notlar?["readOnlyHint"]?.mantikMi,
+                                         yikiciIpucu: notlar?["destructiveHint"]?.mantikMi))
             }
             let sonraki = sonuc["nextCursor"]?.metinMi
             // Aynı imleci tekrar veren sunucu döngüye sokmasın.

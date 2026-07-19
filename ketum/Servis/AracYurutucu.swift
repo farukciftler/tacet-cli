@@ -84,8 +84,16 @@ final class AracYurutucu: AracRaporlayici {
     ///
     /// - Parameter icerik: gönderilecek argümanların aynısı; kullanıcı onay
     ///   sayfasında birebir bunu görür.
+    /// Cihaz verisi kapısı — çağrı yerlerinin çoğu bu kısa biçimi kullanır.
     func onayIste(kaynak: String, aracAdi: String, icerik: String) async -> Bool {
-        guard oturumKirli else { return true }
+        await onayIste(kaynak: kaynak, aracAdi: aracAdi, icerik: icerik, zorunlu: false)
+    }
+
+    /// - Parameter zorunlu: true ise oturum temiz olsa da sorulur. Yıkıcı uzak
+    ///   araçlar bunu kullanır: orada soru "cihazdan ne çıkıyor" değil,
+    ///   "kullanıcının sunucusunda ne değişiyor" — kirlilikle ilgisiz.
+    func onayIste(kaynak: String, aracAdi: String, icerik: String, zorunlu: Bool) async -> Bool {
+        guard oturumKirli || zorunlu else { return true }
         if reddedilenKaynaklar.contains(kaynak) { return false }
         // Aynı anda ikinci bir kapı açmayız: üst üste binen istek sessizce
         // reddedilir, kullanıcı iki sheet arasında sıkışmaz.

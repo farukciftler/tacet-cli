@@ -85,15 +85,49 @@ enum BeceriDeposu {
     /// Boşluk kullanmayan yazılarda (CJK, Korece) sözcük sınırı diye bir şey
     /// yok; oradaki tetikleyiciler için ham alt-dizgiye düşülür, aksi hâlde
     /// hiç eşleşmezlerdi.
+    /// Sözcük BAŞI yetmediği uzunluk sınırı. Bunun altındaki tetikleyiciler
+    /// için sözcük SONU da aranır (tam sözcük eşleşmesi).
+    ///
+    /// Ölçülen hata: "ara" tetikleyicisi "**ara**lık"ı yakalıyordu, yani her
+    /// Aralık ayı sorusu Spotlight arama becerisini çağırıyor, 4096 bütçesinden
+    /// ~700 karakter yiyor ve modele alakasız kılavuz enjekte ediyordu. Aynı
+    /// tuzak "bul" → "bulut/bulmaca/bulunduğu"da da var.
+    ///
+    /// Neden yalnız KISA tetikleyicilerde: Türkçe SONA ek alır, dolayısıyla
+    /// uzun tetikleyicilerde ön-ek eşleşmesi ŞART ("satır" → "satırını",
+    /// "çarp" → "çarparsak"). Ama kısa bir kök, kendisiyle akrabalığı olmayan
+    /// bambaşka sözcüklerin de başında durabiliyor — orada gürültü üretiyor.
+    ///
+    /// Eşik 4: 3 harfli kökler (ara/bul/oku/dök/pdf) tam sözcük ister, 4+
+    /// ön-ek eşleşmesini sürdürür. Eşiği 5 yapmak "çarp"ı kırardı.
+    ///
+    /// Asimetri bilinçli: yanlış beceri enjekte etmek modeli YANILTIR ve
+    /// bütçeden ~700 karakter yer; beceriyi kaçırmak yalnızca fazladan
+    /// kılavuzu kaybettirir — araç zaten oturumda durur. Kaçırmak ucuz,
+    /// yanlış eşleşmek pahalı; o yüzden kısa köklerde katı davranılır.
+    static let tamSozcukSiniri = 4
+
     private static func icerir(_ metin: String, _ tetik: String) -> Bool {
         guard let ilk = tetik.unicodeScalars.first, ilk.value < 0x0590 else {
             return metin.contains(tetik)   // CJK/Korece: sınır kavramı yok
         }
+        // Boşluk içeren tetikleyiciler ("kaç satır") zaten öbek; kısalık kuralı
+        // yalnız tek sözcüklük köklere uygulanır.
+        let tamSozcukGerek = tetik.count < tamSozcukSiniri && !tetik.contains(" ")
+
         var alan = metin.startIndex..<metin.endIndex
         while let r = metin.range(of: tetik, range: alan) {
-            if r.lowerBound == metin.startIndex { return true }
-            let onceki = metin[metin.index(before: r.lowerBound)]
-            if !onceki.isLetter && !onceki.isNumber { return true }
+            let bastaMi = r.lowerBound == metin.startIndex
+                || !metin[metin.index(before: r.lowerBound)].isLetter
+                && !metin[metin.index(before: r.lowerBound)].isNumber
+            if bastaMi {
+                if !tamSozcukGerek { return true }
+                // Kısa tetikleyici: sonrasında harf/rakam gelmemeli.
+                let sonrasi = r.upperBound
+                if sonrasi == metin.endIndex { return true }
+                let sonraki = metin[sonrasi]
+                if !sonraki.isLetter && !sonraki.isNumber { return true }
+            }
             guard r.lowerBound < metin.endIndex else { break }
             alan = metin.index(after: r.lowerBound)..<metin.endIndex
         }

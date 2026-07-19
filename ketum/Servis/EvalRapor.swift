@@ -32,6 +32,12 @@ struct EvalSonuc: Codable {
     var puan: Int = 0
     var sorunlar: [String] = []
     var sureMs: Int = 0
+    /// Tur bekçiye takıldı: yanıt YARIDA kesildi, dolayısıyla bu vaka
+    /// ÖLÇÜLEMEDİ. Kalite sinyali DEĞİLDİR — ölçüm artefaktıdır ve bu yüzden
+    /// hiçbir ortalamaya girmez (bkz. `EvalRapor.ortalama`). Kesilmiş turu 0
+    /// puan saymak, koşum ortamının yavaşlığını modelin kusuru gibi raporlar;
+    /// önceki koşumda ham ortalamayı 92.3'ten 66.0'a düşüren hata buydu.
+    var olculemedi: Bool = false
 }
 
 /// Vaka başına 0-100 puanlama. Boyut ağırlıkları bilinçli seçildi:
@@ -210,7 +216,10 @@ enum EvalRapor {
                 s.istem,
                 s.beklenenCipler.joined(separator: " "),
                 s.gercekCipler.joined(separator: " "),
-                "\(s.puan)",
+                // Kesilen turun puanı YARIM yanıttan hesaplanmıştır; sayı olarak
+                // yazılırsa tabloda sütun ortalaması alan herkes onu gerçek bir
+                // düşük puan sanır. Hücre bilerek metin.
+                s.olculemedi ? "ÖLÇÜLEMEDİ" : "\(s.puan)",
                 s.sorunlar.joined(separator: "; "),
                 "\(s.sureMs)",
                 kirp(s.yanit, 120)
@@ -224,6 +233,82 @@ enum EvalRapor {
             klasor: klasor)
     }
 
+    // MARK: - Birleşik nihai rapor
+
+    /// Nihai raporun sütunları — vaka sütunlarının önüne KOŞUM gelir.
+    static let birlesikSutunlar = ["Koşum"] + sutunlar
+
+    /// Birden fazla koşumun ham JSON'unu tek sayfada birleştirir.
+    ///
+    /// `kaynaklar`: (koşum etiketi, ham JSON dosyası) çiftleri. Etiket satır
+    /// başına yazılır ki "eski koşum mu, düzeltme sonrası mı" sorusu tabloda
+    /// tek bakışta yanıtlanabilsin — üç koşumu tek dosyada birleştirip ayırt
+    /// edici sütun koymamak raporu okunamaz yapardı.
+    ///
+    /// Süre sütunu tamamen sayısal tutulur ki `ExcelMotor` altına GERÇEK bir
+    /// `=SUM` düşürsün. Puan sütununda "ÖLÇÜLEMEDİ" metni geçebildiği için
+    /// orada formül beklenmez; ölçülemeyen turu sayıya çevirmek raporu
+    /// yanıltırdı (bkz. `EvalSonuc.olculemedi`).
+    static func birlesikExcelYaz(_ kaynaklar: [(etiket: String, url: URL)],
+                                 klasor: URL,
+                                 dosyaAdi: String) throws -> URL {
+        let cozucu = JSONDecoder()
+        var satirlar: [Satir] = []
+        for kaynak in kaynaklar {
+            guard let veri = try? Data(contentsOf: kaynak.url),
+                  let sonuclar = try? cozucu.decode([EvalSonuc].self, from: veri) else { continue }
+            for s in sonuclar {
+                satirlar.append(Satir(hucreler: [
+                    kaynak.etiket,
+                    s.kategori,
+                    s.vakaAd,
+                    s.mod,
+                    "\(s.adimNo)",
+                    s.istem,
+                    s.beklenenCipler.joined(separator: " "),
+                    s.gercekCipler.joined(separator: " "),
+                    s.olculemedi ? "ÖLÇÜLEMEDİ" : "\(s.puan)",
+                    s.sorunlar.joined(separator: "; "),
+                    "\(s.sureMs)",
+                    kirp(s.yanit, 200)
+                ]))
+            }
+        }
+        return try ExcelMotor().yaz(
+            dosyaAdi: dosyaAdi,
+            baslik: "sirr — nihai eval raporu",
+            govde: nil,
+            tablo: Tablo(basliklar: birlesikSutunlar, satirlar: satirlar),
+            klasor: klasor)
+    }
+
+    /// `--eval-birlestir`: `sirr-test/birlestir/` altındaki `<etiket>.json`
+    /// dosyalarını tek Excel'e toplar. Dosya adı koşum etiketidir.
+    @MainActor
+    static func birlestirmeKosusu() {
+        let klasor = BelgeBaglami.testKlasoru()
+        let kaynakKlasor = klasor.appendingPathComponent("birlestir", isDirectory: true)
+        let dosyalar = (try? FileManager.default.contentsOfDirectory(
+            at: kaynakKlasor, includingPropertiesForKeys: nil)) ?? []
+        let kaynaklar = dosyalar
+            .filter { $0.pathExtension == "json" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            .map { (etiket: $0.deletingPathExtension().lastPathComponent, url: $0) }
+        guard !kaynaklar.isEmpty else {
+            print("BİRLEŞTİR: \(kaynakKlasor.path) altında json yok")
+            return
+        }
+        let hedef = klasor.appendingPathComponent("sirr-eval-raporu.xlsx")
+        try? FileManager.default.removeItem(at: hedef)
+        do {
+            let url = try birlesikExcelYaz(kaynaklar, klasor: klasor,
+                                           dosyaAdi: "sirr-eval-raporu")
+            print("BİRLEŞTİR TAMAM: \(url.path) · kaynak \(kaynaklar.count)")
+        } catch {
+            print("BİRLEŞTİR HATA: \(error)")
+        }
+    }
+
     /// Markdown özet: kategori ortalamaları, en düşük 15 vaka, sorun frekansı,
     /// tekil vs zincir karşılaştırması. Satır dizisi döner — mevcut eval log'u
     /// `[String]` biriktirdiği için doğrudan `log += ...` ile eklenebilir.
@@ -233,10 +318,23 @@ enum EvalRapor {
 
         c.append("## Genel")
         c.append("")
-        c.append("- Vaka: \(sonuclar.count)")
+        // Ölçülemeyen vakalar her sayımın DIŞINDA: "zayıf" da "tam puan" da
+        // ancak yanıtı sonuna kadar görülmüş turlar için anlamlıdır.
+        let olculen = sonuclar.filter { !$0.olculemedi }
+        let kesilen = sonuclar.count - olculen.count
+        c.append("- Vaka: \(sonuclar.count) (ölçülen \(olculen.count), kesilen \(kesilen))")
         c.append("- Ortalama puan: \(ortalamaMetni(sonuclar))")
-        c.append("- Tam puan (100): \(sonuclar.filter { $0.puan == 100 }.count)")
-        c.append("- Zayıf (<60): \(sonuclar.filter { $0.puan < 60 }.count)")
+        c.append("- Tam puan (100): \(olculen.filter { $0.puan == 100 }.count)")
+        c.append("- Zayıf (<60): \(olculen.filter { $0.puan < 60 }.count)")
+        if kesilen > 0 {
+            let oran = 100.0 * Double(kesilen) / Double(sonuclar.count)
+            c.append("- ⚠︎ Bekçiye takılan (ÖLÇÜLEMEDİ, ortalamaya girmez):"
+                     + " \(kesilen) (%\(bicim(oran)))")
+            c.append("  Bu bir KALİTE bulgusu değil, ölçüm kaybıdır. Oran birkaç"
+                     + " yüzdeyi aşıyorsa koşum ortamı yüklüdür: eval süreçlerini"
+                     + " PARALEL değil SIRAYLA koşun (aynı Mac'te eşzamanlı"
+                     + " simülatörler cihaz-üstü modeli birbirine yavaşlatır).")
+        }
         c.append("")
 
         // — Kategori tablosu —
@@ -318,7 +416,11 @@ enum EvalRapor {
         // — En düşük 15 —
         c.append("## En düşük 15 vaka")
         c.append("")
+        // Kesilen turlar BURAYA GİRMEZ. Bu liste triyaj listesidir: birisi onu
+        // açıp en baştaki vakayı düzeltmeye oturur. Yarıda kesilmiş turlar
+        // sıralamanın tepesini kaplarsa, harcanan mesai ölçüm gürültüsüne gider.
         let enDusuk = sonuclar
+            .filter { !$0.olculemedi }
             .sorted { ($0.puan, $0.vakaAd) < ($1.puan, $1.vakaAd) }
             .prefix(15)
         for s in enDusuk {
@@ -356,13 +458,25 @@ enum EvalRapor {
 
     // MARK: - Yardımcılar
 
+    /// Ortalama YALNIZ ölçülebilmiş vakalar üzerinden alınır. Kesilmiş tur ne
+    /// 0'dır ne 100 — bilgi yokluğudur; onu paya da paydaya da katmak ölçümü
+    /// koşum ortamının yüküne bağımlı kılar.
     private static func ortalama(_ liste: [EvalSonuc]) -> Double {
-        guard !liste.isEmpty else { return 0 }
-        return Double(liste.reduce(0) { $0 + $1.puan }) / Double(liste.count)
+        let olculen = liste.filter { !$0.olculemedi }
+        guard !olculen.isEmpty else { return 0 }
+        return Double(olculen.reduce(0) { $0 + $1.puan }) / Double(olculen.count)
     }
 
+    /// Ortalamayı, arkasında kaç vakanın ölçülebildiğiyle birlikte yazar:
+    /// "84.2 (n=31)". Payda görünmezse okuyucu 3 vakalık ortalamayla 60
+    /// vakalıkını ayırt edemez.
     private static func ortalamaMetni(_ liste: [EvalSonuc]) -> String {
-        bicim(ortalama(liste))
+        let olculen = liste.filter { !$0.olculemedi }
+        guard !olculen.isEmpty else { return "— (ölçülemedi)" }
+        var metin = "\(bicim(ortalama(liste))) (n=\(olculen.count)"
+        let eksik = liste.count - olculen.count
+        if eksik > 0 { metin += ", \(eksik) ölçülemedi" }
+        return metin + ")"
     }
 
     /// Sabit format — sayı biçimlendirmesi cihaz diline göre değişmesin diye
@@ -372,11 +486,13 @@ enum EvalRapor {
     }
 
     /// Aynı vaka adının zincir ve tekil puanları arasındaki fark (negatif = bozulma).
+    /// Kesilen turlar dışarıda: tek bir zaman aşımı, o vakayı "zincirde bozuldu"
+    /// listesinin başına taşıyıp olmayan bir bağlam kusuru icat ederdi.
     private static func ortakBozulmalar(tekil: [EvalSonuc], zincir: [EvalSonuc]) -> [(String, Double)] {
         var tekilOrt: [String: [Int]] = [:]
-        for s in tekil { tekilOrt[s.vakaAd, default: []].append(s.puan) }
+        for s in tekil where !s.olculemedi { tekilOrt[s.vakaAd, default: []].append(s.puan) }
         var zincirOrt: [String: [Int]] = [:]
-        for s in zincir { zincirOrt[s.vakaAd, default: []].append(s.puan) }
+        for s in zincir where !s.olculemedi { zincirOrt[s.vakaAd, default: []].append(s.puan) }
         var sonuc: [(String, Double)] = []
         for (ad, zPuanlar) in zincirOrt {
             guard let tPuanlar = tekilOrt[ad] else { continue }

@@ -19,7 +19,7 @@ enum YanitIzleri {
 
     /// Kart olarak çizilecek izler.
     static func kartlar(_ izler: [AracIzi]) -> [AracIzi] {
-        izler.filter(kartlikMi)
+        izler.filter { kartlikMi($0) }
     }
 
     /// Yanıt bitince görünen çipler.
@@ -164,11 +164,30 @@ struct KetumYaniti: View {
     }
 
     private func metinGovde(_ t: String) -> some View {
-        Text(t)
+        Text(bicimli(t))
             .font(Yazi.ketum())
             .foregroundStyle(Renk.murekkep)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Satır içi markdown'ı çözer: `**kalın**`, `*italik*`, `` `kod` ``.
+    ///
+    /// `Text(String)` markdown'ı ÇÖZMEZ — SwiftUI bunu yalnızca derleme anında
+    /// bilinen `LocalizedStringKey` literalleri için yapar. Model çıktısı çalışma
+    /// anı String olduğu için yıldızlar ekranda ham görünüyordu ("**İmsak:** 05:04").
+    ///
+    /// `inlineOnlyPreservingWhitespace` bilinçli: satır sonlarını KORUR. Tam
+    /// markdown ayrıştırması paragrafları birleştirip listeyi tek satıra indirirdi.
+    /// Blok yapısı (tablolar) zaten `bloklar(_:)` tarafından ayrı ele alınıyor.
+    ///
+    /// Ayrıştırma düşerse ham metne dönülür: yarım kalmış bir `**` yüzünden
+    /// (akış sırasında olur) yanıtın kaybolması kabul edilemez.
+    private func bicimli(_ ham: String) -> AttributedString {
+        (try? AttributedString(
+            markdown: ham,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        )) ?? AttributedString(ham)
     }
 
     // Metni metin/tablo bloklarına böler (markdown tablolarını ayırır).
