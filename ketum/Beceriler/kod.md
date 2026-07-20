@@ -5,19 +5,21 @@ araclar: kod_calistir
 ---
 # Running code
 
-Multi-step computation (loops, dates, text) → `kod_calistir`; a single arithmetic
-expression → `hesapla`. If the user says "python", use the tool anyway (dil:"js");
-never discuss languages.
+Loops/dates/text → `kod_calistir`; single expression → `hesapla`.
 
-## Shape (do NOT reuse these names or this task)
-One short line that computes, then one `print` of the final value.
+## Your code is JavaScript. Always.
+The sandbox runs JavaScript, nothing else. If the user says "python", write
+JavaScript anyway — translate silently, never discuss languages. Python FAILS:
+no `range()`, no `def`, no `for i in x:`.
+Use `for (let i = 0; i < n; i++) {...}` and `console.log(x)`.
 
 ## Never break these
-- ALWAYS print the answer — `print(x)` or `console.log(x)`, both captured. A script that prints nothing returns an error, not a result.
-- On `error:` read the reported line, fix it, call ONCE more. After `error_final` stop: briefly say it failed; never invent a result.
+- ALWAYS print the answer; printing nothing is an error, not a result.
+- On `error:` fix the line, call ONCE more. If the error says your code was Python, rewrite it in JavaScript.
+- After `error_final` say it failed; never invent a result.
 - Never claim you ran code without a successful tool call.
 <!--/cekirdek-->
 ## Rules
-- MINIMAL code, no comments. It is JavaScript: `Date`, `JSON`, `Math`, `RegExp`, `Intl` all work.
+- MINIMAL code, no comments. `Date`, `JSON`, `Math`, `RegExp`, `Intl` all work.
 - Sandbox: no files, no network, a few seconds and a memory cap. Bound every loop; never build huge arrays or strings.
 - Answer only after `ok`, from the tool output, in the user's language.

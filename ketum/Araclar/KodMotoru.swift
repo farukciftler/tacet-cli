@@ -184,7 +184,25 @@ enum KodMotoru {
         // çalışır — dış zaman aşımı yine korur.
         let calisan = BekciEnjeksiyonu.uygula(kod)
         let baslangic = DispatchTime.now()
-        let sonDeger = baglam.evaluateScript(calisan)
+        var sonDeger = baglam.evaluateScript(calisan)
+
+        // ÜST DÜZEY `return` KURTARMASI (ölçüm: kod kategorisinin en sık hatası).
+        // Küçük model betiği sık sık bir fonksiyon gövdesi gibi yazıp sonucu
+        // `return` ile veriyor; global kapsamda bu SyntaxError'dır ve tur
+        // "yapamadım"a düşüyordu. Kod bir IIFE'ye sarılıp BİR KEZ daha denenir.
+        //
+        // Neden koşulsuz sarmalamıyoruz: sarmalama son-ifade değerini yutar
+        // (`6*7` → undefined), oysa print'siz betiğin son değeri bilerek çıktı
+        // sayılıyor. Bu yüzden yalnız BU sözdizimi hatasında devreye girer;
+        // başarılı ve diğer hatalı yollar bit düzeyinde aynı kalır.
+        if let ham = hataMesaji, Self.ustDuzeyReturnMu(ham) {
+            hataMesaji = nil
+            hataSatiri = 0
+            // Sözdizimi hatası hiçbir şey çalıştırmadığı için yan etki yok;
+            // yine de çıktı tamponu temizlenir ki kısmi çıktı sızmasın.
+            baglam.evaluateScript("__out.length=0;__kirp=false")
+            sonDeger = baglam.evaluateScript("(function(){\n\(calisan)\n})()")
+        }
         let ms = Int((DispatchTime.now().uptimeNanoseconds &- baslangic.uptimeNanoseconds) / 1_000_000)
 
         // Çıktı, hata olsa DA okunur: modele "nereye kadar geldiğini"
@@ -208,6 +226,17 @@ enum KodMotoru {
             }
         }
         return .basarili(cikti: cikti, ms: ms)
+    }
+
+    /// Hata metni "global kapsamda return" sözdizimi hatası mı?
+    ///
+    /// JSC bunu "Return statements are only valid inside functions." diye
+    /// bildirir. Eşleşme DAR tutulur: yalnız `return` + `function` geçen
+    /// sözdizimi hataları sarmalamayı tetikler, yoksa gerçek bir kullanıcı
+    /// hatası sessizce ikinci kez çalıştırılmış olurdu.
+    private static func ustDuzeyReturnMu(_ ham: String) -> Bool {
+        let h = ham.lowercased()
+        return h.contains("return") && h.contains("function")
     }
 
     /// `__out` içeriğini köprüler. Kırpma JS İÇİNDE yapılır: tavan üstü veri

@@ -953,7 +953,10 @@ extension Degerlendirme {
         // Kritik vakalar N kez koşar (P0-5): tek koşumda "geçti" demek, örneklem
         // 1 iken varyansı sıfır varsaymaktır. Ortalamaya YALNIZ medyan koşum
         // girer, yoksa kritik vakalar puanı üç katı ağırlıkla çekerdi.
-        for (kategori, vaka) in EvalRapor.shardSec(kategorili(), shard: shard, toplam: toplam) {
+        // GEÇİCİ TEŞHİS FİLTRESİ — kaldırılacak
+        let filtre = ProcessInfo.processInfo.environment["SIRR_VAKA"] ?? ""
+        for (kategori, vaka) in EvalRapor.shardSec(kategorili(), shard: shard, toplam: toplam)
+        where filtre.isEmpty || vaka.ad.contains(filtre) {
             let kosuSayisi = vaka.kritik ? Self.kritikKosuSayisi : 1
             var denemeler: [EvalSonuc] = []
             for _ in 0..<kosuSayisi {
@@ -967,7 +970,9 @@ extension Degerlendirme {
                                   yanit: tur.metin,
                                   sureMs: tur.sureMs,
                                   hamGirdiler: tur.izler.compactMap(\.hamGirdi),
-                                  hamCiktilar: tur.izler.compactMap(\.hamCikti))
+                                  hamCiktilar: tur.izler.compactMap(\.hamCikti),
+                                  hataSinifi: tur.hataSinifi == .yok
+                                      ? nil : tur.hataSinifi.rawValue)
                 s = EvalPuan.puanla(s,
                                     cipYok: vaka.cipYok,
                                     yanitIcermeli: vaka.yanitIcermeli,
@@ -996,7 +1001,8 @@ extension Degerlendirme {
         //   "bagimsiz" → her adım öncesi sıfırlama (bağlam taşınmaz)
         // Karşılaştırmanın anlamı budur: bağlam taşımak yardım mı ediyor,
         // yoksa birikmiş bağlam modeli bozuyor mu?
-        for z in EvalRapor.shardSec(EvalVakalari.zincirler(), shard: shard, toplam: toplam) {
+        for z in EvalRapor.shardSec(EvalVakalari.zincirler(), shard: shard, toplam: toplam)
+        where filtre.isEmpty || z.ad.contains(filtre) {
             let belgeIster = z.ad.contains("belge-oku")
             for mod in ["zincir", "bagimsiz"] {
                 if mod == "zincir" {
@@ -1016,7 +1022,9 @@ extension Degerlendirme {
                                       beklenenCipler: beklenen,
                                       gercekCipler: tur.izler.map(\.ikon),
                                       yanit: tur.metin,
-                                      sureMs: tur.sureMs)
+                                      sureMs: tur.sureMs,
+                                      hataSinifi: tur.hataSinifi == .yok
+                                          ? nil : tur.hataSinifi.rawValue)
                     s = EvalPuan.puanla(s, basarisizCipVar: tur.basarisizCip)
                     // Kesilen tur ÖLÇÜLEMEDİ (tekil daldaki gerekçenin aynısı).
                     if tur.zamanAsimi { s.sorunlar.append("zaman-asimi"); s.olculemedi = true }
@@ -1107,6 +1115,8 @@ extension Degerlendirme {
         let izler: [AracIzi]
         let sureMs: Int
         let zamanAsimi: Bool
+        /// Tur hatayla bittiyse sınıfı; `.yok` ise hata yok.
+        var hataSinifi: ModelServisi.HataSinifi = .yok
         var basarisizCip: Bool {
             izler.contains { if case .basarisiz = $0.durum { return true }; return false }
         }
@@ -1116,17 +1126,21 @@ extension Degerlendirme {
     /// servis tarafında hata SAYILMAZ, o yüzden bayrağı burada kendimiz taşıyoruz.
     private static func turKos(_ servis: ModelServisi, _ istem: String) async -> TurSonucu {
         let basla = Date()
-        let gorev = Task { @MainActor in await servis.yanitla(istem) { _ in } }
+        // `yanitla` yerine `yanitSonucu`: hata SINIFI de ölçüme girsin.
+        // Sarmalayıcı yalnız (metin, izler) döndürüyordu ve düşen turların
+        // sebebi ham JSON'a hiç yazılmıyordu.
+        let gorev = Task { @MainActor in await servis.yanitSonucu(istem) { _ in } }
         let bekci = Task { @MainActor in
             try await Task.sleep(for: vakaZamanAsimi)
             servis.durdur()
         }
-        let (metin, izler) = await gorev.value
+        let sonuc = await gorev.value
         bekci.cancel()
         let gecen = Date().timeIntervalSince(basla)
-        return TurSonucu(metin: metin, izler: izler,
+        return TurSonucu(metin: sonuc.metin, izler: sonuc.izler,
                          sureMs: Int(gecen * 1000),
-                         zamanAsimi: gecen >= vakaZamanAsimi.saniye)
+                         zamanAsimi: gecen >= vakaZamanAsimi.saniye,
+                         hataSinifi: sonuc.hataSinifi)
     }
 
     private static func satirlar(_ s: EvalSonuc) -> [String] {

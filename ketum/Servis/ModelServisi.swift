@@ -41,6 +41,31 @@ final class ModelServisi {
     /// Bir turun sonucu. Hata olup olmadığı METİNDEN ÇIKARILMAZ — servis açıkça
     /// bildirir. (Eskiden UI, dönen metni bilinen hata dizgileriyle karşılaştırıyordu;
     /// metin her değiştiğinde hata balonu sessizce ölüyordu.)
+    /// Turun NEDEN düştüğü. Tek bir "Şu an bunu yapamadım" cümlesi üç ayrı
+    /// arızayı örtüyordu (ölçüm: 5 vaka, hepsi aynı metin, hiçbiri aynı sebep).
+    /// Sınıf iki işi birden görür: kullanıcıya doğru cümleyi seçer (`Yerel`)
+    /// ve eval ham JSON'una yazılır — bir sonraki teşhis log eklemeden yapılır.
+    ///
+    /// İÇ AYRINTI SIZDIRMAZ: sınıf ADI loglanır, kullanıcı yalnız ona karşılık
+    /// gelen sade cümleyi görür (hata metni, satır no, model adı geçmez).
+    enum HataSinifi: String, Codable, Sendable {
+        case yok
+        /// Model konuştu ama geriye yalnız ayrıştırılamamış araç çağrısı kaldı.
+        case bosYanit
+        /// Turda bir araç düştü ve model üstüne söyleyecek metin üretmedi.
+        case aracDustu
+        /// Bağlam penceresi taştı; özetleyip yeniden kurma da tutmadı.
+        case baglamTasmasi
+        /// Guardrail — kurtarılamaz, retry yok.
+        case sinirDisi
+        /// Dil desteklenmiyor — kurtarılamaz, retry yok.
+        case dilDisi
+        /// Yan etki oluştuktan sonraki hata; retry bilerek yapılmadı.
+        case yazmaSonrasi
+        /// Diğer üretim hataları; taze oturumla retry da tutmadı.
+        case uretimHatasi
+    }
+
     struct YanitSonucu {
         let metin: String
         let izler: [AracIzi]
@@ -50,6 +75,8 @@ final class ModelServisi {
         var tekrarDenenebilir: Bool = false
         /// Kalıcı değil, yalnızca anlık durum bildirimi — SwiftData'ya yazılmamalı.
         var geciciMi: Bool = false
+        /// Hata sınıfı — `hataMi` false ise daima `.yok`.
+        var hataSinifi: HataSinifi = .yok
     }
 
     private(set) var durum: Durum = .hazirlaniyor
@@ -408,18 +435,40 @@ final class ModelServisi {
         return [olustur, oku, duzenle, takvim, hatirlatici, arama, hesap, zaman]
     }
 
-    /// Arama profili (web-arama §5.4): web_arama + Hesap + Zaman.
+    /// Arama profili (web-arama §5.4): web_arama + Zaman. HESAP YOK.
     ///
     /// Takvim/Kişi/Arama(Spotlight)/Belge/Hatırlatıcı BİLEREK YOK. Model
     /// sorguyu kendi üretir; kişisel veri aracı aynı oturumda dururken
     /// "notlarımdaki adresi ara" tek adımda dışarı sızabilirdi. Kişisel veri
     /// gerektiren karma iş iki turda akar ve ikinci tur oturumu kirletmiş
     /// olduğu için onay kapısına düşer.
+    ///
+    /// HESAP ARACI ÇIKARILDI (denetim küme 1 — canlı veri uydurması). Ölçülen
+    /// üç vaka, bu profilde `hesapla`nın tek işlevinin UYDURMAYA MEŞRU KILIF
+    /// olduğunu gösterdi — model arayıp bulamadığı canlı değeri kendi kafasından
+    /// atıp aritmetiği araca yaptırıyor, çıkan sayıyı "araçtan geldi" diye
+    /// sunuyordu:
+    ///
+    ///   web-euro    → hesapla("(1.00 / 0.85) * 100") → "Euro 117,6471 TL"
+    ///   web-benzin  → hesapla("(1.60 * 1.20)")       → "Benzin 1.92 TL"
+    ///   web-lig     → hesapla("(139+30)*1.20")       → "202.8 puanla lider Beşiktaş"
+    ///
+    /// Üçünde de girdi sayıları HİÇBİR arama sonucundan gelmiyor; uydurma zaten
+    /// `ifade` alanında olup bitiyor. Araç doğru çalışıyor, sonuç yine de yalan.
+    /// Bunu talimatla kapatmak modelin iyi niyetine bel bağlamaktır (aynı ders
+    /// `yerelAramayiGizle`de iki kez alındı: 3B modelde yasak metni davranışı
+    /// kontrol etmiyor, yeteneği elinden almak kontrol ediyor).
+    ///
+    /// BEDELİ ve neden kabul edilebilir olduğu: "100 dolar kaç TL" gibi zincir
+    /// iki tura yayılır — kur bu turda web'den gelir, çarpma sonraki turda
+    /// gündelik profilde `hesapla` ile yapılır. `niyetProfili`ndeki HESAP KAÇIŞI
+    /// o ikinci turu gündeliğe yönlendirir, yani zincir kopmaz, yalnız uzar.
+    /// Aritmetiğin bir tur gecikmesi, uydurulmuş bir kurun anında sunulmasından
+    /// her koşulda iyidir.
     private func aramaAraclar() -> [any Tool] {
         var web = WebAramaAraci(); web.raporlayici = yurutucu; web.yurutucu = yurutucu; web.veriDeposu = veriDeposu
-        var hesap = HesapAraci();  hesap.raporlayici = yurutucu
         var zaman = ZamanAraci();  zaman.raporlayici = yurutucu
-        return [web, hesap, zaman]
+        return [web, zaman]
     }
 
     /// Bağlantı profili (mcp §5.4): seçili bağlantının araçları + Hesap + Zaman.
@@ -766,12 +815,31 @@ final class ModelServisi {
         // Arama: yalnızca sunucu tanımlı VE açıksa (web-arama §5.4). Kapalıysa
         // profil hiç seçilmez, araç modele hiç görünmez ve bugünkü dürüst
         // "cihazında böyle bir bilgi yok" yanıtı aynen sürer.
-        if aramaKullanilabilir, aramaSinyali(s) { return .arama }
+        // HESAP KAÇIŞI (denetim küme 1'in ikinci yarısı). Arama profilinde artık
+        // `hesapla` YOK; bu yüzden oturum aramaya YAPIŞMIŞKEN gelen saf aritmetik
+        // sorusu araçsız kalır ve model kafadan hesaplar — düzelttiğimiz arızanın
+        // aynısını başka kapıdan geri getirirdi.
+        //
+        // Kaçış YALNIZ yapışkanlıkta verilir: cümlenin KENDİSİNDE açık bir arama
+        // izi varsa ("euro", "fiyat", "kur ", "puan durumu") soru canlı veri
+        // sorusudur ve aramada KALIR — kaçış onu kurtarmaz, kurtarmamalı da.
+        // Yani "Euro kaç lira" hep aramada, arama turundan sonra gelen
+        // "peki 250 ile 890'ı topla" gündelikte çözülür.
+        let acikAramaIzi = Self.aramaIzleri.contains(where: s.contains)
+        if aramaKullanilabilir, aramaSinyali(s) {
+            if !acikAramaIzi, Self.hesapNiyeti(s) { return .gundelik }
+            return .arama
+        }
         // Aksi halde mevcut profili koru — ama cihaz dışı profiller yalnızca
         // hâlâ kullanılabilirken yapışkandır. Kullanıcı arada sunucuyu kapattıysa
         // ya da bağlantıyı sildiyse oturum gündeliğe düşer.
         switch mevcut {
-        case .arama:    return aramaKullanilabilir ? .arama : .gundelik
+        case .arama:
+            // Yapışkan aramadan aritmetik kaçışı burada da geçerli: önceki tur
+            // globe çipi düşürmemişse aramaSinyali false döner ve akış buraya
+            // gelir; kaçış tek yerde dursa oturum yine hesapsız kalırdı.
+            if !acikAramaIzi, Self.hesapNiyeti(s) { return .gundelik }
+            return aramaKullanilabilir ? .arama : .gundelik
         case .baglanti: return baglantiKullanilabilir ? .baglanti : .gundelik
         case .gundelik, .belge: return mevcut
         }
@@ -830,6 +898,32 @@ final class ModelServisi {
         return yapamadimIzleri.contains(where: m.contains)
     }
 
+    /// Metinsiz biten bir turu sınıflar: turda düşmüş bir araç varsa arıza
+    /// ARAÇtadır (`.aracDustu`), yoksa model hiç cümle kurmamıştır
+    /// (`.bosYanit`). Saf ve statik: modelsiz test edilir.
+    static func dususSinifi(izler: [AracIzi]) -> HataSinifi {
+        let dusenVar = izler.contains {
+            if case .basarisiz = $0.durum { return true }
+            return false
+        }
+        return dusenVar ? .aracDustu : .bosYanit
+    }
+
+    /// Sınıftan kullanıcı cümlesine tek eşleme noktası. Metin seçimi TEK
+    /// yerde durur ki yeni bir sınıf eklenince cümlesiz kalması derleyicide
+    /// görünsün. Saf: modelsiz test edilir.
+    static func dususMetni(_ sinif: HataSinifi) -> String {
+        switch sinif {
+        case .aracDustu:      return Yerel.aracDustuYanit
+        case .baglamTasmasi:  return Yerel.konusmaUzadi
+        case .sinirDisi:      return Yerel.sinirDisi
+        case .dilDisi:        return Yerel.dilDesteklenmiyor
+        case .yazmaSonrasi:   return Yerel.yazmaSonrasiHata
+        case .bosYanit:       return Yerel.yanitToparlanamadi
+        case .uretimHatasi, .yok: return Yerel.tekrarDene
+        }
+    }
+
     /// Arama sunucusu tanımlı ve açık mı. `aktifMi` adres geçersizse zaten
     /// false döner — "açık ama çalışmayan" ara durum yoktur.
     private var aramaKullanilabilir: Bool { WebAramaAyari.aktifMi }
@@ -858,6 +952,41 @@ final class ModelServisi {
         if oncekiTurArama { return true }
         return Self.aramaIzleri.contains(where: s.contains)
     }
+
+    /// AÇIK aritmetik niyeti — yapışkan arama oturumundan gündeliğe kaçışın
+    /// tek ölçütü (denetim küme 1). Saf fonksiyon: durum okumaz, model gerektirmez.
+    ///
+    /// İKİ şart birden aranır — yalnız sözcük YETMEZ, RAKAM da gerekir. Tek
+    /// başına sözcük listesi "bölge", "bölüm", "toplantı", "çarpıcı" gibi
+    /// gündelik sözcüklerin içinde geçip canlı veri sorusunu aramadan kaçırırdı;
+    /// rakam şartı bu yanlış pozitiflerin neredeyse hepsini kesiyor.
+    ///
+    /// Liste bilerek DAR ve canlı veri sözlüğüyle KESİŞMEZ: "fiyat", "kaç para",
+    /// "kaç tl", "kur " burada YOK — onlar `aramaIzleri`nin işi ve orada kalmalı.
+    /// Aramada SONDAKİ boşluk bilerek eklenir: "…'e böl" gibi izler sözcük SONU
+    /// aramak zorunda ve tümce sonunda da eşleşmeleri gerekiyor. Boşluksuz
+    /// "e böl" yazılsaydı "bu bölgede" içindeki "e bölge"ye takılırdı.
+    static func hesapNiyeti(_ s: String) -> Bool {
+        guard s.contains(where: \.isNumber) else { return false }
+        let yastik = s + " "
+        return hesapIzleri.contains(where: yastik.contains)
+    }
+
+    /// Aritmetik izleri. Hepsi ya fiil ya da hesap-özgü kalıp; canlı değer adı yok.
+    ///
+    /// TUZAKLAR (hepsi ölçülüp elendi): çıplak "böl" yasak — "bölge/bölüm" içinde
+    /// geçer, o yüzden yalnız çekimli hâlleri ve "…e böl " biçimi alınır. "eksi"
+    /// yasak — "eksik" içinde geçer. "topla" tek başına "toplantı" içinde geçer
+    /// ama rakam şartı bunu zaten kesiyor ("yarınki toplantım kaçta" rakamsız).
+    private static let hesapIzleri = [
+        "hesapla", "hesab", "topla", "toplamı", "çarp", "carp",             // tr
+        "böler", "bölers", "böleceğ", "bölün", "bölüp",                     // tr — çekimli
+        "e böl ", "a böl ", "ye böl", "ya böl", "i böl ", "ı böl ",         // tr — "24'e böl"
+        "yüzde", "yuzde", "kdv", "kaç eder", "kac eder", "kaç yapar",       // tr
+        "kaç kalır", "farkı ne", "kaçtan",                                  // tr
+        "calculate", "compute", "multiply", "divide", "subtract",           // en
+        "sum of", "percent of", "times what",                               // en
+    ]
 
     /// Turun çiplerinden bir sonraki turun yönlendirme sinyallerini çıkarır.
     /// İkon, çipi düşüren araca aittir ve modelin ürettiği bir metin DEĞİLDİR —
@@ -1156,10 +1285,17 @@ final class ModelServisi {
             seyir.bitir()
             // Geriye yalnız sızıntı kalmışsa turda söylenecek bir şey yok:
             // yarım JSON göstermektense tekrar denenebilir hata daha dürüst.
+            //
+            // AMA "hangi hata" ayrımı burada yapılır: turda bir araç DÜŞTÜYSE
+            // bu bir üretim arızası değil, araç arızasıdır ve kullanıcı zaten
+            // çipte görüyor. Aynı cümleyi ikisine de vermek, ölçümde beş
+            // vakanın beşini de aynı metne düşürüp sebebi görünmez kılmıştı.
             if sonMetin.isEmpty, !ham.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 akis("")
-                return YanitSonucu(metin: Yerel.tekrarDene, izler: yurutucu.izler,
-                                   hataMi: true, tekrarDenenebilir: true)
+                let sinif = Self.dususSinifi(izler: yurutucu.izler)
+                return YanitSonucu(metin: Self.dususMetni(sinif), izler: yurutucu.izler,
+                                   hataMi: true, tekrarDenenebilir: yurutucu.retryGuvenli,
+                                   hataSinifi: sinif)
             }
             if sonMetin != ham { akis(sonMetin) }
             return YanitSonucu(metin: sonMetin, izler: yurutucu.izler)
@@ -1225,17 +1361,20 @@ final class ModelServisi {
         if !yurutucu.retryGuvenli {
             // Hata balonu evet; "yeniden dene" HAYIR — yan etki tekrarlanırdı.
             return YanitSonucu(metin: Yerel.yazmaSonrasiHata, izler: yurutucu.izler,
-                               hataMi: true, tekrarDenenebilir: false)
+                               hataMi: true, tekrarDenenebilir: false,
+                               hataSinifi: .yazmaSonrasi)
         }
         if let g = error as? LanguageModelSession.GenerationError {
             switch g {
             case .guardrailViolation:
                 // Kurtarılamaz — pil yakmadan tek cümle (retry yok).
                 return YanitSonucu(metin: Yerel.sinirDisi, izler: yurutucu.izler,
-                                   hataMi: true, tekrarDenenebilir: false)
+                                   hataMi: true, tekrarDenenebilir: false,
+                                   hataSinifi: .sinirDisi)
             case .unsupportedLanguageOrLocale:
                 return YanitSonucu(metin: Yerel.dilDesteklenmiyor, izler: yurutucu.izler,
-                                   hataMi: true, tekrarDenenebilir: false)
+                                   hataMi: true, tekrarDenenebilir: false,
+                                   hataSinifi: .dilDisi)
             case .exceededContextWindowSize:
                 // Kurtarılabilir: özetle, oturumu yeniden kur, bir kez dene.
                 guard uretimNo == benimTur else { return iptalSonucu() }
@@ -1244,8 +1383,9 @@ final class ModelServisi {
                 if let yeni = oturum, let m = try? await akisYut(yeni, soru: soru, akis: akis) {
                     return YanitSonucu(metin: m, izler: yurutucu.izler)
                 }
-                return YanitSonucu(metin: Yerel.tekrarDene, izler: yurutucu.izler,
-                                   hataMi: true, tekrarDenenebilir: true)
+                return YanitSonucu(metin: Yerel.konusmaUzadi, izler: yurutucu.izler,
+                                   hataMi: true, tekrarDenenebilir: true,
+                                   hataSinifi: .baglamTasmasi)
             default:
                 break
             }
@@ -1257,8 +1397,13 @@ final class ModelServisi {
         if let yeni = oturum, let m = try? await akisYut(yeni, soru: soru, akis: akis) {
             return YanitSonucu(metin: m, izler: yurutucu.izler)
         }
-        return YanitSonucu(metin: Yerel.tekrarDene, izler: yurutucu.izler,
-                           hataMi: true, tekrarDenenebilir: true)
+        // Retry de tutmadı. Turda düşmüş bir araç varsa kullanıcının gördüğü
+        // arıza ODUR (çip zaten orada); yoksa arıza üretim tarafındadır.
+        let sinif: HataSinifi =
+            Self.dususSinifi(izler: yurutucu.izler) == .aracDustu ? .aracDustu : .uretimHatasi
+        return YanitSonucu(metin: Self.dususMetni(sinif), izler: yurutucu.izler,
+                           hataMi: true, tekrarDenenebilir: true,
+                           hataSinifi: sinif)
     }
 
     /// İPTAL EDİLMİŞ TURUN KURTARMASI YAPILMAZ (denetim P1-7).

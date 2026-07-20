@@ -54,7 +54,15 @@ struct BelgeDuzenleAraci: KetumAraci {
             return await kirletEgerBasarili(AracSonucu(
                 cipMetni: Yerel.belgeDuzenlendi(ekli.bicim.etiket, url.lastPathComponent),
                 durum: .yazildi,
-                modeleDonen: "file_edited: \(url.lastPathComponent)",
+                // BİÇİM AÇIKÇA SÖYLENİR (ölçüm: "bunu word'e çevir" → araç
+                // .xlsx'i .xlsx olarak yeniden yazıyor, model "Word'e
+                // çevrildi" diyordu — sessiz yalan). Bu araç biçim
+                // DÖNÜŞTÜRMEZ; dönüştürme belge_oku + belge_olustur ile olur.
+                // Olguyu modele bildirmek, kuralı talimatta tekrarlamaktan
+                // güçlüdür: model kendi çıktısında yalanla yüzleşir.
+                modeleDonen: "file_edited: \(url.lastPathComponent) "
+                    + "(format unchanged: \(ekli.bicim.uzanti); this tool never converts "
+                    + "format — to change format call belge_olustur with the new bicim)",
                 hamCikti: url.path,
                 dosyaYolu: url.path
             ))

@@ -114,8 +114,14 @@ enum OtoTest {
             ("nasılsın", "yok"),
             // Özgüllük: "tablo olarak" (belge-oku), "tablo" (belge-olustur) genelini yenmeli.
             ("bunu tablo olarak göster", "belge-oku"),
-            // Genel kelime hâlâ doğru beceriye gitmeli — özgüllük kuralı bunu bozmamalı.
-            ("haftalık yemek tablosu yap", "belge-olustur"),
+            // "tablo yap" ARTIK belge-olustur'u tetiklemez ve bu bilinçlidir:
+            // çıplak "tablo" tetikleyicisi kaldırıldı, çünkü tablo bir GÖSTERİM
+            // isteğidir, dosya isteği değil (Yonlendirici.belgeEki). Kullanıcı
+            // ekranda tablo isterken sessizce .xlsx üretiliyordu.
+            ("haftalık yemek tablosu yap", "yok"),
+            // Dosya AÇIKÇA istenince belge-olustur yine tetiklenmeli — kaldırma
+            // bu yolu kapatmamalı (asıl regresyon riski burada).
+            ("haftalık yemek listesini excel yap", "belge-olustur"),
             ("takvimimi göster", "takvim"),
             // kod-spec §8: yeni beceriler. "python ile" tetikleyicisi olmasa
             // "hesapla" (7) "python"u (6) yenerdi — özgüllük kuralının gereği.

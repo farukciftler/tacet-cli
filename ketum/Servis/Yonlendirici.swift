@@ -114,7 +114,13 @@ enum Yonlendirici {
     estimate, guess, average, or recall a plausible number. "I couldn't find it" is \
     always the better answer.
     - Use 'web_arama' for weather, news and world knowledge; never answer from memory.
-    - Route arithmetic to 'hesapla' and today's date/time to 'zaman'.
+    - A LIVE VALUE IS NEVER COMPUTED. Exchange rates, fuel prices, gold prices, \
+    league standings, temperatures — these are READ from a search result or they are \
+    not known. There is no arithmetic that turns a number you assumed into a real one. \
+    If the results do not state the value, say you could not find it.
+    - Today's date/time comes from 'zaman'. There is no calculator in this mode: if the \
+    user needs arithmetic, give them the figure you actually found and ask them to \
+    repeat the calculation request, which will be handled in the next turn.
     """
 
     /// Bağlantı: uzak araçlar kullanıcının SUNUCUSUNU değiştirir.

@@ -71,6 +71,25 @@ enum Yerel {
     static var dilDesteklenmiyor: String { String(localized: "Bu dili şu an tam desteklemiyorum.") }
     static var tekrarDene: String { String(localized: "Şu an bunu yapamadım. Bir daha sorar mısın?") }
 
+    // MARK: - Hata sınıfına göre düşüş cümleleri
+    // Tek bir "Şu an bunu yapamadım" üç ayrı arızayı örtüyordu: kullanıcı ne
+    // olduğunu da, kendi tarafında yapabileceği bir şey olup olmadığını da
+    // bilemiyordu. Her cümle NE olduğunu söyler ama İÇ AYRINTI vermez —
+    // hata metni, satır numarası, araç adı, model adı hiçbirinde geçmez.
+    /// Geriye yalnız yarım araç çağrısı kaldı: model cümleyi hiç kurmadı.
+    static var yanitToparlanamadi: String {
+        String(localized: "Cevabı toparlayamadım — sana yarım bir şey göstermek istemem. Bir daha sorar mısın?")
+    }
+    /// Turda araç düştü ve model üstüne bir şey söylemedi. Çip zaten NE
+    /// düştüğünü gösteriyor; cümle uydurmadığımızı söyler, ayrıntıyı çipe bırakır.
+    static var aracDustuYanit: String {
+        String(localized: "Denedim ama bu adım yürümedi; sonucu uydurmaktansa söylemeyi tercih ederim. Yukarıdaki adıma dokunursan ne olduğunu görebilirsin.")
+    }
+    /// Bağlam taştı: kullanıcının yapabileceği somut bir şey VAR, onu söyle.
+    static var konusmaUzadi: String {
+        String(localized: "Konuşma benim için fazla uzadı. Yeni bir sohbet açıp tekrar sorarsan bunu yapabilirim.")
+    }
+
     // MARK: - Kod çalıştırma (kod-spec §5)
     static var kodCalisiyor: String { String(localized: "Kod çalıştırılıyor…") }
     static func kodCalisti(_ ms: Int) -> String { String(localized: "Kod çalıştırıldı · \(ms) ms") }

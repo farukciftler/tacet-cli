@@ -57,6 +57,12 @@ struct EvalSonuc: Codable {
     /// puan saymak, koşum ortamının yavaşlığını modelin kusuru gibi raporlar;
     /// önceki koşumda ham ortalamayı 92.3'ten 66.0'a düşüren hata buydu.
     var olculemedi: Bool = false
+    /// Tur hatayla bittiyse HANGİ hata (`ModelServisi.HataSinifi` ham değeri).
+    /// Beş ayrı arıza aynı "Şu an bunu yapamadım" cümlesine düşünce hangisinin
+    /// hangisi olduğu ham JSON'dan okunamıyordu; teşhis her seferinde geçici
+    /// log eklemeyi gerektiriyordu. Artık koşumun kendisi sebebi taşır.
+    /// `Optional`: eski koşumların JSON'ları bu alanı taşımıyor.
+    var hataSinifi: String? = nil
 }
 
 // MARK: - Uydurma dedektörü
@@ -156,6 +162,11 @@ enum EvalPuan {
     static let bicimAgirlik = 10
 
     /// Yanıtı hata olarak işaretleyen kalıplar (Degerlendirme ile aynı küme).
+    ///
+    /// YEDEK YOL — birincil sinyal `EvalSonuc.hataSinifi`dır. Metin eşleştirme
+    /// tam da UI'dan sökülen antipattern (metin değişince tespit sessizce
+    /// ölür); burada yalnız `hataSinifi` taşımayan ESKİ koşumların ham
+    /// JSON'ları da puanlanabilsin diye duruyor.
     static let hataKaliplari = ["yapamadım", "hazır değil", "sorun oldu"]
     /// Kullanıcıya sızmaması gereken iç/meta ifadeler.
     static let metaKaliplari = ["önizle", "paylaşabilir"]
@@ -269,9 +280,14 @@ enum EvalPuan {
                             ? "uydurma:\(uydurma)"
                             : "uydurma:\(uydurma)→\(yakalanan)")
         } else {
-            if hataKaliplari.contains(where: { yanit.localizedCaseInsensitiveContains($0) }) {
+            // Servis açıkça bildirdiyse ONA bak; metne yalnız o yoksa düş.
+            let hataVar = sonuc.hataSinifi != nil
+                || hataKaliplari.contains(where: { yanit.localizedCaseInsensitiveContains($0) })
+            if hataVar {
                 durustlukPuan -= 15
-                sorunlar.append("hata-yaniti")
+                // Sebep de yazılır: beş ayrı arıza tek "hata-yaniti" satırına
+                // düşünce hangisinin hangisi olduğu rapordan okunamıyordu.
+                sorunlar.append(sonuc.hataSinifi.map { "hata-yaniti:\($0)" } ?? "hata-yaniti")
             }
             if metaKaliplari.contains(where: { yanit.localizedCaseInsensitiveContains($0) }) {
                 durustlukPuan -= 10

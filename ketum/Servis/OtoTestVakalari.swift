@@ -97,7 +97,226 @@ enum OtoTestVakalari {
         mcpAdCakismasi(&d)
         mcpAlakaSiralamasi(&d)
         sapmaMatrisi(&d)
+        canliVeriKilidi(&d)
+        kodDiliKilidi(&d)
+        dususSiniflandirmasi(&d)
         return d
+    }
+
+    // MARK: - Küme 2: "Şu an bunu yapamadım" TURLARI
+
+    /// KÖK NEDEN (ölçüldü, iPhone 17 Pro, kod kategorisi): küçük model JS
+    /// motoruna PYTHON yazıyor. Aynı koşumda 3/4 kod vakası Python sözdizimi
+    /// üretti — `for i in range(2, 101):`, `print(i, end=' ')`,
+    /// `for i from 0 to 19:` — motor `SyntaxError` döndü, model ham JS
+    /// ayrıştırıcı mesajından ("Unexpected identifier 'i'. Expected '('")
+    /// DİLİ değiştirmesi gerektiğini çıkaramadı, ikinci deneme de düştü ve
+    /// tur `Yerel.tekrarDene`ye kaldı.
+    ///
+    /// İki katman kilitlenir:
+    ///   (a) `kod.md` çekirdeği — "JavaScript. Always." kuralı enjeksiyon
+    ///       bütçesine SIĞMALI. Eski dosyada bu olgu `<!--/cekirdek-->`ın
+    ///       ALTINDAydı, yani bütçe daralınca ilk düşen satırdı; üstelik
+    ///       çekirdek ölü bir `dil:"js"` argümanı öğretiyordu.
+    ///   (b) `KodCalistirAraci.pythonMu` — kılavuz tutmazsa aracın kendisi
+    ///       nedeni söyler ve modelin kalan tek denemesi boşa gitmez.
+    private static func kodDiliKilidi(_ d: inout OtoTestDefteri) {
+        d.baslik("KOD DİLİ KİLİDİ · JS motoruna Python yazılmıyor (küme 2)")
+
+        // — (a) Kılavuz çekirdeği —
+        // Beceri PAKETTEN okunur (kaynak dosyadan değil): modele giden şey
+        // budur. Frontmatter ayrıştırması, bundle'a girmiş olması ve
+        // enjeksiyon kesmesi böylece TEK iddiada birlikte doğrulanır.
+        guard let kodBecerisi = BeceriDeposu.paket.first(where: { $0.ad == "kod" }) else {
+            d.dogru(false, "kod becerisi pakette bulundu")
+            return
+        }
+        let ham = kodBecerisi.metin
+        // Enjeksiyon gövdesi = modele GERÇEKTEN giden metin (çekirdek + artan
+        // bütçeye kuyruk). İddiayı ham dosyaya değil BUNA yapmak şart:
+        // kural dosyada olup enjeksiyonda kesiliyorsa modelde YOK demektir.
+        let enjekte = BeceriDeposu.enjeksiyonGovdesi(ham)
+        d.dogru(enjekte.contains("JavaScript"),
+                "kod.md enjeksiyonunda 'JavaScript' olgusu HAYATTA (bütçede kesilmiyor)",
+                "enjekte=\(enjekte.count) krk")
+        d.dogru(enjekte.contains("python") || enjekte.contains("Python"),
+                "kod.md enjeksiyonu 'python' istendiğinde ne yapılacağını söylüyor")
+        // Ölü argüman geri gelmesin: `dil` alanı şemadan çıkarıldı (P2-3),
+        // kılavuz onu öğretmeye devam ederse model her çağrıda boş bir decode
+        // slotu doldurmaya çalışır.
+        d.dogru(!ham.contains("dil:"),
+                "kod.md ÖLÜ `dil:` argümanını artık öğretmiyor (şemada yok)")
+        // Karşı-iddia: çekirdek gerçekten ayrıştı mı? Kırılmaz kuralların
+        // sonuncusu enjeksiyonda duruyorsa gövde satırda kesilmemiş demektir.
+        d.dogru(enjekte.contains("without a successful tool call"),
+                "kod.md çekirdeği SON kırılmaz kurala kadar enjekte ediliyor")
+
+        // — (b) Araç tarafı teşhis —
+        // ÖLÇÜMDE GÖRÜLEN GERÇEK BETİKLER (SONRA-ham + doğrulama koşumu):
+        let python = [
+            "for i in range(2, 101): if i % 2 != 0: print(i, end=' ')",
+            "for i from 0 to 19: print(fibonacci(i));",
+            "for i in range(1, 51): print(i**2)",
+            "def f(n): return n * 2",
+            "x = True",
+        ]
+        for k in python {
+            d.dogru(KodCalistirAraci.pythonMu(k), "Python yakalandı: \"\(k.prefix(38))…\"")
+        }
+        // Geçerli JS Python SANILMAMALI — yanlış pozitif, modele yanlış
+        // düzeltme öğretir ve çalışan kodu bozdurur.
+        let js = [
+            "let s=0; for (let i=1;i<=50;i++){s+=i*i;} console.log(s)",
+            "const a=[1,2]; for (const x of a) { console.log(x) }",
+            "for (const k in {a:1}) { console.log(k) }",
+            "console.log(new Date().toISOString())",
+            "print(2+2)",
+        ]
+        for k in js {
+            d.dogru(!KodCalistirAraci.pythonMu(k), "JS Python SANILMADI: \"\(k.prefix(38))…\"")
+        }
+    }
+
+    /// Metinsiz biten turun sınıflandırması ve sınıfa özgü cümle.
+    ///
+    /// Ölçülen arıza: BEŞ ayrı vaka (kod-fibonacci, kod-kare-toplam,
+    /// kod-tanimsiz-degisken, sayfa-kisa-2, zincir-excel-tablo-satir-pdf) tek
+    /// bir "Şu an bunu yapamadım" cümlesine düşüyordu. Kullanıcı ne olduğunu
+    /// bilemiyordu, teşhis ajanı da sebebi ham JSON'dan okuyamıyordu.
+    private static func dususSiniflandirmasi(_ d: inout OtoTestDefteri) {
+        d.baslik("DÜŞÜŞ SINIFLANDIRMASI · tek cümle beş arızayı örtmüyor (küme 2)")
+
+        let dusen = AracIzi(ikon: "curlybraces", metin: "Kod çalıştırılamadı",
+                            durum: .basarisiz("SyntaxError"))
+        let saglam = AracIzi(ikon: "function", metin: "Hesaplandı", durum: .okundu)
+
+        d.esit(ModelServisi.dususSinifi(izler: [dusen]), .aracDustu,
+               "düşmüş araç varsa sınıf .aracDustu")
+        d.esit(ModelServisi.dususSinifi(izler: [saglam, dusen]), .aracDustu,
+               "biri düştüyse sınıf .aracDustu (sağlam çip örtmez)")
+        d.esit(ModelServisi.dususSinifi(izler: []), .bosYanit,
+               "hiç araç yoksa sınıf .bosYanit")
+        d.esit(ModelServisi.dususSinifi(izler: [saglam]), .bosYanit,
+               "araçlar sağlamsa arıza üretim tarafında (.bosYanit)")
+
+        // Cümleler AYRIŞMALI: sınıf ayrımının tek görünür karşılığı budur.
+        // Aynı metne düşen iki sınıf, düzeltmeyi kullanıcı açısından geri alır.
+        let ayrik: [ModelServisi.HataSinifi] =
+            [.aracDustu, .baglamTasmasi, .bosYanit, .sinirDisi, .dilDisi, .yazmaSonrasi]
+        var gorulen: [String: ModelServisi.HataSinifi] = [:]
+        for s in ayrik {
+            let m = ModelServisi.dususMetni(s)
+            d.dogru(!m.isEmpty, "\(s.rawValue) için cümle var")
+            d.dogru(m != Yerel.tekrarDene,
+                    "\(s.rawValue) ARTIK genel 'yapamadım' cümlesine düşmüyor")
+            if let cakisan = gorulen[m] {
+                d.dogru(false, "\(s.rawValue) cümlesi ayrık", "\(cakisan.rawValue) ile aynı")
+            } else {
+                gorulen[m] = s
+                d.dogru(true, "\(s.rawValue) cümlesi ayrık")
+            }
+        }
+        // Sınıfsız hâl genel cümlede KALMALI: hata yokken özel bir şey deme.
+        d.esit(ModelServisi.dususMetni(.yok), Yerel.tekrarDene,
+               ".yok genel cümlede kalıyor")
+
+        // İÇ AYRINTI SIZMAZ: hiçbir kullanıcı cümlesi hata sınıfı adını, araç
+        // adını ya da motor terimini taşımamalı.
+        let sizinti = ["SyntaxError", "guardrail", "kod_calistir", "context",
+                       "JavaScript", "aracDustu", "token"]
+        for s in ayrik {
+            let m = ModelServisi.dususMetni(s)
+            for iz in sizinti {
+                d.dogru(!m.localizedCaseInsensitiveContains(iz),
+                        "\(s.rawValue) cümlesi '\(iz)' sızdırmıyor")
+            }
+        }
+    }
+
+    // MARK: - Küme 1: CANLI VERİ UYDURMASI · hesap aracı arama profilinde YOK
+
+    /// Arama profilinde `hesapla` bulunmadığını KODDAN doğrular.
+    ///
+    /// Ölçülen arıza (SONRA-ham): model arayıp bulamadığı canlı değeri kafadan
+    /// atıp aritmetiği `hesapla`ya yaptırıyor, çıkan sayıyı gerçek değer diye
+    /// sunuyordu — web-euro "(1.00 / 0.85) * 100" → "Euro 117,6471 TL",
+    /// web-benzin "(1.60 * 1.20)" → "1.92 TL", web-lig "(139+30)*1.20" →
+    /// "202.8 puanla lider". Uydurma `ifade` alanında olup bittiği için araç
+    /// doğru çalışsa da sonuç yalandı; tek deterministik önlem aracı o
+    /// profilden ÇIKARMAK.
+    ///
+    /// İddia KAYNAK AĞACINDA yapılır (`agTekeli` ile aynı yöntem): `aramaAraclar()`
+    /// private ve `ModelServisi` örneği model/izin ister, oysa kilit derleme
+    /// zamanı bir olgudur. Gövdeyi metin olarak okumak, birinin ileride
+    /// "hesap aracını geri koyalım" demesini yakalar.
+    @MainActor
+    private static func canliVeriKilidi(_ d: inout OtoTestDefteri) {
+        d.baslik("CANLI VERİ KİLİDİ · ARAMA PROFİLİNDE HESAP YOK (küme 1)")
+
+        let servis = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let kaynak = servis.appendingPathComponent("ModelServisi.swift")
+        guard let metin = try? String(contentsOf: kaynak, encoding: .utf8) else {
+            d.dogru(false, "ModelServisi.swift okunabildi", kaynak.path)
+            return
+        }
+
+        // Yalnız `aramaAraclar()` GÖVDESİ — dosyanın geri kalanında HesapAraci
+        // elbette geçiyor (gündelik/belge/bağlantı profilleri onu kullanır).
+        let imza = "private func aramaAraclar() -> [any Tool] {"
+        guard let bas = metin.range(of: imza),
+              let son = metin.range(of: "\n    }", range: bas.upperBound..<metin.endIndex) else {
+            d.dogru(false, "aramaAraclar() gövdesi ayrıştırılabildi", "imza bulunamadı")
+            return
+        }
+        let govde = String(metin[bas.upperBound..<son.lowerBound])
+
+        d.dogru(!govde.contains("HesapAraci"),
+                "arama profilinde 'hesapla' YOK (canlı değer aritmetikle uydurulamaz)",
+                "gövdede HesapAraci geçiyor")
+        // Karşı-iddia: gövde gerçekten AYRIŞTI mı? Yukarıdaki iddia boş dizgede
+        // de yeşile döner; web aracının varlığı taramanın canlı olduğunu kanıtlar.
+        d.dogru(govde.contains("WebAramaAraci"),
+                "arama profili gövdesi gerçekten tarandı (web_arama duruyor)")
+        d.dogru(govde.contains("ZamanAraci"), "arama profilinde 'zaman' korunuyor")
+
+        // Diğer profiller hesabı KAYBETMEMELİ — hesap kategorisi (90.0) oralarda
+        // ölçülüyor; bu satırlar düzeltmenin yan hasarını doğrudan kilitler.
+        for imza in ["private func gundelikAraclar() -> [any Tool] {",
+                     "private func belgeAraclar() -> [any Tool] {"] {
+            guard let b = metin.range(of: imza),
+                  let s = metin.range(of: "\n    }", range: b.upperBound..<metin.endIndex) else {
+                d.dogru(false, "profil gövdesi ayrıştırılabildi", imza)
+                continue
+            }
+            let ad = imza.contains("gundelik") ? "gündelik" : "belge"
+            d.dogru(String(metin[b.upperBound..<s.lowerBound]).contains("HesapAraci"),
+                    "\(ad) profilinde 'hesapla' KORUNUYOR")
+        }
+
+        // HESAP KAÇIŞI: yapışkan arama oturumundan aritmetiğin çıkış kapısı.
+        // Aritmetik sorusu kaçmalı, canlı değer sorusu KAÇMAMALI.
+        let kacmali = [
+            "1250 ile 890'ı topla, üstüne %20 kdv ekle",
+            "4536'yı 24'e böl",
+            "(45 + 55) çarpı 3 eksi 100 kaç eder?",
+            "870 lirayı 6 kişiye eşit böleceğiz",
+            "2'nin 40. kuvvetini hesapla",
+            "calculate 12 percent of 500",
+        ]
+        for c in kacmali {
+            d.dogru(ModelServisi.hesapNiyeti(c), "hesap niyeti tanındı: \"\(c)\"")
+        }
+
+        // Rakamsız sözcük TEK BAŞINA yetmez — "bölge/toplantı" tuzağı.
+        let kacmamali = [
+            "euro kaç lira şu an?",                 // canlı değer, rakam bile yok
+            "bu bölgede hava nasıl",                // "böl" alt dizgesi, rakam yok
+            "yarınki toplantım kaçta",              // "topla" alt dizgesi + rakam yok
+            "haberleri özetle",
+        ]
+        for c in kacmamali {
+            d.dogru(!ModelServisi.hesapNiyeti(c), "hesap niyeti YOK: \"\(c)\"")
+        }
     }
 
     /// Askıya alma gerektiren vakalar (onay kapısı). OtoTest ayrı bir Task'ta çağırır.
@@ -1438,6 +1657,37 @@ enum OtoTestVakalari {
                     "console.error/warn/info da yakalanır", cikti)
         case let sonuc:
             d.dogru(false, "console.error/warn/info yakalanır", "\(sonuc)")
+        }
+
+        // 1b. ÜST DÜZEY `return` KURTARMASI: küçük model betiği bir fonksiyon
+        //     gövdesi gibi yazıyor. Global kapsamda bu SyntaxError'dı ve tur
+        //     "yapamadım"a düşüyordu (ölçüm: kod kategorisinin en sık hatası).
+        switch await KodMotoru.calistir("const x = 6*7;\nreturn x;") {
+        case .basarili(let cikti, _):
+            d.esit(cikti, "42", "üst düzey `return` IIFE'ye sarılıp çalışır")
+        case let sonuc:
+            d.dogru(false, "üst düzey return çalışır", "\(sonuc)")
+        }
+        // Sarmalama print'i YUTMAMALI (kurtarma yolunda da çıktı okunur).
+        switch await KodMotoru.calistir("print('a');\nreturn 1;") {
+        case .basarili(let cikti, _):
+            d.dogru(cikti.contains("a"), "return kurtarmasında print çıktısı korunur", cikti)
+        case let sonuc:
+            d.dogru(false, "return kurtarmasında print korunur", "\(sonuc)")
+        }
+        // KURTARMA DAR OLMALI: sarmalama yalnız bu sözdizimi hatasında devreye
+        // girer; son-ifade değeri ve gerçek hatalar bit düzeyinde aynı kalır.
+        switch await KodMotoru.calistir("6*7") {
+        case .basarili(let cikti, _):
+            d.esit(cikti, "42", "son ifade değeri HÂLÂ çıktı sayılır (sarmalama bozmadı)")
+        case let sonuc:
+            d.dogru(false, "son ifade değeri korunur", "\(sonuc)")
+        }
+        switch await KodMotoru.calistir("let a = ;") {
+        case .hata(let m):
+            d.dogru(!m.isEmpty, "ilgisiz sözdizimi hatası sarmalanmadan hata döner", m)
+        case let sonuc:
+            d.dogru(false, "ilgisiz sözdizimi hatası hata döner", "\(sonuc)")
         }
 
         // 2. Nesne çıktısı "[object Object]" DEĞİL, okunur JSON olmalı —

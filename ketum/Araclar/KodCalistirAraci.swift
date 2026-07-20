@@ -54,6 +54,32 @@ struct KodCalistirAraci: KetumAraci {
     /// da taşıyor; 4096 bütçesini yemesin diye burada kırpılır (kod-spec §7).
     private static let modelHataTavani = 400
 
+    /// Betik Python'a mı benziyor? ÖLÇÜM BULGUSU: küçük model kod vakalarının
+    /// çoğunda Python yazıyor (`for i in range(2,101):`, `print(i, end=' ')`),
+    /// motor JS olduğu için `SyntaxError` alıyor ve turu kaybediyor. Ham JS
+    /// ayrıştırıcı mesajı ("Unexpected identifier 'i'") düzeltmek için YETMEZ:
+    /// Python yazdığını sanan bir modele "beklenen '(' " demek yanlış onarıma
+    /// götürür. Bu yüzden nedeni araç söyler — modelin kalan TEK denemesi
+    /// boşa gitmesin.
+    ///
+    /// Saf ve statik: modelsiz test edilir.
+    static func pythonMu(_ kod: String) -> Bool {
+        // Bu belirteçlerin her biri JS'te ya sözdizimi hatası ya tanımsızdır;
+        // geçerli bir JS betiğini yanlışlıkla Python sanma riski yoktur.
+        // `print(` BİLEREK yok: motor `print`i JS'te de tanır (kod-spec §5.2).
+        let pythonaOzgu = ["range(", "def ", "elif ", "end=", " True", " False", " None"]
+        if pythonaOzgu.contains(where: kod.contains) { return true }
+        // İKİ NOKTAYLA BİTEN BLOK BAŞLIĞI. JS'te `for`/`if`/`while` başlığı
+        // parantezle açılır, gövde süslü ayraçla gelir; iki nokta üst üste ile
+        // BİTMEZ. Ölçümde görülen `for i from 0 to 19: print(...)` tam olarak
+        // buraya düşer — `range(` yok, ` in ` yok, ama JS de değil.
+        // `{` varsa dokunma: `for (const k in o) { ... }` geçerli JS'tir ve
+        // nesne değişmezleri de iki nokta taşır.
+        guard !kod.contains("{") else { return false }
+        let blokBasi = ["for ", "if ", "while ", "else", "try", "except"]
+        return kod.contains(":") && blokBasi.contains(where: kod.contains)
+    }
+
     /// Hata dönüşünü tek yerde kurar: son denemede `error_final` eklenir
     /// (kod-spec §5.4 adım 3) — ama NEDEN de söylenir, çünkü modelin
     /// kullanıcıya vereceği dürüst kısa cevap nedeni içermeli.
@@ -120,6 +146,16 @@ struct KodCalistirAraci: KetumAraci {
                 // description'daki "call it ONCE more" modeli boşa bir 3.
                 // çağrıya itmesin; 3. çağrı reddi yalnız emniyet kemeridir.
                 let ilkDeneme = denemeNo == 1
+                // DİL TEŞHİSİ ÖNCE GELİR. Betik Python'sa ham JS ayrıştırıcı
+                // mesajı ("Unexpected identifier 'i'. Expected '('") modeli
+                // yanlış onarıma sürüklüyor: parantez ekliyor, dili
+                // değiştirmiyor, ikinci deneme de düşüyor ve tur kayboluyor.
+                // Nedeni açıkça söylemek kalan tek denemeyi işe yarar kılar.
+                let neden = Self.pythonMu(arguments.kod)
+                    ? "error: this script is Python, but the sandbox runs JavaScript ONLY. "
+                      + "Rewrite the SAME logic in JavaScript: for (let i = 0; i < n; i++) {...}, "
+                      + "console.log(x). Do not use range(), def, or indent blocks.\n\(mesaj)"
+                    : "error: \(mesaj)"
                 return AracSonucu(
                     cipMetni: ilkDeneme ? Yerel.kodYenidenDeneniyor
                                         : Yerel.kodCalistirilamadi,
@@ -127,7 +163,7 @@ struct KodCalistirAraci: KetumAraci {
                     // Motor artık tip+mesaj+satır no+HATALI SATIRIN METNİ ve
                     // hatadan önceki çıktıyı veriyor; hepsi modele geçer
                     // (ölçüm: "SyntaxError" tek başına düzeltme için yetmiyor).
-                    modeleDonen: Self.hataMetni("error: \(mesaj)", sonDeneme: !ilkDeneme),
+                    modeleDonen: Self.hataMetni(neden, sonDeneme: !ilkDeneme),
                     hamCikti: mesaj
                 )
             case .zamanAsimi:
