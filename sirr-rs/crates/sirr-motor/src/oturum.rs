@@ -16,7 +16,50 @@ pub const EN_FAZLA_TUR: usize = 4;
 
 /// Sabit oturum talimati. Eval'in ve uygulamanin AYNI metni gormesi sart:
 /// farkli istemle olculen bir davranis uygulamayi baglamaz.
+///
+/// YER TUTUCU YOK — GERCEK MODELDE IKI KEZ OLCULDU.
+///
+/// 1. Metin once bicimi `arac_adi({"alan":"deger"})` diye gosteriyordu.
+///    Qwen2.5-3B bunu kalip olarak degil YAZILACAK METIN olarak aldi: "Saat
+///    kac?" sorusuna harfiyen `arac_adi({"tur":"saat"})` uretti.
+/// 2. Yer tutucu `ad(...)` diye kisaltilinca sorun TASINDI, cozulmedi:
+///    "Merhaba" gibi arac gerektirmeyen bir mesaja `ad({"alan":"Merhaba"})`
+///    uretildi — yani kalip, arac cagrisini hak etmeyen yerde bile cagri
+///    tetikledi.
+///
+/// 3. Yer tutucu kaldirilinca kopyalama BUYUK HARFLI EMIRLERE kaydi: talimatta
+///    "arac CAGIRMA" yazinca model selamlamaya "... Uygun Bir Arac CAGIRMA;
+///    Kendi Dilinde Merhaba" diye cevap verdi. Yani vurgu icin kullanilan
+///    buyuk harf, modelce ICERIK sanildi.
+///
+/// 4. GERCEK arac uzerinden verilen ornek de kopyalandi — Gemma3-4B ile
+///    olculdu. Talimatta `Ornek: hesapla({"ifade":"12*8"})` yazarken
+///    "Tesekkurler, iyi gunler." mesajina "Tesekkurler, size de iyi gunler!
+///    Hesapla({"ifade":"12*8"})." diye cevap verdi: selamlamayi dogru yapip
+///    ornegi HARFIYEN, uydurma argumanlariyla birlikte arkasina yapistirdi.
+///    Yani 1. ve 2. maddedeki ariza yer tutucuya ozgu degilmis; SOMUT ORNEGIN
+///    KENDISINE ozguymus. Qwen3-4B ayni istemde kopyalamiyordu, bu yuzden
+///    ariza tek modelle olculdugunde gorunmuyordu.
+///
+/// Cikarilan ders: bu boyuttaki bir model SOYUT KALIBI SOMUT ORNEKTEN
+/// AYIRAMAZ; istemde gorunen her `xxx(...)` bir kopyalama adayidir — yer
+/// tutucu olsun, gercek arac olsun — her BUYUK HARFLI kelime de oyle. Bu
+/// yuzden talimatta artik HIC cagri ornegi yok: bicim yalnizca sozle tarif
+/// edilir. Ornegin bosalttigi yeri `<araclar>` listesi zaten dolduruyor —
+/// arac tarifi kisa imza bicimine gectiginden (`hesapla(ifade: metin,
+/// basamak?: tamsayi)`) listenin kendisi cagri seklini gosteriyor, ustelik
+/// kopyalanacak somut bir ARGUMAN DEGERI icermeden. Cagri iki savunmayla
+/// korunuyor (gramer + katalog kapisi), ama istem modeli en bastan dogru yere
+/// itmeli — bosa giden tur de bir maliyet.
 pub const SISTEM_TALIMATI: &str = "Sen sirr'sin: tamamen cihaz uzerinde calisan bir asistansin. \
-Veri cihazdan cikmaz. Bir arac gerekiyorsa YALNIZ su bicimde tek satir yaz: \
-arac_adi({\"alan\":\"deger\"}). Arac gerekmiyorsa dogrudan kullanicinin dilinde cevap ver. \
-Arac sonucunu kendi cumlene yerlestir; sonucu UYDURMA.";
+Veri cihazdan cikmaz. Bir arac gerekiyorsa satira once o aracin <araclar> listesindeki \
+adini yaz, hemen ardindan parantez ac, argumanlarini tek bir JSON nesnesi olarak ver, \
+parantezi kapat ve satiri orada bitir. Arac adini yazmadan dogrudan JSON yazma; \
+adi olmayan bir cagri gecersizdir. Ornek: hesapla({\"ifade\":\"12*8\"}). \
+Arguman adlari o aracin listedeki imzasinda yazilidir. \
+Yalniz listede bulunan adlari kullan ve bir araci yalnizca o mesaj icin gerekiyorsa cagir. \
+Selamlasma ve sohbet gibi arac gerektirmeyen mesajlara dogrudan kullanicinin dilinde, \
+kendi cumlelerinle cevap ver. \
+Istenen bilgi bir <tool_response> blogunda sana verilmisse artik yeni bir arac cagirma; \
+o blogun icindeki degeri kendi cumlene yerlestirip kullaniciya Turkce, kisa ve dogrudan \
+cevap ver. Arac cagrisini ya da onun JSON'unu cevap diye tekrarlama; sonucu uydurma.";

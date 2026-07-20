@@ -82,10 +82,59 @@ impl TokenMaskesi {
 
     /// Verilen gramer durumunda uretilebilir token'lar icin `true`.
     pub fn maske(&self, durum: &GramerDurumu) -> Vec<bool> {
+        self.maske_sonlandiricili(durum, None)
+    }
+
+    /// Gramere ek olarak bir SONLANDIRICI karakteri de tanyan maske.
+    ///
+    /// NEDEN GEREKLI (olcumle bulundu): gramer yalnizca ARGUMANLARI tanimlar;
+    /// cagriyi kapatan `)` onun DISINDADIR. Ama belirtecleyici bu siniri
+    /// tanimaz. Qwen2.5 dagarciginda `hesapla({"ifade": "12*8"})` dizgisinin
+    /// DOGAL belirteclemesi `"})` (id 80154) ile biter — yani modelin uretmesi
+    /// EN OLASI belirtec, tam da gramer siniri uzerine oturur.
+    ///
+    /// Sonlandiriciyi tanimadan yalnizca gramer icinde gezseydik o belirtec
+    /// maskede KAPALI kalirdi; model gecerli cagriyi tek hamlede yazamaz,
+    /// `"}` + `)` diye bolmek zorunda kalirdi. Daha kotusu, `ilerlet` ayni
+    /// belirteci KABUL ediyordu: maske ile ilerletme ayrisir, yani kisit
+    /// kendi kabul ettigi ciktiyi uretilemez kilardi.
+    ///
+    /// Cozum gezinin dogal parcasi: gramer KABUL durumundayken sonlandirici
+    /// kenari da izlenir ve orada BITEN belirtecler acilir. Sonlandiricidan
+    /// SONRASINA inilmez — cagri orada kapanir, devami artik gramerin
+    /// konusu degil ve cagrinin ardina gevezelik iliştirilmesine izin verirdi.
+    pub fn maske_sonlandiricili(
+        &self,
+        durum: &GramerDurumu,
+        sonlandirici: Option<char>,
+    ) -> Vec<bool> {
         let mut maske = vec![false; self.dagarcik_boyu];
         let izin = durum.izinli_onekler();
-        self.gez(0, durum, &izin, &mut maske);
+        self.gez(0, durum, &izin, sonlandirici, &mut maske);
         maske
+    }
+
+    /// Gramer su an kapanabiliyorsa, bu dugumden cikan sonlandirici kenarinda
+    /// BITEN belirtecleri acar. Ayri fonksiyon: `gez` icinde iki yerden
+    /// cagriliyor (kok ve her ilerleyen dal) ve kosul tek yerde dursun.
+    fn sonlandiriciyi_ac(
+        &self,
+        dugum: usize,
+        durum: &GramerDurumu,
+        sonlandirici: Option<char>,
+        maske: &mut [bool],
+    ) {
+        let Some(son) = sonlandirici else { return };
+        if !durum.bitti_mi() {
+            return;
+        }
+        let Ok(i) = self.dugumler[dugum].cocuklar.binary_search_by_key(&son, |(k, _)| *k) else {
+            return;
+        };
+        let cocuk = self.dugumler[dugum].cocuklar[i].1;
+        for id in &self.dugumler[cocuk].bitenler {
+            maske[*id] = true;
+        }
     }
 
     /// `izin` daima `durum`un izin kumesidir; parametre olarak gecirilir cunku
@@ -96,8 +145,11 @@ impl TokenMaskesi {
         dugum: usize,
         durum: &GramerDurumu,
         izin: &IzinKumesi,
+        sonlandirici: Option<char>,
         maske: &mut [bool],
     ) {
+        // Bu dugumde gramer kapanabiliyorsa cagriyi bitiren belirtec de mesru.
+        self.sonlandiriciyi_ac(dugum, durum, sonlandirici, maske);
         for (c, cocuk) in &self.dugumler[dugum].cocuklar {
             // Once ucuz kontrol: karakter bu konumda gecerli mi. Gecerliyse
             // durumu ilerlet — klon yalniz gecerli dallarda odenir.
@@ -113,7 +165,7 @@ impl TokenMaskesi {
                 for id in &self.dugumler[*cocuk].bitenler {
                     maske[*id] = true;
                 }
-                self.gez(*cocuk, durum, izin, maske);
+                self.gez(*cocuk, durum, izin, sonlandirici, maske);
                 continue;
             }
             let Ok(yeni) = durum.dallan(*c) else { continue };
@@ -121,7 +173,7 @@ impl TokenMaskesi {
                 maske[*id] = true;
             }
             let yeni_izin = yeni.izinli_onekler();
-            self.gez(*cocuk, &yeni, &yeni_izin, maske);
+            self.gez(*cocuk, &yeni, &yeni_izin, sonlandirici, maske);
         }
     }
 }

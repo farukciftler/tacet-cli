@@ -23,13 +23,27 @@ pub const BAGLAM_BUTCESI: usize = 4096;
 /// kalmazdi — tam dolu bir istem sifir belirteclik bir cevap uretir.
 pub const URETIM_PAYI: usize = 512;
 
-/// Bir belirtece dusen ORTALAMA karakter. Turkce icin bilincli olarak dusuk.
+/// Bir belirtece dusen ortalama BAYT — 5/2 = 2.5, kesirli oldugu icin pay ve
+/// paydasi ayri.
 ///
-/// Ingilizce'de yaygin kabul ~4; Turkce sondan eklemeli oldugu icin ayni
-/// belirtecleyici sozcukleri daha cok parcaya boler ("kitaplarimizdan" tek
-/// sozcuk, cok belirtec). 3 secmek tahmini yukari cekiyor — yukaridaki
-/// "guvenli yon" gerekcesiyle istenen bu.
-const KARAKTER_BASINA: usize = 3;
+/// GERCEK MODELDE OLCULDU, ve onceki deger (3) YANLIS CIKTI. Qwen2.5
+/// belirtecleyicisiyle Turkce duzyazi ortalama **2.71 bayt/belirtec** veriyor.
+/// Yani bayti 3'e bolen eski tahmin, "guvenli yon" gerekcesinin tam TERSINI
+/// yapiyordu: gercegin ~%10 ALTINDA kaliyordu.
+///
+/// Somut ariza: 200 turluk bir gecmis kirpildiginda tahmin 3561 diyip 3584
+/// tavanina "sigdi" karari veriyor, `dogrula()` basariyla donuyordu; ayni
+/// istemin GERCEK belirtec sayisi ise 3937 idi. Uretim payiyla birlikte
+/// (3937 + 512) 4096 penceresi ASILIYORDU — tam da bu dosyanin bastan
+/// onlemeye calistigi sessiz kesilme.
+///
+/// 2.5 secildi, 2.71 degil: olcum tek bir metin turunun ortalamasidir ve
+/// belirtec yogunlugu icerige gore oynar (kod ve Ingilizce daha seyrek, yogun
+/// Turkce cekim daha sik). Aradaki ~%8 pay bilincli emniyet payidir. Tahminin
+/// YUKSEK cikmasi ucuzdur (biraz baglam kaybi), DUSUK cikmasi pahali
+/// (teshis edilemez kesilme).
+const BAYT_PAYI: usize = 2;
+const BAYT_PAYDASI: usize = 5;
 
 pub struct TokenSayaci {
     /// Toplam pencere.
@@ -80,7 +94,7 @@ impl TokenSayaci {
     /// noktalarda fazladan parcalar. Karakter saysaydik Turkce metni
     /// sistematik olarak AZ tahmin ederdik.
     pub fn tahmin(metin: &str) -> usize {
-        metin.len().div_ceil(KARAKTER_BASINA)
+        (metin.len() * BAYT_PAYI).div_ceil(BAYT_PAYDASI)
     }
 
     /// Istemin tamaminin tahmini.
@@ -120,7 +134,7 @@ impl TokenSayaci {
         // cumlenin sonunda olur ("...bunu tablo yap"), basi baglam kurar.
         if self.istem_tahmini(istem) > tavan {
             let fazla = self.istem_tahmini(istem) - tavan;
-            let atilacak_bayt = fazla * KARAKTER_BASINA;
+            let atilacak_bayt = fazla * BAYT_PAYDASI / BAYT_PAYI;
             let yeni = son_bayttan(&istem.soru, istem.soru.len().saturating_sub(atilacak_bayt));
             if yeni.len() < istem.soru.len() {
                 istem.soru = yeni;

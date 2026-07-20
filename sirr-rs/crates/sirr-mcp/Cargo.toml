@@ -1,0 +1,28 @@
+[package]
+name = "sirr-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# AG TEKELI: bu crate ve `sirr-web` disinda hicbir crate soket acmaz. Kural
+# denetlenebilir olsun diye HTTP bagimliligi de yalniz bu iki manifestte durur.
+#
+# `ureq` GEREKCESI: sirr'in kimligi "hazir crate cekmemek" (OOXML zip'i bile
+# elle yazildi), ama HTTPS bunun istisnasidir — TLS'i elle yazmak guvenlik
+# acisindan sorumsuzluk olurdu ve sifir-bagimlilik disiplininin amaci tam da
+# guvenli olmak. `ureq` secildi cunku (a) BLOKLAYAN: bu is agacinda calistirici
+# yok, `sirr-motor::bekle` gelecekleri tek is parcaciginda mesgul-bekleyerek
+# suruyor; tokio cekmek tum mimariye calistirici dayatirdi, (b) govdeyi `Read`
+# olarak veriyor, yani SSE akisini satir satir okuyabiliyoruz (`reqwest`in
+# bloklayan kipi bunu yapar ama arkasinda yine tokio tasir).
+[dependencies]
+sirr-cekirdek.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+# `sirr-web` ile AYNI satir, bilerek birebir. Iki ag crate'i iki farkli HTTP
+# yigini cekseydi TLS yuzeyi de ikiye katlanirdi; tek yigin, tek denetlenecek
+# yer. Gerekcenin uzun hali `crates/sirr-web/Cargo.toml`da yazili — burada
+# tekrarlanmiyor cunku iki kopya gerekce er gec ayrisir.
+ureq = { version = "3", default-features = false, features = ["rustls"] }

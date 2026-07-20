@@ -17,6 +17,47 @@ Son dogrulama: `cargo build --workspace`, `cargo clippy --workspace
 
 ---
 
+## IKINCI TUR — terminal kabugu + baglama (bu bolum yeni)
+
+Kabuk artik GERCEK Qwen2.5-3B ile kosuyor (`sirr sohbet`, `--features metal`).
+Gercek model kaniti (birebir):
+
+- Duz soru: "Merhaba, kisaca kendini tanit" → tutarli Turkce tanitim, arac yok.
+- Arac: "125 carpi 8 kac eder?" → `hesapla({"ifade":"125*8"})` uretti, cip
+  `[=] 125*8 = 1000 · Okundu`, model sonucu DOGRU aktardi ("1000").
+- Web: model kimi zaman `web_ara(` yerine `zaman={...}` / ciplak `{...}` gibi
+  YANLIS yuzey bicimi uretiyor; gramer tasarimi geregi bu duz metne duser ve
+  arac kosmaz (arac SECIMI zorlanmaz — bkz. README). `web_ara` KABLOLAMASI ise
+  betikle kanitlandi: `[globe] arandı · 19 sonuç` (gercek SearXNG, bypass kanali).
+
+BAGLANANLAR (uretim yolunda GERCEK cagri, elle dogrulandi):
+
+- **Beceri → `Istem::kilavuzla`**: `--goster-istem` ciktisinda `<guidance
+  name="hesap">` sorunun hemen onunde, 700 icinde.
+- **Hafiza → istem + arac**: `hafiza` araci diske yazdi (`~/.sirr/hafiza.json`),
+  AYRI surecte uyan mesajda `<hafiza><memory>- Kullanici vejetaryendir` enjekte.
+- **Onay kapisi (etkilesimli)**: kirli oturumda `web_ara` GERCEK payload'i
+  gosterip `[e/H]` sordu, "h" → `[onay] web_ara · gönderilmedi · IzinGerekli`.
+- **Yonlendirici 8 tavani**: 10 araclik katalogta genis mesaj → 8 arac secildi.
+  (Birinci turda 4 arac vardi, tavan hic devreye girmiyordu.)
+- **Akan cikti**: `MotorSaglayici::uret_akan` eklendi; CandleMotor belirtec
+  belirtec akitiyor, SahteMotor varsayilan (tek parca) uygulamayla uyuyor.
+
+EKSIKLER (durustce):
+- **Ctrl-C ile uretim iptali BAGLANMADI**: std sinyal yakalama sunmuyor;
+  gercek iptal libc/ctrlc bagimliligi ister ve sifir-bagimlilik kimligiyle
+  celisir. Su an Ctrl-C sureci oldurur (terminal varsayilani).
+- **belge_duzenle oturum izleyicisi (2. kademe) beslenmıyor**: `YurutmeSonucu`
+  `dosya_yolu` tasimadigi icin izleyici doldurulamiyor; arac 3. kademeye (en
+  son degisen belge) duserek yine calisiyor.
+- **Eval katalogu (5 arac) ile CLI katalogu (10 arac) AYRISTI**: eval bilerek
+  ag-siz/deterministik; gercek `web_ara`yi eklemek bu degismezi bozardi. Yeni
+  katmanlarin kaniti kendi crate birim testlerinde (32 beceri, 24 hafiza, 36
+  web, 54 mcp). Eval'e yeni vaka EKLENMEDI — bilincli, ama D maddesinin
+  yarim kaldigi yer burasi.
+
+---
+
 ## BAGLI — uretim yolunda gercekten calisan mekanizmalar
 
 | Mekanizma | Kanit |

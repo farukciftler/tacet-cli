@@ -7,4 +7,19 @@ license.workspace = true
 [dependencies]
 sirr-cekirdek.workspace = true
 sirr-zip.workspace = true
+# `hafiza` araci icin: notlarin sahibi bu crate degil, sirr-hafiza.
+sirr-hafiza.workspace = true
+# `web_ara`/`web_getir` araclarinin ag katmani. HTTP istemcisi (`ureq`) BURAYA
+# EKLENMEZ: bu crate soket acmaz, yalnizca sirr-web'in dondurdugu tipleri arac
+# sozlesmesine cevirir. Ag tekeli manifest duzeyinde de gorunur olsun diye.
+sirr-web.workspace = true
+# `mcp` koprusunun ag katmani. Ayni kural: `ureq` BURAYA EKLENMEZ, bu crate
+# soket acmaz — sirr-mcp'nin tiplerini `Arac` sozlesmesine cevirir, o kadar.
+sirr-mcp.workspace = true
 serde_json.workspace = true
+
+# `bekle` — MCP onay kapisi testleri gercek `AracYurutucu::yurut` yolunu
+# (async) surmek zorunda. Uretim bagimliligi DEGIL: yon sirr-motor -> sirr-araclar
+# olsaydi katman sirasi tersine donerdi, dev-dependency o siraya dokunmaz.
+[dev-dependencies]
+sirr-motor.workspace = true

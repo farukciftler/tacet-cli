@@ -8,7 +8,7 @@
 //! bagimliliksiz yapiyor.
 
 use crate::hata::MotorSonuc;
-use crate::istem::Istem;
+use crate::istem::{Istem, Sablon};
 use crate::kisit::Kisitlayici;
 use std::future::Future;
 use std::pin::Pin;
@@ -81,6 +81,17 @@ pub trait MotorSaglayici: Send + Sync {
     /// Tanilama/log adi ("sahte", "candle").
     fn ad(&self) -> &str;
 
+    /// Bu motorun istemi hangi tel biciminde bekledigi.
+    ///
+    /// NEDEN MOTORDA: sablon modelin EGITILDIGI bicimdir. CLI'da elle
+    /// secilebilir olsaydi yanlis secim sessizce bozuk cikti verirdi —
+    /// derleme yesil, cevap sacma. Motor kendi bicimini bildirdiginde yanlis
+    /// eslesme imkansizlasir. Varsayilan `Duz`: bicimini bildirmeyen bir motor
+    /// icin okunabilir etiketli metin en zararsiz secimdir.
+    fn sablon(&self) -> Sablon {
+        Sablon::Duz
+    }
+
     /// Belirtec kimligi -> metin tablosu; kisit kurmak icin GEREKLI.
     ///
     /// NEDEN MOTORDA: maske belirtec kimligi uzerinden konusur, kimlikleri ise
@@ -105,4 +116,33 @@ pub trait MotorSaglayici: Send + Sync {
         kisit: Option<&'a dyn Kisitlayici>,
         ayar: OrneklemeAyari,
     ) -> UretimGelecegi<'a>;
+
+    /// Uretimi AKAN bicimde surer: her yeni metin parcasi `dinleyici`ye
+    /// verilir. Donen `Uretim` yine TAM metni tasir (parcalarin toplami =
+    /// `metin`), boylece cagri yeri ister akani gostersin ister bitmisi
+    /// ayristirsin — iki yol ayni dogruluk kaynagindan beslenir.
+    ///
+    /// NEDEN AYRI METOT, `uret`e BAYRAK DEGIL: akis yalniz UI'nin (kabuk)
+    /// ihtiyacidir; eval ve gramer komutu tam metni ister ve bir dinleyici
+    /// uydurmak zorunda kalmamali. Varsayilan uygulama `uret`e duser ve tum
+    /// metni TEK parcada yayar — akisi bildirmeyecek bir motor (SahteMotor)
+    /// yine calisir, sadece "akmaz". 3B modelde ilk belirtece kadar gecen
+    /// saniyelerde kullanicinin donmus ekrana bakmamasi bu metodun tek amaci.
+    fn uret_akan<'a>(
+        &'a self,
+        istem: &'a Istem,
+        kisit: Option<&'a dyn Kisitlayici>,
+        ayar: OrneklemeAyari,
+        dinleyici: &'a (dyn Fn(&str) + Send + Sync),
+    ) -> UretimGelecegi<'a> {
+        kutula_uretim(async move {
+            let u = crate::bekle(self.uret(istem, kisit, ayar));
+            if let Ok(uretim) = &u
+                && !uretim.metin.is_empty()
+            {
+                dinleyici(&uretim.metin);
+            }
+            u
+        })
+    }
 }

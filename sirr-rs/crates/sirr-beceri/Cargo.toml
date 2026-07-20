@@ -1,0 +1,17 @@
+[package]
+name = "sirr-beceri"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# AG YOK: bu crate yalniz yerel dosya okur (paket .md'leri + ~/.sirr/beceriler).
+# Ag cagrisi kurali geregi yalniz sirr-web ve sirr-mcp'de bulunur.
+[dependencies]
+
+# NEDEN SADECE GELISTIRME BAGIMLILIGI: `ENJEKSIYON_SINIRI` ile
+# `sirr_motor::KILAVUZ_SINIRI` AYNI sayi olmak ZORUNDA — biri digerini besliyor.
+# Uretimde sirr-motor'a baglanmak katman yonunu tersine cevirirdi (beceri
+# katmani motorun ic temsilini bilmemeli). Dev-bagimliligi ise sayilarin
+# ayrismasini DERLEME ZAMANINDA yakalar ve uretim grafigine hicbir sey eklemez.
+[dev-dependencies]
+sirr-motor.workspace = true

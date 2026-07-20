@@ -10,7 +10,7 @@
 //! bilerek acilmadi — bu crate hicbir kosulda indirme yapmaz.
 
 use crate::hata::{MotorHatasi, MotorSonuc};
-use crate::istem::Istem;
+use crate::istem::{Istem, Sablon};
 use crate::kisit::Kisitlayici;
 use crate::saglayici::{
     BitisNedeni, MotorSaglayici, OrneklemeAyari, Uretim, UretimGelecegi, kutula_uretim,
@@ -18,20 +18,146 @@ use crate::saglayici::{
 
 use candle_core::{Device, Tensor, quantized::gguf_file};
 use candle_transformers::generation::{LogitsProcessor, Sampling};
-use candle_transformers::models::quantized_llama::ModelWeights;
+// MIMARI MODULU ARTIK SABIT DEGIL — bkz. `Mimari`.
+//
+// Onceki tur tek module (`quantized_qwen2`) sabitlenmisti. Gerekce hala
+// gecerli: Qwen2.5 dikkat katmanlarinda llama'da BULUNMAYAN q/k/v BIAS
+// tensorleri vardir ve llama'nin `forward_attn`i bias TOPLAMAZ. Degisen,
+// artik UC farkli mimarinin desteklenmesi; hangisinin yuklenecegi GGUF
+// ustverisinden OKUNUR, varsayilmaz.
+use candle_transformers::models::{quantized_gemma3, quantized_qwen2, quantized_qwen3};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tokenizers::Tokenizer;
 
 /// Cikarimin kosacagi aygit.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Aygit {
-    #[default]
     Islemci,
     /// Apple GPU. candle-core'un `metal` ozelligi kapaliyken hata doner —
     /// sessizce islemciye DUSMEZ: kullanici GPU istedigini bilerek soyledi,
     /// 10 kat yavas kosan bir motoru "calisiyor" diye sunmak yanlis olur.
     Metal,
+}
+
+/// Varsayilan aygit DERLEME ZAMANINDA belirlenir.
+///
+/// `metal` ozelligi acikken varsayilan Metal'dir; olculdugu icin boyle
+/// (Qwen2.5-3B q4_k_m, ayni istem): cozme 31 -> 73 belirtec/sn, onyukleme
+/// 113 -> 775 belirtec/sn. Ozelligi acikca derleyip yine islemcide kosmak
+/// kimsenin isteyecegi sey degil; tersine, "neden yavas" sorusunu dogurur.
+///
+/// Ozellik kapaliyken Metal secilemez zaten (aygit acilirken hata doner), o
+/// yuzden varsayilan islemcidir. Bu ayrimin `cfg` ile yapilmasi bilincli:
+/// calisma aninda denenip sessizce islemciye dusulseydi, GPU'nun neden
+/// kullanilmadigi hicbir yerde gorunmezdi.
+impl Default for Aygit {
+    fn default() -> Self {
+        #[cfg(feature = "metal")]
+        {
+            Aygit::Metal
+        }
+        #[cfg(not(feature = "metal"))]
+        {
+            Aygit::Islemci
+        }
+    }
+}
+
+/// Desteklenen GGUF mimarileri.
+///
+/// NEDEN OKUNUR, VARSAYILMAZ: agirlik dosyasinin adi ("model.gguf") mimari
+/// hakkinda hicbir sey soylemez ve klasor adi kullanicinin keyfidir. Tek
+/// guvenilir kaynak GGUF ustverisindeki `general.architecture` anahtaridir;
+/// dosyayi ureten donusturucu onu yazmak zorundadir.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mimari {
+    Qwen2,
+    Qwen3,
+    Gemma3,
+}
+
+impl Mimari {
+    /// GGUF ustverisindeki adi mimariye cevirir.
+    ///
+    /// BILINMEYEN MIMARI HATA DONER, en yakin module DUSMEZ. Yanlis modul
+    /// yuklemek iki sonuctan birini verir: ya ustveri anahtari bulunamaz
+    /// (gurultulu, zarasiz) ya da anahtarlar rastlantiyla ortusur ve model
+    /// SESSIZCE COPLUK uretir. Ikincisi kullaniciya "model aptal" gibi
+    /// gorunur ve teshisi saatler alir; onu bastan imkansiz kilmak icin
+    /// eslesme TAM olmak zorunda.
+    pub fn cozumle(ad: &str) -> MotorSonuc<Self> {
+        match ad {
+            "qwen2" => Ok(Mimari::Qwen2),
+            "qwen3" => Ok(Mimari::Qwen3),
+            "gemma3" => Ok(Mimari::Gemma3),
+            baska => Err(MotorHatasi::Cikarim(format!(
+                "desteklenmeyen GGUF mimarisi: '{baska}' \
+                 (destekleniyor: qwen2, qwen3, gemma3)"
+            ))),
+        }
+    }
+
+    /// Modelin egitildigi sohbet sablonu. Mimariye BAGLI, secilebilir degil:
+    /// yanlis sablon rol sinirlarini gorunmez kilar ve model bitis belirteci
+    /// uretmeyip gevezelige duser.
+    pub fn sablon(self) -> Sablon {
+        match self {
+            Mimari::Qwen2 | Mimari::Qwen3 => Sablon::ChatML,
+            Mimari::Gemma3 => Sablon::Gemma,
+        }
+    }
+
+    pub fn adi(self) -> &'static str {
+        match self {
+            Mimari::Qwen2 => "qwen2",
+            Mimari::Qwen3 => "qwen3",
+            Mimari::Gemma3 => "gemma3",
+        }
+    }
+}
+
+/// Yuklu agirliklar — mimariye gore ayrisan tek yer.
+///
+/// Uc modulun `ModelWeights` tipleri ORTAK BIR TRAIT PAYLASMIYOR (candle
+/// bunlari bagimsiz somut tipler olarak sunuyor), bu yuzden koprulemek icin
+/// elle bir enum gerekiyor. `Box<dyn ...>` bir secenek degildi: yazilacak
+/// trait'i biz tanimlasak bile `forward` imzalari ayni olmasina ragmen tipler
+/// yabanci ve trait'i onlar icin uygulamak yine bu enum kadar kod olurdu.
+enum MimariModel {
+    Qwen2(quantized_qwen2::ModelWeights),
+    Qwen3(quantized_qwen3::ModelWeights),
+    Gemma3(quantized_gemma3::ModelWeights),
+}
+
+impl MimariModel {
+    fn forward(&mut self, girdi: &Tensor, konum: usize) -> candle_core::Result<Tensor> {
+        match self {
+            MimariModel::Qwen2(m) => m.forward(girdi, konum),
+            MimariModel::Qwen3(m) => m.forward(girdi, konum),
+            MimariModel::Gemma3(m) => m.forward(girdi, konum),
+        }
+    }
+
+    /// KV onbellegini uretimler arasi sifirlar.
+    ///
+    /// GEMMA3 ICIN GOVDE BOSTUR VE BU BIR EKSIK DEGIL. candle'in
+    /// `quantized_gemma3` moduluu bilerek `clear_kv_cache` SUNMAZ, cunku
+    /// ihtiyaci yoktur: dikkat katmani onbellegi birlestirmeden once
+    /// `if index_pos == 0 { (k, v) }` diye bakar, yani onyukleme adiminda eski
+    /// onbellegi KULLANMAZ ve uzerine yazar. Uretim dongumuz her seferinde
+    /// `konum = 0` ile basladigi icin Gemma3 kendiliginde temizlenir.
+    /// Qwen2/Qwen3 ise kosulsuz `Tensor::cat` yapar — onlarda temizlik SART.
+    ///
+    /// Bu ayrim kaynaktan OKUNDU, varsayilmadi; yanlis tarafi secmek sinsi bir
+    /// bozulma verirdi (ilk cevap duzgun, sonrakiler giderek bozuk).
+    fn onbellegi_temizle(&mut self) {
+        match self {
+            MimariModel::Qwen2(m) => m.clear_kv_cache(),
+            MimariModel::Qwen3(m) => m.clear_kv_cache(),
+            MimariModel::Gemma3(_) => {}
+        }
+    }
 }
 
 /// Model yukleme ayarlari.
@@ -68,7 +194,10 @@ pub struct CandleMotor {
     /// Mutex hem bu boslugu kapatir hem de dogru olani dayatir: KV onbellegi
     /// modelin ICINDE tutuluyor, iki uretim ayni anda kosarsa birbirinin
     /// onbellegini bozar. Kilit bir baris odunu degil, dogruluk sarti.
-    model: Mutex<ModelWeights>,
+    model: Mutex<MimariModel>,
+    /// GGUF ustverisinden OKUNAN mimari. Sablonun ve tanilama ciktisinin
+    /// kaynagi; kullanici hangi modulun yuklendigini gorebilmeli.
+    mimari: Mimari,
     belirtecleyici: Tokenizer,
     aygit: Device,
     bitis_belirtecleri: Vec<u32>,
@@ -92,8 +221,22 @@ impl CandleMotor {
             .map_err(|_| MotorHatasi::ModelYuklenemedi(ayar.model_yolu.clone()))?;
         let icerik = gguf_file::Content::read(&mut dosya)
             .map_err(|_| MotorHatasi::ModelYuklenemedi(ayar.model_yolu.clone()))?;
-        let model = ModelWeights::from_gguf(icerik, &mut dosya, &aygit)
-            .map_err(|e| MotorHatasi::Cikarim(format!("gguf cozulemedi: {e}")))?;
+
+        // MIMARI AGIRLIKLARDAN ONCE OKUNUR. Ustveri zaten bellekte; yanlis
+        // modulle 2.5 GB yuklemeye baslayip sonunda hata almak gereksiz.
+        let mimari = mimariyi_oku(&icerik)?;
+
+        // `from_gguf` UC MODULDE DE ayni imzaya sahip (ct, reader, device) —
+        // kaynaktan dogrulandi, varsayilmadi.
+        let model = match mimari {
+            Mimari::Qwen2 => quantized_qwen2::ModelWeights::from_gguf(icerik, &mut dosya, &aygit)
+                .map(MimariModel::Qwen2),
+            Mimari::Qwen3 => quantized_qwen3::ModelWeights::from_gguf(icerik, &mut dosya, &aygit)
+                .map(MimariModel::Qwen3),
+            Mimari::Gemma3 => quantized_gemma3::ModelWeights::from_gguf(icerik, &mut dosya, &aygit)
+                .map(MimariModel::Gemma3),
+        }
+        .map_err(|e| MotorHatasi::Cikarim(format!("gguf cozulemedi ({}): {e}", mimari.adi())))?;
 
         let belirtecleyici = Tokenizer::from_file(&ayar.belirtecleyici_yolu)
             .map_err(|e| MotorHatasi::Belirtecleme(e.to_string()))?;
@@ -106,7 +249,19 @@ impl CandleMotor {
 
         let dagarcik = dagarcik_kur(&belirtecleyici);
 
-        Ok(Self { model: Mutex::new(model), belirtecleyici, aygit, bitis_belirtecleri, dagarcik })
+        Ok(Self {
+            model: Mutex::new(model),
+            mimari,
+            belirtecleyici,
+            aygit,
+            bitis_belirtecleri,
+            dagarcik,
+        })
+    }
+
+    /// Yuklenen GGUF'un mimarisi — tanilama ve kabuk ciktisi icin.
+    pub fn mimari(&self) -> Mimari {
+        self.mimari
     }
 
     /// Dosyalarin varligini YUKLEMEDEN once dogrular — gguf yuklemesi uzun
@@ -118,6 +273,20 @@ impl CandleMotor {
             }
         }
         Ok(())
+    }
+
+    /// Uretimi durduran belirtec kimlikleri.
+    ///
+    /// DISA ACIK cunku bos kalmasi SESSIZ bir arizadir: uretim o zaman yalniz
+    /// belirtec tavaninda durur ve "model cok konusuyor" gibi gorunur. Cagri
+    /// yeri bunu basip gozle dogrulayabilmeli.
+    pub fn bitis_belirtecleri(&self) -> &[u32] {
+        &self.bitis_belirtecleri
+    }
+
+    /// Yuklu belirtecleyici — olcum ve tani icin.
+    pub fn belirtecleyici(&self) -> &Tokenizer {
+        &self.belirtecleyici
     }
 
     fn belirtecle(&self, metin: &str) -> MotorSonuc<Vec<u32>> {
@@ -141,8 +310,17 @@ impl CandleMotor {
         istem: &Istem,
         kisit: Option<&dyn Kisitlayici>,
         ayar: OrneklemeAyari,
+        dinleyici: Option<&(dyn Fn(&str) + Send + Sync)>,
     ) -> MotorSonuc<Uretim> {
-        let girdi = self.belirtecle(&istem.metin())?;
+        // Sablonu MOTOR bildirir (bkz. `MotorSaglayici::sablon`): Qwen2.5
+        // ChatML ile egitildi, duz metin beslendiginde rolleri kaybedip
+        // gevezelige duser.
+        //
+        // `true` = ozel belirtecleri AYRISTIR. ChatML citleri (`<|im_start|>`)
+        // metin olarak degil, TEK belirtec olarak gecmek zorunda; aksi halde
+        // model kendi cerceve isaretlerini tanimaz ve bitis belirteci hic
+        // uretilmez (uretim tavana kadar surer).
+        let girdi = self.belirtecle(&istem.metin_sablonlu(self.sablon()))?;
         if girdi.is_empty() {
             return Err(MotorHatasi::Belirtecleme("istem bos belirteclendi".into()));
         }
@@ -161,7 +339,18 @@ impl CandleMotor {
         let mut oturum = kisit.map(|k| k.oturum());
         let mut model = self.model.lock().expect("model kilidi");
 
+        // KV ONBELLEGI HER URETIMDE SIFIRLANIR. Onbellek modelin ICINDE
+        // yasiyor ve uretimler arasinda kaliyor; oysa `konum` asagida 0'dan
+        // basliyor. Temizlenmeseydi ikinci uretim, birincinin onbellek
+        // satirlarinin UZERINE yazar ve dikkat, o turun istemiyle bir onceki
+        // turun artiklarinin karisimini gorurdu. Belirti sinsi: ilk cevap
+        // duzgun, sonrakiler giderek bozuluyor.
+        model.onbellegi_temizle();
+
         let mut uretilen: Vec<u32> = Vec::with_capacity(ayar.en_cok_belirtec);
+        // Dinleyiciye halihazirda yayilmis metnin bayt uzunlugu — bir sonraki
+        // adimda yalniz eki gonderebilmek icin.
+        let mut yazilan = String::new();
         let mut bitis = BitisNedeni::Uzunluk;
         // Istem tek seferde islenir (prefill); sonraki adimlarda tek belirtec
         // beslenir ve `konum` KV onbelleginin nerede oldugunu soyler.
@@ -226,6 +415,22 @@ impl CandleMotor {
             uretilen.push(belirtec);
             sonraki = vec![belirtec];
 
+            // AKIS: her adimda birikmis metni cozup YENI eki dinleyiciye ver.
+            // Tam vektoru her seferinde cozmek O(n^2) gorunur ama n birkac yuz
+            // belirtectir ve maliyeti bir `forward` gecisinin yaninda ihmal
+            // edilebilir; kazanci, BPE'nin cok baytli parcalarini (Turkce 'ş',
+            // 'ı') tek belirtecten yanlis kesmeden dogru sinirda yaymak.
+            // Kisit acikken de calisir: dinleyici gordugu metin gercekten
+            // uretilen metindir, halusinasyon degil.
+            if let Some(f) = dinleyici
+                && let Ok(tam) = self.coz(&uretilen)
+                && tam.len() > yazilan.len()
+                && tam.is_char_boundary(yazilan.len())
+            {
+                f(&tam[yazilan.len()..]);
+                yazilan = tam;
+            }
+
             // Kisit kabul durumuna geldi: dilbilgisi tamamlandi, burada durmak
             // GUVENLI. Devam etmek, modelin gecerli JSON'un ardina gevezelik
             // eklemesine izin vermek olurdu.
@@ -245,6 +450,15 @@ impl MotorSaglayici for CandleMotor {
         "candle"
     }
 
+    /// Sablon YUKLENEN MIMARIDEN turer, sabit degildir. Bunu bildirmek
+    /// zorunlu: duz metin beslenirse model rol sinirlarini goremez, bitis
+    /// belirtecini uretmez ve kendi kendine "Kullanici:" yazip konusmayi
+    /// surdurur. Gemma'ya ChatML beslemek de ayni sonucu verir — citler
+    /// tanidik gelmez.
+    fn sablon(&self) -> Sablon {
+        self.mimari.sablon()
+    }
+
     /// Kisit kurmanin sarti. Bunu bildirmeseydik `CagriKisiti` hic kurulamaz
     /// ve GERCEK model tam da kisitin en cok gerektigi yerde (kucuk model,
     /// serbest uretim) kisitsiz kosardi — sahte motorda calisan bir guvenlik
@@ -259,8 +473,38 @@ impl MotorSaglayici for CandleMotor {
         kisit: Option<&'a dyn Kisitlayici>,
         ayar: OrneklemeAyari,
     ) -> UretimGelecegi<'a> {
-        kutula_uretim(async move { self.dongu(istem, kisit, ayar) })
+        kutula_uretim(async move { self.dongu(istem, kisit, ayar, None) })
     }
+
+    /// Akan uretim: `dongu`ya dinleyiciyi gecirir. Varsayilan (tek-parca)
+    /// uygulamayi EZER cunku candle gercekten belirtec-belirtec ureten tek
+    /// motor; 3B modelde ilk belirtece kadarki bekleme burada gizlenir.
+    fn uret_akan<'a>(
+        &'a self,
+        istem: &'a Istem,
+        kisit: Option<&'a dyn Kisitlayici>,
+        ayar: OrneklemeAyari,
+        dinleyici: &'a (dyn Fn(&str) + Send + Sync),
+    ) -> UretimGelecegi<'a> {
+        kutula_uretim(async move { self.dongu(istem, kisit, ayar, Some(dinleyici)) })
+    }
+}
+
+/// GGUF ustverisinden `general.architecture` degerini okur.
+///
+/// Anahtar YOKSA hata doner, tahmine gidilmez: bu anahtar GGUF sartnamesinde
+/// ZORUNLUDUR, yoksa dosya ya bozuktur ya da GGUF degildir. Boyle bir dosyada
+/// mimari tahmin etmek, cozulecek bir sorun yokken risk uretmek olurdu.
+fn mimariyi_oku(icerik: &gguf_file::Content) -> MotorSonuc<Mimari> {
+    let deger = icerik.metadata.get("general.architecture").ok_or_else(|| {
+        MotorHatasi::Cikarim(
+            "GGUF ustverisinde 'general.architecture' yok — dosya bozuk ya da GGUF degil".into(),
+        )
+    })?;
+    let ad = deger
+        .to_string()
+        .map_err(|e| MotorHatasi::Cikarim(format!("'general.architecture' metin degil: {e}")))?;
+    Mimari::cozumle(ad)
 }
 
 /// Belirtecleyicinin sozlugunden yaygin bitis belirteclerini toplar.
@@ -270,9 +514,19 @@ impl MotorSaglayici for CandleMotor {
 /// yalnizca belirtec tavaninda durur: yanlis bir kimligi bitis saymaktansa
 /// gec durmak yeglenir — ilki ciktiyi ortasindan keser, ikincisi yalniz
 /// biraz fazla belirtec harcar.
+///
+/// ADI ARAMAK YETMEZ, OZEL OLDUGU DA DOGRULANIR. Olculdu: Qwen2.5 dagarciginda
+/// `</s>` ORTALAMA bir BPE belirtecidir (id 128247) — ozel degil, yalnizca o
+/// harfleri tasiyan siradan bir parca. Yalniz ada baksaydik model `</s>`
+/// dizgisini metin olarak yazdigi anda (XML/HTML anlatirken pekala olur)
+/// uretim cumlenin ortasinda kesilirdi. `is_special_token` bu ayrimi yapar:
+/// gercek bitis belirteci dagarciga SONRADAN EKLENMIS ve ozel isaretlenmis
+/// olandir (`<|im_end|>`, id 151645).
 fn bitis_belirtecleri_bul(belirtecleyici: &Tokenizer) -> Vec<u32> {
-    ["</s>", "<|im_end|>", "<|eot_id|>", "<|end_of_text|>", "<end_of_turn>"]
+    let eklenmis = belirtecleyici.get_added_vocabulary();
+    ["</s>", "<|im_end|>", "<|eot_id|>", "<|end_of_text|>", "<end_of_turn>", "<|endoftext|>"]
         .iter()
+        .filter(|ad| eklenmis.is_special_token(ad))
         .filter_map(|ad| belirtecleyici.token_to_id(ad))
         .collect()
 }
@@ -294,7 +548,7 @@ fn bitis_belirtecleri_bul(belirtecleyici: &Tokenizer) -> Vec<u32> {
 /// DOGRULANMADI: bu yol gercek bir GGUF + tokenizer ciftiyle HENUZ
 /// kosturulmadi (bkz. DURUM.md "Bilinen riskler"). Sahte motorda kod noktasi =
 /// belirtec oldugu icin bu donusum orada olculemiyor.
-fn dagarcik_kur(belirtecleyici: &Tokenizer) -> Vec<String> {
+pub fn dagarcik_kur(belirtecleyici: &Tokenizer) -> Vec<String> {
     let boy = belirtecleyici.get_vocab_size(true);
     (0..boy as u32)
         .map(|id| belirtecleyici.decode(&[id], false).unwrap_or_default())

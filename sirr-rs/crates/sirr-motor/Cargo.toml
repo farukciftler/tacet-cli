@@ -31,3 +31,23 @@ tokenizers = { version = "0.22", optional = true, default-features = false, feat
 [features]
 default = []
 candle = ["dep:candle-core", "dep:candle-transformers", "dep:tokenizers"]
+
+# Apple GPU. AYRI bir ozellik, cunku candle-core/metal objc2 + metal cekirdek
+# agacini da derler ve Metal olmayan hedeflerde (Linux CI) hic derlenmez.
+# Acikken `Aygit` varsayilani Metal olur — olculdu: cozme 31 -> 73 belirtec/sn,
+# onyukleme 113 -> 775 belirtec/sn (Qwen2.5-3B q4_k_m). Bu fark kullanicinin
+# elle bir bayrak aramasina birakilamayacak kadar buyuk.
+metal = ["candle", "candle-core/metal", "candle-transformers/metal"]
+
+# Olcum ornegi candle olmadan DERLENMEZ. Isaretlenmeseydi varsayilan
+# `cargo test --workspace` onu derlemeye kalkar ve candle tipleri yok diye
+# kirmizi yanardi — yani ornegin varligi, onunla ilgisi olmayan bir kosuyu
+# bozardi.
+[[example]]
+name = "olcum"
+required-features = ["candle"]
+
+# Gemma3 tanilamasi da candle ister (ayni gerekce).
+[[example]]
+name = "gemma_tani"
+required-features = ["candle"]

@@ -42,7 +42,7 @@ pub use token::{BAGLAM_BUTCESI, KirpmaRaporu, TokenSayaci, URETIM_PAYI};
 pub use yurutucu::bekle;
 
 #[cfg(feature = "candle")]
-pub use candle_motor::{CandleMotor, ModelAyari};
+pub use candle_motor::{CandleMotor, Mimari, ModelAyari};
 
 #[cfg(test)]
 mod testler {
@@ -140,13 +140,171 @@ mod testler {
     }
 
     #[test]
+    fn chatml_sablonu_rolleri_citle_ayirir() {
+        use crate::istem::Sablon;
+        let istem = Istem::yeni("Sen sirr'sin.", "yarin ne var?")
+            .araclarla(&katalog())
+            .gecmisle([Tur::kullanici("merhaba"), Tur::asistan("selam"), Tur::arac("sonuc: 3")]);
+        let m = istem.metin_sablonlu(Sablon::ChatML);
+
+        // Arac tarifi SISTEM turunun icinde: ayri bir tur olsaydi butce
+        // baskisinda "eski tur" sanilip kirpilabilirdi.
+        let sistem_sonu = m.find("<|im_end|>").unwrap();
+        assert!(m.find("takvim_oku").unwrap() < sistem_sonu);
+
+        assert!(m.contains("<|im_start|>system\n"));
+        assert!(m.contains("<|im_start|>user\nmerhaba<|im_end|>"));
+        assert!(m.contains("<|im_start|>assistant\nselam<|im_end|>"));
+        // ARAC CIKTISI `user` ROLUNDE ve `<tool_response>` ile sarili.
+        // Qwen3'un GGUF ustverisindeki resmi sablonundan dogrulandi: `tool`
+        // rolu dalinda yazilan cit `<|im_start|>user`dir. Onceden burada
+        // `<|im_start|>tool` uretiliyordu; model egitimde hic gormedigi bir rol
+        // adi gorup arac sonucunu baglamsiz metin sanip araci tekrar cagiriyordu.
+        assert!(
+            m.contains("<|im_start|>user\n<tool_response>\nsonuc: 3\n</tool_response><|im_end|>"),
+            "\n{m}"
+        );
+        assert!(!m.contains("<|im_start|>tool"), "\n{m}");
+        // Uretim capasi en sonda ve ACIK kalir.
+        assert!(m.ends_with("<|im_start|>assistant\n"));
+    }
+
+    /// Gemma'nin SISTEM ROLU YOKTUR. En kolay yapilacak hata, ChatML'i
+    /// kopyalayip etiketleri degistirmek ve `<start_of_turn>system` yazmaktir;
+    /// bu dizgi Gemma'nin egitim verisinde GECMEZ ve talimat baglayiciligini
+    /// yitirir. Bu test tam da onu yasaklar.
+    #[test]
+    fn gemma_sablonu_sistem_rolu_uretmez() {
+        use crate::istem::Sablon;
+        let istem = Istem::yeni("Sen sirr'sin.", "yarin ne var?").araclarla(&katalog());
+        let m = istem.metin_sablonlu(Sablon::Gemma);
+
+        assert!(!m.contains("system"), "Gemma'da sistem rolu yok:\n{m}");
+        assert!(!m.contains("<|im_start|>"), "ChatML citleri sizmis:\n{m}");
+        // Sistem talimati ve arac tarifi ILK KULLANICI turunun icinde.
+        assert!(m.starts_with("<start_of_turn>user\nSen sirr'sin."));
+        assert!(m.contains("takvim_oku"));
+        // Gecmis yokken tek bir user turu olur: iki ardisik `user` Gemma'nin
+        // donusumlu sablonunu bozardi.
+        assert_eq!(m.matches("<start_of_turn>user").count(), 1, "\n{m}");
+        // Uretim capasi `model`, `assistant` DEGIL.
+        assert!(m.ends_with("<start_of_turn>model\n"), "\n{m}");
+    }
+
+    #[test]
+    fn gemma_sablonu_gecmiste_rolleri_donusumlu_yazar() {
+        use crate::istem::Sablon;
+        let istem = Istem::yeni("Sen sirr'sin.", "yarin ne var?")
+            .gecmisle([Tur::kullanici("merhaba"), Tur::asistan("selam"), Tur::arac("sonuc: 3")]);
+        let m = istem.metin_sablonlu(Sablon::Gemma);
+
+        // Sistem blogu ilk `user` turunun basi oldugu icin "merhaba" ONUN
+        // devamidir; ayri bir user turu acilsaydi iki ardisik `user` olurdu.
+        assert!(m.starts_with("<start_of_turn>user\nSen sirr'sin.\n\nmerhaba<end_of_turn>"), "\n{m}");
+        // Asistanin adi `model`.
+        assert!(m.contains("<start_of_turn>model\nselam<end_of_turn>"));
+        // ARAC CIKTISI `user` tarafina yazilir (ucuncu bir rol adi uydurmak
+        // modelin hic gormedigi bir cit olurdu) ve `<tool_response>` ile
+        // isaretlenir. SORU AYNI TURDE devam eder: arac sonucu da soru da
+        // `user` oldugu icin ayri turlar acmak Gemma'nin donusumlu sablonunu
+        // bozardi.
+        assert!(
+            m.contains(
+                "<start_of_turn>user\n<tool_response>\nsonuc: 3\n</tool_response>\n\nyarin ne var?<end_of_turn>"
+            ),
+            "\n{m}"
+        );
+        // ASIL DEGISMEZ: hicbir yerde ardisik AYNI rol turu olmamali. Gemma
+        // sablonu donusumlu olmak zorunda; iki `user` turu yan yana gelirse
+        // model egitim dagiliminin disina cikar.
+        let roller: Vec<&str> = m
+            .match_indices("<start_of_turn>")
+            .map(|(i, c)| if m[i + c.len()..].starts_with("user") { "user" } else { "model" })
+            .collect();
+        assert!(roller.windows(2).all(|p| p[0] != p[1]), "ardisik ayni rol: {roller:?}\n{m}");
+        assert!(!m.contains("assistant") && !m.contains("tool\n"), "\n{m}");
+    }
+
+    /// Kilavuz sorunun HEMEN ONUNDE durmali (bkz. istem.rs BECERI KARARI).
+    /// ChatML'de bu dogrulanmisti; Gemma dalinda ayri kod oldugu icin ayri
+    /// dogrulama gerekiyor — sessizce kaymasi kolay.
+    #[test]
+    fn gemma_kilavuzu_sorunun_onunde_tutar() {
+        use crate::istem::Sablon;
+        for gecmisli in [false, true] {
+            let mut istem =
+                Istem::yeni("s", "asil soru burada").kilavuzla("KILAVUZ METNI".to_string());
+            if gecmisli {
+                istem = istem.gecmisle([Tur::kullanici("onceki")]);
+            }
+            let m = istem.metin_sablonlu(Sablon::Gemma);
+            let k = m.find("KILAVUZ METNI").expect("kilavuz yok");
+            let s = m.find("asil soru burada").expect("soru yok");
+            assert!(k < s, "kilavuz sorunun onunde degil (gecmisli={gecmisli}):\n{m}");
+            // Ikisi de AYNI turun icinde: araya rol siniri girmemeli.
+            assert!(!m[k..s].contains("<start_of_turn>"), "araya rol siniri girmis:\n{m}");
+        }
+    }
+
+    #[test]
+    fn duz_sablon_chatml_citlerini_hic_kullanmaz() {
+        use crate::istem::Sablon;
+        let istem = Istem::yeni("s", "q").araclarla(&katalog());
+        let m = istem.metin_sablonlu(Sablon::Duz);
+        assert!(!m.contains("<|im_start|>"));
+        // Varsayilan `metin()` duz bicimdir: butce olcumu ve CLI ciktisi buna dayanir.
+        assert_eq!(m, istem.metin());
+    }
+
+    #[test]
+    fn sahte_motor_duz_sablon_bildirir() {
+        use crate::istem::Sablon;
+        // Sablon MOTORUN ozelligidir; yanlis eslesme sessiz bozulma uretecegi
+        // icin varsayilanin duz kalmasi bilincli.
+        assert_eq!(SahteMotor::betik(Vec::<SahteAdim>::new()).sablon(), Sablon::Duz);
+    }
+
+    #[test]
+    fn sistem_talimati_yer_tutucu_arac_adi_icermez() {
+        // GERCEK MODELDE OLCULDU: 3B model istemdeki yer tutucu cagriyi
+        // harfiyen kopyaliyor. Talimatta `arac_adi(` ya da `ad(` gibi sahte
+        // bir imza belirirse o regresyon geri gelir.
+        assert!(!SISTEM_TALIMATI.contains("arac_adi("));
+        assert!(!SISTEM_TALIMATI.contains(" ad("));
+        // Ornek GERCEK bir arac uzerinden verilmeli — ve VERILMEK ZORUNDA.
+        // Ornegi kaldirmak Gemma'nin kopyalama arizasini cozuyor ama Qwen3-4B'yi
+        // bozuyor: olculdu, ornek yokken arac ADINI hic yazmadan dogrudan ciplak
+        // JSON (hatta ```json bloklari) uretti, yani cagri ayristirilamaz oldu.
+        // Sozle tarif (\"once adi yaz, adi olmayan cagri gecersizdir\") tek
+        // basina yetmedi. Ikisi arasinda birincil model kazanir; Gemma'nin
+        // kopyalamasi bilinen ve raporlanan bir sinirlilik olarak kaldi.
+        assert!(SISTEM_TALIMATI.contains("hesapla({"));
+    }
+
+    #[test]
     fn arac_tarifi_yalniz_katalogdan_turer() {
         let m = Istem::yeni("s", "q").araclarla(&katalog()).metin();
         assert!(m.contains("takvim_oku"));
         assert!(m.contains("Takvim etkinliklerini okur."));
-        // Sema istemin icinde: model imza uydurmak zorunda kalmasin.
-        assert!(m.contains("\"required\":[\"gun\"]"));
-        assert!(m.contains("\"additionalProperties\":false"));
+        // IMZA KISA BICIMDE: model imza uydurmak zorunda kalmasin ama tam JSON
+        // Schema da basilmasin. Argumanlari zaten gramer zorluyor; sema iki
+        // yerde birden tutulursa er gec ayrisir ve 4096'lik pencerede tam sema
+        // tek basina butcenin buyuk kismini yiyordu.
+        assert!(m.contains("takvim_oku(gun: metin)"), "\n{m}");
+        assert!(!m.contains("\"required\""), "tam JSON Schema sizmis:\n{m}");
+        assert!(!m.contains("additionalProperties"), "tam JSON Schema sizmis:\n{m}");
+    }
+
+    /// Zorunlu/istege bagli ayrimi imzada GORUNMEK zorunda: model hangi alani
+    /// atlayabilecegini baska hicbir yerden ogrenemez.
+    #[test]
+    fn kisa_imza_zorunlu_alani_isaretsiz_istege_baglıyi_soru_isaretli_yazar() {
+        use sirr_cekirdek::{Alan, ArgSema};
+        let sema = ArgSema::nesne(vec![
+            Alan::yeni("ifade", ArgSema::metin()).zorunlu(),
+            Alan::yeni("basamak", ArgSema::tamsayi()),
+        ]);
+        assert_eq!(sema.kisa_imza(), "ifade: metin, basamak?: tamsayi");
     }
 
     #[test]
@@ -278,6 +436,27 @@ mod testler {
         assert_eq!(TokenSayaci::tahmin(""), 0);
     }
 
+    /// OLCUME DAYALI REGRESYON: tahmin gercek belirtec sayisinin ALTINA
+    /// dusmemeli.
+    ///
+    /// Qwen2.5 belirtecleyicisiyle Turkce duzyazi olculdu: ortalama 2.71
+    /// bayt/belirtec. Tahmin bayti 3'e bolerken (eski hali) gercegin %10
+    /// altinda kaliyor, kirpma "sigdi" deyip 4096 penceresini asiyordu.
+    /// Bu test o orani sabitler: bayt basina en az 1/2.71 belirtec sayilmali.
+    #[test]
+    fn tahmin_olculen_turkce_yogunlugunun_altina_dusmez() {
+        let metin = "Cihaz uzerinde calisan asistanin baglam penceresini \
+                     doldurmak icin yazilmis uzunca bir Turkce cumle.";
+        // Olculen en kotu hal: 2.71 bayt/belirtec.
+        let gercekci_ust_sinir = (metin.len() as f64 / 2.71).ceil() as usize;
+        assert!(
+            TokenSayaci::tahmin(metin) >= gercekci_ust_sinir,
+            "tahmin {} < olculen gercek {}: kirpma pencereyi asar",
+            TokenSayaci::tahmin(metin),
+            gercekci_ust_sinir
+        );
+    }
+
     // --- SahteMotor ve kisit akisi ---
 
     #[test]
@@ -385,5 +564,44 @@ mod testler {
         assert!(TokenSayaci::tahmin(&gorulen) <= sayaci.istem_tavani());
         assert!(gorulen.contains("SISTEM TALIMATI"));
         assert!(gorulen.contains("asil soru burada"));
+    }
+}
+
+/// Mimari cozumlemesi — `candle` ozelligi altinda.
+///
+/// AGIRLIK GEREKTIRMEZ: burada olculen sey, ustveri dizgisinden dogru modul
+/// secimine giden karardir. Gercek GGUF yuklemesi 2.5 GB okur ve CI'da
+/// kosamaz; oysa "bilinmeyen mimaride sessizce yanlis modul yukleme" riski
+/// tam da bu saf fonksiyonda yasiyor.
+#[cfg(all(test, feature = "candle"))]
+mod mimari_testleri {
+    use crate::candle_motor::Mimari;
+    use crate::istem::Sablon;
+
+    #[test]
+    fn bilinen_mimariler_dogru_module_ve_sablona_gider() {
+        assert_eq!(Mimari::cozumle("qwen2").unwrap(), Mimari::Qwen2);
+        assert_eq!(Mimari::cozumle("qwen3").unwrap(), Mimari::Qwen3);
+        assert_eq!(Mimari::cozumle("gemma3").unwrap(), Mimari::Gemma3);
+
+        // Sablon mimariye BAGLI: Qwen ailesi ChatML, Gemma kendi bicimi.
+        // Yanlis eslesme sessiz bozulmadir (model citleri tanimaz).
+        assert_eq!(Mimari::Qwen2.sablon(), Sablon::ChatML);
+        assert_eq!(Mimari::Qwen3.sablon(), Sablon::ChatML);
+        assert_eq!(Mimari::Gemma3.sablon(), Sablon::Gemma);
+    }
+
+    /// EN ONEMLI TEST. Bilinmeyen mimaride "en yakin" module dusmek, modelin
+    /// sessizce copluk uretmesi demektir; hata mesaji desteklenenleri saymali
+    /// ki kullanici ne yapacagini bilsin.
+    #[test]
+    fn bilinmeyen_mimari_sessizce_dusmez_hata_doner() {
+        for ad in ["llama", "gemma2", "phi3", "qwen", "", "QWEN3"] {
+            let sonuc = Mimari::cozumle(ad);
+            assert!(sonuc.is_err(), "'{ad}' sessizce kabul edildi");
+            let mesaj = sonuc.unwrap_err().to_string();
+            assert!(mesaj.contains("desteklenmeyen GGUF mimarisi"), "{mesaj}");
+            assert!(mesaj.contains("qwen2, qwen3, gemma3"), "{mesaj}");
+        }
     }
 }

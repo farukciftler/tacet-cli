@@ -6,6 +6,10 @@ members = [
     "crates/sirr-gramer",
     "crates/sirr-motor",
     "crates/sirr-araclar",
+    "crates/sirr-beceri",
+    "crates/sirr-hafiza",
+    "crates/sirr-web",
+    "crates/sirr-mcp",
     "crates/sirr-eval",
     "crates/sirr-cli",
 ]
@@ -36,4 +40,11 @@ sirr-zip = { path = "crates/sirr-zip" }
 sirr-gramer = { path = "crates/sirr-gramer" }
 sirr-motor = { path = "crates/sirr-motor" }
 sirr-araclar = { path = "crates/sirr-araclar" }
+sirr-beceri = { path = "crates/sirr-beceri" }
+sirr-hafiza = { path = "crates/sirr-hafiza" }
+# AG TEKELI: ag cagrisi YALNIZ su iki crate'te bulunur. Baska hicbir crate
+# soket acmaz; kural `denetim` betigiyle degil, gozle denetlenebilir olsun diye
+# HTTP bagimliligi da yalniz bu ikisinin manifestinde durur.
+sirr-web = { path = "crates/sirr-web" }
+sirr-mcp = { path = "crates/sirr-mcp" }
 sirr-eval = { path = "crates/sirr-eval" }

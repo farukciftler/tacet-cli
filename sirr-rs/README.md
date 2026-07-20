@@ -131,36 +131,48 @@ cargo run -p sirr-cli -- sohbet --mesaj "125 carpi 8" --betik 'hesapla({"ifade":
 istemek demektir ve reddedilir; gercek motorla kosarken `--esik 0.8` gibi
 verin.
 
-## Gercek modelle deneme
+## Gercek modelle sohbet (terminal kabugu)
 
-Varsayilan derleme candle agacini HIC cekmez. Gercek cikarim icin:
+Varsayilan derleme candle agacini HIC cekmez. Gercek cikarim icin `candle`
+(islemci) ya da `metal` (Apple GPU) ozelligiyle derleyin. Model dosyalari
+`~/models/qwen2.5-3b/` altina konursa ya da `SIRR_MODEL`/`SIRR_TOKENIZER`
+ayarliysa `--motor oto` (varsayilan) GERCEK modeli kendiliginden secer; yoksa
+anlamli bir mesajla SahteMotor'a duser.
 
 ```sh
-cargo build -p sirr-cli --features candle
+# Tek komutla kur — `sirr` PATH'e girer (~/.cargo/bin):
+cargo install --path crates/sirr-cli --features metal   # Apple GPU
+# ya da islemci:
+cargo install --path crates/sirr-cli --features candle
 
-export SIRR_MODEL=/yol/model.gguf          # yerel GGUF agirlik
-export SIRR_TOKENIZER=/yol/tokenizer.json  # yerel tokenizer.json
-cargo run -p sirr-cli --features candle -- sohbet --motor candle
+# Yerel model (indirilmez, ag tekeli):
+#   ~/models/qwen2.5-3b/<agirlik>.gguf + tokenizer.json
+# ya da acikca:
+export SIRR_MODEL=/yol/model.gguf
+export SIRR_TOKENIZER=/yol/tokenizer.json
+
+sirr sohbet                 # etkilesimli: akan cevap, canli cip, onay kapisi
+sirr sohbet --mesaj "..."   # tek mesaj (tanilama; onay kapisi SessizRet)
+sirr araclar                # katalog (10 arac)
 ```
 
-Iki dosya da YERELDIR ve indirilmez (ag tekeli). Yollar yalniz ortam
-degiskeninden okunur. Aygit varsayilan islemcidir; `Aygit::Metal` istenirse
-`candle-core`un `metal` ozelligi de acilmali — sessizce islemciye DUSMEZ.
+Etkilesimli kabukta slash komutlari: `/yardim`, `/araclar`, `/hafiza`,
+`/gecmis`, `/model`, `/temizle`, `/cik`. Iki dosya da YERELDIR. Aygit
+varsayilan islemcidir; Metal icin `metal` ozelligi acilmali — sessizce
+islemciye DUSMEZ.
 
-## Bu turda YAPILMADI (kapsam disi)
+## Ikinci turda BAGLANAN katmanlar
 
-Asagidakiler bilincli olarak ertelendi; kodda karsiliklari ya yok ya da
-TODO ile isaretli:
+Birinci turda "kapsam disi" olan her sey artik URETIM YOLUNDA:
 
-- **Web arama** — `sirr` hicbir ag cagrisi yapmaz. Ag tekeli bu turun kurali.
-- **MCP** — dis arac protokolu yok. `AracYurutucu`nun onay kapisi mekanizmasi
-  hazir ve eval'de olculuyor (`disari_gonder`), ama gercek bir dis arac yok;
-  `sirr-cli`daki `DIS_ARACLAR` listesi bu yuzden BOS.
-- **Hafiza (kalici baglam)** — oturum sadece surec omurlu.
-- **Beceri deposu** — `Istem::kilavuzla` ve `KILAVUZ_SINIRI` (700) yazili ve
-  testli ama URETIMDE CAGRILMIYOR; besleyecek `BeceriDeposu` katmani yok.
-  Baglanacak tek nokta `istem.rs`de TODO ile isaretli.
-- **UI** — bu bir kutuphane + headless kabuk. Cip/onay akislari sozlesme
-  duzeyinde var, ekran yok.
+- **Web arama** (`web_ara`/`web_getir`) — ag YALNIZ `sirr-web`de; kirli
+  oturumda onay kapisindan gecer (`DIS_ARACLAR`).
+- **MCP** — `~/.sirr/mcp.json` varsa uzak araclar katalogda; hepsi dis arac.
+- **Hafiza** — `~/.sirr/hafiza.json` (0600); mesaja uyan not `<hafiza>` citiyle
+  isteme enjekte edilir + `hafiza` araci katalogda.
+- **Beceri** — mesaja uyan TEK beceri `<guidance>` citiyle, 700 karakter
+  siniriyla, her turda `BeceriDeposu::eslesen` ile secilerek isteme eklenir.
+- **Yeni araclar** — `belge_duzenle`, `dosya_ara`, `kod_calistir`.
+- **Yonlendirici** — 10 araclik katalogta 8 arac tavani ARTIK BAGLAYICI.
 
-Ayrintili "ne BAGLI, ne TODO" dokumu icin `DURUM.md`.
+Ayrintili "ne BAGLI, ne eksik" dokumu icin `DURUM.md`.

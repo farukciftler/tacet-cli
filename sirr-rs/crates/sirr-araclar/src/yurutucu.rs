@@ -90,23 +90,64 @@ impl AracCagrisi {
         }
 
         // Bicim 2 — cagri bicimi: ad({...})
-        let acilis = govde.find('(')?;
-        let ad = govde[..acilis].trim();
-        if ad.is_empty() || !ad.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            return None;
-        }
+        //
+        // ONEKTE DUZ METIN OLABILIR. Eskiden `(` oncesindeki metnin TAMAMI
+        // arac adi sayiliyordu; gercek modelde olculdu ve bu yanlis cikti.
+        // Qwen3-4B tipik olarak once niyetini yaziyor:
+        //
+        //   "Istanbul'un hava durumunu sorgulamak icin web aramasi yapacagim.
+        //    web_ara({"sorgu":"istanbul hava durumu"})"
+        //
+        // Eski kod bu ciktida adi "Istanbul'un ... yapacagim.\n\nweb_ara"
+        // olarak okuyor, icinde harf-disi karakter gorup `None` donuyordu —
+        // yani model araci DOGRU cagirmis olmasina ragmen arac HIC KOSMUYOR,
+        // uretilen cagri sessizce yutuluyordu. Belirtisi en yanilticisiydi:
+        // "model arac cagirmiyor" gibi gorunuyor, oysa cagiriyordu.
+        //
+        // Dogrusu, `(` oncesindeki SON tanimlayiciyi almak. Ad dogrulamasi
+        // burada yapilmaz; bilinmeyen ad 1. kapida (`katalog.bul`) zaten
+        // reddedilir ve modele duzgun bir hata doner.
         let kapanis = govde.rfind(')')?;
-        if kapanis <= acilis {
-            return None;
+        // Adaylar SAGDAN SOLA denenir: kisit uretimi cagrinin kapanis
+        // parantezinde bitirdigi icin gercek cagri metnin SONUNDADIR. Duz
+        // metinde gecen parantezler ("... (matematik) ...") boylece cagriyi
+        // golgelemez.
+        for (acilis, _) in govde[..kapanis].char_indices().rev().filter(|(_, c)| *c == '(') {
+            let ad = son_tanimlayici(&govde[..acilis]);
+            if ad.is_empty() {
+                continue;
+            }
+            let ic = govde[acilis + 1..kapanis].trim();
+            let args = if ic.is_empty() {
+                Value::Object(Default::default())
+            } else {
+                match serde_json::from_str(ic) {
+                    Ok(v) => v,
+                    // Bu `(` cagrinin acilisi degilmis; soldaki adaya gec.
+                    Err(_) => continue,
+                }
+            };
+            return Some(Self::yeni(ad, args));
         }
-        let ic = govde[acilis + 1..kapanis].trim();
-        let args = if ic.is_empty() {
-            Value::Object(Default::default())
-        } else {
-            serde_json::from_str(ic).ok()?
-        };
-        Some(Self::yeni(ad, args))
+        None
     }
+}
+
+/// Metnin SONUNDAKI tanimlayiciyi (`[A-Za-z0-9_]*`) dondurur.
+///
+/// ASCII sinirli olmasi bilincli: arac adlari sozlesme geregi ASCII'dir
+/// (bkz. isimlendirme kurali — semboller ASCII). Turkce harfleri de kabul
+/// etseydik "yapacagim" gibi bir sozcugun sonu gecerli bir ad gibi gorunur,
+/// 1. kapiya gereksiz gurultu tasirdi.
+fn son_tanimlayici(metin: &str) -> &str {
+    let bas = metin
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_ascii_alphanumeric() || *c == '_')
+        .last()
+        .map(|(i, _)| i)
+        .unwrap_or(metin.len());
+    &metin[bas..]
 }
 
 /// ```` ```json ... ``` ```` citini soyar. Kucuk model istense de istenmese de
@@ -661,6 +702,33 @@ mod testler {
     fn duz_cevap_cagri_degildir() {
         assert!(AracCagrisi::ayristir("Merhaba, nasil yardimci olabilirim?").is_none());
         assert!(AracCagrisi::ayristir("").is_none());
+    }
+
+    /// GERCEK MODEL CIKTISI (Qwen3-4B, birebir). Model once niyetini yazip
+    /// sonra cagriyi uretiyor; eski ayristirici bunu sessizce yutuyordu.
+    #[test]
+    fn duz_metin_onekli_cagri_ayristirilir() {
+        let ham = "İstanbul'un hava durumunu sorgulamak için web araması yapacağım.\n\n\
+                   web_ara({\"sorgu\":\"istanbul hava durumu\"})";
+        let c = AracCagrisi::ayristir(ham).expect("onekli cagri ayristirilamadi");
+        assert_eq!(c.ad, "web_ara");
+        assert_eq!(c.args["sorgu"], "istanbul hava durumu");
+    }
+
+    /// Onekteki parantezler cagriyi golgelememeli: adaylar SAGDAN denenir.
+    #[test]
+    fn onekteki_parantez_cagriyi_golgelemez() {
+        let ham = "Once bir hesap (basit aritmetik) yapmam gerek: hesapla({\"ifade\":\"2+2\"})";
+        let c = AracCagrisi::ayristir(ham).expect("cagri bulunamadi");
+        assert_eq!(c.ad, "hesapla");
+        assert_eq!(c.args["ifade"], "2+2");
+    }
+
+    /// Parantez var ama ONUNDE tanimlayici yok — cagri degildir.
+    #[test]
+    fn tanimlayicisiz_parantez_cagri_sayilmaz() {
+        assert!(AracCagrisi::ayristir("Bu bir aciklama (parantez icinde).").is_none());
+        assert!(AracCagrisi::ayristir("({\"a\":1})").is_none());
     }
 
     // --- Kapilar ---

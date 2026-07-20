@@ -152,6 +152,50 @@ impl ArgSema {
         }
     }
 
+    /// Istemde gosterilen KISA IMZA: `ifade: metin, basamak?: tamsayi`.
+    ///
+    /// NEDEN TAM JSON SCHEMA DEGIL: sema iki yerde birden zorlanamaz. Argumanlari
+    /// ZATEN gramer (`sirr_gramer::CagriKisiti`) zorluyor — model semanin disina
+    /// cikamiyor, cikamadigi icin de ezberlemesine gerek yok. Tam sema istemde
+    /// 4096'lik pencerenin neredeyse tamamini yiyordu; imza ayni secim bilgisini
+    /// (hangi alan var, hangisi zorunlu, tipi ne) onda birinden az yerde veriyor.
+    ///
+    /// `?` = istege bagli. Secenek tipi degerleri ACIK yazilir (`'saat'|'tarih'`):
+    /// kapali kume, modelin uyduramayacagi tek bilgidir ve secimi dogrudan
+    /// belirler — kisaltilirsa model gecerli bir deger tahmin etmek zorunda kalir.
+    pub fn kisa_imza(&self) -> String {
+        self.alanlar()
+            .iter()
+            .map(|a| {
+                let isaret = if a.zorunlu { "" } else { "?" };
+                format!("{}{}: {}", a.ad, isaret, a.sema.tip_adi())
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// Tek alanin istemde gorunen tip adi. TURKCE: istemin geri kalani Turkce
+    /// ve kucuk modelde dil karisimi gereksiz bir belirsizlik kaynagi.
+    fn tip_adi(&self) -> String {
+        match &self.tip {
+            SemaTipi::Nesne { .. } => "nesne".into(),
+            SemaTipi::Dizi { eleman, .. } => format!("{} dizisi", eleman.tip_adi()),
+            SemaTipi::Metin { .. } => "metin".into(),
+            // Kapali kume acik yazilir; bkz. `kisa_imza`.
+            SemaTipi::Secenek { secenekler } => {
+                secenekler.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join("|")
+            }
+            SemaTipi::Sayi { tam_mi, .. } => {
+                if *tam_mi {
+                    "tamsayi".into()
+                } else {
+                    "sayi".into()
+                }
+            }
+            SemaTipi::Bool => "evet/hayir".into(),
+        }
+    }
+
     /// Klasik JSON Schema karsiligi. Yalniz dis dunyaya (log, istem metni,
     /// uyumluluk) bakan yuzeydir; ic akis daima `ArgSema` uzerinden gider.
     pub fn json_schema(&self) -> serde_json::Value {

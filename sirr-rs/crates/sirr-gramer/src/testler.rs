@@ -560,6 +560,48 @@ fn maske_bitis_konumunda_hicbir_seyi_acmaz() {
     assert!(d.izinli_onekler().bitebilir());
 }
 
+/// GERCEK DAGARCIK REGRESYONU: gramer icinde baslayip cagriyi kapatan `)` ile
+/// biten BIRLESIK belirtec maskede acilmali.
+///
+/// Bu, Qwen2.5 ile olculmus somut bir arizanin testi: `hesapla({"ifade":
+/// "12*8"})` dizgisinin dogal belirteclemesi `"})` (tek belirtec) ile biter.
+/// Sonlandirici gezinin disinda ele alindigi surece o belirtec kapali kaliyor,
+/// yani modelin uretmesi EN OLASI belirtec yasak oluyordu.
+#[test]
+fn maske_sonlandiriciyla_biten_birlesik_tokeni_acar() {
+    let s = ornek_sema();
+    let g = gramer(&s);
+    let mut d = g.durum();
+    d.ilerlet(r#"{"sorgu":"a"#).unwrap();
+
+    // Dagarcikta hem parcali hem birlesik kapanislar var.
+    let dag: Vec<String> =
+        ["\"", "}", ")", "\"}", "\"})", "\"}) ekstra", "a"].iter().map(|s| s.to_string()).collect();
+    let m = TokenMaskesi::yeni(&dag);
+    let acik = izinliler(&m.maske_sonlandiricili(&d, Some(')')), &dag);
+
+    // Deger tirnakla kapanip nesne bitince cagri da kapanabilir.
+    assert!(acik.contains(&"\"}".to_string()), "parcali kapanis acik olmali");
+    assert!(acik.contains(&"\"})".to_string()), "birlesik kapanis acik olmali");
+    // Sonlandiricidan SONRASINA inilmez: cagrinin ardina gevezelik eklenemez.
+    assert!(!acik.contains(&"\"}) ekstra".to_string()), "cagri sonrasi metin yasak");
+}
+
+/// Sonlandirici verilmezse davranis degismez — `maske` bir cagri teli degil,
+/// salt gramer sorusudur ve `)` onun alfabesinde yoktur.
+#[test]
+fn sonlandiricisiz_maske_kapanis_tokenini_acmaz() {
+    let s = ornek_sema();
+    let g = gramer(&s);
+    let mut d = g.durum();
+    d.ilerlet(r#"{"sorgu":"a"#).unwrap();
+    let dag: Vec<String> = ["\"}", "\"})"].iter().map(|s| s.to_string()).collect();
+    let m = TokenMaskesi::yeni(&dag);
+    let acik = izinliler(&m.maske(&d), &dag);
+    assert!(acik.contains(&"\"}".to_string()));
+    assert!(!acik.contains(&"\"})".to_string()));
+}
+
 #[test]
 fn maske_onbellegi_ile_onbelleksiz_ayni_sonucu_verir() {
     let s = ornek_sema();

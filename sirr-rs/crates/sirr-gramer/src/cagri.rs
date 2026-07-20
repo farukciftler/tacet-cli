@@ -45,6 +45,14 @@ struct Ic {
     dagarcik: Vec<String>,
     /// (arac adi, argumanlarinin derlenmis grameri) — katalog sirasinda.
     araclar: Vec<(String, Arc<Gramer>)>,
+    /// ICINDE `(` GECEN belirtecler: (kimlik, `(` oncesi, ilk `(` sonrasi).
+    ///
+    /// NEDEN ONBELLEK: onek asamasindaki tek gercek tehlike, arac adini
+    /// KAPATIP argumanlara da giren tek bir belirtectir (`("` gibi). Bu
+    /// belirtecleri her adimda dagarcigi bastan tarayarak bulmak, maskenin
+    /// kacinmak icin var oldugu maliyeti geri getirirdi. Parantezli belirtecler
+    /// dagarcigin cok kucuk bir azinligi oldugu icin bir kez ayirmak yeter.
+    parantezli: Vec<(usize, String, String)>,
 }
 
 /// Katalogdan turetilmis cagri kisiti. Bir kez kurulur, tum uretim boyunca
@@ -65,11 +73,20 @@ impl CagriKisiti {
             .iter()
             .map(|a| (a.ad().to_string(), Gramer::derle(&a.sema())))
             .collect();
+        let parantezli = dagarcik
+            .iter()
+            .enumerate()
+            .filter_map(|(i, t)| {
+                let p = t.find('(')?;
+                Some((i, t[..p].to_string(), t[p + 1..].to_string()))
+            })
+            .collect();
         Self {
             ic: Arc::new(Ic {
                 maske: TokenMaskesi::yeni(dagarcik),
                 dagarcik: dagarcik.to_vec(),
                 araclar,
+                parantezli,
             }),
         }
     }
@@ -161,31 +178,83 @@ impl CagriOturumu {
     }
 }
 
+impl CagriOturumu {
+    /// Onek asamasinda YALNIZ parantezli belirtecleri eler (bkz. `maskele`).
+    ///
+    /// Elenme sarti dar tutuldu: belirtec, `(` oncesiyle birlikte TAM bir arac
+    /// adi olusturuyor VE `(` sonrasi kalan o aracin gramerine uymuyorsa
+    /// kapatilir. Ad tutmuyorsa belirtec zaten duz metne (`Serbest`) goturur,
+    /// yani zararsizdir; kapatmak modelin `(` iceren normal cumleler yazmasini
+    /// engellerdi.
+    fn onek_maskesi(&self, yenen: &str, logits: &mut [f32]) {
+        for (id, onces, kalan) in &self.ic.parantezli {
+            if *id >= logits.len() {
+                continue;
+            }
+            let ad = format!("{yenen}{onces}");
+            let ad = ad.trim();
+            let Some((_, gramer)) = self.ic.araclar.iter().find(|(a, _)| a == ad) else {
+                continue;
+            };
+            if !kalan_gramere_uyuyor(gramer, kalan) {
+                logits[*id] = f32::NEG_INFINITY;
+            }
+        }
+    }
+}
+
+/// `arac_adi(` ardindan gelen kalan karakterlerin gramerde YASAYIP yasamadigi.
+///
+/// `yut`un `Asama::Args` dalinin ayni mantigi: kabul durumunda gelen `)` cagriyi
+/// kapatir, sonrasi artik gramerin isi degildir.
+fn kalan_gramere_uyuyor(gramer: &Arc<Gramer>, kalan: &str) -> bool {
+    let mut durum = gramer.durum();
+    for c in kalan.chars() {
+        if durum.bitti_mi() && c == ')' {
+            return true;
+        }
+        if durum.ilerlet(&c.to_string()).is_err() {
+            return false;
+        }
+    }
+    true
+}
+
 impl KisitOturumu for CagriOturumu {
     fn maskele(&self, logits: &mut [f32]) {
-        let Asama::Args { durum } = &self.asama else {
-            // Serbest metin ya da onek asamasi: her sey mubah. Maske uretmek
-            // hem gereksiz hem pahali olurdu (bkz. dosya basi).
-            return;
+        let durum = match &self.asama {
+            Asama::Args { durum } => durum,
+            // ONEK ASAMASI: serbest metin mesru oldugu icin genel maske YOK.
+            // Tek istisna, arac adini kapatip AYNI belirtec icinde argumanlara
+            // da giren belirtecler (`("` gibi). Bunlar maskelenmezse gramer o
+            // belirteci sonradan reddeder ve uretim `KisitIhlali` ile duser —
+            // gozlenen ariza tam olarak buydu: `belge_oku` yazildiktan sonra
+            // gelen tek belirtec hem `(` hem `"` tasiyordu, oysa gramer `(`
+            // ardindan `{` bekliyor. Maskeleme ile ilerletmenin ayrismasi
+            // burada onlenir; hatayi sonradan yakalamak gec kalmaktir.
+            Asama::Onek { yenen } => {
+                self.onek_maskesi(yenen, logits);
+                return;
+            }
+            Asama::Kapali | Asama::Serbest => return,
         };
-        let izinli = self.ic.maske.maske(durum);
-        let kapanabilir = durum.bitti_mi();
+        // Sonlandirici `)` maskeye GEZI SIRASINDA katilir, sonradan degil.
+        //
+        // Onceki hali `dagarcik[id].starts_with(')')` diye bir son-ek kontroluydu
+        // ve iki yonden de yanlisti. Kacirdigi: `"})` gibi gramer icinde BASLAYIP
+        // sonlandiriciyla BITEN belirtecler — ki Qwen2.5'te gecerli bir cagrinin
+        // dogal belirteclemesi tam olarak boyle biter, yani en olasi belirtec
+        // kapali kaliyordu. Fazladan actigi: `))` ya da `) ...` gibi cagrinin
+        // ardina gevezelik ekleyen her belirtec. Gezinin icinde yapilan kontrol
+        // ikisini birden duzeltir: onek gramerden GECMEK, kalan ise TAM olarak
+        // sonlandirici olmak zorunda.
+        let izinli = self.ic.maske.maske_sonlandiricili(durum, Some(')'));
         for (id, logit) in logits.iter_mut().enumerate() {
-            if id >= izinli.len() {
-                // Dagarcigin disindaki indeks: kisit onun hakkinda bir sey
-                // soyleyemez, kapatmak en guvenlisi.
+            // Dagarcigin disindaki indeks: kisit onun hakkinda bir sey
+            // soyleyemez, kapatmak en guvenlisi.
+            if id >= izinli.len() || !izinli[id] {
                 *logit = f32::NEG_INFINITY;
-                continue;
             }
-            if izinli[id] {
-                continue;
-            }
-            // Gramer kapanabiliyorsa cagriyi bitiren `)` de mesrudur; onu
-            // gramer bilmez, cagri tel bicimi bilir.
-            if kapanabilir && self.ic.dagarcik[id].starts_with(')') {
-                continue;
-            }
-            *logit = f32::NEG_INFINITY;
         }
     }
 

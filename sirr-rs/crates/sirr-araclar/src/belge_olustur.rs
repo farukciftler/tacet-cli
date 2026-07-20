@@ -816,6 +816,21 @@ impl Arac for BelgeOlusturAraci {
                 .file_name()
                 .map(|a| a.to_string_lossy().into_owned())
                 .unwrap_or_else(|| dosya_adi.clone());
+
+            // MODELE DONEN YOL, CALISMA DIZININE GORELIDIR — cip metni gibi
+            // yalin dosya adi DEGIL.
+            //
+            // NEDEN: dosyalar `CIKTI_KLASORU` altina yaziliyor ama modele
+            // "ornek_tablo.xlsx" donuyordu. Model ayni oturumda "onu tablo
+            // olarak goster" dedigimde belge_oku'yu tam o adla cagiriyor,
+            // `yolu_coz` onu kokte ariyor ve "Dosya bulunamadi" doniyordu —
+            // ardindan model dosyayi okuyamadigi icin tabloyu KENDI HAFIZASINDAN
+            // uyduruyordu. Modelin gordugu yol, belge_oku'ya geri verilebilecek
+            // yol olmak zorunda.
+            let goreli = yol
+                .strip_prefix(&ctx.calisma_dizini)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| ad.clone());
             let cip_metni = format!("{} olusturuldu: {ad}", bicim.etiket());
 
             ctx.cip_guncelle(
@@ -830,7 +845,7 @@ impl Arac for BelgeOlusturAraci {
             // Modele yalniz olgu doner; "onizle/paylas" gibi UI yonergesi yazma
             // — model onu papaganlar ve kullaniciya var olmayan bir dugmeyi
             // tarif eder.
-            AracSonucu::yazildi(cip_metni, format!("file_created ({}): {ad}", bicim.anahtar()))
+            AracSonucu::yazildi(cip_metni, format!("file_created ({}): {goreli}", bicim.anahtar()))
                 .ham_cikti(yol.display().to_string())
                 .dosya_yolu(yol)
         })
