@@ -1,0 +1,39 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/sirr-cekirdek",
+    "crates/sirr-zip",
+    "crates/sirr-gramer",
+    "crates/sirr-motor",
+    "crates/sirr-araclar",
+    "crates/sirr-eval",
+    "crates/sirr-cli",
+]
+
+# Bagimlilik listesi bilerek kisadir: sirr'in kimligi "hazir crate cekmemek"
+# uzerine kurulu (OOXML zip/deflate/crc32 el ile yazilir). Buraya yeni bir
+# satir eklemek mimari bir karardir, kolaylik degil.
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+
+# KALDIRILDI — `anyhow` ve `tokio`: ikisi de burada bildirilmisti ama HICBIR
+# crate cekmiyordu. Olu bir manifest satiri zararsiz gorunur, degildir: listede
+# durdugu icin "zaten izinli" sayilir ve bir sonraki eklemede kimse gerekce
+# sormaz. Ustelik tokio icin kod kendi tersini soyluyor — sirr-motor ve
+# sirr-cekirdek "bu crate calistirici SECMEMELI, o yuzden tokio yok" diye
+# yaziyor. Bagimlilik ihtiyac dogdugunda, gerekcesiyle birlikte geri gelir.
+
+sirr-cekirdek = { path = "crates/sirr-cekirdek" }
+sirr-zip = { path = "crates/sirr-zip" }
+sirr-gramer = { path = "crates/sirr-gramer" }
+sirr-motor = { path = "crates/sirr-motor" }
+sirr-araclar = { path = "crates/sirr-araclar" }
+sirr-eval = { path = "crates/sirr-eval" }

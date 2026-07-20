@@ -1,0 +1,22 @@
+[package]
+name = "sirr-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# clap YALNIZ burada: arguman ayristirma bir kabuk isidir, kutuphane
+# katmanlarinin hicbiri onu gormemeli. Motor varsayilan ozelliklerle alinir
+# (candle YOK) — `--motor candle` istendiginde bu crate `candle` ozelligiyle
+# yeniden derlenir, varsayilan `cargo build` saniyeler icinde biter.
+[dependencies]
+sirr-cekirdek.workspace = true
+sirr-araclar.workspace = true
+sirr-gramer.workspace = true
+sirr-motor.workspace = true
+sirr-eval.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+
+[features]
+default = []
+candle = ["sirr-motor/candle"]

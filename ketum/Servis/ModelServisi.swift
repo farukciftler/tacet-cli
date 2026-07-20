@@ -152,6 +152,28 @@ final class ModelServisi {
     /// çevirisi bedava olmadığı için sınırsız değil (mcp §5.2).
     private static let mcpAracHavuzu = 24
 
+    /// Üretim seçenekleri (denetim P0-5'in eksik yarısı).
+    ///
+    /// ÜRETİMDE VARSAYILAN DEĞİŞMEZ: `GenerationOptions()` bugünkü davranışın
+    /// ta kendisidir; buraya dokunmak kullanıcının gördüğü yanıtları değiştirir
+    /// ve bu ayrı bir karardır. Değişken YALNIZCA eval için vardır.
+    ///
+    /// NEDEN GEREKLİ (ölçüldü, 20 Temmuz 2026): aynı ikiliyle kod değişmeden
+    /// iki koşum arasında vakaların %27'si puan değiştirdi, değişenlerde
+    /// ortalama oynama 21.8 puan, kategori ortalamaları kendiliğinden ±15 puan
+    /// kaydı. Bu gürültü tabanında bir düzeltmenin işe yarayıp yaramadığı tek
+    /// koşumla SÖYLENEMEZ — her "iyileştirme" iddiası zayıf kalır.
+    ///
+    /// `.greedy` sıcaklık 0'dan daha kesindir: sıcaklık 0 hâlâ örnekleme
+    /// yapabilir, greedy her adımda en olası jetonu alır.
+    nonisolated(unsafe) static var uretimSecenekleri = GenerationOptions()
+
+    /// Eval koşumları için örneklemeyi kapatır. Yalnız DEBUG yollarından
+    /// çağrılır; üretim ikilisinde çağıran yoktur.
+    static func orneklemeyiKapat() {
+        uretimSecenekleri = GenerationOptions(sampling: .greedy)
+    }
+
     /// Bu turun ham istemi — yuva alaka sıralamasının tek girdisi (P1-6).
     /// Oturum kurulumu senkron olduğu için soru bir alan üzerinden taşınır.
     private var sonSoru: String = ""
@@ -1431,7 +1453,7 @@ final class ModelServisi {
             // iptali onurlandır (checkCancellation yalnız döngü içinde kalırsa
             // "dur" ilk token gelene kadar etkisiz kalıyordu).
             try Task.checkCancellation()
-            let stream = oturum.streamResponse(to: soru)
+            let stream = oturum.streamResponse(to: soru, options: Self.uretimSecenekleri)
             var ilkParca = true
             for try await parca in stream {
                 // Kullanıcı "dur" dediyse burada çıkarız; `akanMetin` son gördüğü

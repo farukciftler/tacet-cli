@@ -1,0 +1,19 @@
+[package]
+name = "sirr-eval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# EVAL AGIRLIK CEKMEZ: `sirr-motor` VARSAYILAN ozelliklerle alinir, yani candle
+# agaci gelmez. Tum vakalar `SahteMotor` uzerinde koser; gercek motor
+# `MotorSecici` uzerinden disaridan verilir. Boylece eval kosmak bir GGUF
+# dosyasina ya da dakikalarca suren bir derlemeye bagli olmaz.
+[dependencies]
+sirr-cekirdek.workspace = true
+sirr-araclar.workspace = true
+# Gramer kisiti eval'de de kosar: uretim kisitli, eval kisitsiz olsaydi
+# olculen sey uygulamanin davranisi olmazdi.
+sirr-gramer.workspace = true
+sirr-motor.workspace = true
+serde.workspace = true
+serde_json.workspace = true

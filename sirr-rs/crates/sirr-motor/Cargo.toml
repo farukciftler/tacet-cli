@@ -1,0 +1,33 @@
+[package]
+name = "sirr-motor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# BAGIMLILIK KARARI: varsayilan derleme yalniz cekirdek + serde/thiserror ceker.
+# Gercek cikarim (candle) ISTEGE BAGLI ozellik arkasindadir ve varsayilanda YOK.
+# Gerekce iki katli: (1) sifir-bagimlilik kimligi — candle agaci tek basina
+# projenin geri kalanindan buyuk; (2) derleme suresi — tum eval ve CI
+# SahteMotor uzerinde koser, oraya dakikalarca suren bir agirlik derlemesi
+# sokmanin karsiligi yok.
+[dependencies]
+sirr-cekirdek = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+# --- Yalniz `candle` ozelligi altinda ---
+# Ag tekeli kurali burada da gecerli: bu crate'ler YEREL dosyadan model yukler,
+# indirmez — candle-transformers'in `hf-hub` uzantisi bilerek ACILMAZ.
+# candle-nn dogrudan kullanilmiyor (candle-transformers zaten cekiyor), bu
+# yuzden burada bildirilmedi: kullanilmayan bir bagimlilik listede durursa
+# "gerekli" saniliyor ve zamanla gercekten oyle oluyor.
+candle-core = { version = "0.11", optional = true }
+candle-transformers = { version = "0.11", optional = true }
+tokenizers = { version = "0.22", optional = true, default-features = false, features = [
+    "onig",
+] }
+
+[features]
+default = []
+candle = ["dep:candle-core", "dep:candle-transformers", "dep:tokenizers"]

@@ -903,6 +903,13 @@ extension Degerlendirme {
         let hamURL = klasor.appendingPathComponent("eval-ham-\(ek).json")
         let ozetURL = klasor.appendingPathComponent("eval-ozet-\(ek).txt")
 
+        // ÖRNEKLEMEYİ KAPAT (denetim P0-5). Ölçüm: örneklemeli koşumda aynı
+        // ikili iki kez koşturulunca vakaların %27'si puan değiştiriyor,
+        // değişenlerde ortalama oynama 21.8 puan. O gürültü tabanında bir
+        // düzeltmenin işe yaradığı SÖYLENEMEZ. Servis kurulmadan ÖNCE
+        // ayarlanır ki ilk tur da greedy olsun.
+        ModelServisi.orneklemeyiKapat()
+
         let servis = ModelServisi()
         guard servis.durum.hazirMi else {
             try? "MODEL HAZIR DEĞİL: \(servis.durum.etiket)"

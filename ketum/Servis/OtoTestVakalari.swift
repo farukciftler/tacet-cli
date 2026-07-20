@@ -13,6 +13,7 @@
 
 #if DEBUG
 import Foundation
+import FoundationModels
 
 // MARK: - Küçük iddia defteri
 
@@ -1940,6 +1941,26 @@ enum OtoTestVakalari {
         }
 
         d.esit(EvalKapisi.gecmePuani, 80, "geçme puanı 80 (araç + dürüstlük tam)")
+
+        // ÖRNEKLEME KAPALI OLMADAN KAPI ANLAMSIZDIR (P0-5'in eksik yarısı).
+        // ÖLÇÜM: örneklemeli iki koşum arasında 92 vakanın 25'i (%27) puan
+        // değiştirdi, değişenlerde ortalama oynama 21.8 puan, 14 vaka 20+ puan
+        // oynadı. Greedy'ye geçince AYNI karşılaştırma 91 vakada SIFIR değişim
+        // verdi (92.1 → 92.1). Yani eşik ancak greedy ile gerçek gerilemeyi
+        // ölçer; örneklemeliyken kapı kendi gürültüsüyle rastgele kırılırdı.
+        //
+        // Bu yüzden denetimin önerdiği "vaka başına N-koşu çoğunluk oranı"
+        // UYGULANMADI: gürültü sıfırken N-koşu koşum süresini üçe katlayıp
+        // hiçbir bilgi eklemiyor. Gürültü geri gelirse (SDK/model değişimi)
+        // bu iddia düşer ve N-koşu yeniden gündeme gelir.
+        let oncekiSecenek = ModelServisi.uretimSecenekleri
+        ModelServisi.orneklemeyiKapat()
+        d.esit(ModelServisi.uretimSecenekleri,
+               GenerationOptions(sampling: .greedy),
+               "eval örneklemeyi KAPATIR (greedy) — kapının ön koşulu")
+        ModelServisi.uretimSecenekleri = oncekiSecenek
+        d.esit(ModelServisi.uretimSecenekleri, GenerationOptions(),
+               "ÜRETİM varsayılanı değişmez (greedy yalnız eval yolunda)")
 
         // ÜSTÜNDE: 8/10 geçen, eşik 0.75 → geçer, çıkış kodu 0.
         let iyi = EvalKapisi.karar(Array(repeating: vaka(100), count: 8)
