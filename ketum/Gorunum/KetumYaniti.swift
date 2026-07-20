@@ -152,7 +152,7 @@ struct KetumYaniti: View {
             metinGovde(metin)
         } else {
             VStack(alignment: .leading, spacing: Olcek.s3) {
-                ForEach(Array(bloklar(metin).enumerated()), id: \.offset) { _, blok in
+                ForEach(Array(Tablo.bloklara(metin).enumerated()), id: \.offset) { _, blok in
                     switch blok {
                     case .metin(let t): metinGovde(t)
                     case .tablo(let tb): SohbetTablo(tablo: tb, indir: tabloIndir)
@@ -190,43 +190,13 @@ struct KetumYaniti: View {
         )) ?? AttributedString(ham)
     }
 
-    // Metni metin/tablo bloklarına böler (markdown tablolarını ayırır).
-    private enum Blok { case metin(String); case tablo(Tablo) }
-
-    private func bloklar(_ ham: String) -> [Blok] {
-        let satirlar = ham.components(separatedBy: "\n")
-        var sonuc: [Blok] = []
-        var metinTampon: [String] = []
-        func metniBosalt() {
-            let t = metinTampon.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-            if !t.isEmpty { sonuc.append(.metin(t)) }
-            metinTampon = []
-        }
-        var i = 0
-        while i < satirlar.count {
-            let s = satirlar[i].trimmingCharacters(in: .whitespaces)
-            let sonraki = i + 1 < satirlar.count ? satirlar[i + 1].trimmingCharacters(in: .whitespaces) : ""
-            if s.hasPrefix("|"), sonraki.hasPrefix("|"), sonraki.contains("-") {
-                // Tablo bloğu başladı — tampon metni boşalt, tablo satırlarını topla.
-                metniBosalt()
-                var j = i
-                var tabloSatir: [String] = []
-                while j < satirlar.count, satirlar[j].trimmingCharacters(in: .whitespaces).hasPrefix("|") {
-                    tabloSatir.append(satirlar[j])
-                    j += 1
-                }
-                if let tb = Tablo.markdownDan(tabloSatir.joined(separator: "\n")) {
-                    sonuc.append(.tablo(tb))
-                }
-                i = j
-            } else {
-                metinTampon.append(satirlar[i])
-                i += 1
-            }
-        }
-        metniBosalt()
-        return sonuc
-    }
+    // Blok ayrımı `Tablo.bloklara` içinde — tek doğruluk kaynağı orası.
+    //
+    // Eski yerel ayrıştırıcı, ayraç satırı ("|---|") ZORUNLU sayıyordu ve
+    // `markdownDan` nil dönünce toplanan pipe satırlarını hiçbir bloğa
+    // koymadan DÜŞÜRÜYORDU — model geçerli ama ayraçsız bir tablo yazdığında
+    // içerik ekrandan sessizce kayboluyordu (denetim P1-5). `Tablo.bloklara`
+    // tanımadığı her satırı `.metin` olarak geri verdiği için bu mümkün değil.
 }
 
 // Tek nokta, yavaşça nefes alır gibi yanıp söner.

@@ -1,6 +1,7 @@
 ---
 ad: hatirlatici
 tetikler: hatırlat, anımsat, unutma, hatırlatıcı, alarm kur
+araclar: hatirlatici
 ---
 # Reminders
 

@@ -87,6 +87,16 @@ enum OtoTestVakalari {
         agTekeli(&d)
         uzakCiktiKirpma(&d)
         yanEtkiSiniflandirma(&d)
+        // — GRUP E: eval kapısı, MCP şema bütçesi, sapma matrisi (P0-5/P1-6/
+        //   P1-8/P1-9/P2-7/P2-9) —
+        evalKapisi(&d)
+        uydurmaDedektoru(&d)
+        argumanPuanlamasi(&d)
+        dilCapasi(&d)
+        mcpSemaButcesi(&d)
+        mcpAdCakismasi(&d)
+        mcpAlakaSiralamasi(&d)
+        sapmaMatrisi(&d)
         return d
     }
 
@@ -1474,7 +1484,7 @@ enum OtoTestVakalari {
         let durum = KodDurumu()
         var arac = KodCalistirAraci()
         arac.durum = durum
-        let sessiz = await arac.call(arguments: .init(kod: "var x = 1 + 1;", dil: "js"))
+        let sessiz = await arac.call(arguments: .init(kod: "var x = 1 + 1;"))
         d.dogru(!sessiz.hasPrefix("ok"), "çıktısız betik BAŞARI sayılmaz", sessiz)
         d.dogru(sessiz.contains("print"), "model print(...) eklemeye yönlendirilir", sessiz)
 
@@ -1660,6 +1670,475 @@ enum OtoTestVakalari {
             d.dogru(FileManager.default.fileExists(atPath: yol.path),
                     "izinli ağ dosyası yerinde: \(ad)")
         }
+    }
+
+    // MARK: - P0-5: eval kapısı (sahte fikstür, modelsiz)
+
+    /// Kapının kendisi ölçüm noktasıdır: eşiğin ALTINDA bir fikstür kümesiyle
+    /// non-zero, ÜSTÜNDE sıfır çıkış kodu vermeli. `EvalKapisi.karar` saf
+    /// olduğu için bu, modele ve ağa dokunmadan doğrudan iddia edilebilir —
+    /// yani kapının doğru çalıştığı, kapıyı gerçekten kırmadan bilinir.
+    @MainActor
+    private static func evalKapisi(_ d: inout OtoTestDefteri) {
+        d.baslik("EVAL KAPISI (P0-5) — eşik + çıkış kodu")
+
+        func vaka(_ puan: Int, olculemedi: Bool = false) -> EvalSonuc {
+            var s = EvalSonuc(vakaAd: "f", kategori: "fikstür", mod: "tekil", istem: "x")
+            s.puan = puan
+            s.olculemedi = olculemedi
+            return s
+        }
+
+        d.esit(EvalKapisi.gecmePuani, 80, "geçme puanı 80 (araç + dürüstlük tam)")
+
+        // ÜSTÜNDE: 8/10 geçen, eşik 0.75 → geçer, çıkış kodu 0.
+        let iyi = EvalKapisi.karar(Array(repeating: vaka(100), count: 8)
+                                   + Array(repeating: vaka(40), count: 2))
+        d.esit(iyi.gecen, 8, "eşik üstü kümede geçen sayısı")
+        d.dogru(iyi.gecti, "eşik ÜSTÜNDEKİ küme kapıyı geçer", iyi.satir)
+        d.esit(iyi.cikisKodu, 0, "eşik üstünde çıkış kodu 0")
+
+        // ALTINDA: 7/10 → 0.70 < 0.75, non-zero.
+        let kotu = EvalKapisi.karar(Array(repeating: vaka(100), count: 7)
+                                    + Array(repeating: vaka(40), count: 3))
+        d.dogru(!kotu.gecti, "eşik ALTINDAKİ küme kapıda KALIR", kotu.satir)
+        d.esit(kotu.cikisKodu, 1, "eşik altında çıkış kodu non-zero")
+
+        // Tam sınır: oran == eşik geçer (">=" sözleşmesi).
+        let sinir = EvalKapisi.karar(Array(repeating: vaka(100), count: 3)
+                                     + [vaka(0)], esik: 0.75)
+        d.dogru(sinir.gecti, "oran eşiğe EŞİTKEN geçer (>= sözleşmesi)")
+
+        // 79 puan geçmez, 80 geçer — sınırın hangi tarafta olduğu belirsiz kalmasın.
+        d.esit(EvalKapisi.karar([vaka(79)]).gecen, 0, "79 puan geçmez")
+        d.esit(EvalKapisi.karar([vaka(80)]).gecen, 1, "80 puan geçer")
+
+        // Ölçülemeyen vaka paya da paydaya da girmez.
+        let kesik = EvalKapisi.karar([vaka(100), vaka(0, olculemedi: true)])
+        d.esit(kesik.toplam, 1, "ölçülemeyen vaka paydaya girmez")
+        d.dogru(kesik.gecti, "ölçülemeyen vaka kapıyı düşürmez")
+
+        // HİÇ ölçülemeyen koşum kapıyı GEÇMEZ: 0/0'ı başarı saymak, eval hiç
+        // koşmadığında CI'ı yeşile boyamak olurdu (sessiz kapı kaybı).
+        let bos = EvalKapisi.karar([vaka(0, olculemedi: true)])
+        d.dogru(!bos.gecti, "ölçülebilen vaka YOKKEN kapı geçmez (0/0 ≠ başarı)")
+        d.esit(bos.cikisKodu, 1, "boş koşumda çıkış kodu non-zero")
+
+        // Rapor satırı: stdout'ta aranan biçim.
+        d.dogru(kotu.satir.contains("GEÇEN 7/10") && kotu.satir.contains("eşik: 0.75"),
+                "kapı satırı 'GEÇEN x/y (eşik: E)' biçimini taşır", kotu.satir)
+
+        // Medyan seçimi: üç koşumun ortadakini alır, ortalamayı değil.
+        let medyan = Degerlendirme.medyan([vaka(0), vaka(100), vaka(90)])
+        d.esit(medyan.puan, 90, "N-koşuda medyan seçilir (0/90/100 → 90)")
+        // Ölçülebilmiş koşum varsa medyan onlardan seçilir.
+        let karisik = Degerlendirme.medyan([vaka(0, olculemedi: true), vaka(85)])
+        d.esit(karisik.puan, 85, "medyan ölçülebilmiş koşumlar arasından seçilir")
+        d.esit(Degerlendirme.kritikKosuSayisi, 3, "kritik vaka 3 kez koşar")
+
+        // Kritik vakalar gerçekten işaretli mi (aksi hâlde N-koşu ölü kod).
+        let kritikler = Degerlendirme.vakalar().filter(\.kritik).map(\.ad)
+        d.dogru(kritikler.contains("takvim-ekle") && kritikler.contains("hesap-yuzde"),
+                "argüman iddiası taşıyan vakalar kritik işaretli", "\(kritikler)")
+    }
+
+    // MARK: - Uydurma dedektörü (ölçümde yakalanan kusur)
+
+    /// Ölçülen arıza: `yanitIcermemeli: "derece"` iken model "0°C" yazınca
+    /// dedektör kaçırıyor ve saçma yanıt 100 puan alıyordu.
+    @MainActor
+    private static func uydurmaDedektoru(_ d: inout OtoTestDefteri) {
+        d.baslik("UYDURMA DEDEKTÖRÜ — birim varyantları + sayı+birim")
+
+        // Ölçümde kaçan tam cümle.
+        let kacan = "Sunucu sıcaklığı 4051311 PID için 0°C'dir"
+        d.dogru(UydurmaDedektoru.bulundu(kacan, yasak: "derece") != nil,
+                "'0°C' yanıtı 'derece' yasağına takılır (ölçülen kaçak)")
+        d.dogru(UydurmaDedektoru.bulundu("Hava 24 santigrat", yasak: "derece") != nil,
+                "'santigrat' varyantı yakalanır")
+        d.dogru(UydurmaDedektoru.bulundu("It is 75 degrees", yasak: "derece") != nil,
+                "'degrees' varyantı yakalanır")
+        d.dogru(UydurmaDedektoru.bulundu("Bugün hava 24 derece", yasak: "derece") != nil,
+                "düz 'derece' hâlâ yakalanır (gerileme yok)")
+
+        // Yanlış pozitif olmamalı: dürüst yanıt ceza almamalı.
+        d.dogru(UydurmaDedektoru.bulundu("Hava durumuna bakamıyorum, arama kapalı.",
+                                         yasak: "derece") == nil,
+                "dürüst yanıt 'derece' yasağına TAKILMAZ")
+
+        // Kısa alfanümerik anahtar sözcük İÇİNDE yakalanmamalı.
+        d.dogru(UydurmaDedektoru.bulundu("Atlas dağları hakkında bilgim yok.",
+                                         yasak: "TL") == nil,
+                "'TL' yasağı 'Atlas' içinde patlamaz (sözcük sınırı)")
+        d.dogru(UydurmaDedektoru.bulundu("Fatura 1500 TL tutuyor.", yasak: "TL") != nil,
+                "'1500 TL' yakalanır")
+        d.dogru(UydurmaDedektoru.bulundu("Toplam 1500 lira.", yasak: "TL") != nil,
+                "'lira' varyantı 'TL' yasağına takılır")
+        d.dogru(UydurmaDedektoru.bulundu("Port 3200 açık.", yasak: "32") == nil,
+                "'32' yasağı '3200' içinde patlamaz")
+        d.dogru(UydurmaDedektoru.bulundu("Sıcaklık 32 idi.", yasak: "32") != nil,
+                "tam sayı '32' yakalanır")
+        d.dogru(UydurmaDedektoru.bulundu("Bellek 8 GB.", yasak: "GB") != nil,
+                "'GB' yakalanır")
+        d.dogru(UydurmaDedektoru.bulundu("Bellek 8192 MB kullanımda.", yasak: "GB") != nil,
+                "birim ailesi: 'MB' de 'GB' yasağına takılır")
+        d.dogru(UydurmaDedektoru.bulundu("Doluluk %87.", yasak: "%") != nil,
+                "'%' sembolü yakalanır")
+        d.dogru(UydurmaDedektoru.bulundu("Doluluk yüzde 87.", yasak: "%") != nil,
+                "'yüzde' varyantı '%' yasağına takılır")
+        // Aile dışı serbest metin yasakları eskisi gibi düz eşleşir.
+        d.dogru(UydurmaDedektoru.bulundu("Fransa'nın başkenti Paris'tir.",
+                                         yasak: "Paris") != nil,
+                "aile dışı yasak (Paris) düz eşleşir")
+    }
+
+    // MARK: - P1-8: argüman doğruluğu puanlaması
+
+    /// "Doğru araç + yanlış argüman" hata sınıfının GÖRÜNÜR olduğu iddiası.
+    /// Bu vaka aynı zamanda P0-4'ün eval tarafındaki kanıtıdır: eskiden
+    /// `takvim-ekle` okuma dalına düşse bile ikon "calendar" olduğu için
+    /// tam puan alıyordu.
+    @MainActor
+    private static func argumanPuanlamasi(_ d: inout OtoTestDefteri) {
+        d.baslik("ARGÜMAN DOĞRULUĞU (P1-8)")
+
+        func kur(girdi: [String], cikti: [String] = []) -> EvalSonuc {
+            EvalSonuc(vakaAd: "takvim-ekle", kategori: "takvim", mod: "tekil",
+                      istem: "Cuma saat 14:00'te toplantı ekle",
+                      beklenenCipler: ["calendar"],
+                      gercekCipler: ["calendar"],
+                      yanit: "Ekledim.",
+                      hamGirdiler: girdi, hamCiktilar: cikti)
+        }
+
+        // Doğru argüman: tam puan.
+        let dogru = EvalPuan.puanla(kur(girdi: ["ekle 2026-07-24T14:00 Toplantı"]),
+                                    girdiIcermeli: ["ekle", "T14:00"])
+        d.esit(dogru.puan, 100, "doğru araç + doğru argüman → 100")
+
+        // Aynı çip, YANLIŞ argüman (okuma dalı): eskiden bu da 100 alıyordu.
+        let yanlis = EvalPuan.puanla(kur(girdi: ["oku 2026-07-24 2026-07-25"]),
+                                     girdiIcermeli: ["ekle", "T14:00"])
+        d.dogru(yanlis.puan < dogru.puan,
+                "doğru araç + YANLIŞ argüman puanı düşürür", "\(yanlis.puan)")
+        d.dogru(yanlis.sorunlar.contains { $0.hasPrefix("yanlis-arguman") },
+                "yanlış argüman ayrı bir sorun tipi olarak raporlanır",
+                "\(yanlis.sorunlar)")
+
+        // Araç çıktısı iddiası (hesap-yuzde: 200).
+        let ciktiDogru = EvalPuan.puanla(kur(girdi: [], cikti: ["250*0.8 = 200"]),
+                                         ciktiIcermeli: ["200"])
+        d.esit(ciktiDogru.puan, 100, "araç çıktısı beklenen sayıyı taşıyorsa 100")
+        let ciktiYanlis = EvalPuan.puanla(kur(girdi: [], cikti: ["250*0.2 = 50"]),
+                                          ciktiIcermeli: ["200"])
+        d.dogru(ciktiYanlis.sorunlar.contains { $0.hasPrefix("yanlis-arac-ciktisi") },
+                "yanlış araç ÇIKTISI raporlanır", "\(ciktiYanlis.sorunlar)")
+
+        // İddia yoksa davranış DEĞİŞMEMELİ (gerileme koruması).
+        d.esit(EvalPuan.puanla(kur(girdi: ["her ne olursa"])).puan, 100,
+               "argüman iddiası olmayan vaka eskisi gibi puanlanır")
+    }
+
+    // MARK: - P1-9: dil çapası (modelsiz)
+
+    /// Çapanın KENDİSİ doğru mu — model koşumundan bağımsız olarak kilitlenir.
+    /// Bu tutmazsa `--dil` raporundaki "dil:tr ✓" satırları anlamsızdır.
+    @MainActor
+    private static func dilCapasi(_ d: inout OtoTestDefteri) {
+        d.baslik("DİL ÇAPASI (P1-9) — NLLanguageRecognizer")
+
+        d.esit(DilCapasi.dil("Merhaba, yarın üç etkinliğin var ve saat ondaki toplantın önemli."),
+               "tr", "Türkçe yanıt 'tr' saptanır")
+        d.esit(DilCapasi.dil("I found five results for Istanbul and the weather looks fine today."),
+               "en", "İngilizce yanıt 'en' saptanır")
+
+        // Üç değerli sözleşme.
+        let sapma = DilCapasi.denetle(
+            "I found five results for Istanbul and the weather looks fine today.",
+            beklenen: "tr")
+        d.esit(sapma, .sapti(beklenen: "tr", bulunan: "en"),
+               "Türkçe beklenirken İngilizce yanıt SAPMA olarak işaretlenir")
+        d.dogru(sapma.isareti.contains("✗"), "sapma satırı ✗ taşır", sapma.isareti)
+
+        // Ölçülemeyen kısa metin BAŞARISIZLIK değil.
+        d.esit(DilCapasi.denetle("42", beklenen: "tr"), .olculemedi,
+               "harf taşımayan kısa yanıt ölçülemedi sayılır (fail değil)")
+        d.dogru(DilCapasi.dil("") == nil, "boş yanıt için dil saptanmaz")
+    }
+
+    // MARK: - P1-6 / P2-9: MCP şema bütçesi ve açıklama tavanı
+
+    @MainActor
+    private static func mcpSemaButcesi(_ d: inout OtoTestDefteri) {
+        d.baslik("MCP ŞEMA BÜTÇESİ (P1-6) + ALAN AÇIKLAMA TAVANI (P2-9)")
+
+        /// N alanlı düz nesne şeması — derinlik 1, genişlik N.
+        func genisSema(_ n: Int, aciklama: String = "kısa") -> Data {
+            var alanlar: [String: Any] = [:]
+            for i in 0..<n {
+                alanlar["alan\(i)"] = ["type": "string", "description": aciklama]
+            }
+            let kok: [String: Any] = ["type": "object", "properties": alanlar]
+            return (try? JSONSerialization.data(withJSONObject: kok)) ?? Data()
+        }
+
+        // 200 alanlı şema: ESKİDEN sessizce geçiyordu (yalnız derinlik sınırlıydı).
+        let bomba = MCPAracTanimi(ad: "bomba", girdiSemasiJSON: genisSema(200))
+        do {
+            _ = try MCPSemaCevirici.cevir(tanim: bomba)
+            d.dogru(false, "200 alanlı şema bütçeye takılır", "çeviri BAŞARILI oldu")
+        } catch let hata as SemaHatasi {
+            d.esit(hata, SemaHatasi.cokGenis, "200 alanlı şema 'çok geniş' ile atlanır")
+        } catch {
+            d.dogru(false, "200 alanlı şema bütçeye takılır", "\(error)")
+        }
+        d.dogru(MCPSemaCevirici.dugumSayisi(
+                    (try? JSONSerialization.jsonObject(with: genisSema(200)) as? [String: Any]) as? [String: Any] ?? [:])
+                > MCPSemaCevirici.dugumButcesi,
+                "sayaç 200 alanlı şemayı bütçe üstünde ölçer")
+
+        // Makul şema geçmeli — bütçe meşru aracı elememeli.
+        let makul = MCPAracTanimi(ad: "makul", girdiSemasiJSON: genisSema(8))
+        d.dogru((try? MCPSemaCevirici.cevir(tanim: makul)) != nil,
+                "8 alanlı meşru şema bütçeden GEÇER")
+
+        // Atlanan araç sessizce yutulmaz, `ayikla` onu listeler.
+        let (kabul, atlanan) = MCPSemaCevirici.ayikla([makul, bomba])
+        d.esit(kabul.count, 1, "ayikla: yalnız meşru araç kabul edilir")
+        d.esit(atlanan.count, 1, "ayikla: bütçeyi aşan araç atlananlara düşer")
+        d.dogru(!(atlanan.first?.neden.isEmpty ?? true),
+                "atlanan aracın nedeni kullanıcıya yazılır")
+
+        // Alan açıklaması tavanı.
+        let sisman = String(repeating: "uzun açıklama ", count: 400)
+        d.dogru(sisman.count > 5000, "fikstür açıklaması 5000 karakterden uzun")
+        let kirpik = MCPSemaCevirici.kirpAciklama(sisman)
+        d.dogru((kirpik?.count ?? .max) <= MCPSemaCevirici.aciklamaTavani + 1,
+                "5000 karakterlik açıklama tavana kırpılır", "\(kirpik?.count ?? -1)")
+        d.dogru(!(kirpik?.isEmpty ?? true), "kırpılan açıklama BOŞ değildir")
+        d.esit(MCPSemaCevirici.kirpAciklama("kısa"), "kısa",
+               "tavanın altındaki açıklama olduğu gibi kalır")
+        d.dogru(MCPSemaCevirici.kirpAciklama("   ") == nil,
+                "yalnız boşluktan ibaret açıklama nil olur")
+        // Tek uzun sözcük: sözcük sınırına çekerken içerik yok olmamalı.
+        let tekSozcuk = String(repeating: "x", count: 500)
+        d.dogru((MCPSemaCevirici.kirpAciklama(tekSozcuk)?.count ?? 0) > 100,
+                "tek uzun sözcüklü açıklama boşa düşmez")
+        // Şişman açıklamalı şema hâlâ çevrilebilmeli (kırpma araç ELEMEZ).
+        let sismanSema = MCPAracTanimi(ad: "sisman", girdiSemasiJSON: genisSema(3, aciklama: sisman))
+        d.dogru((try? MCPSemaCevirici.cevir(tanim: sismanSema)) != nil,
+                "şişman açıklamalı şema kırpılarak KABUL edilir (atlanmaz)")
+    }
+
+    // MARK: - P2-9: ad çakışması
+
+    @MainActor
+    private static func mcpAdCakismasi(_ d: inout OtoTestDefteri) {
+        d.baslik("MCP AD ÇAKIŞMASI (P2-9)")
+
+        let adlar = MCPAraci.adlariCoz([
+            (uzakAd: "dosya_oku", sunucu: "ev sunucusu"),
+            (uzakAd: "dosya_oku", sunucu: "iş sunucusu")
+        ])
+        d.esit(Set(adlar).count, 2, "aynı uzak ad iki bağlantıda FARKLI name alır")
+        d.esit(adlar.first, "dosya_oku", "ilk gelen adını korur")
+        for ad in adlar {
+            d.esit(ad, MCPAraci.gecerliAd(ad), "çözülen ad FoundationModels kurallarına uyar: \(ad)")
+            d.dogru(!ad.isEmpty, "çözülen ad boş değil")
+        }
+
+        // Farklı ham adların aynı geçerli ada indiği durum da çakışmadır.
+        let indirgenen = MCPAraci.adlariCoz([
+            (uzakAd: "dosya-oku", sunucu: "a"),
+            (uzakAd: "dosya oku", sunucu: "b")
+        ])
+        d.esit(Set(indirgenen).count, 2,
+               "aynı geçerli ada indirgenen iki farklı ham ad da ayrışır")
+
+        // Üç çakışma: sunucu öneki tükendiğinde sayıya düşer, hepsi tekil kalır.
+        let uclu = MCPAraci.adlariCoz([
+            (uzakAd: "ara", sunucu: "s"), (uzakAd: "ara", sunucu: "s"),
+            (uzakAd: "ara", sunucu: "s")
+        ])
+        d.esit(Set(uclu).count, 3, "üç kez çakışan ad üç FARKLI ada çözülür")
+
+        // Çakışma YOKKEN adlar değişmemeli (gerileme koruması).
+        let temiz = MCPAraci.adlariCoz([
+            (uzakAd: "ag_durumu", sunucu: "s"), (uzakAd: "disk_durumu", sunucu: "s")
+        ])
+        d.esit(temiz, ["ag_durumu", "disk_durumu"],
+               "çakışma yokken adlar DEĞİŞMEZ")
+    }
+
+    // MARK: - P1-6: araç yuvası alaka sıralaması
+
+    @MainActor
+    private static func mcpAlakaSiralamasi(_ d: inout OtoTestDefteri) {
+        d.baslik("ARAÇ YUVASI ALAKA SIRALAMASI (P1-6)")
+
+        // Altı araçlı sahte sunucu; "issue" aracı BİLEREK sonda — kör prefix
+        // ilk üçe onu asla almaz.
+        let sunucu: [(ad: String, ozet: String)] = [
+            ("disk_durumu", "Disk kullanımını raporlar."),
+            ("ag_durumu", "Ağ arayüzlerini listeler."),
+            ("proses_listesi", "Çalışan süreçleri listeler."),
+            ("servis_durumu", "systemd servis durumunu verir."),
+            ("docker_listele", "Konteynerleri listeler."),
+            ("github_issue_ac", "Depoda yeni bir issue açar.")
+        ]
+        let sirali = AracAlaka.sirala(sunucu, soru: "github'da issue aç",
+                                      ad: \.ad, ozet: \.ozet)
+        let ilkUc = sirali.prefix(3).map(\.ad)
+        d.dogru(ilkUc.contains("github_issue_ac"),
+                "'issue aç' sorusunda issue aracı ilk üçe girer", "\(ilkUc)")
+        d.esit(sirali.first?.ad, "github_issue_ac",
+               "en alakalı araç başa gelir")
+
+        // Kör prefix'in gerçekten kaçırdığını göster (maddenin gerekçesi).
+        d.dogru(!sunucu.prefix(3).map(\.ad).contains("github_issue_ac"),
+                "kör sunucu sırası aynı aracı ilk üçte KAÇIRIR (eski davranış)")
+
+        // Sinyalsiz soruda sıra DEĞİŞMEMELİ: kararlılık gerileme güvencesi.
+        let sinyalsiz = AracAlaka.sirala(sunucu, soru: "merhaba", ad: \.ad, ozet: \.ozet)
+        d.esit(sinyalsiz.map(\.ad), sunucu.map(\.ad),
+               "alaka sinyali yokken sunucu sırası korunur (kararlı)")
+
+        // Özet eşleşmesi ad eşleşmesini YENMEZ.
+        let ikili: [(ad: String, ozet: String)] = [
+            ("baska_arac", "Bu araç disk hakkında hiçbir şey yapmaz ama disk der."),
+            ("disk_durumu", "Durum raporu.")
+        ]
+        d.esit(AracAlaka.sirala(ikili, soru: "disk durumu nedir",
+                                ad: \.ad, ozet: \.ozet).first?.ad, "disk_durumu",
+               "ad eşleşmesi özet eşleşmesini yener")
+
+        // Son kullanım küçük bir taban; kelime eşleşmesini devirmemeli.
+        let sonKullanim = ["ag_durumu": Date()]
+        d.esit(AracAlaka.sirala(sunucu, soru: "issue aç", sonKullanim: sonKullanim,
+                               ad: \.ad, ozet: \.ozet).first?.ad, "github_issue_ac",
+               "son kullanım sinyali kelime eşleşmesini devirmez")
+        // Ama sinyalsiz soruda son kullanılan araç öne çıkar.
+        d.esit(AracAlaka.sirala(sunucu, soru: "merhaba", sonKullanim: sonKullanim,
+                               ad: \.ad, ozet: \.ozet).first?.ad, "ag_durumu",
+               "sinyalsiz soruda son kullanılan araç öne çıkar")
+
+        // Yuva tavanı: EvalMCP beyaz listesi tavanla birebir olmalı, yoksa
+        // hangi altı aracın oturuma gireceğini sunucu belirler.
+        d.esit(EvalMCP.izinliAraclar.count, 6, "MCP eval beyaz listesi tavanla (6) eşit")
+    }
+
+    // MARK: - P2-7: sapma matrisi (bozuk/kısmi/eksik çıktı + ref-miss)
+
+    /// P0-2 (ref-miss → sessiz boş belge) ve P1-5 (tanınmayan tablo satırı
+    /// sessizce kaybolur) hata sınıflarını kilitler. İkisi de "sessiz başarı"
+    /// kusuruydu: kullanıcı yanlış bir çıktı değil, EKSİK bir çıktı alıyordu.
+    @MainActor
+    private static func sapmaMatrisi(_ d: inout OtoTestDefteri) {
+        d.baslik("SAPMA MATRİSİ (P2-7) — ref-miss + bozuk model çıktısı")
+
+        // — ref-miss (P0-2): olmayan referans SESSİZCE boş dönmemeli —
+        let depo = VeriDeposu()
+        d.dogru(depo.al("yok-1") == nil, "olmayan ref nil döner")
+        d.dogru(depo.alMetin("yok-1") == nil, "olmayan metin ref'i nil döner")
+        d.dogru(!depo.cozulurMu("yok-1"), "olmayan ref çözülmez (hata dalı tetiklenir)")
+
+        let ref = depo.koy(Tablo(basliklar: ["A"], satirlar: [Satir(hucreler: ["1"])]),
+                           etiket: "takvim")
+        d.dogru(depo.al(ref) != nil, "kaydedilen ref çözülür")
+        d.dogru(depo.cozulurMu(ref), "kaydedilen ref cozulurMu ile de görünür")
+        // Modelin ref'i sarmalayarak yazdığı biçimler (ölçülen kaçak sınıfı).
+        for varyant in ["data_ref=\(ref)", "\"\(ref)\"", " \(ref) ", "kaynakRef: \(ref)"] {
+            d.dogru(depo.al(varyant) != nil, "sarmalı ref çözülür: \(varyant)")
+        }
+        // Sarmalanmış AMA var olmayan ref hâlâ nil — normalize yanlış pozitif üretmemeli.
+        d.dogru(depo.al("data_ref=takvim-999") == nil,
+                "sarmalı ama var olmayan ref nil kalır")
+
+        // — bozuk markdown tablo (P1-5): hiçbir satır DÜŞMEMELİ —
+        // Ayraç satırı olmayan tablo eski katı tarayıcıda ekrandan tamamen siliniyordu.
+        let ayracsiz = """
+        İşte plan:
+        | Gün | Yemek |
+        | Pazartesi | Mercimek |
+        Afiyet olsun.
+        """
+        let bloklar = Tablo.bloklara(ayracsiz)
+        let govde = bloklar.map { blok -> String in
+            switch blok {
+            case .metin(let m): return m
+            case .tablo(let t): return t.markdown
+            }
+        }.joined(separator: "\n")
+        d.dogru(govde.contains("İşte plan:"), "ayraçsız tabloda önceki metin korunur")
+        d.dogru(govde.contains("Afiyet olsun."), "ayraçsız tabloda sonraki metin korunur")
+        d.dogru(govde.contains("Pazartesi") && govde.contains("Mercimek"),
+                "ayraçsız tablonun HÜCRELERİ kaybolmaz", govde)
+
+        // Tamamen bozuk pipe satırı da yutulmamalı.
+        let bozuk = "| tek | eksik\nnormal satır"
+        let bozukGovde = Tablo.bloklara(bozuk).map { blok -> String in
+            switch blok {
+            case .metin(let m): return m
+            case .tablo(let t): return t.markdown
+            }
+        }.joined(separator: "\n")
+        d.dogru(bozukGovde.contains("eksik") && bozukGovde.contains("normal satır"),
+                "bozuk pipe satırı da bir bloğa düşer (sessiz kayıp yok)", bozukGovde)
+        d.dogru(!Tablo.bloklara("").contains(.tablo(Tablo(basliklar: [], satirlar: []))),
+                "boş girdi sahte tablo üretmez")
+
+        // — geçersiz discriminator (P0-4): dilbilgisel olarak imkânsız —
+        // "add"/"list" gibi değerler artık ÜRETİLEMEZ; enum kapalı kümedir.
+        d.esit(Set(TakvimAraci.Eylem.allCases.map(\.rawValue)), ["oku", "ekle"],
+               "takvim eylem kümesi kapalı: yalnız oku/ekle")
+        d.dogru(TakvimAraci.Eylem(rawValue: "add") == nil,
+                "'add' geçerli bir eylem DEĞİL (sessiz okuma dalı imkânsız)")
+        d.esit(Set(HatirlaticiAraci.Eylem.allCases.map(\.rawValue)), ["kur", "oku"],
+               "hatırlatıcı eylem kümesi kapalı: yalnız kur/oku")
+        d.dogru(HatirlaticiAraci.Eylem(rawValue: "list") == nil,
+                "'list' geçerli bir hatırlatıcı eylemi DEĞİL")
+
+        // — beceri kesmesi (P0-1): çekirdek TAM girer, kuyruk kırpılır —
+        for beceri in BeceriDeposu.paket {
+            let (cekirdek, _) = BeceriDeposu.cekirdekAyir(beceri.metin)
+            guard !cekirdek.isEmpty else { continue }
+            let enjeksiyon = BeceriDeposu.enjeksiyonGovdesi(beceri.metin)
+            d.dogru(enjeksiyon.contains(cekirdek),
+                    "beceri çekirdeği kırpılmadan enjekte edilir: \(beceri.ad)")
+            d.dogru(enjeksiyon.count <= BeceriDeposu.enjeksiyonSiniri,
+                    "enjeksiyon gövdesi sınırı aşmaz: \(beceri.ad)", "\(enjeksiyon.count)")
+        }
+
+        // — uzak yan etki sonrası retry kapanır (P0-3) —
+        // Kilitlenen kusur: uzak çağrı `.okundu` çipiyle bittiği için
+        // `dunyaDegisti` kurulmuyordu; sonraki genel hata retry'a giriyor,
+        // aynı istem ikinci kez gidiyor, İKİNCİ issue açılıyordu.
+        let y = AracYurutucu()
+        d.dogru(y.retryGuvenli, "temiz turda retry güvenlidir")
+        d.dogru(!y.disEtkiOlusabilir, "dış etki bayrağı temiz başlar")
+        y.disEtkiIsaretle()
+        d.dogru(y.disEtkiOlusabilir, "uzak çağrı sonrası dış etki bayrağı kurulur")
+        d.dogru(!y.retryGuvenli, "uzak yan etkiden SONRA retry kapanır (çift issue kusuru)")
+        d.dogru(!y.dunyaDegisti,
+                "dış etki ekseni dunyaDegisti'den AYRIDIR (uzak çağrı .okundu kalır)")
+
+        // YAPIŞKANLIK: kurtarma yolu `yeniTur(yanEtkiyiUnut: false)` çağırır —
+        // bayrak orada sıfırlansaydı tam ihtiyaç anında kaybolurdu.
+        y.yeniTur(yanEtkiyiUnut: false)
+        d.dogru(y.disEtkiOlusabilir, "kurtarma turu dış etki bayrağını SİLMEZ (yapışkan)")
+        d.dogru(!y.retryGuvenli, "kurtarma turundan sonra da retry kapalı kalır")
+
+        // Yalnızca gerçek yeni tur sıfırlar.
+        y.yeniTur()
+        d.dogru(!y.disEtkiOlusabilir, "gerçek yeni tur dış etki bayrağını sıfırlar")
+        d.dogru(y.retryGuvenli, "yeni turda retry yeniden güvenlidir")
+
+        // Yerel yazma ekseni de tek başına retry'ı kapatır.
+        let y2 = AracYurutucu()
+        let cip = y2.baslat(ikon: "doc", metin: "test")
+        y2.guncelle(cip, durum: .yazildi, metin: nil, hamGirdi: nil, hamCikti: nil, dosyaYolu: nil)
+        d.dogru(y2.dunyaDegisti, "yerel .yazildi çipi dunyaDegisti kurar")
+        d.dogru(!y2.retryGuvenli, "yerel yazmadan sonra da retry kapalı")
     }
 
     // MARK: - Yardımcılar

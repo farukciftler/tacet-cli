@@ -41,7 +41,7 @@ struct WebAramaAraci: KetumAraci {
         // Sunucu tanımsız/kapalıysa araç zaten profile girmemeli; yine de
         // savunmacı dur — ağ katmanına hiç dokunma.
         guard WebAramaAyari.aktifMi else {
-            return "search_unavailable: no search server is configured. Tell the user, in their own language, that this information is not on the device."
+            return "search_unavailable: no search server is configured; the answer is not available on this device"
         }
 
         // ONAY KAPISI — çipten ÖNCE. Temiz oturumda sormadan geçer (§2.4);

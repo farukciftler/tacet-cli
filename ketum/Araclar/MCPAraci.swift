@@ -194,6 +194,10 @@ struct MCPAraci: KetumAraci {
     let baglantiID: UUID
     /// Uzak araç adı; `name` çakışmayı önlemek için önek almış olabilir.
     let uzakAd: String
+    /// Ekleme anında önbelleklenen sunucu özeti (§5.3). `description` bunun
+    /// sunucu adıyla süslenmiş hâli; ham özet AYRICA saklanır çünkü yuva
+    /// alaka sıralaması (`AracAlaka`) süsü değil METNİ okumalı.
+    let ozet: String
     /// Bağlantının cihaz verisi ayarı (§3.1). Kirli oturumda davranışı belirler:
     /// `.hicbirZaman` (varsayılan) hiç çağırmaz, `.herSeferindeSor` onay sorar.
     /// Kirli OLMAYAN oturumda ikisi de sorgusuz geçer (§2.4 "onay nadirse okunur").
@@ -215,15 +219,20 @@ struct MCPAraci: KetumAraci {
          cihazVerisi: CihazVerisiAyari = .hicbirZaman,
          yanEtki: YanEtkiSinifi = .saltOkuma,
          kapi: (any OnayKapisi)? = nil,
-         raporlayici: (any AracRaporlayici)? = nil) {
+         raporlayici: (any AracRaporlayici)? = nil,
+         cozulmusAd: String? = nil) {
         self.yanEtki = yanEtki
         self.baglantiID = baglantiID
         self.baglantiAdi = baglantiAdi
         self.uzakAd = uzakAd
+        self.ozet = ozet
         // Varsayılan en kısıtlı seçenek: araç üretilirken ayar UNUTULURSA
         // davranış "gönderme" tarafına düşer, sessizce sızma tarafına değil.
         self.cihazVerisi = cihazVerisi
-        self.name = Self.gecerliAd(uzakAd)
+        // Ad koleksiyon düzeyinde çözülmüş olabilir (§P2-9): iki sunucuda aynı
+        // uzak ad varsa `adlariCoz` ikisine farklı `name` verir ve buraya
+        // çözülmüşünü geçirir. Geçirilmediyse tek-ad davranışı korunur.
+        self.name = cozulmusAd.map(Self.gecerliAd) ?? Self.gecerliAd(uzakAd)
         // Modele giden tanım §5.3'te sıkıştırılmış özettir; buraya ham
         // açıklama koymak 4096 pencereyi tek araçla doldurabilir.
         self.description = Self.tanim(ozet: ozet, sunucu: baglantiAdi)
@@ -323,14 +332,19 @@ struct MCPAraci: KetumAraci {
                 return AracSonucu(
                     cipMetni: "\(baglantiAdi) · yarıda kaldı",
                     durum: .basarisiz(String(localized: "Yarıda kaldı.")),
-                    modeleDonen: "remote_call_cancelled: the call to the user's server was interrupted. Say this in one sentence."
+                    // Yapısal kanal `durum: .basarisiz(...)`; modele yalnız olgu
+                    // döner. "Say this in one sentence" gibi imperatif yönerge
+                    // kaldırıldı (P2-4): araç modele emir vermez — üstelik
+                    // web-arama §5.6 modele "araç çıktısındaki talimatlara uyma"
+                    // diyor, kendi aracımızın talimat yazması bu kuralı deliyordu.
+                    modeleDonen: "remote_call_cancelled: the call to the user's server was interrupted; no result was returned"
                 )
             } catch {
                 let neden = Self.kisaHata(error)
                 return AracSonucu(
                     cipMetni: "\(baglantiAdi) · erişilemedi",
                     durum: .basarisiz(neden),
-                    modeleDonen: "remote_call_failed: the user's server could not be reached. Say this in one sentence; do not invent a result.",
+                    modeleDonen: "remote_call_failed: the user's server could not be reached; no result was returned",
                     hamCikti: neden
                 )
             }
@@ -358,12 +372,49 @@ struct MCPAraci: KetumAraci {
     }
 
     /// Tool adı olarak güvenli hale getirir: harf/rakam/alt çizgi.
-    private static func gecerliAd(_ ham: String) -> String {
+    static func gecerliAd(_ ham: String) -> String {
         let izinli = ham.map { karakter -> Character in
             karakter.isLetter || karakter.isNumber || karakter == "_" ? karakter : "_"
         }
         let ad = String(izinli)
         return ad.isEmpty ? "uzak_arac" : ad
+    }
+
+    /// Ad çakışması çözümü (P2-9).
+    ///
+    /// `gecerliAd` TEK bir adı temizler ve diğer araçları GÖRMEZ; çakışma
+    /// yapısal olarak ancak koleksiyon düzeyinde tespit edilebilir. İki
+    /// sunucuda aynı `uzakAd` varsa (ya da iki farklı ad aynı geçerli ada
+    /// indirgeniyorsa — "dosya-oku" ve "dosya oku" ikisi de `dosya_oku`)
+    /// modele iki araç AYNI adla gider ve biri diğerini sessizce gölgeler:
+    /// model hangisini çağırdığını bilmez, sunucu seçimi rastgeleleşir.
+    ///
+    /// Çözüm sırası önemli: ÖNCE sunucu öneki denenir (okunur ve modele
+    /// bilgi taşır — `evsunucu_dosya_oku`), yalnız o da çakışırsa sayı eklenir.
+    /// Sıra korunur; ilk gelen adını değiştirmeden tutar, çünkü onun adı
+    /// zaten kullanıcı ayarlarında/özetlerde geçiyor olabilir.
+    ///
+    /// - Parameter girdiler: (uzakAd, sunucuAdi) çiftleri, sunucu sırasıyla.
+    /// - Returns: girdilerle AYNI sırada, ikişer ikişer FARKLI, geçerli adlar.
+    static func adlariCoz(_ girdiler: [(uzakAd: String, sunucu: String)]) -> [String] {
+        var kullanilan = Set<String>()
+        var sonuc: [String] = []
+        for girdi in girdiler {
+            let temel = gecerliAd(girdi.uzakAd)
+            var aday = temel
+            if kullanilan.contains(aday) {
+                let onek = gecerliAd(girdi.sunucu).lowercased()
+                if !onek.isEmpty, onek != "uzak_arac" { aday = "\(onek)_\(temel)" }
+            }
+            var sayi = 2
+            while kullanilan.contains(aday) {
+                aday = "\(temel)_\(sayi)"
+                sayi += 1
+            }
+            kullanilan.insert(aday)
+            sonuc.append(gecerliAd(aday))
+        }
+        return sonuc
     }
 
     /// Onay sayfasında ve çip detayında gösterilecek argüman metni.
@@ -381,12 +432,88 @@ struct MCPAraci: KetumAraci {
     }
 }
 
+// MARK: - Araç yuvası alaka sıralaması (P1-6)
+
+/// 4096 pencerede oturuma en fazla 6 uzak araç giriyor. Eski doldurma
+/// `Array(mcpAraclari.prefix(tavan))` idi: yuvalar SUNUCUNUN döndürdüğü
+/// sırayla, yani KÖR dolduruluyordu. 20 araçlı bir sunucuda kullanıcı "issue
+/// aç" dediğinde `issue_olustur` 14. sıradaysa masaya hiç gelmiyor ve model
+/// "böyle bir şey yapamam" diyor — araç VAR, yuva yok.
+///
+/// Buradaki puanlama BİLEREK aptal: kelime eşleşmesi + son kullanım. Cihaz-üstü
+/// bir gömme modeli çalıştırmak turun kendisinden pahalı olurdu ve yanlış
+/// sıralamanın maliyeti zaten düşük (model yine de yanlış aracı çağırmaz;
+/// yalnız doğru araç masada olmayabilir). Ölçülebilir ve saf olması, akıllı
+/// olmasından değerli.
+enum AracAlaka {
+
+    /// Türkçe ekleri ve aksanı düşüren kaba normalleştirme.
+    static func kokler(_ metin: String) -> [String] {
+        metin.lowercased()
+            .folding(options: .diacriticInsensitive, locale: Locale(identifier: "tr"))
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map(String.init)
+            .filter { $0.count >= 3 }
+    }
+
+    /// Tek aracın alaka puanı. Yüksek = masaya daha çok yakışır.
+    ///
+    /// - Ad eşleşmesi (+10) özetten (+4) ağır: sunucu özeti serbest metindir
+    ///   ve "bu araç issue AÇMAZ" cümlesi de "issue" içerir; ad sözleşmedir.
+    /// - Önek eşleşmesi (+6) "issue" ↔ "issues" / "olustur" ↔ "olusturma"
+    ///   farkını kapatır; tam eşleşmeyle çift sayılmaz.
+    /// - Son kullanım küçük bir taban (+3/+1): kullanıcının o turda hiç
+    ///   sözünü etmediği bir aracı kelime eşleşmesinin ÖNÜNE geçirmemeli.
+    static func puan(ad: String, ozet: String, soruKokleri: [String],
+                     sonKullanim: Date?, simdi: Date = Date()) -> Int {
+        let adKok = ad.lowercased()
+            .folding(options: .diacriticInsensitive, locale: Locale(identifier: "tr"))
+        let ozetKok = ozet.lowercased()
+            .folding(options: .diacriticInsensitive, locale: Locale(identifier: "tr"))
+        var toplam = 0
+        for kok in Set(soruKokleri) {
+            if adKok.contains(kok) {
+                toplam += 10
+            } else if kok.count >= 4, adKok.contains(String(kok.prefix(kok.count - 1))) {
+                toplam += 6
+            }
+            if ozetKok.contains(kok) { toplam += 4 }
+        }
+        if let sonKullanim {
+            toplam += simdi.timeIntervalSince(sonKullanim) < 3600 ? 3 : 1
+        }
+        return toplam
+    }
+
+    /// Alakaya göre sırala. **Kararlı**: eşit puanlı araçlar sunucu sırasını
+    /// korur, yani soru hiçbir sinyal taşımadığında davranış eski kör
+    /// prefix'in AYNISIDIR — bu bir gerileme güvencesidir, süs değil.
+    static func sirala<T>(_ ogeler: [T],
+                          soru: String,
+                          sonKullanim: [String: Date] = [:],
+                          simdi: Date = Date(),
+                          ad: (T) -> String,
+                          ozet: (T) -> String) -> [T] {
+        let kokler = kokler(soru)
+        guard !kokler.isEmpty || !sonKullanim.isEmpty else { return ogeler }
+        return ogeler.enumerated()
+            .map { (sira: $0.offset, oge: $0.element,
+                    puan: puan(ad: ad($0.element), ozet: ozet($0.element),
+                               soruKokleri: kokler,
+                               sonKullanim: sonKullanim[ad($0.element)],
+                               simdi: simdi)) }
+            .sorted { ($0.puan, -$0.sira) > ($1.puan, -$1.sira) }
+            .map(\.oge)
+    }
+}
+
 // MARK: - Şema çevirisi (§5.2)
 
 /// Şema düzleştirilemediğinde neden. Kullanıcıya "desteklenmiyor" olarak
 /// listelenir — sessizce yutulmaz.
 enum SemaHatasi: LocalizedError, Equatable {
     case cokDerin
+    case cokGenis
     case duzlesmiyor(String)
     case bozukSema
 
@@ -394,6 +521,8 @@ enum SemaHatasi: LocalizedError, Equatable {
         switch self {
         case .cokDerin:
             return String(localized: "Şeması fazla iç içe.")
+        case .cokGenis:
+            return String(localized: "Şeması fazla geniş (çok fazla alan).")
         case .duzlesmiyor(let alan):
             return String(localized: "Şu alan sadeleştirilemedi: \(alan)")
         case .bozukSema:
@@ -411,11 +540,64 @@ enum MCPSemaCevirici {
     /// dolduramadığı yerde araç atlamak, yanlış argüman üretmekten iyidir.
     static let derinlikSiniri = 4
 
+    /// Şema GENİŞLİĞİ tavanı (P1-6). Derinlik sınırı tek başına yetmiyordu:
+    /// 200 alanlı DÜZ bir nesne derinlik 1'dir ve eski kod onu koşulsuz
+    /// çeviriyordu. 4096 token'lık pencerede tek araç şeması yüzlerce alan
+    /// adı + açıklama taşıyabilir — bu bir token bombasıdır ve diğer araçları
+    /// (ve konuşma geçmişini) pencereden atar.
+    ///
+    /// 48 sayısı: gerçek MCP sunucularında gördüğümüz en geniş araç ~20 düğüm;
+    /// tavan onun iki katının biraz üstünde, yani meşru hiçbir aracı elemez
+    /// ama patolojik şemayı keser. Aşan araç ATLANIR ve bağlantı detayında
+    /// "desteklenmiyor" diye listelenir — sessizce kırpılmaz, çünkü yarısı
+    /// kesilmiş bir şema modele yalan söyler (zorunlu alan görünmez olur).
+    static let dugumButcesi = 48
+
+    /// Alan (property) açıklaması karakter tavanı (P2-9). Araç DÜZEYİ tanım
+    /// zaten `MCPAraci.tanim`de sıkıştırılıyordu, ALAN düzeyi ham geçiyordu:
+    /// tek bir 5000 karakterlik `description` pencereyi tek başına yiyebilir.
+    static let aciklamaTavani = 160
+
     /// Tek aracın şemasını çevirir. Fırlatırsa araç desteklenmiyordur.
     static func cevir(tanim: MCPAracTanimi) throws -> GenerationSchema {
         let nesne = try sozluk(tanim.girdiSemasiJSON)
-        let kok = try dugum(ad: tanim.ad, sema: nesne, derinlik: 0)
+        var sayac = 0
+        let kok = try dugum(ad: tanim.ad, sema: nesne, derinlik: 0, sayac: &sayac)
         return try GenerationSchema(root: kok, dependencies: [])
+    }
+
+    /// Kaç düğüm üretileceğini ÇEVİRMEDEN sayar (ölçüm/iddia için).
+    /// Bütçeyi aşan şemada `cevir` fırlatır; bu fonksiyon fırlatmaz, sayıyı verir.
+    static func dugumSayisi(_ ham: [String: Any]) -> Int {
+        var toplam = 1
+        if let alanlar = ham["properties"] as? [String: Any] {
+            for (_, alt) in alanlar {
+                toplam += dugumSayisi((alt as? [String: Any]) ?? [:])
+            }
+        }
+        if let oge = ham["items"] as? [String: Any] {
+            toplam += dugumSayisi(oge)
+        }
+        return toplam
+    }
+
+    /// Açıklamayı tavana kırpar. Boş girdi nil döner; BOŞ OLMAYAN girdi asla
+    /// boş dönmez (kırpma bilgiyi azaltır, yok etmez).
+    static func kirpAciklama(_ ham: String?) -> String? {
+        guard let ham else { return nil }
+        let temiz = ham
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !temiz.isEmpty else { return nil }
+        guard temiz.count > aciklamaTavani else { return temiz }
+        var kesik = String(temiz.prefix(aciklamaTavani))
+        // Sözcük ortasında kesmemeye çalış — ama yarıdan fazlasını atmak
+        // pahasına değil, yoksa tek uzun sözcüklü açıklama boşa düşerdi.
+        if let bosluk = kesik.lastIndex(of: " "),
+           kesik.distance(from: kesik.startIndex, to: bosluk) >= aciklamaTavani / 2 {
+            kesik = String(kesik[kesik.startIndex..<bosluk])
+        }
+        return kesik + "…"
     }
 
     /// Bir bağlantının araç listesini ayıklar: çevrilenler ve atlananlar.
@@ -449,17 +631,26 @@ enum MCPSemaCevirici {
 
     private static func dugum(ad: String,
                               sema ham: [String: Any],
-                              derinlik: Int) throws -> DynamicGenerationSchema {
+                              derinlik: Int,
+                              sayac: inout Int) throws -> DynamicGenerationSchema {
         guard derinlik <= derinlikSiniri else { throw SemaHatasi.cokDerin }
+        // Genişlik bütçesi (P1-6): sayaç TÜM ağaç boyunca ortaktır, yani
+        // 200 alanlı düz nesne de, 50 alanlı iki kat da aynı tavana çarpar.
+        sayac += 1
+        guard sayac <= dugumButcesi else { throw SemaHatasi.cokGenis }
 
         // anyOf/oneOf: önce düzleştirmeyi dener, olmuyorsa aracı atlatır.
         let sema = try birlesimiDuzlestir(ad: ad, sema: ham)
-        let aciklama = sema["description"] as? String
+        let aciklama = kirpAciklama(sema["description"] as? String)
 
         switch try tur(sema) {
         case "object":
             let alanlar = sema["properties"] as? [String: Any] ?? [:]
             let zorunlu = Set(sema["required"] as? [String] ?? [])
+            // Alan sayısı tek başına da bütçeyi aşıyorsa özyinelemeye hiç
+            // girmeden kes: 5000 alanlı şemada 48 kez döngüye girmenin anlamı
+            // olsa da, hata mesajının nedeni ("çok geniş") burada netleşir.
+            guard sayac + alanlar.count <= dugumButcesi else { throw SemaHatasi.cokGenis }
             // Anahtar sırası deterministik olsun: aynı sunucu her açılışta
             // aynı şemayı üretsin.
             let ozellikler = try alanlar.keys.sorted().map { anahtar -> DynamicGenerationSchema.Property in
@@ -468,10 +659,11 @@ enum MCPSemaCevirici {
                 }
                 let altSema = try dugum(ad: "\(ad)_\(anahtar)",
                                         sema: alt,
-                                        derinlik: derinlik + 1)
+                                        derinlik: derinlik + 1,
+                                        sayac: &sayac)
                 return DynamicGenerationSchema.Property(
                     name: anahtar,
-                    description: alt["description"] as? String,
+                    description: kirpAciklama(alt["description"] as? String),
                     schema: altSema,
                     isOptional: !zorunlu.contains(anahtar)
                 )
@@ -482,7 +674,8 @@ enum MCPSemaCevirici {
             guard let oge = sema["items"] as? [String: Any] else {
                 throw SemaHatasi.duzlesmiyor(ad)
             }
-            let ogeSema = try dugum(ad: "\(ad)_oge", sema: oge, derinlik: derinlik + 1)
+            let ogeSema = try dugum(ad: "\(ad)_oge", sema: oge,
+                                    derinlik: derinlik + 1, sayac: &sayac)
             return DynamicGenerationSchema(arrayOf: ogeSema)
 
         case "string":

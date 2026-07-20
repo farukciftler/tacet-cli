@@ -16,6 +16,9 @@ struct Beceri {
     let ad: String
     let tetikler: [String]
     let metin: String
+    /// Bu kılavuzun EMRETTİĞİ araçların adları (frontmatter `araclar:`).
+    /// Boşsa beceri araçtan bağımsızdır ve her profilde serbesttir.
+    var araclar: [String] = []
     /// Kullanıcının kendi yazdığı mı — eşitlikte kullanıcınınki kazanır.
     var kullanicininMi: Bool = false
 }
@@ -24,6 +27,22 @@ enum BeceriDeposu {
     /// Enjeksiyonda tek beceriden alınacak en fazla karakter. Paket becerileri
     /// insan referansı olarak daha uzun olabilir; modele giden kısım sınırlıdır.
     static let enjeksiyonSiniri = 700
+
+    /// Gövdede ÇEKİRDEĞİN bittiği yeri işaretleyen HTML yorumu. Markdown'da
+    /// görünmez, bu yüzden dosya insan için de okunur kalır.
+    ///
+    /// Neden var: eski kesme gövdenin SONUNU atıyordu, ama somut `tool(args)`
+    /// örneği ile anti-halüsinasyon kuralları tam orada duruyordu — yani sınır
+    /// tam da becerinin var oluş sebebini yutuyordu (kod.md'de 327 karakter,
+    /// belge-olustur.md'de 729 karakter). Şimdi dosyalar "çekirdek-önce"
+    /// yazılıyor: örnek + kırılmaz kurallar işaretin ÜSTÜNDE, insan referansı
+    /// altında. Enjeksiyon çekirdeği TAM alır, artan bütçeye kuyruğu doldurur.
+    static let cekirdekIsareti = "<!--/cekirdek-->"
+
+    /// Çekirdekten sonra kuyruktan parça almaya değer en küçük kalan bütçe.
+    /// Bunun altında tek satır bile anlamlı girmiyor; yarım kural eklemektense
+    /// hiç eklememek yeğdir.
+    private static let kuyrukEsigi = 80
 
     /// Bundle'daki .md becerileri (bir kez yüklenir, salt-okunur).
     static let paket: [Beceri] = yukle()
@@ -61,16 +80,33 @@ enum BeceriDeposu {
     /// belge-oku'nun "tablo olarak"ı, belge-olustur'un "tablo"sunu geçer. Adet
     /// sayılsaydı ikisi de 1 alır, sıra rastgele belirlerdi.
     /// Eşit puanda `hepsi` sırası gereği kullanıcının becerisi kazanır.
-    static func eslesen(_ soru: String) -> Beceri? {
+    ///
+    /// `mevcutAraclar` verilirse (aktif profilin araç setindeki `tool.name`
+    /// listesi) kılavuzun EMRETTİĞİ aracı bulundurmayan beceriler elenir —
+    /// tek doğruluk kaynağı araç setidir, elle tutulan bir profil haritası
+    /// değil. nil geçilirse eleme yapılmaz (test/önizleme yolu).
+    static func eslesen(_ soru: String, mevcutAraclar: Set<String>? = nil) -> Beceri? {
         let s = soru.lowercased()
         var enIyi: (beceri: Beceri, skor: Int)?
         for b in hepsi {
+            guard aracVarMi(b, mevcutAraclar) else { continue }
             let skor = b.tetikler.reduce(0) { $0 + (icerir(s, $1) ? $1.count : 0) }
             if skor > 0, skor > (enIyi?.skor ?? 0) {
                 enIyi = (b, skor)
             }
         }
         return enIyi?.beceri
+    }
+
+    /// Becerinin bildirdiği TÜM araçlar oturumda var mı.
+    ///
+    /// Kapı "hepsi" üzerinden çünkü kılavuz iki adımlı bir akış anlatabiliyor
+    /// (belge-duzenle: önce `belge_oku`, sonra `belge_duzenle`); yarısı eksikse
+    /// kılavuz zaten uygulanamaz. Araç bildirmeyen beceri (hesap, kullanıcı
+    /// becerileri) her sette serbesttir.
+    static func aracVarMi(_ beceri: Beceri, _ mevcutAraclar: Set<String>?) -> Bool {
+        guard let mevcut = mevcutAraclar, !beceri.araclar.isEmpty else { return true }
+        return beceri.araclar.allSatisfy(mevcut.contains)
     }
 
     /// Tetikleyici aramasında SÖZCÜK BAŞI şartı arar (ham alt-dizgi değil).
@@ -134,16 +170,42 @@ enum BeceriDeposu {
         return false
     }
 
-    /// Modele verilecek biçim: sınırlanmış gövde + "bunu anlatma" çitleri.
-    /// Kesme satır sınırında yapılır ki yarım kural kalmasın.
+    /// Metni satır sınırında en fazla `tavan` karaktere indirir (yarım kural kalmasın).
+    private static func satirdaKes(_ metin: String, tavan: Int) -> String {
+        guard metin.count > tavan else { return metin }
+        let kesik = String(metin.prefix(tavan))
+        guard let son = kesik.range(of: "\n", options: .backwards) else { return kesik }
+        return String(kesik[..<son.lowerBound])
+    }
+
+    /// Gövdeyi (çekirdek, kuyruk) diye ayırır. İşaret yoksa çekirdek boştur ve
+    /// tüm gövde kuyruk sayılır — kullanıcı becerileri işaret koymak zorunda değil.
+    static func cekirdekAyir(_ metin: String) -> (cekirdek: String, kuyruk: String) {
+        let govde = metin.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let r = govde.range(of: cekirdekIsareti) else { return ("", govde) }
+        return (String(govde[..<r.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines),
+                String(govde[r.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// Modele gidecek gövde: ÇEKİRDEK ÖNCE, artan bütçeye kuyruk.
+    ///
+    /// Çekirdek bütünlüğü sınırdan önce gelir; yine de bir beceri çekirdeği
+    /// tavanı aşarsa satırda kesilir (aksi hâlde tek bir dosya 4096 pencerenin
+    /// bütçesini sessizce yiyebilirdi).
+    static func enjeksiyonGovdesi(_ metin: String) -> String {
+        let (cekirdek, kuyruk) = cekirdekAyir(metin)
+        guard !cekirdek.isEmpty else { return satirdaKes(kuyruk, tavan: enjeksiyonSiniri) }
+
+        let govde = satirdaKes(cekirdek, tavan: enjeksiyonSiniri)
+        let kalan = enjeksiyonSiniri - govde.count - 1   // -1: araya girecek "\n"
+        guard kalan >= kuyrukEsigi, !kuyruk.isEmpty else { return govde }
+        let ek = satirdaKes(kuyruk, tavan: kalan)
+        return ek.isEmpty ? govde : govde + "\n" + ek
+    }
+
+    /// Modele verilecek biçim: çekirdek-önce gövde + "bunu anlatma" çitleri.
     static func enjeksiyonMetni(_ beceri: Beceri) -> String {
-        var govde = beceri.metin.trimmingCharacters(in: .whitespacesAndNewlines)
-        if govde.count > enjeksiyonSiniri {
-            let kesik = String(govde.prefix(enjeksiyonSiniri))
-            govde = kesik.contains("\n")
-                ? String(kesik[..<kesik.range(of: "\n", options: .backwards)!.lowerBound])
-                : kesik
-        }
+        let govde = enjeksiyonGovdesi(beceri.metin)
         return """
         <guidance name="\(beceri.ad)">
         \(govde)
@@ -165,6 +227,7 @@ enum BeceriDeposu {
         guard let ham = try? String(contentsOf: url, encoding: .utf8) else { return nil }
         var ad = url.deletingPathExtension().lastPathComponent
         var tetikler: [String] = []
+        var araclar: [String] = []
         var govde = ham
 
         let satirlar = ham.components(separatedBy: "\n")
@@ -181,6 +244,11 @@ enum BeceriDeposu {
                         .split(separator: ",")
                         .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
                         .filter { !$0.isEmpty }
+                case "araclar":
+                    araclar = parca[1]
+                        .split(separator: ",")
+                        .map { $0.trimmingCharacters(in: .whitespaces) }
+                        .filter { !$0.isEmpty }
                 default: break
                 }
             }
@@ -188,6 +256,52 @@ enum BeceriDeposu {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         }
         guard !tetikler.isEmpty else { return nil }
-        return Beceri(ad: ad, tetikler: tetikler, metin: govde)
+        return Beceri(ad: ad, tetikler: tetikler, metin: govde, araclar: araclar)
+    }
+
+    // MARK: - Yeniden enjeksiyon (mesafeli işaret)
+
+    /// Hangi becerinin hangi turda enjekte edildiğini tutan saf durum makinesi.
+    ///
+    /// Eski davranış: beceri bir kez enjekte edilip kalıcı işaretleniyordu.
+    /// Uzun turda transcript ilerledikçe kılavuz pencereden kayıyor, ama işaret
+    /// durduğu için bir daha asla girmiyordu — geç turlarda davranış sapması
+    /// tam da buradan geliyordu. İşaret artık MESAFELİ: aradan yeterince tur
+    /// geçtiyse kılavuz yeniden yürürlüğe girer.
+    ///
+    /// Durum ModelServisi'nde tutulur, mantık burada durur — modelsiz test
+    /// edilebilsin diye.
+    struct EnjeksiyonDurumu {
+        /// Kaç tur sonra aynı beceri yeniden enjekte edilebilir.
+        ///
+        /// 6: bir beceri ~700 karakter yer ve 4096 penceresinde her turda
+        /// tekrarlamak bütçeyi yerdi; öte yandan çok büyük bir mesafede kılavuz
+        /// pencereden kayıp bir daha dönmezdi. 6 tur, tipik bir araç-kullanım
+        /// alışverişinin (soru → araç → yanıt) iki katıdır.
+        static let mesafe = 6
+
+        /// Şu ana kadar işlenen tur sayısı (1'den başlar).
+        private(set) var tur = 0
+        private var sonEnjeksiyon: [String: Int] = [:]
+
+        /// Her turun BAŞINDA bir kez çağrılır.
+        mutating func turBasla() { tur += 1 }
+
+        /// Bu beceri bu turda enjekte edilmeli mi (hiç girmediyse ya da
+        /// üstünden `mesafe` tur geçtiyse).
+        func gerekliMi(_ ad: String) -> Bool {
+            guard let son = sonEnjeksiyon[ad] else { return true }
+            return tur - son >= Self.mesafe
+        }
+
+        /// Enjeksiyon GERÇEKTEN yapıldığında çağrılır. Profil uymadığı için
+        /// atlanan beceri işaretlenmez — doğru profile geçilince yeniden denenir.
+        mutating func isaretle(_ ad: String) { sonEnjeksiyon[ad] = tur }
+
+        /// Yeni oturum = yeni bağlam: sayaç ve işaretler sıfırlanır.
+        mutating func sifirla() {
+            tur = 0
+            sonEnjeksiyon.removeAll()
+        }
     }
 }

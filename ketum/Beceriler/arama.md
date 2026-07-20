@@ -1,6 +1,7 @@
 ---
 ad: arama
 tetikler: notlarımda, notlarda, ara, dosyalarımda, bul, geçen haftaki not, spotlight
+araclar: not_arama
 ---
 # Device search (not the internet)
 

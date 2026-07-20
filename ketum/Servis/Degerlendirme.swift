@@ -21,6 +21,19 @@ struct TestVaka {
     var ekliBelge = false           // önce test belgesi ekle (oku/düzenle vakaları)
     var yanitIcermeli: String? = nil
     var yanitIcermemeli: String? = nil   // uydurma tespiti (ör. "Paris" dememeli)
+    /// Araç ARGÜMANINDA geçmesi gereken parçalar (P1-8). Çip ikonu doğru
+    /// aracın çağrıldığını söyler, argümanın doğru olduğunu SÖYLEMEZ:
+    /// `takvim-ekle` vakası model "oku" dalına düşse bile ikon "calendar"
+    /// olduğu için geçiyordu. Bu alan o sessiz hata sınıfını görünür kılar.
+    var girdiIcermeli: [String] = []
+    /// Araç ÇIKTISINDA geçmesi gereken parçalar (P1-8). "hesap-yuzde"
+    /// vakasında 200'ü aracın söylemesi gerekir; modelin yanıtında 200
+    /// yazması aracın doğru hesapladığının kanıtı değildir.
+    var ciktiIcermeli: [String] = []
+    /// Kritik vaka: kapsamlı koşuda N kez koşulur ve çoğunluk oranı raporlanır.
+    /// HEPSİNE uygulanmaz — N-koşu süreyi N katına çıkarır ve cihaz-üstü
+    /// çıkarım paralelleşmez; 230 vakayı üçe katlamak turu saatlere taşır.
+    var kritik = false
 }
 
 @MainActor
@@ -42,7 +55,10 @@ enum Degerlendirme {
             // — Hesap —
             TestVaka(ad: "hesap-carpma", istem: "125 çarpı 8 kaç eder?", ikonlar: ["function"]),
             TestVaka(ad: "hesap-toplam", istem: "Üç ürün aldım, her biri 45 lira, toplam ne kadar?", ikonlar: ["function"]),
-            TestVaka(ad: "hesap-yuzde", istem: "250 liranın yüzde 20 indirimlisi kaç lira?", ikonlar: ["function"]),
+            // P1-8: 250 × %20 indirim → 200. Sayıyı ARAÇ söylemeli; çip ikonu
+            // "function" olması modelin doğru hesapladığını göstermez.
+            TestVaka(ad: "hesap-yuzde", istem: "250 liranın yüzde 20 indirimlisi kaç lira?",
+                     ikonlar: ["function"], ciktiIcermeli: ["200"], kritik: true),
 
             // — Zaman (çip yok; yanıt bir saat/gün içermeli) —
             TestVaka(ad: "zaman-saat", istem: "Saat kaç?", yanitIcermeli: ":"),
@@ -51,7 +67,16 @@ enum Degerlendirme {
             // — Takvim —
             TestVaka(ad: "takvim-oku", istem: "Yarın neler var?", ikonlar: ["calendar"]),
             TestVaka(ad: "takvim-hafta", istem: "Bu hafta programım ne?", ikonlar: ["calendar"]),
-            TestVaka(ad: "takvim-ekle", istem: "Cuma saat 14:00'te toplantı ekle", ikonlar: ["calendar"]),
+            // P1-8 — bu vaka maddenin KANITI: eskiden yalnız ikon "calendar"
+            // aranıyordu ve TakvimAraci'nın OKUMA dalı da aynı ikonu düşürdüğü
+            // için, model hiçbir şey eklemeden de 100 puan alıyordu. Artık
+            // argümanda hem eylem hem saat aranıyor.
+            // P0-4 sonrası ekleme dalının kendi ikonu var ("calendar.badge.plus");
+            // beklenen çip artık okuma dalıyla KARIŞMIYOR. Argüman iddiası
+            // ikinci kat: doğru dal + yanlış saat de yakalanır.
+            TestVaka(ad: "takvim-ekle", istem: "Cuma saat 14:00'te toplantı ekle",
+                     ikonlar: ["calendar.badge.plus"],
+                     girdiIcermeli: ["ekle", "T14:00"], kritik: true),
 
             // — Hatırlatıcı —
             TestVaka(ad: "hatirlatici-1", istem: "Beni 18:00'de aramam için hatırlat", ikonlar: ["bell"]),
@@ -156,8 +181,20 @@ enum Degerlendirme {
             if let ic = v.yanitIcermeli, !metin.localizedCaseInsensitiveContains(ic) {
                 sorunlar.append("yanit-icermiyor:\(ic)")
             }
-            if let ic = v.yanitIcermemeli, metin.localizedCaseInsensitiveContains(ic) {
-                sorunlar.append("uydurma:\(ic)")
+            if let ic = v.yanitIcermemeli,
+               let yakalanan = UydurmaDedektoru.bulundu(metin, yasak: ic) {
+                sorunlar.append("uydurma:\(ic)→\(yakalanan)")
+            }
+            // — Argüman/çıktı doğruluğu (P1-8) —
+            let girdiHavuzu = izler.compactMap(\.hamGirdi).joined(separator: "\n")
+            for beklenen in v.girdiIcermeli
+            where !girdiHavuzu.localizedCaseInsensitiveContains(beklenen) {
+                sorunlar.append("yanlis-arguman:\(beklenen)")
+            }
+            let ciktiHavuzu = izler.compactMap(\.hamCikti).joined(separator: "\n")
+            for beklenen in v.ciktiIcermeli
+            where !ciktiHavuzu.localizedCaseInsensitiveContains(beklenen) {
+                sorunlar.append("yanlis-arac-ciktisi:\(beklenen)")
             }
 
             let ok = sorunlar.isEmpty
@@ -758,6 +795,58 @@ enum Degerlendirme {
     }
 }
 
+// MARK: - Eval kapısı (P0-5)
+
+/// Eval'in CI kapısı. Eskiden koşu sonucu yalnız bir dosyaya yazılıyordu:
+/// hiçbir şey KIRILMIYORDU. Diğer dört P0 düzeltmesi (araç adı çakışması,
+/// discriminator enum'ları, retry koruması, çekirdek-önce enjeksiyon) davranış
+/// düzeltmeleridir ve davranış gerilemesini yalnız eval görür — ama gören
+/// eval hiçbir şey söylemiyordu.
+///
+/// Kararın kendisi SAF: `EvalSonuc` dizisi girer, karar çıkar. Bu yüzden
+/// sahte fikstürle (modelsiz, ağsız) OtoTest içinde doğrudan iddia edilebilir
+/// ve "eşiğin altında küme → non-zero exit" ölçütü gerçekten ÖLÇÜLEBİLİR.
+enum EvalKapisi {
+    /// Bir vakanın "geçti" sayılması için gereken puan. 80: araç boyutu (40)
+    /// tam, dürüstlük (30) tam, ve içerik/biçimden en fazla 20 kayıp. Yani
+    /// yanlış araç ya da uydurma tespiti olan hiçbir vaka geçemez.
+    static let gecmePuani = 100 - EvalPuan.icerikAgirlik   // 80
+
+    /// Koşumun geçmesi için gereken oran. 0.75 keyfi DEĞİL: ölçülmüş taban
+    /// ortalama ~92 ve zayıf (<60) vaka oranı %10 civarındaydı; 0.75 o tabanın
+    /// belirgin altında, yani gündelik varyans kapıyı çalmaz ama gerçek bir
+    /// gerileme (bir araç sınıfının tamamen düşmesi) kırar.
+    ///
+    /// Eşiği yükseltmek isteyen ölçümle yükseltmeli: kapı sık sık yanlış
+    /// alarm verirse ilk feda edilen şey kapının kendisi olur.
+    static let esik = 0.75
+
+    struct Karar {
+        let gecen: Int
+        let toplam: Int
+        let esik: Double
+        var oran: Double { toplam == 0 ? 0 : Double(gecen) / Double(toplam) }
+        /// Ölçülebilmiş TEK BİR vaka yoksa kapı geçmez: "0/0 → başarılı"
+        /// demek, koşum hiç çalışmadığında CI'ı yeşile boyamak olurdu.
+        var gecti: Bool { toplam > 0 && oran >= esik }
+        var cikisKodu: Int32 { gecti ? 0 : 1 }
+        /// Ölçüm noktasının kendisi — stdout'ta bu satır aranır.
+        var satir: String {
+            "EVAL KAPISI: GEÇEN \(gecen)/\(toplam) (eşik: "
+                + String(format: "%.2f", esik) + ") → "
+                + (gecti ? "GEÇTİ" : "KALDI")
+        }
+    }
+
+    /// Ölçülemeyen (bekçiye takılan) vakalar paya da paydaya da girmez —
+    /// `EvalRapor.ortalama` ile aynı gerekçe: ölçüm kaybı kalite kusuru değil.
+    static func karar(_ sonuclar: [EvalSonuc], esik: Double = EvalKapisi.esik) -> Karar {
+        let olculen = sonuclar.filter { !$0.olculemedi }
+        let gecen = olculen.filter { $0.puan >= gecmePuani }.count
+        return Karar(gecen: gecen, toplam: olculen.count, esik: esik)
+    }
+}
+
 // MARK: - Kapsamlı koşu ("--eval")
 
 /// `kosu()` küçük, elle bakılan bir geçti/kaldı listesidir. Kapsamlı koşu ise
@@ -777,6 +866,22 @@ extension Degerlendirme {
     /// kesilip 0 puan alıyordu. Eşik artık tek süreç p99'unun (~19 sn) kat kat
     /// üstünde; buraya takılan tur gerçekten ASILI kalmış demektir.
     private static var vakaZamanAsimi: Duration { .seconds(180) }
+
+    /// Kritik vaka başına koşum sayısı (P0-5). 3 = varyansı görmeye yeten en
+    /// küçük tek sayı (çoğunluk tanımlıdır). Yalnız `TestVaka.kritik` olanlara
+    /// uygulanır: cihaz-üstü çıkarım paralelleşmediği için N'i tüm korpusa
+    /// yaymak koşum süresini üçe katlardı ve ölçümün kendisi ürünü bekletirdi.
+    static var kritikKosuSayisi: Int { 3 }
+
+    /// N koşumun MEDYANI (puana göre sıralı ortadaki). Ortalama değil: tek bir
+    /// zaman aşımı ortalamayı aşağı çeker, medyan onu görmezden gelir.
+    /// Ölçülebilmiş koşum varsa medyan onların arasından seçilir.
+    static func medyan(_ denemeler: [EvalSonuc]) -> EvalSonuc {
+        let havuz = denemeler.filter { !$0.olculemedi }
+        let liste = havuz.isEmpty ? denemeler : havuz
+        let sirali = liste.sorted { $0.puan < $1.puan }
+        return sirali[sirali.count / 2]
+    }
     /// Turlar arası kısa nefes: model bağlamını serbest bıraksın.
     private static var nefes: Duration { .milliseconds(100) }
 
@@ -845,28 +950,45 @@ extension Degerlendirme {
         }
 
         // — TEKİL vakalar: her biri bağımsız oturum —
+        // Kritik vakalar N kez koşar (P0-5): tek koşumda "geçti" demek, örneklem
+        // 1 iken varyansı sıfır varsaymaktır. Ortalamaya YALNIZ medyan koşum
+        // girer, yoksa kritik vakalar puanı üç katı ağırlıkla çekerdi.
         for (kategori, vaka) in EvalRapor.shardSec(kategorili(), shard: shard, toplam: toplam) {
-            servis.sohbetiSifirla()
-            if vaka.ekliBelge, let testBelge { servis.belgeBaglami.belgeEkle(url: testBelge) }
-            let tur = await turKos(servis, vaka.istem)
-            var s = EvalSonuc(vakaAd: vaka.ad, kategori: kategori, mod: "tekil",
-                              istem: vaka.istem,
-                              beklenenCipler: vaka.ikonlar,
-                              gercekCipler: tur.izler.map(\.ikon),
-                              yanit: tur.metin,
-                              sureMs: tur.sureMs)
-            s = EvalPuan.puanla(s,
-                                cipYok: vaka.cipYok,
-                                yanitIcermeli: vaka.yanitIcermeli,
-                                yanitIcermemeli: vaka.yanitIcermemeli,
-                                basarisizCipVar: tur.basarisizCip)
-            // Kesilen tur ÖLÇÜLEMEDİ: 0 puan vermek ölçüm kaybını kalite
-            // kusuru gibi raporlardı. Puan hesaplanır ama ortalamaya girmez.
-            if tur.zamanAsimi { s.sorunlar.append("zaman-asimi"); s.olculemedi = true }
+            let kosuSayisi = vaka.kritik ? Self.kritikKosuSayisi : 1
+            var denemeler: [EvalSonuc] = []
+            for _ in 0..<kosuSayisi {
+                servis.sohbetiSifirla()
+                if vaka.ekliBelge, let testBelge { servis.belgeBaglami.belgeEkle(url: testBelge) }
+                let tur = await turKos(servis, vaka.istem)
+                var s = EvalSonuc(vakaAd: vaka.ad, kategori: kategori, mod: "tekil",
+                                  istem: vaka.istem,
+                                  beklenenCipler: vaka.ikonlar,
+                                  gercekCipler: tur.izler.map(\.ikon),
+                                  yanit: tur.metin,
+                                  sureMs: tur.sureMs,
+                                  hamGirdiler: tur.izler.compactMap(\.hamGirdi),
+                                  hamCiktilar: tur.izler.compactMap(\.hamCikti))
+                s = EvalPuan.puanla(s,
+                                    cipYok: vaka.cipYok,
+                                    yanitIcermeli: vaka.yanitIcermeli,
+                                    yanitIcermemeli: vaka.yanitIcermemeli,
+                                    basarisizCipVar: tur.basarisizCip,
+                                    girdiIcermeli: vaka.girdiIcermeli,
+                                    ciktiIcermeli: vaka.ciktiIcermeli)
+                // Kesilen tur ÖLÇÜLEMEDİ: 0 puan vermek ölçüm kaybını kalite
+                // kusuru gibi raporlardı. Puan hesaplanır ama ortalamaya girmez.
+                if tur.zamanAsimi { s.sorunlar.append("zaman-asimi"); s.olculemedi = true }
+                denemeler.append(s)
+                try? await Task.sleep(for: nefes)
+            }
+            var s = Self.medyan(denemeler)
+            if kosuSayisi > 1 {
+                s.kosuSayisi = kosuSayisi
+                s.cogunluk = denemeler.filter { !$0.olculemedi && $0.puan >= EvalKapisi.gecmePuani }.count
+            }
             sonuclar.append(s)
             log += satirlar(s)
             diskeBas()
-            try? await Task.sleep(for: nefes)
         }
 
         // — ZİNCİRLER: aynı adımlar iki kez —
@@ -932,6 +1054,18 @@ extension Degerlendirme {
         // NSLog yok (gizlilik): yanıtlar gerçek takvim/kişi verisi içerebilir.
         print("KAPSAMLI EVAL bitti: \(sonuclar.count) vaka, \(olculen) ölçüldü, "
               + "\(kesilen) ölçülemedi, ort \(String(format: "%.1f", ort))")
+
+        // — KAPI (P0-5): eşiğin altındaysa süreç non-zero çıkar —
+        // Buraya kadar her şey diske yazıldı; exit sonuç kaybettirmez.
+        // Kritik vakaların çoğunluk oranları da basılır ki CI günlüğünde
+        // "hangi vaka oynak" sorusu rapor dosyasını açmadan yanıtlanabilsin.
+        for s in sonuclar where s.kosuSayisi != nil {
+            print("N-KOŞU \(s.vakaAd) \(s.cogunluk ?? 0)/\(s.kosuSayisi ?? 0)")
+        }
+        let kapi = EvalKapisi.karar(sonuclar)
+        print(kapi.satir)
+        fflush(stdout)
+        exit(kapi.cikisKodu)
     }
 
     // MARK: - Yardımcılar
@@ -997,7 +1131,9 @@ extension Degerlendirme {
 
     private static func satirlar(_ s: EvalSonuc) -> [String] {
         let isaret = s.puan >= 80 ? "✓" : (s.puan >= 60 ? "~" : "✗")
-        var c = ["\(isaret) \(s.puan) [\(s.kategori)/\(s.vakaAd)·\(s.mod)#\(s.adimNo)] '\(s.istem)'"]
+        // Çoğunluk oranı yalnız N-koşulu (kritik) vakalarda basılır: "3/3".
+        let oran = (s.kosuSayisi.map { n in " [\(s.cogunluk ?? 0)/\(n)]" }) ?? ""
+        var c = ["\(isaret) \(s.puan)\(oran) [\(s.kategori)/\(s.vakaAd)·\(s.mod)#\(s.adimNo)] '\(s.istem)'"]
         c.append("    çip:\(s.gercekCipler) (bek:\(s.beklenenCipler)) \(s.sureMs)ms")
         c.append("    yanıt:\"\(kisaltKamu(s.yanit))\"")
         if !s.sorunlar.isEmpty { c.append("    ⚠︎ \(s.sorunlar.joined(separator: "; "))") }

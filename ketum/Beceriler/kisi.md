@@ -1,6 +1,7 @@
 ---
 ad: kisi
 tetikler: kişi, numara, telefonu, e-posta, mail adresi, rehber, kişilerde, phone number, contact, email address
+araclar: kisi
 ---
 # Contacts
 

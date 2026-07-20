@@ -9,6 +9,78 @@
 
 #if DEBUG
 import Foundation
+import NaturalLanguage
+
+// MARK: - Dil çapası (P1-9)
+
+/// Yanıtın GERÇEKTEN kullanıcının dilinde olup olmadığını saptar.
+///
+/// Eskiden bu ölçüt "gözle bak"tı: kod yalnız araç seçimini (çip ikon önekini)
+/// sayıyor, yanıt metni log'a 55 karakter kırpılıp basılıyordu. Dil kayması —
+/// özellikle araç çıktısının diline sürüklenme — hiçbir sayıya yansımıyordu,
+/// dolayısıyla gerileme sessizce geçebilirdi.
+///
+/// `NLLanguageRecognizer` KISA metinde güvenilmezdir ("Merhaba" tek başına
+/// pekâlâ "id" dönebilir). Bu yüzden iki koruma var: (a) aday diller
+/// kısıtlanır — testte koştuğumuz dokuz dil dışına çıkılmaz, (b) güven eşiği
+/// altındaki saptama BAŞARISIZLIK SAYILMAZ, `nil` döner. Ölçemediğimiz şeyi
+/// kusur diye raporlamak, ölçmemekten daha kötüdür.
+enum DilCapasi {
+    /// Testte koştuğumuz diller — tanıyıcı bunların dışına çıkamaz.
+    static let adaylar: [NLLanguage] = [
+        .turkish, .english, .simplifiedChinese, .japanese, .spanish,
+        .german, .french, .korean, .portuguese
+    ]
+
+    /// Dil kodu eşlemesi (rapor satırında "tr"/"zh" gibi görünsün).
+    static let kodlar: [NLLanguage: String] = [
+        .turkish: "tr", .english: "en", .simplifiedChinese: "zh",
+        .traditionalChinese: "zh", .japanese: "ja", .spanish: "es",
+        .german: "de", .french: "fr", .korean: "ko", .portuguese: "pt"
+    ]
+
+    /// Güven tabanı. 0.50 keyfi değil: aday listesi dokuza kısıtlıyken rastgele
+    /// tahminin beklentisi ~0.11; 0.50 onun dört katından fazlası ama tek
+    /// cümlelik gerçek yanıtları da eleyecek kadar yüksek değil.
+    static let guvenTabani = 0.50
+
+    /// Metnin baskın dili — saptanamazsa (çok kısa / güven düşük) `nil`.
+    /// `nil` "dil yanlış" DEĞİL, "ölçülemedi" demektir.
+    static func dil(_ metin: String) -> String? {
+        let temiz = metin.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Rakam ve noktalama tek başına dil taşımaz; harf sayısı taban şart.
+        guard temiz.filter({ $0.isLetter }).count >= 8 else { return nil }
+        let tanici = NLLanguageRecognizer()
+        tanici.languageConstraints = adaylar
+        tanici.processString(temiz)
+        let olasiliklar = tanici.languageHypotheses(withMaximum: 3)
+        guard let (en, guven) = olasiliklar.max(by: { $0.value < $1.value }),
+              guven >= guvenTabani else { return nil }
+        return kodlar[en]
+    }
+
+    /// Beklenen dilden sapma var mı. Üç değerli: `.dogru` / `.sapti(bulunan)`
+    /// / `.olculemedi`. Rapor satırı üçünü de ayrı gösterir.
+    enum Sonuc: Equatable {
+        case dogru(String)
+        case sapti(beklenen: String, bulunan: String)
+        case olculemedi
+
+        var isareti: String {
+            switch self {
+            case .dogru(let d): return "dil:\(d) ✓"
+            case .sapti(let b, let g): return "dil:\(g) ✗ (beklenen \(b))"
+            case .olculemedi: return "dil:? ⊘"
+            }
+        }
+    }
+
+    static func denetle(_ metin: String, beklenen: String) -> Sonuc {
+        guard let bulunan = dil(metin) else { return .olculemedi }
+        return bulunan == beklenen ? .dogru(bulunan)
+                                   : .sapti(beklenen: beklenen, bulunan: bulunan)
+    }
+}
 
 @MainActor
 enum DilTesti {
@@ -103,6 +175,10 @@ enum DilTesti {
 
         var log: [String] = ["=== KETUM ÇOK DİLLİ TEST ===", ""]
         var gecen = 0, toplam = 0
+        // İkinci eksen (P1-9): yanıt gerçekten kullanıcının dilinde mi.
+        // `dilOlculemedi` ayrı sayılır — payda ile karıştırılırsa dil skoru
+        // kısa yanıtların sayısına göre oynar.
+        var dilGecen = 0, dilOlculen = 0, dilOlculemedi = 0
 
         for (dil, vakalar) in diller() {
             log.append("──── \(dil.uppercased()) ────")
@@ -115,14 +191,24 @@ enum DilTesti {
                     : ikonlar.contains { $0.hasPrefix(v.ikon) }
                 toplam += 1
                 if toolOk { gecen += 1 }
+                let dilSonuc = DilCapasi.denetle(metin, beklenen: dil)
+                switch dilSonuc {
+                case .dogru:      dilOlculen += 1; dilGecen += 1
+                case .sapti:      dilOlculen += 1
+                case .olculemedi: dilOlculemedi += 1
+                }
                 let kisa = metin.replacingOccurrences(of: "\n", with: " ").prefix(55)
-                log.append("\(toolOk ? "✓" : "✗") [\(v.ad)] araç:\(ikonlar) · \"\(kisa)\"")
-                let ara = (["=== çalışıyor: \(gecen)/\(toplam) ==="] + log.dropFirst()).joined(separator: "\n")
+                log.append("\(toolOk ? "✓" : "✗") [\(v.ad)] araç:\(ikonlar) · "
+                           + "\(dilSonuc.isareti) · \"\(kisa)\"")
+                let ara = (["=== çalışıyor: araç \(gecen)/\(toplam) · dil \(dilGecen)/\(dilOlculen) ==="]
+                           + log.dropFirst()).joined(separator: "\n")
                 try? ara.write(to: sonucURL, atomically: true, encoding: .utf8)
             }
             log.append("")
         }
-        log[0] = "=== KETUM ÇOK DİLLİ TEST: araç seçimi \(gecen)/\(toplam) ==="
+        log[0] = "=== KETUM ÇOK DİLLİ TEST: araç seçimi \(gecen)/\(toplam)"
+            + " · yanıt dili \(dilGecen)/\(dilOlculen)"
+            + (dilOlculemedi > 0 ? " (\(dilOlculemedi) ölçülemedi)" : "") + " ==="
         try? log.joined(separator: "\n").write(to: sonucURL, atomically: true, encoding: .utf8)
     }
 }

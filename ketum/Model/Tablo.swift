@@ -51,41 +51,130 @@ struct Tablo: Equatable {
         return kisa.markdown + "\n… (+\(satirlar.count - enFazlaSatir) satır daha)"
     }
 
-    /// Metindeki tüm markdown tablolarını (| … | satırları) çıkarır.
-    /// Hem belge üretimi hem de sohbet içi tablo gösterimi bunu kullanır.
-    static func markdownTablolari(_ metin: String) -> [Tablo] {
-        var sonuc: [Tablo] = []
+    // MARK: - Ayrıştırma (toleranslı)
+
+    /// Metnin tablo/metin bloklarına ayrılmış hâli.
+    ///
+    /// Tek doğruluk kaynağı budur: `markdownTablolari` de sohbet gövdesi de
+    /// bunu kullanır. Böylece "tanınmayan pipe satırı sessizce kayboldu"
+    /// hatası yapısal olarak imkânsız — tanınmayan her satır `.metin` bloğuna
+    /// düşer (denetim P1-5).
+    enum MetinBlogu: Equatable {
+        case metin(String)
+        case tablo(Tablo)
+    }
+
+    /// Metni sırayı koruyarak bloklara böler. HİÇBİR satır düşürülmez.
+    static func bloklara(_ metin: String) -> [MetinBlogu] {
         let satirlar = metin.components(separatedBy: "\n")
+        var sonuc: [MetinBlogu] = []
+        var tampon: [String] = []
+        var kodBloguIcinde = false
+
+        func metniBosalt() {
+            let t = tampon.joined(separator: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !t.isEmpty { sonuc.append(.metin(t)) }
+            tampon = []
+        }
+
         var i = 0
         while i < satirlar.count {
             let s = satirlar[i].trimmingCharacters(in: .whitespaces)
-            // Bir tablo: "|…|" başlık + "|---|" ayraç + en az bir satır.
-            if s.hasPrefix("|"), i + 1 < satirlar.count,
-               satirlar[i + 1].contains("-"),
-               satirlar[i + 1].trimmingCharacters(in: .whitespaces).hasPrefix("|") {
-                let basliklar = hucreleAyir(s)
-                var satirVerisi: [Satir] = []
-                var j = i + 2
-                while j < satirlar.count {
-                    let r = satirlar[j].trimmingCharacters(in: .whitespaces)
-                    guard r.hasPrefix("|") else { break }
-                    satirVerisi.append(Satir(hucreler: hucreleAyir(r)))
-                    j += 1
-                }
-                if !basliklar.isEmpty, !satirVerisi.isEmpty {
-                    sonuc.append(Tablo(basliklar: basliklar, satirlar: satirVerisi))
-                }
-                i = j
+            // ``` çitleri: kod bloğu içindeki "|" tabloya dönüşmez.
+            if s.hasPrefix("```") {
+                kodBloguIcinde.toggle()
+                tampon.append(satirlar[i])
+                i += 1
+                continue
+            }
+            if !kodBloguIcinde, let (tablo, son) = tabloDene(satirlar, i) {
+                metniBosalt()
+                sonuc.append(.tablo(tablo))
+                i = son
             } else {
+                tampon.append(satirlar[i])
                 i += 1
             }
         }
+        metniBosalt()
         return sonuc
+    }
+
+    /// Metindeki tüm markdown tablolarını çıkarır.
+    static func markdownTablolari(_ metin: String) -> [Tablo] {
+        bloklara(metin).compactMap { if case .tablo(let t) = $0 { return t } else { return nil } }
     }
 
     /// Metindeki ilk markdown tablosu (yoksa nil).
     static func markdownDan(_ metin: String) -> Tablo? {
         markdownTablolari(metin).first
+    }
+
+    /// `i` konumundan başlayan bir tablo var mı? Varsa tablo + bittiği satır indisi.
+    ///
+    /// KABUL SINIRI (yanlış pozitif üretmemek için):
+    /// 1. Aday satırda en az bir `|` VE ayrıştırınca en az 2 hücre olmalı.
+    /// 2. En az İKİ ardışık aday satır gerekir (başlık + veri). Düz metindeki
+    ///    tek bir `|` asla tablo olmaz.
+    /// 3. Ayraç satırı (`|---|`, `|:--|--:|`) OPSİYONELDİR; varsa atlanır.
+    /// 4. Dış boru (satır başı/sonu `|`) OPSİYONELDİR — ancak dış boru YOKSA
+    ///    tolerans daraltılır: bloktaki bütün satırların hücre sayısı BİRE BİR
+    ///    aynı olmalı. Serbest metnin ("Ali | Veli" gibi) kazara tabloya
+    ///    dönüşmesini engelleyen sınır budur.
+    private static func tabloDene(_ satirlar: [String], _ i: Int) -> (Tablo, Int)? {
+        // Ardışık aday satır dizisi.
+        var j = i
+        while j < satirlar.count, adaySatirMi(satirlar[j]) { j += 1 }
+        guard j - i >= 2 else { return nil }
+
+        let basliklar = hucreleAyir(satirlar[i])
+        guard basliklar.count >= 2, basliklar.contains(where: { !$0.isEmpty }) else { return nil }
+
+        // Dış boru tutarlılığı: hepsi "|" ile başlıyor mu?
+        let hepsiDisBorulu = (i..<j).allSatisfy {
+            satirlar[$0].trimmingCharacters(in: .whitespaces).hasPrefix("|")
+        }
+        if !hepsiDisBorulu {
+            // Gevşek biçim — sütun sayısı birebir tutmalı.
+            let tutar = (i..<j).allSatisfy { hucreleAyir(satirlar[$0]).count == basliklar.count }
+            guard tutar else { return nil }
+        }
+
+        // Ayraç satırı varsa atla.
+        var veriBas = i + 1
+        if ayracSatiriMi(satirlar[veriBas]) { veriBas += 1 }
+        guard veriBas < j else { return nil }
+
+        var satirVerisi: [Satir] = []
+        for k in veriBas..<j {
+            // Gövde ortasına düşmüş ikinci bir ayraç satırı veriye girmez.
+            if ayracSatiriMi(satirlar[k]) { continue }
+            let h = hucreleAyir(satirlar[k])
+            guard h.contains(where: { !$0.isEmpty }) else { continue }
+            satirVerisi.append(Satir(hucreler: h))
+        }
+        guard !satirVerisi.isEmpty else { return nil }
+        return (Tablo(basliklar: basliklar, satirlar: satirVerisi), j)
+    }
+
+    /// Tablo satırı adayı: `|` içerir ve en az 2 hücreye ayrılır.
+    private static func adaySatirMi(_ satir: String) -> Bool {
+        let s = satir.trimmingCharacters(in: .whitespaces)
+        guard s.contains("|") else { return false }
+        return hucreleAyir(s).count >= 2
+    }
+
+    /// `---`, `:---`, `---:`, `:---:` hücrelerinden oluşan ayraç satırı.
+    private static func ayracSatiriMi(_ satir: String) -> Bool {
+        let h = hucreleAyir(satir).filter { !$0.isEmpty }
+        guard !h.isEmpty else { return false }
+        return h.allSatisfy { hucre in
+            var s = Substring(hucre)
+            if s.hasPrefix(":") { s = s.dropFirst() }
+            if s.hasSuffix(":") { s = s.dropLast() }
+            return !s.isEmpty && s.allSatisfy { $0 == "-" }
+        }
     }
 
     private static func hucreleAyir(_ satir: String) -> [String] {

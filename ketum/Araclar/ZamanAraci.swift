@@ -22,10 +22,23 @@ struct ZamanAraci: KetumAraci {
 
     weak var raporlayici: (any AracRaporlayici)?
 
+    /// Tür serbest metin DEĞİL (P0-4): beş serbest değeri @Guide'da saymak,
+    /// modelin altıncısını uydurmasını engellemiyordu; `tur.lowercased() == "fark"`
+    /// dışındaki HER değer sessizce "hepsi"ye düşüyordu — "difference" yazan
+    /// model gün farkı yerine saat/tarih alıyordu.
+    @Generable
+    enum Tur: String, Equatable, CaseIterable {
+        case saat
+        case tarih
+        case gun
+        case hepsi
+        case fark
+    }
+
     @Generable
     struct Arguments {
-        @Guide(description: "What to return: 'saat' (time), 'tarih' (date), 'gun' (day of week), 'hepsi' (all), or 'fark' (days until/since the date given in 'hedef'). Use these exact values; if unsure use 'hepsi'.")
-        var tur: String
+        @Guide(description: "What to return: 'saat' (time), 'tarih' (date), 'gun' (day of week), 'hepsi' (all), or 'fark' (days until/since the date given in 'hedef'). If unsure use 'hepsi'.")
+        var tur: Tur
         @Guide(description: "Only for tur='fark': the other date, exactly as the user wrote it (e.g. '2 aralık 2026', '2026-12-02', 'next Friday'). Leave empty otherwise.")
         var hedef: String
     }
@@ -37,7 +50,7 @@ struct ZamanAraci: KetumAraci {
         // "from=… to=… days=…" görünür, kullanıcı yanlış ayrıştırmayı yakalar.
         // Kullanıcının doğrulaması gereken bir sayıyı gizlemek, seyrin
         // "sirr yaptığını gizlemez" ilkesini deler.
-        guard arguments.tur.lowercased() == "fark" else {
+        guard arguments.tur == .fark else {
             return Self.simdi(tur: arguments.tur)
         }
         let hedefHam = arguments.hedef
@@ -86,7 +99,7 @@ struct ZamanAraci: KetumAraci {
         return "from=\(bicim.string(from: bugun)) to=\(bicim.string(from: hedef)) days=\(gun)"
     }
 
-    static func simdi(tur: String) -> String {
+    static func simdi(tur: Tur) -> String {
         let simdi = Date()
         // Dil-nötr çıktı: ISO tarih + 24s saat + İngilizce gün adı. Model bunu
         // kullanıcının diline çevirir (çok dilli — tarih/saat metnini asla papağanlamaz).
@@ -99,11 +112,13 @@ struct ZamanAraci: KetumAraci {
         tf.dateFormat = "EEEE"
         let gun = tf.string(from: simdi)
 
-        switch tur.lowercased() {
-        case "saat": return "time=\(saat)"
-        case "tarih": return "date=\(tarih)"
-        case "gun": return "weekday=\(gun)"
-        default: return "time=\(saat) date=\(tarih) weekday=\(gun)"
+        switch tur {
+        case .saat:  return "time=\(saat)"
+        case .tarih: return "date=\(tarih)"
+        case .gun:   return "weekday=\(gun)"
+        // `.fark` buraya gelmez (çağıran ayırır) ama exhaustive switch
+        // gereği açıkça yazılır: sessiz `default` dalı bırakmıyoruz.
+        case .hepsi, .fark: return "time=\(saat) date=\(tarih) weekday=\(gun)"
         }
     }
 }

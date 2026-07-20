@@ -102,7 +102,7 @@ final class ModelServisi {
     /// Burada kurulmazlar: MCP aracının şeması sunucudan çalışma anında gelir
     /// ve `oturumKur` senkrondur. Bağlantıyı bilen katman hazır araçları
     /// `baglantiAraclariniAyarla` ile verir; boşsa profil hiç seçilmez.
-    private var mcpAraclari: [any Tool] = []
+    private var mcpAraclari: [MCPAraci] = []
     /// Seçili bağlantının adı — yönlendirme sinyali ve seyir satırı için.
     private var baglantiAdi: String = ""
 
@@ -111,7 +111,7 @@ final class ModelServisi {
     ///
     /// Aktif oturum bağlantı profilindeyse liste değiştiğinde oturum
     /// geçersizleşir: bir sonraki turda yeni araç setiyle yeniden kurulur.
-    func baglantiAraclariniAyarla(_ araclar: [any Tool], ad: String = "") {
+    func baglantiAraclariniAyarla(_ araclar: [MCPAraci], ad: String = "") {
         mcpAraclari = araclar
         baglantiAdi = ad
         if aktifProfil == .baglanti { oturum = nil }
@@ -120,6 +120,28 @@ final class ModelServisi {
     /// En fazla kaç MCP aracı oturuma girer (mcp §5.4: "gerekirse ilk 4–6").
     /// Hesap + Zaman ile birlikte 6–8 bütçesi korunur.
     private static let mcpAracTavani = 6
+
+    /// Alaka sıralamasının içinden seçtiği havuz. Yuvadan geniş, ama şema
+    /// çevirisi bedava olmadığı için sınırsız değil (mcp §5.2).
+    private static let mcpAracHavuzu = 24
+
+    /// Bu turun ham istemi — yuva alaka sıralamasının tek girdisi (P1-6).
+    /// Oturum kurulumu senkron olduğu için soru bir alan üzerinden taşınır.
+    private var sonSoru: String = ""
+
+    /// Yuvaya girecek MCP araçları: havuzdan, kullanıcının o turki isteğine
+    /// ALAKAYA göre seçilir (P1-6). Eski davranış `prefix(tavan)` idi, yani
+    /// yuvalar sunucunun `tools/list` sırasına göre KÖR doluyordu; 20 araçlı
+    /// bir sunucuda "issue aç" isteği, `issue_olustur` 14. sıradaysa masaya
+    /// hiç gelmiyordu.
+    ///
+    /// `sirala` kararlıdır: soru hiçbir sinyal taşımıyorsa sonuç eski kör
+    /// prefix'in AYNISI — bu bir gerileme güvencesidir.
+    private func secilenMCPAraclari() -> [MCPAraci] {
+        Array(AracAlaka.sirala(mcpAraclari, soru: sonSoru,
+                               ad: \.uzakAd, ozet: \.ozet)
+            .prefix(Self.mcpAracTavani))
+    }
 
     // MARK: - Bağlantı köprüsü (mcp §5.4 — fişe takma)
 
@@ -180,7 +202,7 @@ final class ModelServisi {
             guard let self else { return }
             let araclar = await baglantiKopru.araclariKur(
                 baglantiID: kimlik, ad: ad, ozetler: ozetler,
-                tavan: Self.mcpAracTavani, cihazVerisi: cihazVerisi,
+                havuz: Self.mcpAracHavuzu, cihazVerisi: cihazVerisi,
                 kapi: yurutucu, raporlayici: yurutucu)
             guard !Task.isCancelled, baglantiImzasi == imza else { return }
             // Sunucuya erişilemediyse imzayı düşür: bir sonraki tazelemede
@@ -241,6 +263,11 @@ final class ModelServisi {
         // Uzak çıktı da 4096 bütçesine göre işlenir (§5.5): büyük sonuç modelden
         // geçmeden veri deposuna konur, modele özet + kaynakRef gider.
         baglantiKopru.veriDeposu = veriDeposu
+        // P0-3: uzak çağrı başarıyla dönünce retry kapısını kapatan bayrağı
+        // kuracak olan taraf. Köprü TEK huni: her uzak çağrı buradan geçer,
+        // dolayısıyla yeni bir MCP çağrı yolu eklenirse bayrağı kurmayı
+        // unutmak mümkün değil.
+        baglantiKopru.yurutucu = yurutucu
         // Kod deneme sayacı tur yaşam döngüsüne buradan bağlanır (kod-spec
         // §5.4: sıfırlama AracYurutucu.yeniTur'dadır). sohbetiSifirla da
         // yeniTur'u içeriden çağırdığı için tüm yollar tek kancadan geçer.
@@ -346,6 +373,20 @@ final class ModelServisi {
         "contact", "phone number", "email address", "in numarası",
     ]
 
+    /// Belge kilidinden kaçış izleri (denetim P2-1). Rehber ve açık web ayrı
+    /// hesaplanır; burası yalnızca belge setinde HİÇ karşılığı olmayan iki
+    /// yetenek: nöbet (zamanlanmış ajan) ve kod çalıştırma.
+    ///
+    /// Liste bilerek çok DAR ve hep ÇOK SÖZCÜKLÜ/ayırt edici: kaçışın yanlış
+    /// pozitifi, kullanıcının ekli belgesi üzerinde çalışmayı reddetmek demek
+    /// — kilidin kendisinden daha kötü bir arıza. Çıplak "kod" yok ("kodu",
+    /// "barkod", "kodlanmış" içinde geçer); çıplak "ajan" yok.
+    private static let kilitKacisIzleri = [
+        "nöbet", "nobet kur", "her sabah", "her akşam",                      // tr — nobet_kur
+        "kod çalıştır", "kodu çalıştır", "javascript", "js ile hesapla",     // tr — kod_calistir
+        "run this code", "execute this code", "in javascript",               // en
+    ]
+
     /// Belge/üretim profili (spec §7.3.1): Oluştur, Oku, Düzenle + veri kaynağı ve yardımcılar.
     ///
     /// Bir belge ekliyken `niyetProfili` profili .belge'ye KİLİTLER; bu yüzden bu sette
@@ -386,7 +427,7 @@ final class ModelServisi {
     private func baglantiAraclar() -> [any Tool] {
         var hesap = HesapAraci(); hesap.raporlayici = yurutucu
         var zaman = ZamanAraci(); zaman.raporlayici = yurutucu
-        return Array(mcpAraclari.prefix(Self.mcpAracTavani)) + [hesap, zaman]
+        return secilenMCPAraclari().map { $0 as any Tool } + [hesap, zaman]
     }
 
     /// Kurulacak araç setini tek dizgede özetler. Yalnızca seti GERÇEKTEN
@@ -399,7 +440,11 @@ final class ModelServisi {
             return "gundelik|\(takas)|\(yerelAramayiGizle ? "spotsuz" : "spot")"
         case .belge:    return "belge"
         case .arama:    return "arama"
-        case .baglanti: return "baglanti|\(min(mcpAraclari.count, Self.mcpAracTavani))"
+        // SAYI YETMEZ: alaka sıralaması turdan tura FARKLI altılıyı seçebilir,
+        // sayı ise aynı kalır. İmza seçilen ADLARI yazar; aksi halde mekanizma
+        // tanımlı olur ama ilk turdan sonra oturum hiç yeniden kurulmadığı için
+        // hiç çalışmazdı (gündelik setteki Kişi ↔ web takasının aynı tuzağı).
+        case .baglanti: return "baglanti|" + secilenMCPAraclari().map(\.name).joined(separator: ",")
         }
     }
 
@@ -419,7 +464,10 @@ final class ModelServisi {
     /// gösterdi. Bunun yerine Claude'un SKILL.md mantığı uygulanır — yalnızca o
     /// mesaja uyan TEK beceri, o oturuma BİR KEZ, o turun istemine iliştirilir.
     /// Böylece hem sabit talimat kısa kalır hem rehberlik gerektiği anda gelir.
-    private var enjekteBeceriler: Set<String> = []
+    /// Beceri enjeksiyonunun MESAFELİ durumu (denetim P2-2). Eski `Set<String>`
+    /// "bir kez enjekte edildi, bir daha asla" demekti; kılavuz uzun turda
+    /// pencereden kayınca geri gelmiyordu. Mantık `BeceriDeposu`da, durum burada.
+    private var beceriDurumu = BeceriDeposu.EnjeksiyonDurumu()
 
     /// Bu oturuma hâlihazırda enjekte edilmiş hafıza notları (hafiza-spec §5.1).
     /// `enjekteBeceriler` simetriği: aynı not aynı oturuma bir kez girer, oturum
@@ -436,30 +484,20 @@ final class ModelServisi {
     /// Sıra: önce hafıza (kullanıcı hakkında olgular), sonra beceri (nasıl
     /// yapılacağı), en sonda sorunun kendisi — soru istemin SONUNDA kalır,
     /// küçük modelde son bloğun ağırlığı en yüksektir.
-    /// Paket becerilerinin araç gerektirdiği profiller. Kılavuz, aracı
-    /// oturumda OLMAYAN bir profile enjekte edilirse model var olmayan aracı
-    /// çağırmaya yönlendirilir (kod-spec §10 dağıtım notunun profil düzeyindeki
-    /// eşi — ör. belge kilidindeyken "kodla…" isteği kod.md'yi tetiklerdi ama
-    /// kod_calistir belge setinde yok). Listede olmayan beceriler (hesap,
-    /// kullanıcı becerileri) her profilde serbesttir.
-    private static let beceriProfilleri: [String: Set<Profil>] = [
-        "kod":           [.gundelik],           // kod_calistir yalnız gündelik sette
-        "web-sayfa":     [.belge],              // belge_olustur yalnız belge setinde
-        "belge-olustur": [.belge],
-        "belge-oku":     [.belge],
-        "belge-duzenle": [.belge],
-        "kisi":          [.gundelik],           // KisiAraci yalnız gündelik sette
-        "takvim":        [.gundelik, .belge],
-        "hatirlatici":   [.gundelik, .belge],
-        "arama":         [.gundelik, .belge],   // Spotlight araması iki sette de var
-    ]
-
-    /// Beceri bu profilde enjekte edilebilir mi. Uymayan beceri o tura girmez
-    /// ve İŞARETLENMEZ — doğru profile geçildiğinde yeniden denenir.
-    private static func beceriUygun(_ beceri: Beceri, profil: Profil) -> Bool {
-        guard let izinli = beceriProfilleri[beceri.ad] else { return true }
-        return izinli.contains(profil)
-    }
+    /// Mevcut oturumdaki araç adları. Beceri kapısının TEK doğruluk kaynağı
+    /// (denetim P1-4): kılavuz, emrettiği araç oturumda YOKSA enjekte edilmez —
+    /// aksi halde model var olmayan bir aracı çağırmaya yönlendirilirdi
+    /// (belge kilidindeyken "kodla…" isteği kod.md'yi tetikliyor ama
+    /// `kod_calistir` belge setinde yok).
+    ///
+    /// Eskiden burada elle yazılmış bir `[beceri: Set<Profil>]` haritası vardı.
+    /// O harita ARAÇ SETİNİN KOPYASIYDI ve kopya olduğu için sessizce
+    /// eskiyordu: bir araç profiller arasında taşındığında (Hatırlatıcı ve
+    /// Arama'nın belge setine alınması gibi) haritayı güncellemeyi unutmak
+    /// hiçbir derleme hatası vermiyordu. Artık kapı, oturumun GERÇEK araç
+    /// adlarından okunuyor; harita ile set arasında sapma kavramsal olarak
+    /// imkânsız.
+    private var oturumAracAdlari: Set<String> = []
 
     private func istemZenginlestir(_ soru: String) -> String {
         var bloklar: [String] = []
@@ -475,9 +513,13 @@ final class ModelServisi {
             }
         }
 
-        if let beceri = BeceriDeposu.eslesen(soru), !enjekteBeceriler.contains(beceri.ad),
-           Self.beceriUygun(beceri, profil: aktifProfil) {
-            enjekteBeceriler.insert(beceri.ad)
+        // Beceri kapısı iki aşamalı: (1) `eslesen` oturumun araç adlarıyla
+        // süzülür — emrettiği aracı bulundurmayan kılavuz hiç ADAY olmaz;
+        // (2) mesafeli işaret aynı kılavuzun her turda tekrarlanmasını önler
+        // ama uzun turda geri dönmesine izin verir.
+        if let beceri = BeceriDeposu.eslesen(soru, mevcutAraclar: oturumAracAdlari),
+           beceriDurumu.gerekliMi(beceri.ad) {
+            beceriDurumu.isaretle(beceri.ad)
             bloklar.append(BeceriDeposu.enjeksiyonMetni(beceri))
             // Seyir'de beceri GÖRÜNÜR, hafıza GÖRÜNMEZ (seyir-spec §8.1 kararı):
             // hafıza katmanı modele "notları asla anma" der; aynı notu arayüzde
@@ -509,6 +551,20 @@ final class ModelServisi {
                 + "belge_olustur: \(refler.joined(separator: "; "))]")
         }
 
+        // EKLİ BELGENİN VARLIĞI (denetim P2-5). Belge varken profil .belge'ye
+        // kilitleniyor ve `belge_oku` sette duruyordu, ama modelin bunu yalnız
+        // kullanıcının cümlesinden çıkarması gerekiyordu: belgenin varlığı
+        // isteme SIFIR bit taşıyordu. Sonuç ölçüldü — "bir belge göremiyorum".
+        //
+        // Yalnızca `belge_oku` oturumdayken yazılır: aracı olmayan bir profilde
+        // (P2-1 kaçışından sonra mümkün) bu satır modeli var olmayan bir aracı
+        // çağırmaya iterdi. Belge yoksa satır hiç eklenmez — boş yere token yok.
+        if let belge = belgeBaglami.calisilabilirBelge,
+           oturumAracAdlari.contains("belge_oku") {
+            bloklar.append("[Attached document: \(belge.ad) — call belge_oku to read it "
+                + "before answering anything about its contents.]")
+        }
+
         if !aktifDil.isEmpty, aktifDil != "English" {
             bloklar.append("[Reply in \(aktifDil), including any content taken from tool results.]")
         }
@@ -521,7 +577,7 @@ final class ModelServisi {
         aktifProfil = profil
         // Yeni oturum = yeni bağlam: enjekte edilmiş beceriler ve notlar artık
         // transcript'te yok, ikisi de yeniden enjekte edilebilir olmalı.
-        enjekteBeceriler.removeAll()
+        beceriDurumu.sifirla()
         enjekteNotlar.removeAll()
         // Kirli oturum bayrağı BİLEREK taşınır (mcp §5.6): `ozet` metni kişisel
         // veri içerebilir, dolayısıyla yeni session da kirlidir. `AracYurutucu`
@@ -529,8 +585,13 @@ final class ModelServisi {
         // bir şey yoktur — bu yorum o sessiz bağımlılığı görünür kılar.
         let dil = aktifDil
         let secildi = dilSecildi
-        let temel = LanguageModelSession(tools: araclariYap(profil)) {
-            Yonlendirici.talimatlar
+        let araclar = araclariYap(profil)
+        // Beceri kapısının ve ekli-belge satırının okuduğu tek kaynak.
+        oturumAracAdlari = Set(araclar.map(\.name))
+        let temel = LanguageModelSession(tools: araclar) {
+            // ÇEKİRDEK + PROFİL EKİ (P1-1): bu oturumun araç setinde anlamı
+            // olmayan hiçbir kural taşınmaz.
+            Yonlendirici.talimat(profil)
             if !dil.isEmpty {
                 // Yanıt-dili çapası: adlandırılmış dil direktifi (sızıntıyı azaltır).
                 //
@@ -543,14 +604,14 @@ final class ModelServisi {
                 let capa = secildi
                     ? "The user has chosen \(dil) as the reply language. Reply ONLY in \(dil), never in another language, even if the user writes in a different language."
                     : "The user is writing in \(dil). Reply ONLY in \(dil), never in another language."
+                // KISALTILDI (P1-1): eski metin sekiz satırdı ve aynı şeyi üç
+                // kez söylüyordu. Ölçülen etkiyi taşıyan tek fikir korundu —
+                // "araç çıktısı veri, dil örneği değil"; gerisi tekrardı.
                 """
                 \n\n\(capa)
-                This applies to EVERY reply, including replies built from tool output. \
-                Tool results are data, not a language example: they are often English or \
-                mixed-language even when the user is not writing English. Read them, then \
-                write your answer in \(dil). Translate every label, weekday, month and \
-                phrase you take from them into \(dil). Never echo an English sentence \
-                because a tool produced it.
+                Tool results are data, not a language example: they are often English. \
+                Read them, then write your answer in \(dil), translating every label, \
+                weekday and month you take from them.
                 """
             }
             if let ozet {
@@ -616,8 +677,9 @@ final class ModelServisi {
         // Sıfırlama saptanan dili unutur ama kullanıcının açık seçimini EZMEZ.
         aktifDil = secilenDilAdi ?? ""
         dilSecildi = secilenDilAdi != nil
-        enjekteBeceriler.removeAll()
+        beceriDurumu.sifirla()
         enjekteNotlar.removeAll()
+        oturumAracAdlari = []
         // Yönlendirme sinyalleri de oturum ömürlü: yeni sohbet, önceki sohbetin
         // arama/bağlantı çipleri yüzünden cihaz dışı profille başlamamalı.
         oncekiTurArama = false
@@ -635,9 +697,6 @@ final class ModelServisi {
     /// mevcut profil isteği karşılayabiliyorsa DEĞİŞTİRMEZ — yalnızca o profilde olmayan
     /// bir araç gerektiğinde geçiş yapar. İki profil de Takvim/Kişi/Hesap/Zaman'ı paylaşır.
     private func niyetProfili(_ soru: String, mevcut: Profil) -> Profil {
-        // Ekli belge ya da az önce üretilmiş dosya varsa devam isteği belge profilinde
-        // kalmalı — "onu tablo olarak göster" gibi cümlelerde biçim adı geçmeyebilir.
-        if belgeBaglami.calisilabilirBelge != nil { return .belge }
         let s = soru.lowercased()
 
         // AÇIK web niyeti her şeyin önünde: kullanıcı "internette ara" dediyse
@@ -649,7 +708,34 @@ final class ModelServisi {
         yerelAramayiGizle = acikWeb && !aramaKullanilabilir
         // Gündelik sette Kişi mi web araması mı duracağını bu belirler; her
         // turda tazelenir, çünkü kullanıcı konudan konuya geçebilir.
+        //
+        // BU ÜÇ HESAP BELGE KİLİDİNDEN ÖNCE YAPILIR ve bu bir düzeltmedir
+        // (denetim P2-1): eskiden kilit fonksiyonun İLK satırıydı, dolayısıyla
+        // belge ekliyken `kisiSinyaliVar` hiç hesaplanmıyor, gündelik setin
+        // Kişi ↔ web takası da o oturumda hiç çalışmıyordu.
         kisiSinyaliVar = Self.kisiIzleri.contains(where: s.contains)
+
+        // Ekli belge ya da az önce üretilmiş dosya varsa devam isteği belge
+        // profilinde kalmalı — "onu tablo olarak göster" gibi cümlelerde biçim
+        // adı geçmeyebilir. Kilit KOŞULSUZ DEĞİL artık: belge-dışı GÜÇLÜ ve
+        // AÇIK bir niyet varsa kaçış verilir, çünkü mutlak kilit kişi/nöbet/kod
+        // araçlarını o oturumda tamamen erişilemez yapıyordu ("Ali'nin numarası
+        // ne" → araçsız tur → "bulamadım").
+        //
+        // Kaçış DAR: yalnız (a) belge sinyali YOKKEN ve (b) belge-dışı sinyal
+        // AÇIKÇA beyan edilmişken. "bunu tablo olarak göster" ve "cumartesi
+        // satırını ekle" kaçmaz — birincisinde hiçbir kaçış izi yok, ikincisi
+        // zaten "satır" ile belge sinyali taşıyor.
+        if belgeBaglami.calisilabilirBelge != nil {
+            let belgeSinyali = Self.belgeIzleri.contains(where: s.contains)
+            if !belgeSinyali {
+                if kisiSinyaliVar { return .gundelik }
+                if acikWeb, aramaKullanilabilir { return .arama }
+                if Self.kilitKacisIzleri.contains(where: s.contains) { return .gundelik }
+            }
+            return .belge
+        }
+
         if acikWeb, aramaKullanilabilir { return .arama }
         // Gündelik profile ÖZGÜ araçlar (Hatırlatıcı, Arama) — 8 dilde tetikleyiciler.
         //
@@ -689,6 +775,59 @@ final class ModelServisi {
         case .baglanti: return baglantiKullanilabilir ? .baglanti : .gundelik
         case .gundelik, .belge: return mevcut
         }
+    }
+
+    // MARK: - Tur-içi profil kurtarma (denetim P1-2)
+
+    /// Deterministik seçici yanıldığında denenecek İKİNCİ profil.
+    ///
+    /// Sorun şuydu: `niyetProfili` tek bir profil döndürüyor ve yanılırsa
+    /// gereken araç o oturumda HİÇ bulunmuyordu. Model bunu bir yetenek
+    /// eksikliği gibi anlatıyor ("bunu yapamıyorum"), tur araçsız bitiyordu —
+    /// sessiz bir yetenek boşluğu, kullanıcı için görünmez bir arıza.
+    ///
+    /// Saf fonksiyon: sinyal listelerinden okur, durum yazmaz, model gerektirmez.
+    private func ikinciProfil(_ soru: String, birinci: Profil) -> Profil? {
+        let s = soru.lowercased()
+        // Aday sırası SİNYAL GÜCÜNE göre: cümlede izi olan profiller önce.
+        var adaylar: [Profil] = []
+        if Self.belgeIzleri.contains(where: s.contains)    { adaylar.append(.belge) }
+        if Self.gundelikIzleri.contains(where: s.contains) { adaylar.append(.gundelik) }
+        if kisiSinyaliVar                                  { adaylar.append(.gundelik) }
+        if aramaKullanilabilir, aramaSinyali(s)            { adaylar.append(.arama) }
+        if baglantiKullanilabilir, baglantiSinyali(s)      { adaylar.append(.baglanti) }
+        // Hiç ikinci sinyal yoksa en geniş araç seti son çare. Belge kilidi
+        // varken gündelik yerine belgeye düşülür: kullanıcının ekli belgesi
+        // ortadayken onu masadan kaldırmak yeni bir boşluk açardı.
+        adaylar.append(belgeBaglami.calisilabilirBelge != nil ? .belge : .gundelik)
+        return adaylar.first { $0 != birinci }
+    }
+
+    /// "Yapamadım" kalıpları — 8 dilde YETENEK reddi. Kasıtlı olarak DAR:
+    /// olgusal "bulamadım" (aranmış ama sonuç yok) BURAYA GİRMEZ, çünkü o
+    /// doğru ve dürüst bir yanıttır; yeniden çalıştırmak modeli aynı boş
+    /// sonuca ikinci kez götürüp pil yakmaktan başka bir şey yapmaz.
+    private static let yapamadimIzleri = [
+        "yapamıyorum", "yapamam", "yapamadım", "edemiyorum", "edemem",
+        "bu konuda yardımcı olamıyorum", "yardımcı olamam", "erişimim yok",
+        "yeteneğim yok", "elimde böyle bir araç", "bir aracım yok",
+        "i can't", "i cannot", "i'm unable", "i am unable", "i don't have access",
+        "i don't have the ability", "i'm not able",
+        "no puedo", "ich kann nicht", "je ne peux pas", "não posso",
+        "できません", "无法", "할 수 없",
+    ]
+
+    /// Tur-içi kurtarma tetiği. ÜÇ şart birden:
+    /// 1. Hiç araç çalışmadı — bir araç çalıştıysa profil doğruydu, yanıtın
+    ///    içeriği tartışmalı olabilir ama YETENEK boşluğu yok.
+    /// 2. Metin bir yetenek reddi kalıbı taşıyor.
+    /// 3. (çağıran tarafta) bu turda daha önce kurtarma denenmedi.
+    ///
+    /// Saf ve statik: modelsiz test edilir.
+    static func kurtarmaGerekli(izler: [AracIzi], metin: String) -> Bool {
+        guard izler.isEmpty else { return false }
+        let m = metin.lowercased()
+        return yapamadimIzleri.contains(where: m.contains)
     }
 
     /// Arama sunucusu tanımlı ve açık mı. `aktifMi` adres geçersizse zaten
@@ -957,6 +1096,10 @@ final class ModelServisi {
         defer { if uretimNo == benimTur { uretiyor = false } }
         // Sinyaller ÖNCEKİ turun çiplerinden okunur; çipler sıfırlanmadan önce.
         turSinyalleriniGuncelle()
+        // Yuva alaka sıralamasının girdisi (P1-6). Profil kararından ÖNCE
+        // yazılır: `aracImzasi` bu turun sorusuna göre seçilen araçları
+        // yazacak ve seçim değiştiyse oturum yeniden kurulacak.
+        sonSoru = soru
         yurutucu.yeniTur()   // turKancasi kod deneme sayacını da sıfırlar (kod-spec §5.4)
         seyir.sifirla()
 
@@ -992,7 +1135,20 @@ final class ModelServisi {
         do {
             let ham = try await akisYut(oturum, soru: istem, akis: akis)
             // Ayrıştırılamamış araç çağrısı kullanıcıya GİTMEZ.
-            let sonMetin = Self.aracSizintisiniTemizle(ham)
+            var sonMetin = Self.aracSizintisiniTemizle(ham)
+
+            // TUR-İÇİ PROFİL KURTARMA (P1-2). Araç izi YOK + "yapamıyorum"
+            // kalıbı VAR = deterministik seçici büyük olasılıkla yanıldı ve
+            // gereken araç bu oturumda hiç bulunmuyor. Bir kez, ikinci en
+            // olası profille tekrar denenir. `seyir.bitir()`den ÖNCE olmak
+            // zorunda: kaydedici kapandıktan sonra yeni adım açılamaz.
+            if Self.kurtarmaGerekli(izler: yurutucu.izler, metin: sonMetin),
+               uretimNo == benimTur,
+               let ikinci = ikinciProfil(soru, birinci: aktifProfil) {
+                sonMetin = await profilKurtar(ikinci, soru: soru,
+                                              ilkMetin: sonMetin, akis: akis)
+            }
+
             // Normal tamamlanma ya da iptal (yarım metin) — ikisi de hata DEĞİL.
             // İptal edilmiş turda `durdur()` seyri zaten kesti; `bitir()` kapalı
             // kaydediciye dokunmaz.
@@ -1008,23 +1164,65 @@ final class ModelServisi {
             if sonMetin != ham { akis(sonMetin) }
             return YanitSonucu(metin: sonMetin, izler: yurutucu.izler)
         } catch {
-            let sonuc = await hataKurtar(error, soru: istem, akis: akis)
+            let sonuc = await hataKurtar(error, soru: soru, benimTur: benimTur, akis: akis)
             seyriEsitle()
             seyir.bitir()
             return sonuc
         }
     }
 
+    /// İkinci profille turu BİR KEZ yeniden çalıştırır. Kurtarma tutmazsa
+    /// `ilkMetin` geri gelir — girişim kullanıcının elindeki yanıtı asla
+    /// kötüleştirmez, en kötü ihtimalle bir üretim süresi harcar.
+    ///
+    /// Hangi metinle dönerse dönsün ekrana O metin yazılır (`akis`), çünkü
+    /// ilk denemenin metni akıştan silinmiş oluyor.
+    ///
+    /// Özet TAŞINIR: konuşma bağlamını düşürmek kurtarmanın kendisinden daha
+    /// büyük bir kayıp olurdu. Özete giren "yapamıyorum" cümlesinin ikinci
+    /// denemeyi yanlı kılma riski var; buna karşı ikinci denemede araç
+    /// GERÇEKTEN oturumda olduğu için modelin önünde somut bir yol duruyor.
+    private func profilKurtar(_ ikinci: Profil,
+                              soru: String,
+                              ilkMetin: String,
+                              akis: @escaping (String) -> Void) async -> String {
+        akis("")   // ilk denemenin "yapamıyorum" metnini ekrandan kaldır
+        // Kurtarma turu: çipler ve yan etki bayrakları KORUNUR (P2-8).
+        yurutucu.yeniTur(yanEtkiyiUnut: false)
+        oturumKur(profil: ikinci, devam: await ozetle())
+        seyir.basla(tur: .yonlendirme, metin: Self.yonlendirildi(ikinci))
+        // İstem YENİDEN kurulur: oturum değişti, dolayısıyla yeni profilin
+        // beceri kılavuzu ve ekli-belge satırı bu sette geçerli olanlardır.
+        if let yeni = oturum,
+           let ham = try? await akisYut(yeni, soru: istemZenginlestir(soru), akis: akis) {
+            let metin = Self.aracSizintisiniTemizle(ham)
+            // Boş ya da yine "yapamıyorum" ise kurtarma tutmadı.
+            if !metin.isEmpty,
+               !Self.kurtarmaGerekli(izler: yurutucu.izler, metin: metin) {
+                akis(metin)
+                return metin
+            }
+        }
+        akis(ilkMetin)
+        return ilkMetin
+    }
+
     /// Hata taksonomisi (rapor §5.5): taşma → görünmez kurtarma; guardrail/dil → retry YOK.
     private func hataKurtar(_ error: Error,
                             soru: String,
+                            benimTur: Int,
                             akis: @escaping (String) -> Void) async -> YanitSonucu {
         akis("")  // yarım akan metni temizle
         // Retry, AYNI istemi ikinci kez gönderir. Bu turda bir araç dünyayı zaten
         // değiştirdiyse (etkinlik yazıldı, hatırlatıcı kuruldu, belge üretildi)
         // ikinci deneme aynı yan etkiyi TEKRARLAR — çift etkinlik, çift hatırlatıcı.
-        // Böyle bir durumda hiç denemeyip kullanıcıya ne olduğunu söylemek doğrusu.
-        if yurutucu.dunyaDegisti {
+        //
+        // YEREL yan etki tek eksen DEĞİL (denetim P0-3): uzak bir MCP yazması
+        // (Jira issue, kayıt, e-posta) `.yazildi` çipi düşürmez ve `dunyaDegisti`
+        // bayrağını hiç kurmazdı, dolayısıyla o yan etkiden SONRA oluşan genel
+        // bir hata retry'a giriyor ve ikinci issue açılıyordu. `retryGuvenli`
+        // iki ekseni birden okur.
+        if !yurutucu.retryGuvenli {
             // Hata balonu evet; "yeniden dene" HAYIR — yan etki tekrarlanırdı.
             return YanitSonucu(metin: Yerel.yazmaSonrasiHata, izler: yurutucu.izler,
                                hataMi: true, tekrarDenenebilir: false)
@@ -1040,6 +1238,7 @@ final class ModelServisi {
                                    hataMi: true, tekrarDenenebilir: false)
             case .exceededContextWindowSize:
                 // Kurtarılabilir: özetle, oturumu yeniden kur, bir kez dene.
+                guard uretimNo == benimTur else { return iptalSonucu() }
                 yurutucu.yeniTur(yanEtkiyiUnut: false)
                 oturumKur(profil: aktifProfil, devam: await ozetle())
                 if let yeni = oturum, let m = try? await akisYut(yeni, soru: soru, akis: akis) {
@@ -1052,6 +1251,7 @@ final class ModelServisi {
             }
         }
         // Diğer geçici hatalar: taze oturumla bir kez daha dene.
+        guard uretimNo == benimTur else { return iptalSonucu() }
         yurutucu.yeniTur(yanEtkiyiUnut: false)
         oturumKur(profil: aktifProfil)
         if let yeni = oturum, let m = try? await akisYut(yeni, soru: soru, akis: akis) {
@@ -1059,6 +1259,20 @@ final class ModelServisi {
         }
         return YanitSonucu(metin: Yerel.tekrarDene, izler: yurutucu.izler,
                            hataMi: true, tekrarDenenebilir: true)
+    }
+
+    /// İPTAL EDİLMİŞ TURUN KURTARMASI YAPILMAZ (denetim P1-7).
+    ///
+    /// `hataKurtar` eskiden `uretimNo`ya hiç bakmıyordu: kullanıcı "dur"a
+    /// bastıktan sonra gelen hata yeni bir `oturumKur` + `akisYut` başlatıyor,
+    /// yani görünmez bir üretim yarışı açıyordu. Daha kötüsü `oturumKur`
+    /// `aktifProfil`i yazdığı için o sırada başlamış YENİ turun oturumunu
+    /// ezebiliyordu.
+    ///
+    /// İptal hata DEĞİLDİR: `hataMi` false, `tekrarDenenebilir` false — akan
+    /// yarım metin ekranda kalır, kullanıcı zaten kendi durdurduğunu biliyor.
+    private func iptalSonucu() -> YanitSonucu {
+        YanitSonucu(metin: akanMetin, izler: yurutucu.izler)
     }
 
     private func akisYut(_ oturum: LanguageModelSession,
@@ -1240,6 +1454,10 @@ final class MCPAracKoprusu: MCPCagirici {
     /// §5.5 sonuç işleme için — büyük çıktı modelden geçmeden buraya konur.
     weak var veriDeposu: VeriDeposu?
 
+    /// Dış yan etki bayrağının sahibi (denetim P0-3). Uzak çağrı sunucuya
+    /// ULAŞTIĞI anda `disEtkiIsaretle()` çağrılır ve o turda retry kapanır.
+    weak var yurutucu: AracYurutucu?
+
     init() {}
 
     /// Bağlantının adresini kaydeder. Adres ya da anahtar değiştiyse istemci
@@ -1279,7 +1497,7 @@ final class MCPAracKoprusu: MCPCagirici {
     func araclariKur(baglantiID: UUID,
                      ad: String,
                      ozetler: [AracOzeti],
-                     tavan: Int,
+                     havuz: Int,
                      cihazVerisi: CihazVerisiAyari,
                      kapi: (any OnayKapisi)?,
                      raporlayici: (any AracRaporlayici)?) async -> [MCPAraci] {
@@ -1290,8 +1508,12 @@ final class MCPAracKoprusu: MCPCagirici {
         for ozet in ozetler where !ozet.desteklenmiyor { ozetSozlugu[ozet.ad] = ozet.ozet }
 
         // Sunucu sırası korunur (deterministik), önbellekte olmayan elenir ve
-        // bütçe tavanı ÇEVİRİDEN ÖNCE uygulanır: 200 araçlık sunucuda 200 şema
-        // çevirmenin anlamı yok, oturuma zaten en fazla `tavan` tanesi giriyor.
+        // HAVUZ tavanı ÇEVİRİDEN ÖNCE uygulanır: 200 araçlık sunucuda 200 şema
+        // çevirmenin anlamı yok. Havuz, oturum yuvasından (6) BİLEREK geniştir:
+        // yuvayı hangi araçların dolduracağına artık burada değil, kullanıcının
+        // o turki isteğine bakan `AracAlaka` karar veriyor (P1-6) ve bunun için
+        // seçebileceği bir havuz gerek. Havuz da 6 olsaydı alaka sıralaması
+        // sunucunun ilk 6'sını kendi içinde yeniden dizmekten öteye gidemezdi.
         // Sınıflandırma tavandan ÖNCE: 200 araçlık bir sunucuda ilk 6 araç
         // `komut_calistir`, `dosya_sil` olabilir ve saf sunucu sırası bu
         // durumda oturumu yıkıcı araçlarla doldurup salt-okumaları dışarıda
@@ -1312,10 +1534,16 @@ final class MCPAracKoprusu: MCPCagirici {
                 return sol.offset < sag.offset
             }
             .map(\.element)
-            .prefix(tavan)
+            .prefix(havuz)
+
+        // Ad çakışması koleksiyon düzeyinde çözülür (P2-9). "get-user" ve
+        // "get_user" ikisi de `get_user`a indirgeniyordu ve model iki araçtan
+        // hangisini çağırdığını bilmiyordu; `adlariCoz` sırayı bozmadan
+        // ikisine FARKLI ad verir.
+        let cozulmusAdlar = MCPAraci.adlariCoz(adaylar.map { (uzakAd: $0.0.ad, sunucu: ad) })
 
         var araclar: [MCPAraci] = []
-        for (tanim, yanEtki) in adaylar {
+        for (sira, (tanim, yanEtki)) in adaylar.enumerated() {
             // Şema çalışma anında çevrilir; çevrilemeyen araç ATLANIR (§5.2) —
             // yanlış argüman üretmektense araç hiç olmasın.
             guard let sema = try? MCPSemaCevirici.cevir(tanim: Self.tanimaCevir(tanim)) else { continue }
@@ -1328,7 +1556,8 @@ final class MCPAracKoprusu: MCPCagirici {
                                     cihazVerisi: cihazVerisi,
                                     yanEtki: yanEtki,
                                     kapi: kapi,
-                                    raporlayici: raporlayici))
+                                    raporlayici: raporlayici,
+                                    cozulmusAd: cozulmusAdlar[sira]))
         }
         return araclar
     }
@@ -1357,6 +1586,18 @@ final class MCPAracKoprusu: MCPCagirici {
         // uydurmayız — argümansız çağrıya ineriz.
         let argumanlar = JSONDeger.ayristir(argumanlarJSON) ?? .nesne([:])
         let (metin, hataliMi) = try await istemci.aracCagir(ad: aracAdi, argumanlar: argumanlar)
+
+        // BURASI P0-3'ÜN TEK NOKTASI. Çağrı DÖNDÜ demek, istek sunucuya ulaştı
+        // ve sunucu onu işledi demektir — issue açıldı, kayıt yazıldı, e-posta
+        // gitti olabilir. Bundan sonra bu turda AYNI istemi ikinci kez
+        // göndermek geri alınamaz bir tekrar üretir.
+        //
+        // `hataliMi` AYIRMAZ ve ayırmamalı: MCP'de `isError` sunucunun aracın
+        // sonucu hakkındaki yorumudur, işlemin hiç gerçekleşmediğinin kanıtı
+        // değil ("issue açıldı ama alan doğrulaması geçmedi" de isError döner).
+        // Yalnız `throw` eden yol (taşıma hatası) bayrağı kurmaz, çünkü orada
+        // istek sunucuya ulaşmamıştır.
+        yurutucu?.disEtkiIsaretle()
 
         // §5.5: ham çıktı modele girmez; özet + kaynakRef gider, tamamı çipte kalır.
         let islenmis = BaglantiServisi.sonucIsle(metin, aracAdi: aracAdi, veriDeposu: veriDeposu)

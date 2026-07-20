@@ -1,6 +1,7 @@
 ---
 ad: takvim
 tetikler: takvim, etkinlik, toplantı, randevu, programım, yarın ne var, bugün ne var, ajanda
+araclar: takvim
 ---
 # Calendar
 

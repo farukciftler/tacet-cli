@@ -21,10 +21,35 @@ struct BelgeOlusturAraci: KetumAraci {
     /// Büyük veri kanalı — kaynakRef ile toplu veri modelden geçmeden çekilir.
     weak var veriDeposu: VeriDeposu?
 
+    /// Biçim artık serbest metin DEĞİL. Eskiden `BelgeBicimi(kullaniciMetni:)`
+    /// bulanık `.contains` ile çözüyordu ve eşleşmeyen her değer sessizce `.txt`
+    /// oluyordu: kullanıcı "excel" isteyip .txt alıyordu. Enum ile kısıtlı
+    /// çözümleme (constrained decoding) geçersiz değeri ÜRETİLEMEZ yapar.
+    @Generable
+    enum Bicim: String, Equatable, CaseIterable {
+        case excel
+        case pdf
+        case word
+        case markdown
+        case metin
+        case html
+
+        var belgeBicimi: BelgeBicimi {
+            switch self {
+            case .excel:    return .xlsx
+            case .pdf:      return .pdf
+            case .word:     return .docx
+            case .markdown: return .md
+            case .metin:    return .txt
+            case .html:     return .html
+            }
+        }
+    }
+
     @Generable
     struct Arguments {
-        @Guide(description: "File format: 'excel', 'pdf', 'word', 'markdown', 'metin' (plain text) or 'html' (single-page website). Use these exact values.")
-        var bicim: String
+        @Guide(description: "File format: 'excel' (spreadsheet), 'pdf', 'word', 'markdown', 'metin' (plain text) or 'html' (single-page website).")
+        var bicim: Bicim
         @Guide(description: "File name without extension, e.g. 'july-meetings'.")
         var dosyaAdi: String
         @Guide(description: "Document title (optional).")
@@ -36,7 +61,7 @@ struct BelgeOlusturAraci: KetumAraci {
     }
 
     func call(arguments: Arguments) async -> String {
-        let bicim = BelgeBicimi(kullaniciMetni: arguments.bicim)
+        let bicim = arguments.bicim.belgeBicimi
         let girdi = "biçim: \(bicim.etiket), ad: \(arguments.dosyaAdi)"
             + (arguments.kaynakRef.map { ", ref: \($0)" } ?? "")
         return await cipliCalis(ikon: bicim.ikon,
@@ -45,9 +70,38 @@ struct BelgeOlusturAraci: KetumAraci {
             // Toplu veri kanalı: referans varsa tabloyu depodan çek (model bağlamından değil).
             var tablo: Tablo?
             var govde: String? = arguments.icerik
-            if let ref = arguments.kaynakRef, let depoTablo = await veriDeposu?.al(ref) {
-                tablo = depoTablo
-                govde = nil
+            let refHam = arguments.kaynakRef?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let ref = refHam, !ref.isEmpty {
+                // REF VARSA REF BAĞLAYICIDIR (P0-2). Çözülemeyen ref eskiden
+                // sessizce `icerik`e düşüyordu; `icerik` de boş olduğu için
+                // BOŞ dosya yazılıp "file_created" raporlanıyordu — kullanıcı
+                // dolu sandığı dosyayı taşıyordu. En tehlikeli hata sınıfı
+                // buydu. Artık dosya HİÇ yazılmaz, açık hata döner.
+                if let depoTablo = await veriDeposu?.al(ref) {
+                    tablo = depoTablo
+                    govde = nil
+                } else if let depoMetin = await veriDeposu?.alMetin(ref) {
+                    // belge_oku'nun offload ettiği düz gövde (P2-6). Excel
+                    // isteniyorsa içindeki markdown tabloyu yapılandır.
+                    if bicim.tabloYapisi, let ayrilan = Tablo.markdownDan(depoMetin) {
+                        tablo = ayrilan
+                        govde = nil
+                    } else {
+                        tablo = nil
+                        govde = depoMetin
+                    }
+                } else {
+                    let eldekiler = await veriDeposu?.refAnahtarlari ?? []
+                    let liste = eldekiler.isEmpty ? "none" : eldekiler.joined(separator: ",")
+                    return AracSonucu(
+                        cipMetni: Self.kaynakBulunamadi,
+                        durum: .basarisiz(Self.kaynakBulunamadi),
+                        // Yalnız olgu: hangi ref istendi, elde hangileri var,
+                        // ne oldu. İmperatif yönerge yok (P2-4).
+                        modeleDonen: "unknown_data_ref: \"\(ref)\" (available: \(liste)); no file was created",
+                        hamCikti: "kaynakRef=\(ref)"
+                    )
+                }
             } else if bicim.tabloYapisi, let ic = arguments.icerik,
                       let ayrilan = Tablo.markdownDan(ic) {
                 // Excel isteniyor ve içerikte markdown tablo var → yapılandırılmış tabloya çevir.
@@ -72,7 +126,11 @@ struct BelgeOlusturAraci: KetumAraci {
                     return AracSonucu(
                         cipMetni: Yerel.sayfaDogrulanamadi,
                         durum: .basarisiz(neden),
-                        modeleDonen: "verification_failed: the page did not load cleanly. Simplify the content (plain sections, no exotic markdown) and try ONCE more.",
+                        // Yapısal kanal `durum: .basarisiz(neden)`; modele yalnız
+                        // olgu döner. "Simplify … try ONCE more" gibi imperatif
+                        // yönerge kaldırıldı (P2-4): araç modele emir vermez,
+                        // yeniden deneme yönergesi beceri dosyasının işidir.
+                        modeleDonen: "verification_failed: the page did not load cleanly; the file was discarded",
                         hamCikti: neden
                     )
                 }
@@ -89,4 +147,8 @@ struct BelgeOlusturAraci: KetumAraci {
             ))
         }
     }
+
+    // Not: Yerel.swift bu fazda başka bir ajanın dosyası; yeni anahtar burada
+    // String(localized:) ile tanımlı — String Catalog'a otomatik girer.
+    static var kaynakBulunamadi: String { String(localized: "Kaynak veri bulunamadı") }
 }

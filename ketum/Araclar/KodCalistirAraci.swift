@@ -12,8 +12,8 @@
 //  sayması beklenmez, ret araçtadır. Sayaç `KodDurumu`nda yaşar; entegratör
 //  bunu AracYurutucu'nun tur kancasına bağlar (tur başına sıfırlanır).
 //
-//  Sözleşme dilden bağımsızdır (`dil` parametresi); v1'de tek motor JS'tir —
-//  "python" istense de JS ile çözülür, dil bir uygulama ayrıntısıdır (§5.1).
+//  Sözleşmede DİL ALANI YOKTUR; tek motor JS'tir — "python" istense de JS ile
+//  çözülür, dil bir uygulama ayrıntısıdır (§5.1).
 //
 
 import Foundation
@@ -42,8 +42,10 @@ struct KodCalistirAraci: KetumAraci {
     struct Arguments {
         @Guide(description: "The script. Keep it minimal; print the final result.")
         var kod: String
-        @Guide(description: "js")
-        var dil: String
+        // `dil` ALANI KALDIRILDI (P2-3). Ölü bir alandı: tek geçerli değeri
+        // "js" idi, hiçbir dallanmada okunmuyordu, ama küçük modelin HER
+        // çağrıda doldurması gereken bir decode slotu tüketiyordu. Motor
+        // zaten tek: JS (§5.1) — dil bir uygulama ayrıntısı, sözleşme değil.
     }
 
     /// Modele dönen çıktının tavanı — tam çıktı çipe gider (kod-spec §5.2).
@@ -85,7 +87,7 @@ struct KodCalistirAraci: KetumAraci {
                 )
             }
 
-            // v1: tek motor JS — `dil` ne derse desin JSC çalışır (§5.1).
+            // v1: tek motor JS (§5.1).
             let sonuc = await KodMotoru.calistir(arguments.kod)
             switch sonuc {
             case .basarili(let cikti, _) where cikti.isEmpty:

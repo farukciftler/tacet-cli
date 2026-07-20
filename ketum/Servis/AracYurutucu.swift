@@ -30,11 +30,38 @@ final class AracYurutucu: AracRaporlayici {
     /// Bu turda "dünyayı değiştiren" (`.yazildi`) bir araç çalıştı mı — etkinlik
     /// yazıldı, hatırlatıcı kuruldu, belge üretildi/düzenlendi, nöbet kuruldu.
     ///
-    /// `izler`den ayrı ve YAPIŞKAN tutulur: hata kurtarma yolu retry'dan önce
-    /// `yeniTur()` çağırıp çipleri sıfırlıyor; bayrak orada da sıfırlansaydı
-    /// yan etkinin olup olmadığı bilgisi tam da ihtiyaç duyulduğu anda kaybolurdu.
-    /// Yalnızca gerçek yeni tur (`yeniTur(yanEtkiyiUnut:)` varsayılanı) sıfırlar.
+    /// YAPIŞKAN: hata kurtarma yolu retry'dan önce `yeniTur(yanEtkiyiUnut: false)`
+    /// çağırıyor; bayrak orada sıfırlansaydı yan etkinin olup olmadığı bilgisi
+    /// tam da ihtiyaç duyulduğu anda kaybolurdu. Yalnızca gerçek yeni tur
+    /// (`yeniTur(yanEtkiyiUnut:)` varsayılanı) sıfırlar.
     private(set) var dunyaDegisti = false
+
+    /// Bu turda UZAK (cihaz dışı) bir çağrı başarıyla döndü mü — yani
+    /// kullanıcının kendi sunucusunda bir yan etki oluşmuş OLABİLİR.
+    ///
+    /// `dunyaDegisti`den AYRI bir eksendir ve ayrı olmak zorundadır: o bayrak
+    /// yalnızca `.yazildi` çipiyle kurulur, uzak çağrı ise bilerek `.okundu`
+    /// bırakılıyor (`MCPAraci.uzagaCagir`: `.yazildi` yerel geri alma/kurtarma
+    /// mantığını tetikler ve uzak çağrı için yanlış olur). Sonuç: Jira issue'su
+    /// açan bir çağrıdan SONRA oluşan genel bir hata `hataKurtar`ı retry'a
+    /// sokuyor, AYNI istem ikinci kez gidiyor ve ikinci issue açılıyordu.
+    ///
+    /// `dunyaDegisti` gibi YAPIŞKAN: kurtarma yolu `yeniTur(yanEtkiyiUnut: false)`
+    /// çağırdığında korunur, yalnız gerçek yeni tur sıfırlar.
+    ///
+    /// SINIF AYRIMI YAPILMAZ (salt-okuma/yazma). Sınıflandırma (`YanEtkiSinifi`)
+    /// sunucunun ipuçlarına ve ad sezgisine dayanan bir TAHMİNDİR; "salt-okuma"
+    /// sanılan bir uzak aracın kayıt tuttuğu, sayaç artırdığı, e-posta
+    /// tetiklediği durumda geri alınamaz. Bir retry'ı fazladan engellemenin
+    /// maliyeti bir hata balonu; kaçırmanın maliyeti çift dış yan etki.
+    private(set) var disEtkiOlusabilir = false
+
+    /// Uzak çağrı BAŞARIYLA döndükten sonra çağrılır. Tek yön; tur boyunca kalır.
+    func disEtkiIsaretle() { disEtkiOlusabilir = true }
+
+    /// Retry güvenli mi — `hataKurtar` tek karar noktası olarak bunu okur.
+    /// İki eksen de temizse aynı istem ikinci kez gönderilebilir.
+    var retryGuvenli: Bool { !dunyaDegisti && !disEtkiOlusabilir }
 
     // MARK: - Kirli oturum (mcp §5.6)
 
@@ -144,15 +171,27 @@ final class AracYurutucu: AracRaporlayici {
     var turKancasi: (() -> Void)?
 
     /// Yeni tur — önceki turun çipleri Mesaj'a taşındıktan sonra sıfırlanır.
-    /// `yanEtkiyiUnut: false` ile çağrılırsa çipler temizlenir ama yan etki
-    /// bayrağı korunur (aynı turun içindeki kurtarma denemeleri için).
+    ///
+    /// `yanEtkiyiUnut: false` = "bu gerçek bir yeni tur DEĞİL, aynı turun
+    /// kurtarma denemesi". O durumda ne yan etki bayrakları ne de ÇİPLER
+    /// sıfırlanır (denetim P2-8).
+    ///
+    /// Çiplerin de korunması bilinçli bir geri dönüştür: eski davranış
+    /// `izler = []`i koşulsuz yapıyordu ve kurtarma sonrası kullanıcı ilk
+    /// denemede hangi aracın çalıştığını göremiyordu — tam da hata teşhisinin
+    /// en çok ihtiyaç duyduğu bilgi, hata anında siliniyordu. İki deneme aynı
+    /// aracı çalıştırırsa iki çip görünür; bu bir kusur değil, olan bitenin
+    /// kendisidir ("bir kez denendi, hata aldı, yeniden denendi").
     ///
     /// Kirli oturum bayrağını ve ret önbelleğini BİLEREK sıfırlamaz — ikisi de
     /// oturum ömürlüdür (mcp §5.6, §3.3).
     func yeniTur(yanEtkiyiUnut: Bool = true) {
         bekleyenOnayiCoz()
-        izler = []
-        if yanEtkiyiUnut { dunyaDegisti = false }
+        if yanEtkiyiUnut {
+            izler = []
+            dunyaDegisti = false
+            disEtkiOlusabilir = false
+        }
         turKancasi?()
     }
 

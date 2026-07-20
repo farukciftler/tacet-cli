@@ -1,6 +1,7 @@
 ---
 ad: belge-oku
 tetikler: oku, özetle, ne yazıyor, içinde ne var, bu belge, bu dosya, kaç satır, tablo olarak, olarak göster, tabloyu göster, içeriğini göster, html'i oku, html oku
+araclar: belge_oku
 ---
 # Reading documents
 

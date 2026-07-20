@@ -338,12 +338,12 @@ enum OtoTest {
         var arac = KodCalistirAraci()
         arac.durum = durum
 
-        let a1 = await arac.call(arguments: .init(kod: "print(1)", dil: "js"))
+        let a1 = await arac.call(arguments: .init(kod: "print(1)"))
         d.dogru(a1.hasPrefix("ok"), "1. çağrı çalışır", a1)
-        let a2 = await arac.call(arguments: .init(kod: "print(2)", dil: "js"))
+        let a2 = await arac.call(arguments: .init(kod: "print(2)"))
         d.dogru(a2.hasPrefix("ok"), "2. çağrı çalışır", a2)
         d.esit(durum.deneme, 2, "sayaç iki denemeyi saydı")
-        let a3 = await arac.call(arguments: .init(kod: "print(3)", dil: "js"))
+        let a3 = await arac.call(arguments: .init(kod: "print(3)"))
         d.dogru(a3.hasPrefix("error_final"), "3. çağrı error_final ile reddedilir", a3)
         d.dogru(!a3.contains("ok ("), "3. çağrıda motor çalıştırılmaz")
 
@@ -351,7 +351,7 @@ enum OtoTest {
         // dalları ve sohbetiSifirla'dadır — burada sözleşme doğrulanır.
         durum.yeniTur()
         d.esit(durum.deneme, 0, "yeniTur() sayacı sıfırlar")
-        let a4 = await arac.call(arguments: .init(kod: "print(4)", dil: "js"))
+        let a4 = await arac.call(arguments: .init(kod: "print(4)"))
         d.dogru(a4.hasPrefix("ok"), "yeni turda çağrı yeniden çalışır", a4)
 
         return d

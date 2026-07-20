@@ -15,18 +15,9 @@ struct ExcelMotor: BelgeMotoru {
     // MARK: - Yazma
 
     func yazHam(dosyaAdi: String, baslik: String?, govde: String?, tablo: Tablo?, klasor: URL) throws -> URL {
-        // Kaynağı tabloya indir: tablo varsa doğrudan, yoksa govde'yi tek sütuna çevir.
-        let basliklar: [String]
-        let satirlar: [[String]]
-        if let t = tablo, !t.basliklar.isEmpty {
-            basliklar = t.basliklar
-            satirlar = t.satirlar.map { $0.hucreler }
-        } else {
-            let metin = govde ?? baslik ?? ""
-            let dilimler = metin.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-            basliklar = [baslik ?? "Metin"]
-            satirlar = dilimler.isEmpty ? [[""]] : dilimler.map { [$0] }
-        }
+        let kaynak = try tabloyaIndir(baslik: baslik, govde: govde, tablo: tablo)
+        let basliklar = kaynak.basliklar
+        let satirlar = kaynak.satirlar
 
         let sheet = sheetXml(basliklar: basliklar, satirlar: satirlar)
 
@@ -42,6 +33,63 @@ struct ExcelMotor: BelgeMotoru {
         let url = hedefURL(dosyaAdi: dosyaAdi, klasor: klasor)
         try ZipDeposu.paketle(girisler).write(to: url)
         return url
+    }
+
+    // MARK: - Kaynağı tabloya indirme
+
+    /// xlsx'in tek girdisi bir tablodur. Yapılandırılmış tablo yoksa gövdeden
+    /// KURTARMAYA çalışılır; kurtarılamıyorsa AÇIK HATA fırlatılır.
+    ///
+    /// Eskiden burada sessiz bir düşüş dalı vardı: gövde satır satır TEK SÜTUNA
+    /// dökülüyordu. Model markdown tablosu yazdığında ("| Ad | Yaş |") sonuç,
+    /// her satırı tek hücreye sıkışmış çöp bir xlsx oluyor; üstelik araç
+    /// "oluşturuldu" diye başarı raporluyordu (denetim P1-5). Artık:
+    /// - gövde ayrıştırılabilir bir tabloysa → gerçek tabloya çevrilir,
+    /// - gövdede boru var ama tablo çıkmıyorsa → hata (model bir kez düzeltir),
+    /// - gövde borusuz düz liste ise → tek sütun MEŞRUDUR, yazılır,
+    /// - tablo da gövde de yoksa → hata.
+    private func tabloyaIndir(baslik: String?, govde: String?,
+                              tablo: Tablo?) throws -> (basliklar: [String], satirlar: [[String]]) {
+        if let t = tablo, !t.basliklar.isEmpty {
+            if !t.satirlar.isEmpty { return (t.basliklar, t.satirlar.map { $0.hucreler }) }
+            // Başlık var, satır yok: gövdeden satır kurtarmayı dene; olmazsa
+            // başlık-satırı-tek sayfa yazılır (eski davranış korunur).
+            if let g = govde, let ayrilan = Tablo.markdownDan(g), !ayrilan.satirlar.isEmpty {
+                return (ayrilan.basliklar, ayrilan.satirlar.map { $0.hucreler })
+            }
+            return (t.basliklar, [])
+        }
+
+        let metin = (govde ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !metin.isEmpty else {
+            throw BelgeMotorHatasi.desteklenmiyor(
+                "Elektronik tablo için içerik yok. Sütun başlıkları ve satırları olan bir tablo ver."
+            )
+        }
+
+        // 1) Gövde bir markdown tablosu mu? (ayraç satırı opsiyonel — bkz. Tablo)
+        if let ayrilan = Tablo.markdownDan(metin), !ayrilan.satirlar.isEmpty {
+            return (ayrilan.basliklar, ayrilan.satirlar.map { $0.hucreler })
+        }
+
+        // 2) Boru var ama tablo çıkmadı → sessizce tek sütuna dökme, DÜZELTTİR.
+        if metin.contains("|") {
+            throw BelgeMotorHatasi.desteklenmiyor(
+                "Table could not be parsed. Provide a table with a header row and data rows, "
+                + "one row per line, cells separated by |. Example:\n| Name | Amount |\n| Ali | 120 |"
+            )
+        }
+
+        // 3) Borusuz düz liste: tek sütun meşru sonuçtur.
+        let dilimler = metin.components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard !dilimler.isEmpty else {
+            throw BelgeMotorHatasi.desteklenmiyor(
+                "Elektronik tablo için içerik yok. Sütun başlıkları ve satırları olan bir tablo ver."
+            )
+        }
+        return ([baslik ?? "Metin"], dilimler.map { [$0] })
     }
 
     // MARK: - Okuma

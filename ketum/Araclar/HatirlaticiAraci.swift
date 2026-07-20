@@ -171,22 +171,39 @@ struct HatirlaticiAraci: KetumAraci {
     /// Büyük veri taşıma kanalı — listelenen hatırlatıcılar burada saklanıp modele ref döner.
     weak var veriDeposu: VeriDeposu?
 
+    /// Eylem serbest metin DEĞİL (P0-4). `contains("oku") || contains("liste")`
+    /// İngilizce "list" için false dönüyor ve akış SESSİZCE kurma dalına
+    /// düşüyordu: kullanıcı listesini isterken başlıksız bir hatırlatıcı
+    /// kurulma girişimi oluyordu. Enum bu değeri üretilemez yapar.
+    @Generable
+    enum Eylem: String, Equatable, CaseIterable {
+        case kur
+        case oku
+    }
+
     @Generable
     struct Arguments {
-        @Guide(description: "The operation to perform: \"kur\" to create a reminder, \"oku\" to list pending ones. Use these exact values.")
-        var eylem: String
-        @Guide(description: "Title of the reminder for \"kur\"; short and action-oriented, e.g. 'Call Ali', 'Buy milk'.")
+        @Guide(description: "The operation to perform: create a reminder, or list the pending ones.")
+        var eylem: Eylem
+        @Guide(description: "Title of the reminder for 'kur'; short and action-oriented, e.g. 'Call Ali', 'Buy milk'.")
         var baslik: String?
-        @Guide(description: "When to be reminded. ALWAYS give ISO 8601: \"2026-07-20T18:00\". Resolve relative wording ('tomorrow', 'tonight') into a date yourself and write it as ISO; call the time tool first if you need today's date. Leave empty if no time was asked for.")
+        @Guide(description: "When to be reminded. ISO 8601, e.g. \"2026-07-20T18:00\". Resolve relative wording ('tomorrow', 'tonight') yourself; call the time tool first if you need today's date. Leave empty if no time was asked for.")
         var zaman: String?
     }
 
     func call(arguments: Arguments) async -> String {
-        let okuMu = arguments.eylem.lowercased().contains("oku")
-            || arguments.eylem.lowercased().contains("liste")
-        let ikon = okuMu ? "checklist" : "bell"
-        let calisiyorMetni = okuMu ? Self.hatirlaticilaraBakiliyor : Yerel.hatirlaticiKuruluyor
-        let hamGirdi = [arguments.eylem, arguments.baslik, arguments.zaman]
+        // Exhaustive switch: bulanık eşleme yok, sessiz yanlış dal yok.
+        let ikon: String
+        let calisiyorMetni: String
+        switch arguments.eylem {
+        case .oku:
+            ikon = "checklist"
+            calisiyorMetni = Self.hatirlaticilaraBakiliyor
+        case .kur:
+            ikon = "bell"
+            calisiyorMetni = Yerel.hatirlaticiKuruluyor
+        }
+        let hamGirdi = [arguments.eylem.rawValue, arguments.baslik, arguments.zaman]
             .compactMap { $0 }
             .joined(separator: " · ")
 
@@ -213,12 +230,14 @@ struct HatirlaticiAraci: KetumAraci {
             // İzin geçildi, gerçek hatırlatıcı erişimi burada. Sonuç `.okundu`
             // ya da `.yazildi` ise oturum kirlenir (mcp §5.6); zaman
             // çözülemeyip `.basarisiz` dönen yol kirletmez.
-            if okuMu {
+            switch arguments.eylem {
+            case .oku:
                 let okunan = await Self.oku(store: store, veriDeposu: veriDeposu)
                 return await kirletEgerBasarili(okunan)
+            case .kur:
+                let kurulan = try Self.kur(store: store, arguments: arguments)
+                return await kirletEgerBasarili(kurulan)
             }
-            let kurulan = try Self.kur(store: store, arguments: arguments)
-            return await kirletEgerBasarili(kurulan)
         }
     }
 

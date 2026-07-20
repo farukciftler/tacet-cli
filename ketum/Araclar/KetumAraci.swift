@@ -53,7 +53,7 @@ extension KetumAraci {
                 await raporlayici?.guncelle(id, durum: .basarisiz(neden), metin: nil,
                                             hamGirdi: hamGirdi, hamCikti: neden, dosyaYolu: nil)
             }
-            return "tool_failed: the action could not be completed. Tell the user briefly, in their own language, that this step did not work."
+            return "tool_failed: the action could not be completed; no result was produced"
         }
     }
 
@@ -85,7 +85,7 @@ extension KetumAraci {
             // Model akışı kesilmesin diye hata metni String olarak döner.
             // Modele giden metin İNGİLİZCE ve sabittir: model bunu yanıtına
             // olduğu gibi yansıtsa bile ne Türkçe sızar ne de ham hata kodu.
-            return "tool_failed: the action could not be completed. Tell the user briefly, in their own language, that this step did not work."
+            return "tool_failed: the action could not be completed; no result was produced"
         }
     }
 

@@ -18,22 +18,43 @@ struct TakvimAraci: KetumAraci {
     /// Büyük veri taşıma kanalı — okunan tüm etkinlikler burada saklanıp modele ref döner.
     weak var veriDeposu: VeriDeposu?
 
+    /// Eylem artık serbest metin DEĞİL (P0-4). Ölçülen arıza: İngilizce yazan
+    /// model "add" üretiyor, `eylem.lowercased().contains("ekle")` false dönüyor
+    /// ve akış SESSİZCE okuma dalına düşüyordu — kullanıcı "ekledim" sanıp
+    /// takvimde hiçbir şey bulamıyordu. Enum ile bu değer üretilemez hale gelir.
+    @Generable
+    enum Eylem: String, Equatable, CaseIterable {
+        case oku
+        case ekle
+    }
+
     @Generable struct Arguments {
-        @Guide(description: "The operation to perform: \"oku\" to read, \"ekle\" to add. Use these exact values.")
-        var eylem: String
-        @Guide(description: "Start of the range for \"oku\", or the event time for \"ekle\". ALWAYS give ISO 8601: \"2026-07-20T13:00\". Resolve relative wording ('tomorrow', 'next Friday') into a date yourself and write it as ISO; call the time tool first if you need today's date. Required for \"ekle\".")
+        @Guide(description: "The operation to perform: read the calendar, or add an event.")
+        var eylem: Eylem
+        // ISO yönergesi TEK yerde: eskiden baslangic/bitis @Guide'larında
+        // kelimesi kelimesine tekrar ediyordu (token israfı, denetim §5.2).
+        @Guide(description: "Start of the range for 'oku', or the event time for 'ekle'. ISO 8601, e.g. \"2026-07-20T13:00\". Resolve relative wording ('tomorrow', 'next Friday') yourself; call the time tool first if you need today's date. Required for 'ekle'.")
         var baslangic: String?
-        @Guide(description: "End of the range or of the event. ALWAYS ISO 8601: \"2026-07-20T14:00\". Leave empty if unknown.")
+        @Guide(description: "End of the range or of the event, same ISO format. Leave empty if unknown.")
         var bitis: String?
         @Guide(description: "Event title for \"ekle\", e.g. \"Dentist\".")
         var baslik: String?
     }
 
     func call(arguments: Arguments) async -> String {
-        let ekleMi = arguments.eylem.lowercased().contains("ekle")
-        let ikon = ekleMi ? "calendar.badge.plus" : "calendar"
-        let calisiyorMetni = ekleMi ? Yerel.etkinlikEkleniyor : Yerel.takvimBakiliyor
-        let hamGirdi = [arguments.eylem, arguments.baslangic, arguments.bitis, arguments.baslik]
+        // Bulanık `.contains` yerine exhaustive switch: yeni bir eylem eklenirse
+        // derleyici burayı gösterir, sessizce okumaya düşen bir dal kalmaz.
+        let ikon: String
+        let calisiyorMetni: String
+        switch arguments.eylem {
+        case .ekle:
+            ikon = "calendar.badge.plus"
+            calisiyorMetni = Yerel.etkinlikEkleniyor
+        case .oku:
+            ikon = "calendar"
+            calisiyorMetni = Yerel.takvimBakiliyor
+        }
+        let hamGirdi = [arguments.eylem.rawValue, arguments.baslangic, arguments.bitis, arguments.baslik]
             .compactMap { $0 }
             .joined(separator: " · ")
 
@@ -59,10 +80,11 @@ struct TakvimAraci: KetumAraci {
             // Buradan sonrası GERÇEK takvim erişimidir; sonucu kirlilik
             // bayrağına bağlarız (mcp §5.6). İzin reddi yukarıda döndü —
             // erişilemeyen veri oturumu kirletmez.
-            if ekleMi {
+            switch arguments.eylem {
+            case .ekle:
                 let eklendi = try Self.ekle(depo: depo, arguments: arguments)
                 return await kirletEgerBasarili(eklendi)
-            } else {
+            case .oku:
                 let (ham, tablo) = Self.oku(depo: depo, arguments: arguments)
                 let sonuc = await kirletEgerBasarili(ham)
                 // Toplu veri kanalı: tüm kayıtları depoya koy, modele yalnızca ref döndür.

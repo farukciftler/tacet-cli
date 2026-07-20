@@ -40,7 +40,7 @@ enum EvalMCP {
     /// Oturuma girmesine izin verilen SALT-OKUMA araçları.
     ///
     /// Liste kasten TAM ALTI: `ModelServisi.mcpAracTavani == 6` ve
-    /// `araclariKur` tavanı sunucunun `tools/list` SIRASINA göre uygular.
+    /// `araclariKur` havuz tavanını sunucunun `tools/list` SIRASINA göre uygular.
     /// Yedi ad yazsaydık hangi altısının oturuma gireceğini sunucu belirlerdi
     /// ve vakalar koşudan koşuya farklı araç kümesiyle ölçülürdü. Altı ad =
     /// deterministik masa.
@@ -140,7 +140,7 @@ enum EvalMCP {
             baglantiID: baglanti.id,
             ad: baglanti.ad,
             ozetler: baglanti.kullanilabilirAraclar,
-            tavan: izinliAraclar.count,
+            havuz: izinliAraclar.count,
             cihazVerisi: baglanti.cihazVerisi,
             kapi: servis.yurutucu,
             raporlayici: servis.yurutucu)
