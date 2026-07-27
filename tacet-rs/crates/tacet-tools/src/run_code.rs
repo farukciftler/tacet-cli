@@ -1324,6 +1324,12 @@ mod tests {
     /// often UNDER the home directory; in the reverse order the tmpfs covers the
     /// sandbox and the script sees its own folder EMPTY. This is a bug that does
     /// not break the build and would never be caught without a test.
+    // UNIX ONLY, and not out of convenience: `bwrap_args` guards the home
+    // directory with `home.is_absolute()`, and on Windows `/home/user` is NOT
+    // absolute (a drive prefix is required), so the argument under test is
+    // never produced there. bwrap is a Linux mechanism to begin with; running
+    // this on Windows measured the meaning of `is_absolute`, not the sandbox.
+    #[cfg(unix)]
     #[test]
     fn the_bwrap_arguments_cover_the_home_directory_before_the_sandbox() {
         let sandbox = Path::new("/home/user/.tacet/sandbox");
