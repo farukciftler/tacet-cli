@@ -1,10 +1,11 @@
 //
-//  OtoTest.swift
+//  SelfTest.swift
 //  Tacet
 //
-//  DEBUG kendi kendine testi: gerçek motor kodunu (model olmadan) büyük veriyle
-//  çalıştırır. Bu, büyük dosya kanalının ta kendisidir — uygulama katmanı tabloyu
-//  doğrudan motora verir, model devrede değildir. "--selftest" argümanıyla açılır.
+//  The DEBUG self-test: it runs the real engine code (without a model) against
+//  large data. This IS the large-file channel — the app layer hands the table
+//  straight to the engine, the model is not involved. Opened with the "--selftest"
+//  argument.
 //
 
 #if DEBUG
@@ -13,364 +14,377 @@ import Foundation
 enum SelfTest {
     @MainActor
     static func run() {
-        var record = ["=== TACET OTOTEST ==="]
-        let folder = DocumentContext.testKlasoru()
+        var record = ["=== TACET SELF-TEST ==="]
+        let folder = DocumentContext.testFolder()
 
-        // Büyük tablo: 500 satır, sayısal "Tutar" sütunu (Excel'de =SUM tetikler).
+        // A large table: 500 rows, a numeric "Amount" column (triggers =SUM in Excel).
         var rows: [Row] = []
-        var beklenenToplam = 0
+        var expectedTotal = 0
         for i in 1...500 {
             let holds = i * 7
-            beklenenToplam += holds
+            expectedTotal += holds
             rows.append(Row(cells: [
                 "2026-07-\(String(format: "%02d", (i % 28) + 1))",
-                "Kalem \(i)",
+                "Item \(i)",
                 "\(holds)",
             ]))
         }
-        let table = Table(headers: ["Tarih", "Açıklama", "Tutar"], rows: rows)
-        record.append("Tablo: \(table.rows.count) satır, beklenen Tutar toplamı=\(beklenenToplam)")
+        let table = Table(headers: ["Date", "Description", "Amount"], rows: rows)
+        record.append("Table: \(table.rows.count) rows, expected Amount total=\(expectedTotal)")
 
-        let isler: [(DocumentFormat, String, Bool)] = [
-            (.xlsx, "ototest-excel", true),
-            (.docx, "ototest-word", false),
-            (.pdf,  "ototest-pdf",  false),
-            (.md,   "ototest-markdown", false),
-            (.html, "ototest-sayfa", false),   // kod-spec §4: sayfa da belge kanalıdır
+        let jobs: [(DocumentFormat, String, Bool)] = [
+            (.xlsx, "selftest-excel", true),
+            (.docx, "selftest-word", false),
+            (.pdf,  "selftest-pdf",  false),
+            (.md,   "selftest-markdown", false),
+            (.html, "selftest-page", false),   // code-spec §4: a page is a document channel too
         ]
 
-        for (format, name, tabloMu) in isler {
+        for (format, name, isTable) in jobs {
             do {
                 let engine = DocumentEngines.engine(format)
-                let body = tabloMu ? nil : "# Oto Test Raporu\n\n" + table.markdown
+                let body = isTable ? nil : "# Self-Test Report\n\n" + table.markdown
                 let url = try engine.write(fileName: name,
-                                        title: "Oto Test",
-                                        body: body,
-                                        table: tabloMu ? table : nil,
-                                        folder: folder)
-                let oznitelikler = try? FileManager.default.attributesOfItem(atPath: url.path)
-                let size = (oznitelikler?[.size] as? Int) ?? 0
-                // Geri oku (round-trip).
+                                           title: "Self Test",
+                                           body: body,
+                                           table: isTable ? table : nil,
+                                           folder: folder)
+                let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+                let size = (attributes?[.size] as? Int) ?? 0
+                // Read it back (round-trip).
                 let back = try engine.read(url: url)
-                let satirSayi = back.table?.rows.count ?? back.text.split(separator: "\n").count
-                record.append("\(format.fileExtension): YAZILDI \(url.lastPathComponent) \(size)B · OKUNDU satır/blok=\(satirSayi)")
+                let lineCount = back.table?.rows.count ?? back.text.split(separator: "\n").count
+                record.append("\(format.fileExtension): WROTE \(url.lastPathComponent) \(size)B · READ rows/blocks=\(lineCount)")
             } catch {
-                record.append("\(format.fileExtension): HATA \(error)")
+                record.append("\(format.fileExtension): ERROR \(error)")
             }
         }
-        // Belge bağlamı: üretilen dosya sonradan okunabilir/düzenlenebilir olmalı.
-        // "Excel yap" → "onu tablo olarak göster" akışının dayandığı davranış.
-        record.append("--- BELGE BAĞLAMI ---")
+        // The document context: a produced file must be readable/editable afterwards.
+        // The behaviour the "make an excel" → "show it as a table" flow rests on.
+        record.append("--- DOCUMENT CONTEXT ---")
         let context = DocumentContext()
-        record.append("Başlangıçta çalışılabilir belge: \(context.runnableDocument == nil ? "none ✓" : "var ✗")")
-        let uretilen = folder.appendingPathComponent("ototest-excel.xlsx")
-        context.outputAdded(uretilen)
+        record.append("Runnable document at the start: \(context.runnableDocument == nil ? "none ✓" : "present ✗")")
+        let produced = folder.appendingPathComponent("selftest-excel.xlsx")
+        context.outputAdded(produced)
         let continued = context.runnableDocument
-        record.append("Üretimden sonra: \(continued?.name ?? "none") \(continued?.name == "ototest-excel.xlsx" ? "✓" : "✗")")
-        record.append("  biçim: \(continued?.format.tag ?? "-") \(continued?.format == .xlsx ? "✓" : "✗")")
-        // Kullanıcının eklediği belge, üretilenin önüne geçmeli.
-        let ekliURL = folder.appendingPathComponent("ototest-pdf.pdf")
-        context.addDocument(url: ekliURL)
-        record.append("Ekli belge öncelikli: \(context.runnableDocument?.name ?? "none") "
-                     + "\(context.runnableDocument?.name == "ototest-pdf.pdf" ? "✓" : "✗")")
-        // Ekli kaldırılınca üretilene geri düşmeli.
+        record.append("After production: \(continued?.name ?? "none") \(continued?.name == "selftest-excel.xlsx" ? "✓" : "✗")")
+        record.append("  format: \(continued?.format.tag ?? "-") \(continued?.format == .xlsx ? "✓" : "✗")")
+        // A document the user attached must take precedence over the produced one.
+        let attachedURL = folder.appendingPathComponent("selftest-pdf.pdf")
+        context.addDocument(url: attachedURL)
+        record.append("Attached document takes precedence: \(context.runnableDocument?.name ?? "none") "
+                      + "\(context.runnableDocument?.name == "selftest-pdf.pdf" ? "✓" : "✗")")
+        // Once the attachment is removed it must fall back to the produced one.
         context.removeDocument()
-        record.append("Ekli kaldırılınca üretilene döner: "
-                     + "\(context.runnableDocument?.name == "ototest-excel.xlsx" ? "✓" : "✗")")
-        // Yeni sohbet: bağlam tamamen temizlenmeli, yoksa eski dosya sızar.
-        context.uretimiUnut()
-        record.append("Yeni sohbette temizlendi: \(context.runnableDocument == nil ? "✓" : "✗")")
+        record.append("Falls back to the produced one when the attachment is removed: "
+                      + "\(context.runnableDocument?.name == "selftest-excel.xlsx" ? "✓" : "✗")")
+        // New chat: the context must be cleared entirely, otherwise the old file leaks.
+        context.forgetProduced()
+        record.append("Cleared in a new chat: \(context.runnableDocument == nil ? "✓" : "✗")")
 
-        // Modele dönen tablo GEÇERLİ markdown olmalı — sohbette tablo çizilmesi
-        // Tablo.markdownDan'ın bunu ayrıştırabilmesine bağlı.
-        record.append("--- MODELE DÖNEN TABLO ---")
-        let mdTam = table.truncatedMarkdown(maxRows: 30)
-        let geriAyristirilan = Table.fromMarkdown(mdTam)
-        record.append("Markdown geri ayrıştırıldı: \(geriAyristirilan != nil ? "✓" : "✗")")
-        record.append("  satır: \(geriAyristirilan?.rows.count ?? 0)/30 "
-                     + "\(geriAyristirilan?.rows.count == 30 ? "✓" : "✗")")
-        record.append("  başlık: \(geriAyristirilan?.headers.joined(separator: ",") ?? "-") "
-                     + "\(geriAyristirilan?.headers == table.headers ? "✓" : "✗")")
-        record.append("  kırpma notu var: \(mdTam.contains("+470 satır daha") ? "✓" : "✗")")
-        // Kırpma gerekmeyen küçük tablo olduğu gibi dönmeli.
-        let small = Table(headers: ["Gün", "Yemek"],
-                          rows: [Row(cells: ["Pazartesi", "Mercimek"])])
-        record.append("Küçük tablo kırpılmadı: "
-                     + "\(small.truncatedMarkdown(maxRows: 30) == small.markdown ? "✓" : "✗")")
+        // The table returned to the model must be VALID markdown — drawing a table in the
+        // chat depends on `Table.fromMarkdown` being able to parse it.
+        record.append("--- THE TABLE RETURNED TO THE MODEL ---")
+        let fullMarkdown = table.truncatedMarkdown(maxRows: 30)
+        let reparsed = Table.fromMarkdown(fullMarkdown)
+        record.append("Markdown reparsed: \(reparsed != nil ? "✓" : "✗")")
+        record.append("  rows: \(reparsed?.rows.count ?? 0)/30 "
+                      + "\(reparsed?.rows.count == 30 ? "✓" : "✗")")
+        record.append("  headers: \(reparsed?.headers.joined(separator: ",") ?? "-") "
+                      + "\(reparsed?.headers == table.headers ? "✓" : "✗")")
+        // THE NOTE TEXT COMES FROM `Table.truncatedMarkdown` — the two must be checked
+        // together. It was a Turkish literal here while the producer had already moved to
+        // English, so the assertion was silently red.
+        record.append("  truncation note present: \(fullMarkdown.contains("+470 more rows") ? "✓" : "✗")")
+        // A small table that needs no truncation must come back unchanged.
+        let small = Table(headers: ["Day", "Meal"],
+                          rows: [Row(cells: ["Monday", "Lentil soup"])])
+        record.append("Small table not truncated: "
+                      + "\(small.truncatedMarkdown(maxRows: 30) == small.markdown ? "✓" : "✗")")
 
-        // Beceri (SKILL.md) katmanı testi.
-        record.append("--- BECERİLER (SKILL.md) ---")
-        // kod + web-sayfa aktifleşince (kod-spec adım 7) paket 10 beceriye çıktı.
-        let paketSayisi = SkillStore.package.count
-        record.append("Bundle'dan yüklenen beceri: \(paketSayisi) "
-                     + "\(paketSayisi == 10 ? "✓" : "✗ (expected: 10)")")
-        let denemeler = [
-            ("bir excel yap haftalık", "belge-olustur"),
-            ("yarın ne var takvimimde", "takvim"),
-            ("beni 18'de aramamı hatırlat", "hatirlatici"),
-            ("125*8 kaç eder", "hesap"),
-            ("bu belgeyi özetle", "belge-oku"),
-            ("cuma satırını düzenle", "belge-duzenle"),
-            ("nasılsın", "yok"),
-            // Özgüllük: "tablo olarak" (belge-oku), "tablo" (belge-olustur) genelini yenmeli.
-            ("bunu tablo olarak göster", "belge-oku"),
-            // "tablo yap" ARTIK belge-olustur'u tetiklemez ve bu bilinçlidir:
-            // çıplak "tablo" tetikleyicisi kaldırıldı, çünkü tablo bir GÖSTERİM
-            // isteğidir, dosya isteği değil (Yonlendirici.belgeEki). Kullanıcı
-            // ekranda tablo isterken sessizce .xlsx üretiliyordu.
-            ("haftalık yemek tablosu yap", "yok"),
-            // Dosya AÇIKÇA istenince belge-olustur yine tetiklenmeli — kaldırma
-            // bu yolu kapatmamalı (asıl regresyon riski burada).
-            ("haftalık yemek listesini excel yap", "belge-olustur"),
-            ("takvimimi göster", "takvim"),
-            // kod-spec §8: yeni beceriler. "python ile" tetikleyicisi olmasa
-            // "hesapla" (7) "python"u (6) yenerdi — özgüllük kuralının gereği.
-            ("python ile hesaplar mısın", "kod"),
-            ("kahve dükkanım için site yap", "web-sayfa"),
+        // The skill (SKILL.md) layer test.
+        record.append("--- SKILLS (SKILL.md) ---")
+        // With code + web-page activated (code-spec step 7) the package went to 10 skills.
+        let packageCount = SkillStore.package.count
+        record.append("Skills loaded from the bundle: \(packageCount) "
+                      + "\(packageCount == 10 ? "✓" : "✗ (expected: 10)")")
+        // THE PROBES FOLLOW THE TRIGGERS IN `Skills/*.md`. Both the phrases and the
+        // expected names moved to English together with those files; a probe left in
+        // Turkish matches nothing and turns the whole block red.
+        let probes = [
+            ("make me a weekly excel", "create-document"),
+            ("what is on my calendar tomorrow", "calendar"),
+            ("remind me to call at 6", "reminder"),
+            ("how much is 125*8", "calc"),
+            ("summarize this document", "read-document"),
+            ("edit the friday row", "edit-document"),
+            ("how are you", "none"),
+            // Specificity: "as a table" (read-document) must beat the generic
+            // "table" of create-document.
+            ("show it as a table", "read-document"),
+            // "make a table" NO LONGER triggers create-document, and that is deliberate:
+            // the bare "table" trigger was removed, because a table is a DISPLAY request,
+            // not a file request (Router.documentAddendum). The user was asking for a
+            // table on screen and an .xlsx was being produced silently.
+            ("make a weekly meal table", "none"),
+            // When a file is asked for EXPLICITLY create-document must still fire — the
+            // removal must not close that path (the real regression risk is here).
+            ("make the weekly meal list an excel", "create-document"),
+            ("show my calendar", "calendar"),
+            // code-spec §8: the new skills. Without the "with python" trigger, calc's
+            // "calculate" (9) would beat "python" (6) — the specificity rule at work.
+            ("can you calculate it with python", "code"),
+            ("make a site for my coffee shop", "web-page"),
         ]
-        for (question, expected) in denemeler {
-            let bulunan = SkillStore.eslesen(question)?.name ?? "yok"
-            let marker = bulunan == expected ? "✓" : "✗ (beklenen: \(expected))"
-            record.append("  '\(question)' → \(bulunan) \(marker)")
+        for (question, expected) in probes {
+            let found = SkillStore.matching(question)?.name ?? "none"
+            let marker = found == expected ? "✓" : "✗ (expected: \(expected))"
+            record.append("  '\(question)' → \(found) \(marker)")
         }
 
-        // Enjeksiyon bütçesi: en uzun paket becerisi bile sınırı aşmamalı.
-        let enUzun = SkillStore.package
-            .map { (name: $0.name, length: SkillStore.enjeksiyonMetni($0).count) }
+        // The injection budget: even the longest bundled skill must not exceed the limit.
+        let longest = SkillStore.package
+            .map { (name: $0.name, length: SkillStore.injectionText($0).count) }
             .max { $0.length < $1.length }
-        if let enUzun {
-            // Sınır + çit metni (~200 karakter) toplamı makul kalmalı.
-            let cap = SkillStore.enjeksiyonSiniri + 250
-            let marker = enUzun.length <= cap ? "✓" : "✗ (tavan: \(cap))"
-            record.append("En uzun enjeksiyon: \(enUzun.name) \(enUzun.length) krk \(marker)")
+        if let longest {
+            // The limit + the fence text (~200 characters) must stay reasonable in total.
+            let cap = SkillStore.injectionLimit + 250
+            let marker = longest.length <= cap ? "✓" : "✗ (cap: \(cap))"
+            record.append("Longest injection: \(longest.name) \(longest.length) chars \(marker)")
         }
 
-        // Kullanıcı becerisi: sınır doğrulaması + eşleşmede paketin önüne geçmesi.
-        record.append("--- KULLANICI BECERİSİ ---")
-        let uzunGovde = String(repeating: "x", count: UserSkill.bodyLimit + 1)
-        let asiri = UserSkill(name: "aşırı", rawTriggers: "zzz", body: uzunGovde)
-        record.append("Sınır aşan gövde reddedildi: \(asiri.isValid ? "✗" : "✓")")
-        let bosTetik = UserSkill(name: "boş", rawTriggers: " , ,", body: "bir şey")
-        record.append("Tetiksiz beceri reddedildi: \(bosTetik.isValid ? "✗" : "✓")")
+        // A user skill: limit validation + beating the package on a match.
+        record.append("--- USER SKILL ---")
+        let longBody = String(repeating: "x", count: UserSkill.bodyLimit + 1)
+        let oversized = UserSkill(name: "oversized", rawTriggers: "zzz", body: longBody)
+        record.append("Body over the limit rejected: \(oversized.isValid ? "✗" : "✓")")
+        let noTrigger = UserSkill(name: "empty", rawTriggers: " , ,", body: "something")
+        record.append("Trigger-less skill rejected: \(noTrigger.isValid ? "✗" : "✓")")
 
-        let ozel = UserSkill(name: "fatura-takibi",
-                                     rawTriggers: "fatura, gider",
-                                     body: "Fatura sorulunca önce arama, sonra hesapla aracını çağır.")
-        SkillStore.reloadUser([ozel])
-        let ozelEslesme = SkillStore.eslesen("bu ayki fatura toplamı ne")?.name ?? "yok"
-        record.append("  'fatura' → \(ozelEslesme) \(ozelEslesme == "fatura-takibi" ? "✓" : "✗")")
-        // Kapalı beceri modele gitmemeli. (Cümle 'hesap' becerisinin "topla"
-        // tetikleyicisine de uyduğu için beklenen sonuç "yok" değil, "fatura-takibi
-        // DEĞİL" — kapalı beceri devre dışı kalınca paket becerisine düşer.)
-        ozel.isActive = false
-        SkillStore.reloadUser([ozel])
-        let closed = SkillStore.eslesen("bu ayki fatura toplamı ne")?.name ?? "yok"
-        record.append("  kapalıyken → \(closed) \(closed != "fatura-takibi" ? "✓" : "✗")")
+        let custom = UserSkill(name: "invoice-tracking",
+                               rawTriggers: "invoice, expense",
+                               body: "When an invoice is asked about, call search first, then calculate.")
+        SkillStore.reloadUser([custom])
+        let customMatch = SkillStore.matching("what is my invoice this month")?.name ?? "none"
+        record.append("  'invoice' → \(customMatch) \(customMatch == "invoice-tracking" ? "✓" : "✗")")
+        // A closed skill must not go to the model. The expectation is "NOT
+        // invoice-tracking" rather than "none": if the sentence also fits a bundled
+        // skill's trigger, disabling the user skill falls back to the package one.
+        custom.isActive = false
+        SkillStore.reloadUser([custom])
+        let closed = SkillStore.matching("what is my invoice this month")?.name ?? "none"
+        record.append("  when closed → \(closed) \(closed != "invoice-tracking" ? "✓" : "✗")")
         SkillStore.reloadUser([])
 
-        // Dört spec'in model/ağ gerektirmeyen kabul ölçütleri. Bunlar "gözle bak"
-        // değil ASSERT'tir: başarısızlık satırda işaretlenir ve sonda sayılır.
+        // The acceptance criteria of the four specs that need no model/network. These are
+        // not "look at it by eye" but ASSERTs: a failure is marked on the line and counted
+        // at the end.
         var ledger = SelfTestCases.run()
-        // kod-spec §8: HtmlMotor vakaları (saf motor, model/ağ/WKWebView gerekmez).
-        ledger.add(htmlVakalari(folder: folder))
+        // code-spec §8: the HtmlEngine cases (a pure engine, no model/network/WKWebView
+        // needed).
+        ledger.add(htmlCases(folder: folder))
         record.append(contentsOf: ledger.lines)
-        record.append("=== İDDİA: \(ledger.iddia) · BAŞARISIZ: \(ledger.error) "
-                     + "\(ledger.error == 0 ? "✓" : "✗") ===")
+        record.append("=== ASSERTIONS: \(ledger.assertions) · FAILED: \(ledger.error) "
+                      + "\(ledger.error == 0 ? "✓" : "✗") ===")
 
-        record.append("=== BİTTİ · klasör: \(folder.path) ===")
+        record.append("=== DONE · folder: \(folder.path) ===")
         write(record, folder: folder)
 
-        // Askıya alma gerektiren vakalar (onay kapısı) senkron init içinde
-        // çalışamaz; ilk run loop turunda çalışıp sonucu aynı dosyaya ekler.
+        // Cases that require suspension (the approval gate) cannot run inside a
+        // synchronous init; they run on the first run-loop turn and append their outcome
+        // to the same file.
         Task { @MainActor in
-            var ek = await SelfTestCases.asenkronCalistir()
-            // kod-spec §8: KodMotoru + deneme sayacı vakaları (await gerektirir;
-            // zaman aşımı vakası ~3 sn sürer, launch-anı senkron akışına sığmaz).
-            ek.add(await kodVakalari())
-            var tam = record
-            tam.append(contentsOf: ek.lines)
-            tam.append("=== ASENKRON İDDİA: \(ek.iddia) · BAŞARISIZ: \(ek.error) "
-                       + "\(ek.error == 0 ? "✓" : "✗") ===")
-            let toplamHata = ledger.error + ek.error
-            tam.append("=== TOPLAM BAŞARISIZ: \(toplamHata) "
-                       + "\(toplamHata == 0 ? "✓ HEPSİ GEÇTİ" : "✗ BAŞARISIZ") ===")
-            write(tam, folder: folder)
+            var extra = await SelfTestCases.runAsync()
+            // code-spec §8: the CodeEngine + attempt-counter cases (they need await; the
+            // timeout case takes ~3 s and does not fit the synchronous launch-time flow).
+            extra.add(await codeCases())
+            var full = record
+            full.append(contentsOf: extra.lines)
+            full.append("=== ASYNC ASSERTIONS: \(extra.assertions) · FAILED: \(extra.error) "
+                        + "\(extra.error == 0 ? "✓" : "✗") ===")
+            let totalErrors = ledger.error + extra.error
+            full.append("=== TOTAL FAILED: \(totalErrors) "
+                        + "\(totalErrors == 0 ? "✓ ALL PASSED" : "✗ FAILED") ===")
+            write(full, folder: folder)
         }
     }
 
-    // MARK: - kod-spec §8: HtmlMotor
+    // MARK: - code-spec §8: HtmlEngine
 
-    /// Markdown → HTML dökümü + `oku` geri çıkarımı. SayfaDogrulayici BİLEREK
-    /// çağrılmaz (WKWebView launch-anı senkron akışında güvenilmez) — buradaki
-    /// iddialar doğrulamanın koruduğu şeyin ta kendisini (markdown ayrıştırması
-    /// ve şablonun kendine yeterliği) statik olarak sınar.
+    /// Markdown → HTML emission + the `read` back-extraction. PageVerifier is DELIBERATELY
+    /// not called (WKWebView is unreliable in the synchronous launch-time flow) — the
+    /// assertions here statically exercise the very thing the verification protects
+    /// (markdown parsing and the template's self-containedness).
     @MainActor
-    private static func htmlVakalari(folder: URL) -> SelfTestLedger {
+    private static func htmlCases(folder: URL) -> SelfTestLedger {
         var d = SelfTestLedger()
-        d.title("HTML MOTOR (kod-spec §4)")
+        d.title("HTML ENGINE (code-spec §4)")
 
         let markdown = """
-        # Köşe Kahve
-        Taze kavrulmuş & günlük.
+        # Corner Coffee
+        Freshly roasted & daily.
 
-        ## Menü
-        | Kahve | Fiyat |
+        ## Menu
+        | Coffee | Price |
         | --- | --- |
-        | Filtre | 90 |
+        | Filter | 90 |
         | <Espresso> | 120 |
 
-        ## Özellikler
-        - Hızlı servis
-        - **Taze** çekirdek
+        ## Features
+        - Fast service
+        - **Fresh** beans
 
-        ### Adres
-        Mah. Cad. No 3
+        ### Address
+        3 Main Street
         """
 
         let engine = HtmlEngine()
         do {
-            let url = try engine.write(fileName: "ototest-html-vaka", title: nil,
-                                    body: markdown, table: nil, folder: folder)
+            let url = try engine.write(fileName: "selftest-html-case", title: nil,
+                                       body: markdown, table: nil, folder: folder)
             defer { try? FileManager.default.removeItem(at: url) }
             let raw = try String(contentsOf: url, encoding: .utf8)
 
-            // Kendine yeterlik: şablonda ve üretimde HİÇBİR harici istek izi yok.
-            // "http" araması boş dönmeli — sayfa da ağ vaadi taşır (kod-spec §4.2).
-            d.dogru(!raw.contains("http"), "üretilen HTML'de 'http' geçmez (harici istek yok)")
-            d.dogru(!raw.contains("<script"), "üretilen HTML betik içermez")
+            // Self-containedness: neither the template nor the output carries any trace of
+            // an external request. A search for "http" must come back empty — the page
+            // carries the network promise too (code-spec §4.2).
+            d.check(!raw.contains("http"), "the produced HTML contains no 'http' (no external request)")
+            d.check(!raw.contains("<script"), "the produced HTML contains no script")
 
-            // Markdown → şablon eşlemesinin izleri.
-            d.dogru(raw.contains("<header class=\"hero\">"), "ilk '# ' hero bölümü olur")
-            d.dogru(raw.contains("<h1>Köşe Kahve</h1>"), "hero başlığı h1 taşır")
-            d.dogru(raw.contains("class=\"tagline\""), "hero altındaki paragraf tagline olur")
-            d.dogru(raw.contains("<title>Köşe Kahve</title>"), "sayfa başlığı hero'dan gelir")
-            d.dogru(raw.contains("<h2>Menü</h2>"), "'## ' bölüm başlığı olur")
-            d.dogru(raw.contains("<h3>Adres</h3>"), "'### ' bölüm içi alt başlık olur")
-            d.dogru(raw.contains("<table>"), "markdown tablosu <table> olur")
-            d.dogru(raw.contains("class=\"kartlar\""), "'- ' listesi kart grid'i olur")
-            d.dogru(raw.contains("&lt;Espresso&gt;"), "içerikteki < > kaçışlanır")
-            d.dogru(raw.contains("&amp; günlük"), "içerikteki & kaçışlanır")
-            d.dogru(raw.contains("<strong>Taze</strong>"), "**kalın** strong olur")
+            // Traces of the markdown → template mapping.
+            d.check(raw.contains("<header class=\"hero\">"), "the first '# ' becomes the hero section")
+            d.check(raw.contains("<h1>Corner Coffee</h1>"), "the hero carries an h1 title")
+            d.check(raw.contains("class=\"tagline\""), "the paragraph under the hero becomes the tagline")
+            d.check(raw.contains("<title>Corner Coffee</title>"), "the page title comes from the hero")
+            d.check(raw.contains("<h2>Menu</h2>"), "'## ' becomes a section heading")
+            d.check(raw.contains("<h3>Address</h3>"), "'### ' becomes a sub-heading inside the section")
+            d.check(raw.contains("<table>"), "a markdown table becomes <table>")
+            d.check(raw.contains("class=\"cards\""), "a '- ' list becomes the card grid")
+            d.check(raw.contains("&lt;Espresso&gt;"), "< > in the content is escaped")
+            d.check(raw.contains("&amp; daily"), "& in the content is escaped")
+            d.check(raw.contains("<strong>Fresh</strong>"), "**bold** becomes strong")
 
-            // Round-trip: oku etiketleri ayıklayıp markdown öneklerine geri çevirir —
-            // "siteye bölüm ekle" akışı (belge_oku → belge_duzenle) buna dayanır.
+            // Round-trip: `read` strips the tags and turns them back into markdown
+            // prefixes — the "add a section to the site" flow (read_document →
+            // edit_document) rests on this.
             let back = try engine.read(url: url).text
-            d.dogru(back.contains("# Köşe Kahve"), "oku: hero '# ' önekiyle geri döner")
-            d.dogru(back.contains("Taze kavrulmuş & günlük."), "oku: & kaçışı geri alınır")
-            d.dogru(back.contains("## Menü"), "oku: bölüm '## ' önekiyle geri döner")
-            d.dogru(back.contains("### Adres"), "oku: alt başlık '### ' önekiyle geri döner")
-            d.dogru(back.contains("| Filtre | 90 |"), "oku: tablo markdown satırına geri döner")
-            d.dogru(back.contains("| <Espresso> | 120 |"), "oku: hücre kaçışları geri alınır")
-            d.dogru(back.contains("- Hızlı servis"), "oku: kart '- ' maddesine geri döner")
-            d.dogru(!back.contains("<style"), "oku: stil bloğu tamamen ayıklanır")
-            d.dogru(!back.contains("</"), "oku: hiçbir kapanış etiketi sızmaz")
+            d.check(back.contains("# Corner Coffee"), "read: the hero comes back with the '# ' prefix")
+            d.check(back.contains("Freshly roasted & daily."), "read: the & escape is undone")
+            d.check(back.contains("## Menu"), "read: the section comes back with the '## ' prefix")
+            d.check(back.contains("### Address"), "read: the sub-heading comes back with the '### ' prefix")
+            d.check(back.contains("| Filter | 90 |"), "read: the table comes back as a markdown row")
+            d.check(back.contains("| <Espresso> | 120 |"), "read: the cell escapes are undone")
+            d.check(back.contains("- Fast service"), "read: the card comes back as a '- ' item")
+            d.check(!back.contains("<style"), "read: the style block is stripped entirely")
+            d.check(!back.contains("</"), "read: no closing tag leaks through")
         } catch {
-            d.dogru(false, "HtmlMotor yaz/oku turu", "\(error)")
+            d.check(false, "the HtmlEngine write/read round-trip", "\(error)")
         }
         return d
     }
 
-    // MARK: - kod-spec §8: KodMotoru + deneme sayacı
+    // MARK: - code-spec §8: CodeEngine + the attempt counter
 
     @MainActor
-    private static func kodVakalari() async -> SelfTestLedger {
+    private static func codeCases() async -> SelfTestLedger {
         var d = SelfTestLedger()
-        d.title("KOD MOTORU (kod-spec §5)")
+        d.title("CODE ENGINE (code-spec §5)")
 
         // print(6*7) → "42".
         switch await CodeEngine.run("print(6*7)") {
         case .succeeded(let output, _):
-            d.equal(output, "42", "print(6*7) çıktısı 42")
+            d.equal(output, "42", "print(6*7) outputs 42")
         default:
-            d.dogru(false, "print(6*7) çıktısı 42", "başarılı sonuç dönmedi")
+            d.check(false, "print(6*7) outputs 42", "no successful outcome returned")
         }
 
-        // print çağrılmadıysa son ifadenin değeri çıktı sayılır.
+        // If print was not called, the value of the last expression counts as the output.
         switch await CodeEngine.run("6*7") {
         case .succeeded(let output, _):
-            d.equal(output, "42", "son ifade biçimi (6*7) de 42 verir")
+            d.equal(output, "42", "the last-expression form (6*7) also gives 42")
         default:
-            d.dogru(false, "son ifade biçimi (6*7) de 42 verir", "başarılı sonuç dönmedi")
+            d.check(false, "the last-expression form (6*7) also gives 42", "no successful outcome returned")
         }
 
-        // Sözdizimi hatası → error + satır numarası.
+        // A syntax error → error + line number.
         switch await CodeEngine.run("let a=1;\nlet x = ;") {
         case .error(let message):
-            d.dogru(true, "sözdizimi hatası hata döner")
-            d.dogru(message.contains("line"), "hata satır numarası taşır", message)
+            d.check(true, "a syntax error returns an error")
+            d.check(message.contains("line"), "the error carries a line number", message)
         default:
-            d.dogru(false, "sözdizimi hatası hata döner", "hata dönmedi")
+            d.check(false, "a syntax error returns an error", "no error returned")
         }
 
-        // Sonsuz döngü → ~3 sn'de zaman aşımı; sessiz donma yok.
+        // An infinite loop → a timeout at ~3 s; no silent freeze.
         let start = Date()
         let loop = await CodeEngine.run("while(true){}")
-        let gecen = Date().timeIntervalSince(start)
+        let elapsed = Date().timeIntervalSince(start)
         if case .timeout = loop {
-            d.dogru(true, "sonsuz döngü zaman aşımı döner")
+            d.check(true, "an infinite loop returns a timeout")
         } else {
-            d.dogru(false, "sonsuz döngü zaman aşımı döner", "\(loop)")
+            d.check(false, "an infinite loop returns a timeout", "\(loop)")
         }
-        d.dogru(gecen >= 2.5 && gecen < 10,
-                "zaman aşımı ~3 sn'de gerçekleşir", String(format: "%.1f sn", gecen))
+        d.check(elapsed >= 2.5 && elapsed < 10,
+                "the timeout happens at ~3 s", String(format: "%.1f s", elapsed))
 
-        // 10k üstü çıktı kırpılır ve kırpıldığı söylenir.
+        // Output above 10k is clipped and the clipping is stated.
         switch await CodeEngine.run("let s='x'.repeat(20000); print(s)") {
         case .succeeded(let output, _):
-            d.dogru(output.contains(L10n.codeOutputTruncated), "kırpma notu çıktıya eklenir")
-            d.dogru(output.count <= CodeEngine.outputCap + L10n.codeOutputTruncated.count + 1,
-                    "kırpılan çıktı tavanı aşmaz", "\(output.count)")
+            d.check(output.contains(L10n.codeOutputTruncated), "the truncation note is added to the output")
+            d.check(output.count <= CodeEngine.outputCap + L10n.codeOutputTruncated.count + 1,
+                    "the clipped output does not exceed the cap", "\(output.count)")
         default:
-            d.dogru(false, "10k üstü çıktı kırpılarak döner", "başarılı sonuç dönmedi")
+            d.check(false, "output above 10k comes back clipped", "no successful outcome returned")
         }
 
-        // Sandbox: fetch/require tanımsızdır — hata döner, ÇALIŞMAZ.
-        switch await CodeEngine.run("fetch('https://ornek.com')") {
+        // The sandbox: fetch/require are undefined — they return an error, they DO NOT RUN.
+        switch await CodeEngine.run("fetch('https://example.com')") {
         case .error(let message):
-            d.dogru(message.contains("fetch"), "fetch tanımsız (ağ köprüsü yok)", message)
+            d.check(message.contains("fetch"), "fetch is undefined (no network bridge)", message)
         default:
-            d.dogru(false, "fetch tanımsız (ağ köprüsü yok)", "hata dönmedi")
+            d.check(false, "fetch is undefined (no network bridge)", "no error returned")
         }
         switch await CodeEngine.run("require('fs')") {
         case .error(let message):
-            d.dogru(message.contains("require"), "require tanımsız (dosya köprüsü yok)", message)
+            d.check(message.contains("require"), "require is undefined (no file bridge)", message)
         default:
-            d.dogru(false, "require tanımsız (dosya köprüsü yok)", "hata dönmedi")
+            d.check(false, "require is undefined (no file bridge)", "no error returned")
         }
 
-        // Deneme sayacı (kod-spec §5.4): 3. çağrı motoru HİÇ görmeden reddedilir.
-        d.title("KOD ARACI · DENEME SAYACI (kod-spec §5.4)")
+        // The attempt counter (code-spec §5.4): the 3rd call is refused WITHOUT the engine
+        // ever seeing it.
+        d.title("CODE TOOL · ATTEMPT COUNTER (code-spec §5.4)")
         let state = CodeState()
         var tool = RunCodeTool()
         tool.state = state
 
         let a1 = await tool.call(arguments: .init(code: "print(1)"))
-        d.dogru(a1.hasPrefix("ok"), "1. çağrı çalışır", a1)
+        d.check(a1.hasPrefix("ok"), "the 1st call runs", a1)
         let a2 = await tool.call(arguments: .init(code: "print(2)"))
-        d.dogru(a2.hasPrefix("ok"), "2. çağrı çalışır", a2)
-        d.equal(state.attempt, 2, "sayaç iki denemeyi saydı")
+        d.check(a2.hasPrefix("ok"), "the 2nd call runs", a2)
+        d.equal(state.attempt, 2, "the counter counted two attempts")
         let a3 = await tool.call(arguments: .init(code: "print(3)"))
-        d.dogru(a3.hasPrefix("error_final"), "3. çağrı error_final ile reddedilir", a3)
-        d.dogru(!a3.contains("ok ("), "3. çağrıda motor çalıştırılmaz")
+        d.check(a3.hasPrefix("error_final"), "the 3rd call is refused with error_final", a3)
+        d.check(!a3.contains("ok ("), "the engine is not run on the 3rd call")
 
-        // Canlıda sıfırlama ModelServisi.yanitSonucu turu, hataKurtar retry
-        // dalları ve sohbetiSifirla'dadır — burada sözleşme doğrulanır.
+        // In production the reset lives in `ModelService`'s turn handling, the
+        // recoverFromError retry branches and resetChat — the contract is verified here.
         state.newTurn()
-        d.equal(state.attempt, 0, "newTurn() sayacı sıfırlar")
+        d.equal(state.attempt, 0, "newTurn() resets the counter")
         let a4 = await tool.call(arguments: .init(code: "print(4)"))
-        d.dogru(a4.hasPrefix("ok"), "yeni turda çağrı yeniden çalışır", a4)
+        d.check(a4.hasPrefix("ok"), "the call runs again in a new turn", a4)
 
         return d
     }
 
-    /// Sonucu yalnız print'e ve Caches altındaki test dosyasına yazar.
-    /// NSLog kullanılmaz: sistem log'una düşen kişisel veri kalıcı olur.
+    /// Writes the outcome only to print and to the test file under Caches.
+    /// NSLog is not used: personal data landing in the system log is permanent.
     @MainActor
     private static func write(_ record: [String], folder: URL) {
         let text = record.joined(separator: "\n")
         print(text)
-        try? text.write(to: folder.appendingPathComponent("ototest-sonuc.txt"),
-                         atomically: true, encoding: .utf8)
+        try? text.write(to: folder.appendingPathComponent("selftest-outcome.txt"),
+                        atomically: true, encoding: .utf8)
     }
 }
 #endif

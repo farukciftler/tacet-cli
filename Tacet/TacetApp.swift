@@ -59,6 +59,12 @@ struct TacetApp: App {
         // move the tokens stay behind with no `Connection` pointing at them.
         Self.purgeOrphanKeys(container)
         #if DEBUG
+        // Store seeding for App Store captures. Separate from `--table-demo`,
+        // which seeds exactly one table and exists to check the markdown-to-table
+        // chain; this one seeds the set the screenshots are taken from.
+        if CommandLine.arguments.contains("--demo-seed"), let container {
+            DemoSeed.run(container)
+        }
         if CommandLine.arguments.contains("--table-demo"), let container {
             let chat = Chat(title: "Table demo")
             container.mainContext.insert(chat)

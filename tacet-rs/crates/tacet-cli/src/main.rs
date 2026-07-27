@@ -1085,6 +1085,47 @@ fn session_catalog(
     (c, code_state)
 }
 
+/// Rebuilds everything that derives from the catalog, IN PLACE. The catalog is
+/// a session-start snapshot by design (see the note at its creation); toggling
+/// an addon from inside the shell is the one sanctioned reason to refresh that
+/// snapshot without a restart. What survives the swap: the session taint
+/// (explicitly carried — see `ToolExecutor::inherit_taint`), the shared store,
+/// the memory, the open MCP connections. What resets: the approval denial
+/// cache (the safe direction — it asks again) and the code sandbox state.
+#[allow(clippy::too_many_arguments)]
+fn refresh_session(
+    store: &Arc<SharedStore>,
+    memory: &SharedMemory,
+    color: &Color,
+    interactive: bool,
+    mcp_load: &mcp::LoadOutcome,
+    engine: &Arc<dyn EngineProvider>,
+    catalog: &mut ToolCatalog,
+    executor: &mut ToolExecutor,
+    constraint: &mut Option<CallConstraint>,
+    catalog_names: &mut Vec<String>,
+    web_addon_open: &mut bool,
+    code_state: &mut Option<Arc<CodeState>>,
+) {
+    let tainted = executor.session_tainted();
+    let (mut c, cs) = session_catalog(store, memory, color);
+    let names = mcp::feed_catalog(&mut c, mcp_load);
+    let mut ex = ToolExecutor::new(c.clone());
+    ex = if interactive { ex.with_gate(TerminalApproval) } else { ex.with_gate(SilentDeny) };
+    for n in EXTERNAL_TOOLS {
+        ex = ex.external_tool(*n);
+    }
+    ex = mcp::bind_executor(ex, &names);
+    ex.inherit_taint(tainted);
+
+    *constraint = engine.vocab().map(|v| CallConstraint::new(&v, &c));
+    *catalog_names = c.names().into_iter().map(String::from).collect();
+    *web_addon_open = tacet_web::addon::web_search_is_open();
+    *catalog = c;
+    *executor = ex;
+    *code_state = cs;
+}
+
 // ---------------------------------------------------------------------------
 // chat
 // ---------------------------------------------------------------------------
@@ -1133,14 +1174,15 @@ fn chat(
     }
     let mut injection_state = InjectionState::new();
 
-    let (mut catalog, code_state) = session_catalog(&store, &memory, &color);
+    let (mut catalog, mut code_state) = session_catalog(&store, &memory, &color);
 
     // THE ADDON GATE'S VALUE IS READ AT SESSION START — AT THE SAME MOMENT as
     // the catalog. The catalog is set up at session start too; reading the two at
     // different moments would produce an inconsistent state like "no tools but no
-    // hint either". An addon installed mid-session from another terminal is not
-    // visible in this session; the same holds for MCP connections and skills.
-    let web_addon_open = tacet_web::addon::web_search_is_open();
+    // hint either". An addon installed mid-session from ANOTHER terminal is not
+    // visible in this session; toggling one from INSIDE this shell goes through
+    // `refresh_session`, which re-reads both together.
+    let mut web_addon_open = tacet_web::addon::web_search_is_open();
 
     // MCP CONNECTIONS — `mcp.json` in the config directory. If the file is
     // missing it does nothing and NO NETWORK CALL IS MADE.
@@ -1203,9 +1245,9 @@ fn chat(
     // THE STREAM FILTER'S TOOL NAMES. Taken from the FULL catalog, not from the
     // subset selected in that turn: the model sometimes produces a name outside
     // its budget too and that line must not spill onto the screen (see filter.rs).
-    let catalog_names: Vec<String> = catalog.names().into_iter().map(String::from).collect();
+    let mut catalog_names: Vec<String> = catalog.names().into_iter().map(String::from).collect();
 
-    let constraint = engine.vocab().map(|v| CallConstraint::new(&v, &catalog));
+    let mut constraint = engine.vocab().map(|v| CallConstraint::new(&v, &catalog));
     if constraint.is_none() {
         eprintln!("{}", color.paint(YELLOW, "(warning: the engine does not declare its vocabulary — generation is UNCONSTRAINED)"));
     }
@@ -1279,6 +1321,11 @@ fn chat(
         // Slash commands: they DO NOT GO to the model as a message.
         if message.starts_with('/') {
             let cleared = message.trim() == "/clear";
+            // An /addon verb with arguments changes the registry; the running
+            // session must see the change (the transcript that forced this:
+            // `/addon on web-search` said "opened" while the session kept
+            // answering "the addon is CLOSED" until a restart).
+            let addon_touched = message.trim_start().starts_with("/addon ");
             match slash(&message, &catalog, &memory, &mut history, &engine, &color) {
                 SlashResult::Quit => break,
                 SlashResult::Handled => {
@@ -1290,6 +1337,14 @@ fn chat(
                         last_turn_prompt = 0;
                         last_turn_generation = 0;
                         last_context = 0;
+                    }
+                    if addon_touched {
+                        refresh_session(
+                            &store, &memory, &color, interactive, &mcp_load, &engine,
+                            &mut catalog, &mut executor, &mut constraint,
+                            &mut catalog_names, &mut web_addon_open, &mut code_state,
+                        );
+                        println!("{}", color.paint(DIM, &format!("(catalog refreshed — {} tools)", catalog.tools().len())));
                     }
                     if single_message.is_some() {
                         break;
@@ -1317,8 +1372,28 @@ fn chat(
         // The condition is TWO-SIDED: (1) the gate is closed, (2) the message's
         // dominant intent is Web. Without the second it would print an addon
         // advert on every turn.
+        //
+        // In an interactive session with the addon INSTALLED the sentence is a
+        // QUESTION, not a hint: the user's message already says they want the
+        // web, so the shell offers the switch instead of telling them to type a
+        // command. On yes, the catalog refreshes and THIS SAME message goes to
+        // the model with the web tools available — no retyping.
         if !web_addon_open && addon::is_web_request(&message) {
-            println!("{}", color.paint(YELLOW, &format!("({})", addon::closed_gate_message())));
+            if interactive
+                && screen.tty()
+                && addon::web_installed()
+                && ui::ask_yes_no(&color, "this looks like a web question and web search is off — turn it on?")
+            {
+                let _ = addon::set_state(tacet_web::addon::WEB_SEARCH, true);
+                refresh_session(
+                    &store, &memory, &color, interactive, &mcp_load, &engine,
+                    &mut catalog, &mut executor, &mut constraint,
+                    &mut catalog_names, &mut web_addon_open, &mut code_state,
+                );
+                println!("{}", color.paint(DIM, &format!("(catalog refreshed — {} tools)", catalog.tools().len())));
+            } else {
+                println!("{}", color.paint(YELLOW, &format!("({})", addon::closed_gate_message())));
+            }
         }
 
         // A new turn: the side-effect flag and the attempt counter are reset;
@@ -1829,10 +1904,10 @@ fn slash(
                 (Some("remove"), Some(name)) => {
                     let _ = addon::remove(name);
                 }
-                (Some("on"), Some(name)) => {
+                (Some("on") | Some("open"), Some(name)) => {
                     let _ = addon::set_state(name, true);
                 }
-                (Some("off"), Some(name)) => {
+                (Some("off") | Some("close"), Some(name)) => {
                     let _ = addon::set_state(name, false);
                 }
                 (None, _) => {
@@ -2716,6 +2791,135 @@ mod tests {
         assert_eq!(tacet_mcp::config::default_path().unwrap(), home.join("mcp.json"));
 
         unsafe { std::env::remove_var(tacet_core::env::HOME_VAR) };
+    }
+
+    /// Collects the `Choice` fields of a tool's root schema: (field name, allowed
+    /// values). Only the root object is walked — no tool nests a choice deeper,
+    /// and walking blind would invite false positives.
+    fn choice_fields(schema: &ArgSchema) -> Vec<(String, Vec<String>)> {
+        let tacet_core::SchemaKind::Object { fields } = &schema.kind else { return Vec::new() };
+        fields
+            .iter()
+            .filter_map(|f| match &f.schema.kind {
+                tacet_core::SchemaKind::Choice { choices } => {
+                    Some((f.name.clone(), choices.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The double-quoted tokens in one text block, lowercase words only. A guide
+    /// quotes argument VALUES this way (`"excel"`); prose quoting a sentence
+    /// carries spaces and drops out here.
+    fn quoted_words(block: &str) -> Vec<String> {
+        block
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .filter(|t| {
+                !t.is_empty() && t.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+            })
+            .map(|t| t.to_string())
+            .collect()
+    }
+
+    /// The unit of the check is the PARAGRAPH, not the line. It was the line
+    /// first and the first mutation test showed that to be worthless: the guide
+    /// names the field on one line ("`format`: data/plan/budget ->") and carries
+    /// the values onto the next, so the very defect this test exists for slipped
+    /// straight through a line-scoped filter.
+    fn paragraphs(text: &str) -> Vec<String> {
+        text.split("\n\n").map(|p| p.to_string()).collect()
+    }
+
+    /// A SEAM TEST — a skill guide must not command a tool name, or an argument
+    /// VALUE, that the catalog does not have.
+    ///
+    /// NOT A TYPE ERROR, which is the whole point: the guides are plain text and
+    /// the schemas are Rust, so a divergence compiles clean and surfaces only as
+    /// the model emitting a call the grammar refuses. It was a REAL defect, found
+    /// by hand and not by any test: the bundled `create-document` guide told the
+    /// model `format` -> "pdf" while the schema's choice set was
+    /// {excel, markdown, text}. The iOS side has PDF; this build does not, and
+    /// nothing kept the two apart.
+    ///
+    /// This crate is the only place that sees both the skill store and the
+    /// production catalog, which is why the test lives here.
+    #[test]
+    fn skill_guides_only_name_tools_and_values_the_catalog_has() {
+        let store = Arc::new(SharedStore::new());
+        let memory = SharedMemory::in_memory();
+        // The web gate is supplied FROM OUTSIDE: what is measured must not depend
+        // on whether the addon happens to be open on the machine running the test.
+        let (catalog, _, _) =
+            tacet_tools::catalog::production_catalog_with(&store, &memory, Some(0), true);
+        let skills = tacet_skills::SkillStore::default_set();
+
+        let mut checked_values = 0;
+        for skill in skills.all() {
+            for name in &skill.tools {
+                let tool = catalog.find(name).unwrap_or_else(|| {
+                    panic!(
+                        "skill '{}' commands tool '{name}', which is not in the catalog: {:?}",
+                        skill.name,
+                        catalog.names()
+                    )
+                });
+                for (field, allowed) in choice_fields(&tool.schema()) {
+                    for block in paragraphs(&skill.text).iter().filter(|b| b.contains(&field)) {
+                        for value in quoted_words(block) {
+                            assert!(
+                                allowed.contains(&value),
+                                "skill '{}' tells the model {field}=\"{value}\", \
+                                 but '{name}' only accepts {allowed:?}\n--- block ---\n{block}",
+                                skill.name
+                            );
+                            checked_values += 1;
+                        }
+                    }
+                }
+            }
+        }
+        // A guard on the guard: if the extraction above silently stops matching
+        // anything, the test would pass while measuring NOTHING.
+        assert!(
+            checked_values > 0,
+            "no argument value was checked at all — the extraction is broken"
+        );
+
+        // The system instructions carry ONE hard-coded example call, and the
+        // model copies its shape verbatim. `tacet-engine` already asserts the
+        // example is there; nothing asserted that the tool and the argument in
+        // it EXIST, because that crate cannot see the catalog. This one can.
+        let example = SYSTEM_INSTRUCTIONS
+            .split_once("Example: ")
+            .map(|(_, rest)| rest)
+            .and_then(|rest| rest.split_once("({"))
+            .expect("the system instructions carry an 'Example: name({' call");
+        let example_tool = example.0;
+        let example_tool = catalog.find(example_tool).unwrap_or_else(|| {
+            panic!(
+                "the system prompt's example calls '{example_tool}', \
+                 which is not in the catalog: {:?}",
+                catalog.names()
+            )
+        });
+        let example_args = example.1;
+        let fields: Vec<String> = match &example_tool.schema().kind {
+            tacet_core::SchemaKind::Object { fields } => {
+                fields.iter().map(|f| f.name.clone()).collect()
+            }
+            _ => Vec::new(),
+        };
+        for key in quoted_words(example_args.split("})").next().unwrap_or("")) {
+            assert!(
+                fields.contains(&key),
+                "the system prompt's example passes '{key}', but \
+                 '{}' takes {fields:?}",
+                example_tool.name()
+            );
+        }
     }
 
     // -----------------------------------------------------------------------

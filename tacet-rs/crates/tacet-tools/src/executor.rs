@@ -469,6 +469,17 @@ impl ToolExecutor {
         self.session_tainted.load(Ordering::SeqCst)
     }
 
+    /// Re-applies the session taint onto a REBUILT executor. The catalog can be
+    /// rebuilt mid-session (an addon toggled from inside the shell); the taint
+    /// MUST survive that swap — a fresh executor forgetting it would silently
+    /// drop the approval gate for the rest of the session. Only sets, never
+    /// clears: clearing taint is `reset_chat`'s job alone.
+    pub fn inherit_taint(&self, tainted: bool) {
+        if tainted {
+            self.session_tainted.store(true, Ordering::SeqCst);
+        }
+    }
+
     pub fn world_changed(&self) -> bool {
         self.world_changed.load(Ordering::SeqCst)
     }

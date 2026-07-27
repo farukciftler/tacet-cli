@@ -11,10 +11,14 @@ import SwiftData
 
 /// Who is speaking. Stored as a raw string (simple, for SwiftData enum support).
 enum Role: String, Codable {
-    /// The user. The raw value stays `"sen"` on purpose: it is PERSISTED DATA,
-    /// not prose. Renaming it would push every stored user message through the
-    /// `Role(rawValue:) ?? .tacet` fallback below and redraw it as the assistant.
-    case user = "sen"
+    /// The raw value was `"sen"` until the codebase moved to English. It is
+    /// PERSISTED DATA, not prose, so the rename could not be a plain swap: every
+    /// message already on disk carries the old string, and the plain
+    /// `Role(rawValue:) ?? .tacet` fallback would have redrawn all of them as the
+    /// assistant. The legacy value is therefore mapped explicitly below rather
+    /// than left to the fallback. No migration file — the app was never released,
+    /// and the only records that exist are local development ones.
+    case user
     // The raw value changed once at the brand switch: local records written
     // under the old name still resolve to the assistant role through the
     // `Role(rawValue:) ?? .tacet` fallback below — there is NO separate
@@ -63,7 +67,15 @@ final class Message {
     @Transient private var cache = ResolutionCache()
 
     var role: Role {
-        get { Role(rawValue: rawRole) ?? .tacet }
+        // `"sen"` is the pre-English raw value for `.user`. It is read here and
+        // never written, so records already on disk keep their speaker while
+        // everything new is stored under the English name. Dropping this line
+        // would silently turn every old user message into an assistant reply —
+        // the failure would look like corrupted history, not like a rename.
+        get {
+            if rawRole == "sen" { return .user }
+            return Role(rawValue: rawRole) ?? .tacet
+        }
         set { rawRole = newValue.rawValue }
     }
 

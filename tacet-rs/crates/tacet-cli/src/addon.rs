@@ -83,6 +83,14 @@ pub const ADDON_MISSING: &str =
 /// right one is `open`).
 const ADDON_CLOSED: &str = "the web search addon is CLOSED: `tacet addon open web-search`";
 
+/// Is the web addon INSTALLED at all (open or closed)? The gate message below
+/// distinguishes missing from closed; the chat's offer-to-open needs the same
+/// distinction — offering to "open" something that is not installed would be
+/// the exact wrong-sentence bug the constant above documents.
+pub fn web_installed() -> bool {
+    tacet_web::addon::read().map(|r| r.find(WEB_SEARCH).is_some()).unwrap_or(false)
+}
+
 /// The right sentence to print while the gate is closed: is it not installed, or
 /// closed.
 pub fn closed_gate_message() -> &'static str {

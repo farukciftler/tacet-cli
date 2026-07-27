@@ -547,6 +547,35 @@ mod tests {
         assert!(score_intent("MEETING").score(IntentProfile::Time) > 0);
     }
 
+    /// RESTORED. This test used to measure Turkish diacritic folding
+    /// ("yarınki toplantıyı göster" == "yarinki toplantiyi goster"); it was replaced
+    /// by an ASCII case-only test, and from then on `simplify()` kept folding
+    /// diacritics in production while NOTHING measured it. The triggers are English
+    /// now, so the fold is measured where it lives — on `simplify()` itself — and
+    /// once more at the scoring layer, because the user's input is still free text
+    /// in any language.
+    #[test]
+    fn turkish_diacritics_are_folded() {
+        assert_eq!(
+            simplify("yarınki toplantıyı göster"),
+            "yarinki toplantiyi goster"
+        );
+        // The dotted capital İ and the dotless ı both land on plain `i`; the bare
+        // ASCII `I` is mapped explicitly too, so Turkish-locale lowercasing cannot
+        // turn it into `ı` on the way.
+        assert_eq!(simplify("ÇĞİIÖŞÜ ı"), "cgiiosu i");
+        assert_eq!(simplify("Â Î Û"), "a i u");
+        // Scoring layer, and this one is NOT decoration: a Turkish keyboard
+        // uppercases `i` as `İ`, so an English word typed in caps arrives as
+        // "MEETİNG". Rust's plain `to_lowercase()` turns `İ` into `i` + U+0307, which
+        // matches no trigger — only the explicit fold above rescues it.
+        assert!(score_intent("MEETİNG TOMORROW").score(IntentProfile::Time) > 0);
+        assert_eq!(
+            score_intent("MEETİNG TOMORROW").score(IntentProfile::Time),
+            score_intent("meeting tomorrow").score(IntentProfile::Time)
+        );
+    }
+
     #[test]
     fn a_document_intent_brings_the_document_tools_forward() {
         let selection =

@@ -11,10 +11,14 @@
 //  `read` strips the tags and returns plain text close to markdown — so the
 //  read_document → edit_document chain works for free. No network.
 //
-//  NOTE: the CSS class names (`kart`, `kartlar`, `tablo-kap`) and the custom properties
-//  (`--zemin`, `--murekkep`, `--gri`, `--cizgi`, `--dolgu`) are deliberately LEFT UNCHANGED in
-//  this pass: they are not in the shared glossary, and `Servis/OtoTest.swift` asserts on the
-//  literal string `class="kartlar"`. Renaming them requires changing BOTH sides at once.
+//  NOTE: the CSS class names (`card`, `cards`, `table-wrap`) and the custom properties
+//  (`--background`, `--ink`, `--grey`, `--divider`, `--fill`) appear in the generated document,
+//  so the user reads them in the page source. They live in THREE places that must move
+//  together: the `style` literal, the emitting helpers (`cardGrid`, `tableHTML`), and the
+//  read-back regex in `extractToText`. `Services/SelfTest.swift` also asserts on the literal
+//  string `class="cards"` — renaming requires changing BOTH sides at once.
+//  The custom property names track `Design/Theme.swift` (background / ink / grey / divider /
+//  fill) on purpose: the two palettes are the same palette.
 //
 
 import Foundation
@@ -187,7 +191,7 @@ struct HtmlEngine: DocumentEngine {
 
     /// A markdown table → a responsive <table> (inside a horizontal-overflow container).
     private static func tableHTML(_ t: Table) -> String {
-        var h = "<div class=\"tablo-kap\"><table>\n<thead><tr>"
+        var h = "<div class=\"table-wrap\"><table>\n<thead><tr>"
         for b in t.headers { h += "<th>\(htmlEscape(b))</th>" }
         h += "</tr></thead>\n<tbody>\n"
         for s in t.rows {
@@ -204,9 +208,9 @@ struct HtmlEngine: DocumentEngine {
 
     /// "- " items → a card grid.
     private static func cardGrid(_ items: [String]) -> String {
-        var h = "<div class=\"kartlar\">\n"
+        var h = "<div class=\"cards\">\n"
         for item in items {
-            h += "<div class=\"kart\"><p>\(inline(item))</p></div>\n"
+            h += "<div class=\"card\"><p>\(inline(item))</p></div>\n"
         }
         h += "</div>\n"
         return h
@@ -217,20 +221,20 @@ struct HtmlEngine: DocumentEngine {
     /// NO external URL (SelfTest looks for that).
     private static let style = """
     :root {
-      --zemin: #FFFFFF; --murekkep: #1C1C1A; --gri: #8A8A84;
-      --cizgi: #E9E9E4; --dolgu: #F4F4F1;
+      --background: #FFFFFF; --ink: #1C1C1A; --grey: #8A8A84;
+      --divider: #E9E9E4; --fill: #F4F4F1;
       --serif: 'New York', Georgia, 'Times New Roman', serif;
       --sans: -apple-system, 'Helvetica Neue', Arial, sans-serif;
     }
     @media (prefers-color-scheme: dark) {
       :root {
-        --zemin: #141413; --murekkep: #ECECEA; --gri: #9A9A93;
-        --cizgi: #2A2A28; --dolgu: #222220;
+        --background: #141413; --ink: #ECECEA; --grey: #9A9A93;
+        --divider: #2A2A28; --fill: #222220;
       }
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      background: var(--zemin); color: var(--murekkep);
+      background: var(--background); color: var(--ink);
       font-family: var(--sans); line-height: 1.6;
       -webkit-text-size-adjust: 100%;
       padding-bottom: 4rem;
@@ -241,26 +245,26 @@ struct HtmlEngine: DocumentEngine {
       font-family: var(--serif); font-weight: 500;
       font-size: clamp(2rem, 6vw, 3rem); line-height: 1.15;
     }
-    .hero .tagline { margin-top: 1rem; color: var(--gri); font-size: 1.1rem; }
-    section { padding: 2rem 0; border-top: 1px solid var(--cizgi); }
+    .hero .tagline { margin-top: 1rem; color: var(--grey); font-size: 1.1rem; }
+    section { padding: 2rem 0; border-top: 1px solid var(--divider); }
     main > section:first-child { border-top: 0; }
     h2 { font-family: var(--serif); font-weight: 500; font-size: 1.5rem; margin-bottom: 1rem; }
     h3 { font-family: var(--serif); font-weight: 500; font-size: 1.15rem; margin: 1rem 0 0.5rem; }
     p { margin: 0.75rem 0; }
-    .kartlar {
+    .cards {
       display: grid; gap: 0.75rem; margin: 1rem 0;
       grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
     }
-    .kart {
-      background: var(--dolgu); border: 1px solid var(--cizgi);
+    .card {
+      background: var(--fill); border: 1px solid var(--divider);
       border-radius: 0.75rem; padding: 1rem;
     }
-    .kart p { margin: 0; }
-    .tablo-kap { overflow-x: auto; margin: 1rem 0; }
+    .card p { margin: 0; }
+    .table-wrap { overflow-x: auto; margin: 1rem 0; }
     table { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
-    th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--cizgi); }
+    th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--divider); }
     th {
-      color: var(--gri); font-weight: 600; font-size: 0.8rem;
+      color: var(--grey); font-weight: 600; font-size: 0.8rem;
       text-transform: uppercase; letter-spacing: 0.05em;
     }
     """
@@ -291,7 +295,7 @@ struct HtmlEngine: DocumentEngine {
         // Tables are converted to markdown (including the separator row).
         m = convertTableBack(m)
         // Structural tags → markdown prefixes. The card must be handled BEFORE the generic <p>.
-        m = replace(m, "<div class=\"kart\">\\s*<p[^>]*>", "\n- ")
+        m = replace(m, "<div class=\"card\">\\s*<p[^>]*>", "\n- ")
         m = replace(m, "<h1[^>]*>", "\n# ")
         m = replace(m, "<h2[^>]*>", "\n## ")
         m = replace(m, "<h3[^>]*>", "\n### ")

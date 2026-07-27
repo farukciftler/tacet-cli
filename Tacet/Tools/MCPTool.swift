@@ -112,6 +112,10 @@ enum SideEffectClass: Sendable {
 
     /// Action roots that carry a destructiveness signal — Turkish and English.
     ///
+    /// The Turkish roots STAY even though the codebase is English: this list is not source
+    /// vocabulary, it is matched against tool names a THIRD-PARTY server wrote, i.e. data —
+    /// and a Turkish-speaking user's own MCP server may well expose `dosya_sil`.
+    ///
     /// The dictionary is HEURISTIC and is not claimed to be complete: a server can hand out
     /// arbitrary names. That is why it is not the only defence but a second layer laid ON TOP
     /// of the `annotations` hints.
@@ -127,7 +131,7 @@ enum SideEffectClass: Sendable {
     private static let destructiveRoots = [
         "sil", "delete", "remove", "drop", "destroy", "purge", "wipe",
         "yaz", "write", "olustur", "create", "kaydet", "save",
-        "degistir", "degisiklik", "modify", "update", "patch", "edit", "rename",
+        "degistir", "degisiklik", "modify", "change", "update", "patch", "edit", "rename",
         "tasi", "kopyala", "move", "copy", "upload", "put",
         "calistir", "exec", "execute", "run", "shell", "command", "komut",
         "gonder", "send", "post", "eposta", "email", "mail", "notify",
@@ -144,7 +148,9 @@ enum SideEffectClass: Sendable {
     private static let exactMatchRoots: Set<String> = [
         "put", "post", "run", "kur", "yaz", "tasi", "stop", "start", "mail",
         "copy", "move", "send", "save", "edit", "drop", "kill", "exec",
-        "patch", "komut", "command"
+        // "change" is exact-match, not prefix: as a prefix it swallows the read-only
+        // `get_changelog`/`list_changes` family, which is the false-positive shape above.
+        "patch", "komut", "command", "change"
     ]
 
     /// Splits the name into words: `_`/`-`/`.`/space SEPARATE, and camelCase is split too

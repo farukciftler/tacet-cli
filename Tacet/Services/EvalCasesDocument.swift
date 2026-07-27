@@ -1,5 +1,5 @@
 //
-//  EvalVakalariBelge.swift
+//  EvalCasesDocument.swift
 //  Tacet
 //
 //  Belge yüzeyi: üretim (xlsx/docx/pdf/html), okuma, düzenleme ve biçim
@@ -7,22 +7,22 @@
 //
 //  — VAKA YAZMA SÖZLEŞMESİ (bu dosyanın TEK sözleşmesi) —
 //
-//  Tip adı  : enum EvalVakalariBelge
-//  Alanlar  : static let vakalar: [TestVaka]      → AYRIK oturum vakaları
-//             static let zincirler: [ZincirVaka]  → ZİNCİR oturum vakaları
+//  Type name: enum EvalCasesDocument
+//  Fields   : static let cases: [TestCase]     → DISCRETE-session cases
+//             static let chains: [ChainCase]  → CHAIN-session cases
 //  İkisi de ZORUNLUDUR; boş dizi geçerli değerdir, alanın YOKLUĞU derlemeyi kırar.
 //  `Degerlendirme.kayitliGruplar` / `Degerlendirme.tumZincirler()` bu iki alanı
 //  okur; kayıt için başka hiçbir yere dokunulmaz.
 //
-//  Rapordaki kategori sütunu: "belge" (tekil vakalar için).
-//  Zincirler kategori olarak daima "zincir" yazılır, ayrım `vakaAd` ile yapılır.
+//  Rapordaki kategori sütunu: "belge" (tekil cases için).
+//  Zincirler kategori olarak daima "chain" yazılır, ayrım `caseName` ile yapılır.
 //
 //  Kurallar:
 //   • Puanlama semantiği DEĞİŞTİRİLMEZ — geçme puanı 80, eşik 0.75, uydurma
 //     dedektörü aynı. Vaka yazmak ölçmektir, eşiği kaydırmak değil.
 //   • `TestVaka`/`ZincirTur` dışında yeni beklenti alanı İCAT EDİLMEZ.
 //   • Vaka adları GLOBAL BENZERSİZ olmalı ("blg-..." önekini kullanın):
-//     rapor eşleştirmesi (tekil↔zincir, zincir↔bagimsiz) ada göre yapılıyor.
+//     rapor eşleştirmesi (tekil↔zincir, zincir↔independent) ada göre yapılıyor.
 //   • Ağ gerektiren vaka yazarken bilin: `--eval` SearXNG'yi programatik AÇAR.
 //   • `#if DEBUG` dışına ÇIKMAYIN — sürüm ikilisine test kodu girmesin.
 //
@@ -36,14 +36,14 @@
 //  AYIRMAZ ("doc.text" bile "doc.text.image"ı eşler). Bu dosya bu yüzden üç
 //  gözlem kanalını birlikte kullanır:
 //
-//   1. `ikonlar` — hangi aracın çağrıldığı.
+//   1. `icons` — hangi aracın çağrıldığı.
 //        xlsx "tablecells" · pdf "doc.richtext" · docx "doc.text"
 //        md "text.alignleft" · txt "doc.plaintext" · html "doc.text.image"
-//   2. `girdiIcermeli` — araç ARGÜMANI. `belge_olustur`un ham girdisi
+//   2. `inputContains` — araç ARGÜMANI. `belge_olustur`un ham girdisi
 //        "biçim: <etiket>, ad: <dosyaAdi>[, ref: <kaynakRef>]" biçiminde;
 //        yani istenen dosya adının araca ULAŞTIĞI ve 4096 bypass kanalının
 //        (kaynakRef) gerçekten kullanıldığı buradan okunur.
-//   3. `ciktiIcermeli` — araç ÇIKTISI. `belge_olustur`/`belge_duzenle` ham
+//   3. `outputContains` — araç ÇIKTISI. `belge_olustur`/`belge_duzenle` ham
 //        çıktısı DOSYA YOLUDUR: ".xlsx"/".docx"/".pdf" aramak "excel istendi,
 //        word üretildi" sessiz hatasını yakalayan tek dürüst kanaldır (mevcut
 //        korpusun ENTEGRATÖRE NOTLAR §2'de itiraf ettiği boşluk budur).
@@ -67,183 +67,183 @@ import Foundation
 enum EvalCasesDocument {
 
     /// AYRIK oturum vakaları — her biri TEMİZ oturumda koşar, birbirini kirletmez.
-    static let vakalar: [TestCase] = [
+    static let cases: [TestCase] = [
 
         // MARK: - Excel üretimi
         //
         // NEDEN: ExcelMotor bu turda en çok değişen motor (hücre `r` başvurusu,
-        // SUM önbellek değeri, sayı/metin ayrımı, XML kaçışlama). Tekil vakalar
+        // SUM önbellek değeri, sayı/metin ayrımı, XML kaçışlama). Tekil cases
         // dosyanın İÇİNİ göremez — doğru aracın doğru uzantıyla çalıştığını
         // kilitler; içerik doğrulaması gidiş-dönüş zincirlerinde yapılır.
-        TestCase(name: "blg-xls-basit-tablo",
+        TestCase(name: "doc-xls-simple-table",
                  prompt: "Şunları excel yap: Ali 32, Ayşe 28, Mehmet 41",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-        TestCase(name: "blg-xls-cok-sutun",
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
+        TestCase(name: "doc-xls-many-column",
                  prompt: "Ad, telefon, şehir ve meslek sütunlu bir müşteri listesi excel'i hazırla",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
         // Tamamen sayısal kolon → motor SUM satırı + önbellek değeri yazar.
         // Formülün kendisi tekil vakadan görünmez; ölçümü blg-znc-toplam-satiri yapar.
-        TestCase(name: "blg-xls-sayisal-kolon",
+        TestCase(name: "doc-xls-numeric-column",
                  prompt: "Ocak giderleri: Kira 12000, Market 6500, Fatura 2300, Ulaşım 1800. Bunu excel yap",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-        TestCase(name: "blg-xls-metin-sayi-karisik",
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
+        TestCase(name: "doc-xls-text-number-mixed",
                  prompt: "Ürün, adet ve fiyat sütunlu bir stok tablosu excel'i yap, 6 satır olsun",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-        TestCase(name: "blg-xls-turkce-basliklar",
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
+        TestCase(name: "doc-xls-turkish-headings",
                  prompt: "Sütun başlıkları Öğrenci, Şube ve Ödev Notu olan bir excel yap",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
         // 50+ satır: OOXML gövdesi büyür, model bağlam bütçesi zorlanır.
-        TestCase(name: "blg-xls-uzun-tablo",
+        TestCase(name: "doc-xls-long-table",
                  prompt: "1'den 50'ye kadar sayıların karesini gösteren bir excel yap",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
         // Tek sütun: motor toplam satırı YAZMAZ (etiket sütunu yok). Model
         // "toplam satırı ekledim" derse yalan söylemiş olur.
-        TestCase(name: "blg-xls-tek-sutun",
+        TestCase(name: "doc-xls-single-column",
                  prompt: "Sadece isimlerden oluşan tek sütunluk bir davetli listesi excel'i yap",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-        TestCase(name: "blg-xls-bos-hucre",
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
+        TestCase(name: "doc-xls-empty-cell",
                  prompt: "Ürün, kod ve fiyat sütunlu bir excel yap. Kalemin kodu yok, o hücre boş kalsın: Kalem 15, Defter D2 40, Silgi S9 8",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-        TestCase(name: "blg-xls-gundelik-dil",
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
+        TestCase(name: "doc-xls-everyday-language",
                  prompt: "şu sayıları excele at 12 45 7 89",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-        TestCase(name: "blg-xls-yazim-hatali",
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
+        TestCase(name: "doc-xls-spelling-faulty",
                  prompt: "haftalik ders programi excel yapar misin",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-        TestCase(name: "blg-xls-tarih-sutunu",
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
+        TestCase(name: "doc-xls-date-column",
                  prompt: "Son 5 günün tarihini ve o günkü adım sayımı tutan bir excel yap",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-        TestCase(name: "blg-xls-yuzde-hucre",
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
+        TestCase(name: "doc-xls-percent-cell",
                  prompt: "İndirim tablosu excel'i yap: Ayakkabı %20, Mont %35, Şapka %10",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-        TestCase(name: "blg-xls-para-birimi",
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
+        TestCase(name: "doc-xls-money-unit",
                  prompt: "Fiyat listesi excel'i yap: Çay 25 TL, Kahve 60 TL, Su 10 TL",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
         // İstenen ad araca ULAŞMALI: hamGirdi "biçim: Excel, ad: nisan-butce".
-        TestCase(name: "blg-xls-verilen-ad",
+        TestCase(name: "doc-xls-given-name",
                  prompt: "Adı nisan-butce olan bir excel oluştur",
-                 ikonlar: ["tablecells"], girdiIcermeli: ["nisan-butce"], ciktiIcermeli: [".xlsx"]),
+                 icons: ["tablecells"], inputContains: ["nisan-butce"], outputContains: [".xlsx"]),
         // Motor TEK sayfa yazar. "İkinci sayfaya koydum" cümlesi sessiz yalandır.
-        TestCase(name: "blg-xls-iki-tablo-istegi",
+        TestCase(name: "doc-xls-two-table-request",
                  prompt: "Bir gelir bir de gider tablosu istiyorum, tek excel dosyasında olsun",
-                 ikonlar: ["tablecells"], yanitIcermemeli: "ikinci sayfa", ciktiIcermeli: [".xlsx"]),
-        TestCase(name: "blg-xls-en",
+                 icons: ["tablecells"], replyExcludes: "ikinci sayfa", outputContains: [".xlsx"]),
+        TestCase(name: "doc-xls-en",
                  prompt: "Make me an excel with my monthly subscriptions and their prices",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-        TestCase(name: "blg-xls-on-iki-satir",
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
+        TestCase(name: "doc-xls-twelve-rows",
                  prompt: "Ocak'tan Aralık'a aylık elektrik tüketimimi tutacağım bir excel yap",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
         // Emoji + XML'de kaçışlanması gereken karakterler aynı hücrede.
-        TestCase(name: "blg-xls-emoji-hucre",
+        TestCase(name: "doc-xls-emoji-cell",
                  prompt: "Görev ve durum sütunlu bir excel yap, durumlarda ✅ ve ❌ işaretleri olsun",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-        TestCase(name: "blg-xls-ondalikli",
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
+        TestCase(name: "doc-xls-decimal",
                  prompt: "Şu ölçümleri excel yap: 3.5, 12.75, 0.5, 108.25",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-        TestCase(name: "blg-xls-uzun-hucre-metni",
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
+        TestCase(name: "doc-xls-long-cell-text",
                  prompt: "Excel yap: bir sütunda madde adı, diğerinde uzun açıklama olsun, 3 satır yeter",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
 
         // MARK: - Word üretimi
         //
         // NEDEN: "doc.text" öneki HTML'i de eşlediği için biçim iddiası ancak
         // dosya yolundaki ".docx" ile kanıtlanır. DocxMotor prose yazar; tablo
         // istendiğinde markdown gövdesi paragraf olarak düşer (bilinen sınır).
-        TestCase(name: "blg-wrd-duz-metin",
+        TestCase(name: "doc-wrd-plain-text",
                  prompt: "İş yerine geç kaldığım için kısa bir açıklama yazısı yaz, word olsun",
-                 ikonlar: ["doc.text"], ciktiIcermeli: [".docx"]),
-        TestCase(name: "blg-wrd-baslikli",
+                 icons: ["doc.text"], outputContains: [".docx"]),
+        TestCase(name: "doc-wrd-with-heading",
                  prompt: "Başlıkları olan bir toplantı tutanağı word belgesi hazırla",
-                 ikonlar: ["doc.text"], ciktiIcermeli: [".docx"]),
-        TestCase(name: "blg-wrd-listeli",
+                 icons: ["doc.text"], outputContains: [".docx"]),
+        TestCase(name: "doc-wrd-with-list",
                  prompt: "Taşınmadan önce yapılacakları maddeler hâlinde word dosyası yap",
-                 ikonlar: ["doc.text"], ciktiIcermeli: [".docx"]),
-        TestCase(name: "blg-wrd-tablolu",
+                 icons: ["doc.text"], outputContains: [".docx"]),
+        TestCase(name: "doc-wrd-with-table",
                  prompt: "İçinde küçük bir haftalık plan tablosu olan word belgesi yap",
-                 ikonlar: ["doc.text"], ciktiIcermeli: [".docx"]),
-        TestCase(name: "blg-wrd-uzun",
+                 icons: ["doc.text"], outputContains: [".docx"]),
+        TestCase(name: "doc-wrd-long",
                  prompt: "Kedi bakımı hakkında iki sayfalık bir word belgesi yaz",
-                 ikonlar: ["doc.text"], ciktiIcermeli: [".docx"]),
-        TestCase(name: "blg-wrd-dilekce",
+                 icons: ["doc.text"], outputContains: [".docx"]),
+        TestCase(name: "doc-wrd-petition",
                  prompt: "Elektrik faturasına itiraz dilekçesi yaz, docx olarak kaydet",
-                 ikonlar: ["doc.text"], ciktiIcermeli: [".docx"]),
-        TestCase(name: "blg-wrd-turkce-karakter",
+                 icons: ["doc.text"], outputContains: [".docx"]),
+        TestCase(name: "doc-wrd-turkish-char",
                  prompt: "İçinde şığüöç gibi Türkçe harfler geçen kısa bir word belgesi yap",
-                 ikonlar: ["doc.text"], ciktiIcermeli: [".docx"]),
+                 icons: ["doc.text"], outputContains: [".docx"]),
         // & < > karakterleri OoxmlKacis'ten geçmezse dosya açılmaz.
-        TestCase(name: "blg-wrd-xml-kacis",
+        TestCase(name: "doc-wrd-xml-escape",
                  prompt: "Word belgesi yap, içinde A & B < C > D ifadesi aynen geçsin",
-                 ikonlar: ["doc.text"], ciktiIcermeli: [".docx"]),
-        TestCase(name: "blg-wrd-en",
+                 icons: ["doc.text"], outputContains: [".docx"]),
+        TestCase(name: "doc-wrd-en",
                  prompt: "Write a short cover letter and save it as a word document",
-                 ikonlar: ["doc.text"], ciktiIcermeli: [".docx"]),
-        TestCase(name: "blg-wrd-cok-kisa-istem",
+                 icons: ["doc.text"], outputContains: [".docx"]),
+        TestCase(name: "doc-wrd-many-short-prompt",
                  prompt: "word belgesi yap",
-                 ikonlar: ["doc.text"], ciktiIcermeli: [".docx"]),
+                 icons: ["doc.text"], outputContains: [".docx"]),
 
         // MARK: - PDF üretimi
         //
         // NEDEN: PdfMotor bu turda uzun blok bölmeyi öğrendi (tek paragraf
         // sayfayı taşırsa kırpılıyordu). Kırpmanın kendisi ancak geri okumayla
-        // görülür → blg-znc-pdf-uzun-paragraf. Buradaki vakalar biçim
+        // görülür → blg-znc-pdf-uzun-paragraf. Buradaki cases biçim
         // seçimini ve çökmemeyi kilitler.
-        TestCase(name: "blg-pdf-kisa-metin",
+        TestCase(name: "doc-pdf-short-text",
                  prompt: "Apartmana asmak için kısa bir asansör bakım duyurusu yaz, pdf yap",
-                 ikonlar: ["doc.richtext"], ciktiIcermeli: [".pdf"]),
-        TestCase(name: "blg-pdf-cok-sayfa",
+                 icons: ["doc.richtext"], outputContains: [".pdf"]),
+        TestCase(name: "doc-pdf-many-page",
                  prompt: "Ev taşıma sürecini anlatan üç sayfalık bir pdf hazırla",
-                 ikonlar: ["doc.richtext"], ciktiIcermeli: [".pdf"]),
-        TestCase(name: "blg-pdf-tablolu",
+                 icons: ["doc.richtext"], outputContains: [".pdf"]),
+        TestCase(name: "doc-pdf-with-table",
                  prompt: "İçinde fiyat tablosu olan bir pdf yap: Boya 850, İşçilik 1200, Malzeme 400",
-                 ikonlar: ["doc.richtext"], ciktiIcermeli: [".pdf"]),
-        TestCase(name: "blg-pdf-madde-listesi",
+                 icons: ["doc.richtext"], outputContains: [".pdf"]),
+        TestCase(name: "doc-pdf-bullet-list",
                  prompt: "Kamp için 20 maddelik malzeme listesini pdf yap",
-                 ikonlar: ["doc.richtext"], ciktiIcermeli: [".pdf"]),
-        TestCase(name: "blg-pdf-makbuz",
+                 icons: ["doc.richtext"], outputContains: [".pdf"]),
+        TestCase(name: "doc-pdf-receipt",
                  prompt: "Basit bir serbest meslek makbuzu taslağı pdf olarak hazırla",
-                 ikonlar: ["doc.richtext"], ciktiIcermeli: [".pdf"]),
-        TestCase(name: "blg-pdf-davetiye",
+                 icons: ["doc.richtext"], outputContains: [".pdf"]),
+        TestCase(name: "doc-pdf-invitation",
                  prompt: "Türkçe karakterli bir doğum günü davetiyesi metni yaz, pdf olsun",
-                 ikonlar: ["doc.richtext"], ciktiIcermeli: [".pdf"]),
+                 icons: ["doc.richtext"], outputContains: [".pdf"]),
         // Tek blok, sayfa taşacak kadar uzun: sayfa bölme yolu.
-        TestCase(name: "blg-pdf-tek-uzun-blok",
+        TestCase(name: "doc-pdf-single-long-block",
                  prompt: "Şu cümleyi 60 kez alt alta tekrar eden bir pdf yap: Deneme satırıdır.",
-                 ikonlar: ["doc.richtext"], ciktiIcermeli: [".pdf"]),
-        TestCase(name: "blg-pdf-tek-uzun-paragraf",
+                 icons: ["doc.richtext"], outputContains: [".pdf"]),
+        TestCase(name: "doc-pdf-single-long-paragraph",
                  prompt: "Zaman yönetimi hakkında tek paragraflık, en az 400 kelimelik bir yazı yaz ve pdf yap",
-                 ikonlar: ["doc.richtext"], ciktiIcermeli: [".pdf"]),
-        TestCase(name: "blg-pdf-gundelik-dil",
+                 icons: ["doc.richtext"], outputContains: [".pdf"]),
+        TestCase(name: "doc-pdf-everyday-language",
                  prompt: "yarınki toplantının gündemini 3 madde yazıp pdf yapabilir misin",
-                 ikonlar: ["doc.richtext"], ciktiIcermeli: [".pdf"]),
-        TestCase(name: "blg-pdf-en",
+                 icons: ["doc.richtext"], outputContains: [".pdf"]),
+        TestCase(name: "doc-pdf-en",
                  prompt: "Create a one page pdf summary of my week",
-                 ikonlar: ["doc.richtext"], ciktiIcermeli: [".pdf"]),
-        TestCase(name: "blg-pdf-verilen-ad",
+                 icons: ["doc.richtext"], outputContains: [".pdf"]),
+        TestCase(name: "doc-pdf-given-name",
                  prompt: "Adı yillik-ozet olan bir pdf hazırla",
-                 ikonlar: ["doc.richtext"], girdiIcermeli: ["yillik-ozet"], ciktiIcermeli: [".pdf"]),
+                 icons: ["doc.richtext"], inputContains: ["yillik-ozet"], outputContains: [".pdf"]),
 
         // MARK: - Markdown / düz metin
         //
         // NEDEN: MetinMotor en basit motor ama biçim SEÇİMİ kolay kaybolur —
         // "markdown" isteği .txt'ye düşerse kullanıcı sessizce yanlış dosya alır.
-        TestCase(name: "blg-md-not",
+        TestCase(name: "doc-md-note",
                  prompt: "Bugünkü fikirlerimi markdown dosyası olarak kaydet",
-                 ikonlar: ["text.alignleft"], ciktiIcermeli: [".md"]),
-        TestCase(name: "blg-md-tablo",
+                 icons: ["text.alignleft"], outputContains: [".md"]),
+        TestCase(name: "doc-md-table",
                  prompt: "Markdown dosyası yap, içinde diller ve seviyeleri tablosu olsun",
-                 ikonlar: ["text.alignleft"], ciktiIcermeli: [".md"]),
-        TestCase(name: "blg-md-baslik-hiyerarsi",
+                 icons: ["text.alignleft"], outputContains: [".md"]),
+        TestCase(name: "doc-md-heading-hierarchy",
                  prompt: "Başlık ve alt başlıkları olan bir markdown dosyası yaz",
-                 ikonlar: ["text.alignleft"], ciktiIcermeli: [".md"]),
-        TestCase(name: "blg-md-en",
+                 icons: ["text.alignleft"], outputContains: [".md"]),
+        TestCase(name: "doc-md-en",
                  prompt: "Save my project notes as a markdown file",
-                 ikonlar: ["text.alignleft"], ciktiIcermeli: [".md"]),
-        TestCase(name: "blg-txt-duz",
+                 icons: ["text.alignleft"], outputContains: [".md"]),
+        TestCase(name: "doc-txt-plain",
                  prompt: "Misafir wifi bilgisini düz metin dosyası olarak kaydet",
-                 ikonlar: ["doc.plaintext"], ciktiIcermeli: [".txt"]),
-        TestCase(name: "blg-txt-liste",
+                 icons: ["doc.plaintext"], outputContains: [".txt"]),
+        TestCase(name: "doc-txt-list",
                  prompt: "Alışveriş listemi txt olarak ver: süt, ekmek, yumurta, peynir",
-                 ikonlar: ["doc.plaintext"], ciktiIcermeli: [".txt"]),
+                 icons: ["doc.plaintext"], outputContains: [".txt"]),
 
         // MARK: - HTML sayfası
         //
@@ -251,31 +251,31 @@ enum EvalCasesDocument {
         // ekran dışı yükler); doğrulama düşerse dosya SİLİNİR ve ham çıktıda
         // ".html" bulunmaz — yani ".html" iddiası aynı zamanda doğrulamanın
         // geçtiğinin kanıtıdır.
-        TestCase(name: "blg-htm-pastane",
+        TestCase(name: "doc-htm-bakery",
                  prompt: "Küçük bir pastane için tek sayfalık site yap",
-                 ikonlar: ["doc.text.image"], ciktiIcermeli: [".html"]),
-        TestCase(name: "blg-htm-tablolu",
+                 icons: ["doc.text.image"], outputContains: [".html"]),
+        TestCase(name: "doc-htm-with-table",
                  prompt: "Kurs fiyatlarını tablo hâlinde gösteren bir web sayfası yap",
-                 ikonlar: ["doc.text.image"], ciktiIcermeli: [".html"]),
-        TestCase(name: "blg-htm-iletisim",
+                 icons: ["doc.text.image"], outputContains: [".html"]),
+        TestCase(name: "doc-htm-contact",
                  prompt: "Tesisatçı için site yap, telefon ve çalışma saatleri bölümü olsun",
-                 ikonlar: ["doc.text.image"], ciktiIcermeli: [".html"]),
-        TestCase(name: "blg-htm-ozgecmis",
+                 icons: ["doc.text.image"], outputContains: [".html"]),
+        TestCase(name: "doc-htm-resume",
                  prompt: "Kendi özgeçmişim için tek sayfalık bir web sitesi hazırla",
-                 ikonlar: ["doc.text.image"], ciktiIcermeli: [".html"]),
-        TestCase(name: "blg-htm-form",
+                 icons: ["doc.text.image"], outputContains: [".html"]),
+        TestCase(name: "doc-htm-form",
                  prompt: "Sipariş formu olan basit bir sayfa yap",
-                 ikonlar: ["doc.text.image"], ciktiIcermeli: [".html"]),
-        TestCase(name: "blg-htm-kisa-istem",
+                 icons: ["doc.text.image"], outputContains: [".html"]),
+        TestCase(name: "doc-htm-short-prompt",
                  prompt: "bana site lazım",
-                 ikonlar: ["doc.text.image"], ciktiIcermeli: [".html"]),
-        TestCase(name: "blg-htm-en",
+                 icons: ["doc.text.image"], outputContains: [".html"]),
+        TestCase(name: "doc-htm-en",
                  prompt: "Build a simple landing page for my gym",
-                 ikonlar: ["doc.text.image"], ciktiIcermeli: [".html"]),
+                 icons: ["doc.text.image"], outputContains: [".html"]),
         // Ağ YOK: sayfa dosya olarak üretilir, yayınlanmaz. "Yayınladım" yalandır.
-        TestCase(name: "blg-htm-yayinlama-durustlugu",
+        TestCase(name: "doc-htm-publish-honesty",
                  prompt: "Sayfayı yap ve internette yayınla, linkini ver",
-                 yanitIcermemeli: "yayınladım"),
+                 replyExcludes: "yayınladım"),
 
         // MARK: - Belge okuma (ekli test-girdi.xlsx)
         //
@@ -287,68 +287,68 @@ enum EvalCasesDocument {
         // KRİTİK: ürünün en görünür belge sözü budur ("tabloyu göster") ve tek
         // koşumda geçip geçmemesi oynak. N-koşu çoğunluk oranı, tek puandan
         // okunamayan tek şeyi verir.
-        TestCase(name: "blg-oku-tablo-cizim",
+        TestCase(name: "doc-read-table-drawing",
                  prompt: "Bu dosyadaki tabloyu aynen göster",
-                 ikonlar: ["tablecells"], attachedDocument: true, yanitIcermeli: "|",
-                 kritik: true),
+                 icons: ["tablecells"], attachedDocument: true, replyContains: "|",
+                 critical: true),
         // Katı sürüm: hem boru hem GERÇEK hücre. Markdown üreticisi hücreleri
         // " | " ile ayırıyor; model tabloyu yeniden yazarsa boşluk düzeni
         // değişebilir (bilinen oynaklık — dosya sonundaki nota bakın).
         // KRİTİK: katı olduğu BİLİNEN vaka. Çoğunluk oranı (ör. 1/3) bu
         // katılığın ne kadar gürültü ürettiğini rapordan okunur kılar.
-        TestCase(name: "blg-oku-tablo-hucreli",
+        TestCase(name: "doc-read-table-with-cells",
                  prompt: "Belgedeki tabloyu markdown tablo olarak yaz",
-                 ikonlar: ["tablecells"], attachedDocument: true, yanitIcermeli: "| Mercimek",
-                 kritik: true),
-        TestCase(name: "blg-oku-satir-sayisi",
+                 icons: ["tablecells"], attachedDocument: true, replyContains: "| Mercimek",
+                 critical: true),
+        TestCase(name: "doc-read-row-count",
                  prompt: "Bu tabloda kaç gün var?",
-                 ikonlar: ["tablecells"], attachedDocument: true, yanitIcermeli: "2"),
+                 icons: ["tablecells"], attachedDocument: true, replyContains: "2"),
         // Araç GERÇEKTEN okudu mu: hücre değeri ham çıktıda olmalı, modelin
         // yanıtında yazması aracın dosyayı açtığının kanıtı değil.
-        TestCase(name: "blg-oku-arac-ciktisi",
+        TestCase(name: "doc-read-tool-output",
                  prompt: "Bu dosyayı oku ve içindekileri söyle",
-                 ikonlar: ["tablecells"], attachedDocument: true, ciktiIcermeli: ["Mercimek", "Tavuk"]),
-        TestCase(name: "blg-oku-hucre-sorgu",
+                 icons: ["tablecells"], attachedDocument: true, outputContains: ["Mercimek", "Tavuk"]),
+        TestCase(name: "doc-read-cell-query",
                  prompt: "Salı günü ne var?",
-                 ikonlar: ["tablecells"], attachedDocument: true, yanitIcermeli: "Tavuk",
-                 ciktiIcermeli: ["Tavuk"]),
-        TestCase(name: "blg-oku-sutun-basliklari",
+                 icons: ["tablecells"], attachedDocument: true, replyContains: "Tavuk",
+                 outputContains: ["Tavuk"]),
+        TestCase(name: "doc-read-column-headings",
                  prompt: "Bu belgedeki sütunlar neler?",
-                 ikonlar: ["tablecells"], attachedDocument: true, yanitIcermeli: "Gün"),
-        TestCase(name: "blg-oku-kolon-degerleri",
+                 icons: ["tablecells"], attachedDocument: true, replyContains: "Gün"),
+        TestCase(name: "doc-read-column-values",
                  prompt: "Yemek sütununda neler yazıyor?",
-                 ikonlar: ["tablecells"], attachedDocument: true, yanitIcermeli: "Mercimek"),
-        TestCase(name: "blg-oku-yorum",
+                 icons: ["tablecells"], attachedDocument: true, replyContains: "Mercimek"),
+        TestCase(name: "doc-read-yorum",
                  prompt: "Bu listeye göre haftanın ilk yemeği ne?",
-                 ikonlar: ["tablecells"], attachedDocument: true, yanitIcermeli: "Mercimek"),
+                 icons: ["tablecells"], attachedDocument: true, replyContains: "Mercimek"),
         // Dosyada OLMAYAN gün: model "Perşembe günü ... var" derse uydurmuştur.
-        TestCase(name: "blg-oku-olmayan-gun",
+        TestCase(name: "doc-read-nonexistent-day",
                  prompt: "Perşembe ne yemek varmış?",
-                 ikonlar: ["tablecells"], attachedDocument: true, yanitIcermemeli: "Perşembe günü"),
+                 icons: ["tablecells"], attachedDocument: true, replyExcludes: "Perşembe günü"),
         // Tabloda para/maliyet sütunu YOK.
-        TestCase(name: "blg-oku-olmayan-maliyet",
+        TestCase(name: "doc-read-nonexistent-cost",
                  prompt: "Bu tablodaki toplam maliyet ne kadar?",
-                 ikonlar: ["tablecells"], attachedDocument: true, yanitIcermemeli: "TL"),
-        TestCase(name: "blg-oku-hafta-sonu",
+                 icons: ["tablecells"], attachedDocument: true, replyExcludes: "TL"),
+        TestCase(name: "doc-read-weekend",
                  prompt: "Bu listede hafta sonu da var mı?",
-                 ikonlar: ["tablecells"], attachedDocument: true, yanitIcermemeli: "Cumartesi ve Pazar"),
+                 icons: ["tablecells"], attachedDocument: true, replyExcludes: "Cumartesi ve Pazar"),
         // Motor YALNIZ ilk sayfayı okur; ikinci sayfadan içerik aktarmak uydurmadır.
-        TestCase(name: "blg-oku-ikinci-sayfa",
+        TestCase(name: "doc-read-second-page",
                  prompt: "Bu excel'de ikinci sayfada ne var?",
-                 attachedDocument: true, yanitIcermemeli: "ikinci sayfada"),
+                 attachedDocument: true, replyExcludes: "ikinci sayfada"),
         // Yanlış öncül: model düzeltmeli, onaylamamalı.
-        TestCase(name: "blg-oku-yanlis-oncul",
+        TestCase(name: "doc-read-wrong-premise",
                  prompt: "Bu dosyada 10 satır var değil mi?",
-                 ikonlar: ["tablecells"], attachedDocument: true, yanitIcermeli: "2"),
-        TestCase(name: "blg-oku-ozet",
+                 icons: ["tablecells"], attachedDocument: true, replyContains: "2"),
+        TestCase(name: "doc-read-summary",
                  prompt: "kısaca özetler misin bu dosyayı",
-                 ikonlar: ["tablecells"], attachedDocument: true),
-        TestCase(name: "blg-oku-en",
+                 icons: ["tablecells"], attachedDocument: true),
+        TestCase(name: "doc-read-en",
                  prompt: "What does this file contain?",
-                 ikonlar: ["tablecells"], attachedDocument: true),
-        TestCase(name: "blg-oku-bicim-sorgu",
+                 icons: ["tablecells"], attachedDocument: true),
+        TestCase(name: "doc-read-format-query",
                  prompt: "Bu dosya hangi formatta?",
-                 attachedDocument: true, yanitIcermeli: "xcel"),
+                 attachedDocument: true, replyContains: "xcel"),
 
         // MARK: - Belge düzenleme (ekli test-girdi.xlsx)
         //
@@ -356,57 +356,57 @@ enum EvalCasesDocument {
         // "... (düzenlendi).xlsx" olur. Ham çıktıdaki "düzenlendi" bu yüzden
         // "gerçekten yeni dosya yazıldı mı" sorusunun tek dürüst cevabıdır —
         // model "ekledim" der ama araç çağrılmamış olabilir.
-        TestCase(name: "blg-duz-satir-ekle",
+        TestCase(name: "doc-plain-row-add",
                  prompt: "Bu tabloya Çarşamba - Karnıyarık satırını ekle",
-                 ikonlar: ["tablecells"], attachedDocument: true, ciktiIcermeli: ["düzenlendi"]),
-        TestCase(name: "blg-duz-iki-satir",
+                 icons: ["tablecells"], attachedDocument: true, outputContains: ["düzenlendi"]),
+        TestCase(name: "doc-plain-two-row",
                  prompt: "Perşembe Köfte ve Cuma Balık satırlarını da ekle",
-                 ikonlar: ["tablecells"], attachedDocument: true, ciktiIcermeli: ["düzenlendi"]),
-        TestCase(name: "blg-duz-hucre-degistir",
+                 icons: ["tablecells"], attachedDocument: true, outputContains: ["düzenlendi"]),
+        TestCase(name: "doc-plain-cell-replace",
                  prompt: "Salı gününü Nohut yap",
-                 ikonlar: ["tablecells"], attachedDocument: true, ciktiIcermeli: ["düzenlendi"]),
-        TestCase(name: "blg-duz-satir-sil",
+                 icons: ["tablecells"], attachedDocument: true, outputContains: ["düzenlendi"]),
+        TestCase(name: "doc-plain-row-delete",
                  prompt: "Pazartesi satırını çıkar",
-                 ikonlar: ["tablecells"], attachedDocument: true, ciktiIcermeli: ["düzenlendi"]),
-        TestCase(name: "blg-duz-sutun-ekle",
+                 icons: ["tablecells"], attachedDocument: true, outputContains: ["düzenlendi"]),
+        TestCase(name: "doc-plain-column-add",
                  prompt: "Tabloya Kişi Sayısı diye bir sütun ekle, hepsi 4 olsun",
-                 ikonlar: ["tablecells"], attachedDocument: true, ciktiIcermeli: ["düzenlendi"]),
-        TestCase(name: "blg-duz-baslik-degistir",
+                 icons: ["tablecells"], attachedDocument: true, outputContains: ["düzenlendi"]),
+        TestCase(name: "doc-plain-heading-replace",
                  prompt: "Yemek sütununun adını Öğün yap",
-                 ikonlar: ["tablecells"], attachedDocument: true, ciktiIcermeli: ["düzenlendi"]),
-        TestCase(name: "blg-duz-sirala",
+                 icons: ["tablecells"], attachedDocument: true, outputContains: ["düzenlendi"]),
+        TestCase(name: "doc-plain-sort",
                  prompt: "Satırları yemek adına göre alfabetik sırala",
-                 ikonlar: ["tablecells"], attachedDocument: true, ciktiIcermeli: ["düzenlendi"]),
-        TestCase(name: "blg-duz-temizle",
+                 icons: ["tablecells"], attachedDocument: true, outputContains: ["düzenlendi"]),
+        TestCase(name: "doc-plain-clear",
                  prompt: "Tablodaki bütün satırları sil, sadece başlıklar kalsın",
-                 ikonlar: ["tablecells"], attachedDocument: true, ciktiIcermeli: ["düzenlendi"]),
-        TestCase(name: "blg-duz-veri-koruma",
+                 icons: ["tablecells"], attachedDocument: true, outputContains: ["düzenlendi"]),
+        TestCase(name: "doc-plain-data-guard",
                  prompt: "Cumartesi Pizza satırını ekle ama mevcut satırlara dokunma",
-                 ikonlar: ["tablecells"], attachedDocument: true, ciktiIcermeli: ["düzenlendi"]),
-        TestCase(name: "blg-duz-en",
+                 icons: ["tablecells"], attachedDocument: true, outputContains: ["düzenlendi"]),
+        TestCase(name: "doc-plain-en",
                  prompt: "Add a row: Sunday, Soup",
-                 ikonlar: ["tablecells"], attachedDocument: true, ciktiIcermeli: ["düzenlendi"]),
+                 icons: ["tablecells"], attachedDocument: true, outputContains: ["düzenlendi"]),
         // BİÇİM DÖNÜŞTÜRME: doğru yol belge_oku + belge_olustur. `belge_duzenle`
         // biçim DEĞİŞTİRMEZ ve bunu modele açıkça söyler; ".md" beklentisi
         // "markdown yaptım" diyen ama .xlsx yazan sessiz yalanı yakalar.
         // Okuma çipi de beklentiye YAZILDI: doğru yol iki araç çağırmaktır,
-        // yalnız üretim çipini beklemek doğru davranışı "fazla-arac" sayardı.
+        // yalnız üretim çipini beklemek doğru davranışı "extra-tool" sayardı.
         // Word/pdf dönüşümleri bypass ailesinde (blg-ref-*) ölçülüyor.
-        TestCase(name: "blg-duz-md-cevir",
+        TestCase(name: "doc-plain-md-convert",
                  prompt: "Bunun markdown hâlini de ver",
-                 ikonlar: ["tablecells", "text.alignleft"], attachedDocument: true,
-                 ciktiIcermeli: [".md"]),
+                 icons: ["tablecells", "text.alignleft"], attachedDocument: true,
+                 outputContains: [".md"]),
         // Olmayan satır: silinecek bir şey yok, "sildim" demek yalandır.
-        TestCase(name: "blg-duz-olmayan-satir",
+        TestCase(name: "doc-plain-nonexistent-row",
                  prompt: "Ağustos satırını sil",
-                 attachedDocument: true, yanitIcermemeli: "sildim"),
+                 attachedDocument: true, replyExcludes: "sildim"),
         // Motorda grafik/makro/şifreleme YOK — hiçbiri "eklendi" diye raporlanamaz.
-        TestCase(name: "blg-duz-grafik-istegi",
+        TestCase(name: "doc-plain-chart-request",
                  prompt: "Bu excel'e pasta grafiği ekle",
-                 attachedDocument: true, yanitIcermemeli: "grafiği ekledim"),
-        TestCase(name: "blg-duz-formul-iddiasi",
+                 attachedDocument: true, replyExcludes: "grafiği ekledim"),
+        TestCase(name: "doc-plain-formula-claim",
                  prompt: "Yemek sütununun altına toplam formülü ekle",
-                 attachedDocument: true, yanitIcermemeli: "formülü ekledim"),
+                 attachedDocument: true, replyExcludes: "formülü ekledim"),
 
         // MARK: - Sayı biçimleri (bozuk dosya ÜRETMEME sözü)
         //
@@ -414,39 +414,39 @@ enum EvalCasesDocument {
         // "nan"/"inf"/"0x1p2" ASLA <v> olarak yazılmamalı (Excel dosyayı
         // onarılamaz sayar). Tekil vaka dosyanın içini göremez ama çipin
         // BAŞARISIZ düşmemesi bile bilgidir; içerik doğrulaması zincirlerde.
-        TestCase(name: "blg-sayi-onde-sifir",
+        TestCase(name: "doc-number-leading-zero",
                  prompt: "Personel numaraları 007, 015 ve 042 olan üç kişilik bir excel yap",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-        TestCase(name: "blg-sayi-telefon",
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
+        TestCase(name: "doc-number-phone",
                  prompt: "Rehber excel'i yap: Ali 05321234567, Veli 05339876543",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-        TestCase(name: "blg-sayi-ondalik",
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
+        TestCase(name: "doc-number-decimal",
                  prompt: "Şu ölçümleri excel yap: 1.5, 2.25, 3.125",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-        TestCase(name: "blg-sayi-negatif",
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
+        TestCase(name: "doc-number-negative",
                  prompt: "Kar zarar tablosu excel yap: Ocak -1200, Şubat 3400, Mart -560",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-        TestCase(name: "blg-sayi-cok-buyuk",
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
+        TestCase(name: "doc-number-many-large",
                  prompt: "Excel yap: dünya nüfusu 8100000000, Türkiye nüfusu 85000000",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-        TestCase(name: "blg-sayi-tuzak-metin",
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
+        TestCase(name: "doc-number-trap-text",
                  prompt: "Ölçüm sütununda nan ve inf yazan bir excel yap, diğer iki değer 3.5 ve 7 olsun",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-        TestCase(name: "blg-sayi-binlik-ayrac",
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
+        TestCase(name: "doc-number-thousands-separator",
                  prompt: "Excel yap: gelir 1.250.000, gider 980.500",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-        TestCase(name: "blg-sayi-arti-isaretli",
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
+        TestCase(name: "doc-number-plus-marked",
                  prompt: "Sıcaklık farkları excel'i yap: +3, -2, +7",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-        TestCase(name: "blg-sayi-sifir-degerli",
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
+        TestCase(name: "doc-number-zero-valued",
                  prompt: "Stok excel'i yap: Kalem 0, Defter 12, Silgi 0, Kitap 5",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-        TestCase(name: "blg-sayi-tarih-metni",
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
+        TestCase(name: "doc-number-date-text",
                  prompt: "Excel yap: 01.01.2026 günü 500, 02.01.2026 günü 750",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-        TestCase(name: "blg-sayi-iban",
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
+        TestCase(name: "doc-number-iban",
                  prompt: "Hesap bilgilerimi excel'e yaz: TR330006100519786457841326",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
 
         // MARK: - 4096 bypass kanalı (kaynakRef)
         //
@@ -455,387 +455,387 @@ enum EvalCasesDocument {
         // GEÇMEDEN çeker. Sözleşmenin gözlemlenebilir imzası `belge_olustur`
         // ham girdisindeki "ref:" parçasıdır. Ekli tablo 2 satır olduğu için
         // (>1) ref her okumada üretilir.
-        TestCase(name: "blg-ref-word-cevir",
+        TestCase(name: "doc-ref-word-convert",
                  prompt: "Bu tabloyu word belgesine çevir",
-                 ikonlar: ["tablecells", "doc.text"], attachedDocument: true,
-                 girdiIcermeli: ["ref:"], ciktiIcermeli: [".docx"]),
-        TestCase(name: "blg-ref-pdf-cevir",
+                 icons: ["tablecells", "doc.text"], attachedDocument: true,
+                 inputContains: ["ref:"], outputContains: [".docx"]),
+        TestCase(name: "doc-ref-pdf-convert",
                  prompt: "Bu belgeyi pdf hâline getir",
-                 ikonlar: ["tablecells", "doc.richtext"], attachedDocument: true,
-                 girdiIcermeli: ["ref:"], ciktiIcermeli: [".pdf"]),
-        TestCase(name: "blg-ref-yeni-excel",
+                 icons: ["tablecells", "doc.richtext"], attachedDocument: true,
+                 inputContains: ["ref:"], outputContains: [".pdf"]),
+        TestCase(name: "doc-ref-new-excel",
                  prompt: "Bu belgenin bir kopyasını yeni bir excel olarak kaydet",
-                 ikonlar: ["tablecells"], attachedDocument: true, girdiIcermeli: ["ref:"]),
+                 icons: ["tablecells"], attachedDocument: true, inputContains: ["ref:"]),
 
         // MARK: - Hata yolları (çökme YOK, uydurma YOK)
         //
         // NEDEN: Uygulamanın dosya sistemine erişimi yok, ağ yok, paylaşım yok.
-        // Bu isteklerin hepsi DÜRÜSTÇE reddedilmeli; "yaptım" demek en pahalı
+        // Bu isteklerin all DÜRÜSTÇE reddedilmeli; "yaptım" demek en pahalı
         // hata sınıfı, çünkü kullanıcı doğrulamadan güvenir.
-        TestCase(name: "blg-hata-ekli-yok",
+        TestCase(name: "doc-error-attached-none",
                  prompt: "Bu belgeyi özetle",
-                 yanitIcermemeli: "belgenin içeriği"),
-        TestCase(name: "blg-hata-masaustu-dosya",
+                 replyExcludes: "belgenin içeriği"),
+        TestCase(name: "doc-error-desktop-file",
                  prompt: "Masaüstümdeki 2026-rapor.xlsx dosyasını aç ve özetle",
-                 yanitIcermemeli: "açtım"),
-        TestCase(name: "blg-hata-mutlak-yol",
+                 replyExcludes: "açtım"),
+        TestCase(name: "doc-error-absolute-path",
                  prompt: "/Users/ali/Belgeler/butce.xlsx yolundaki dosyayı oku",
-                 yanitIcermemeli: "okudum"),
-        TestCase(name: "blg-hata-sunum",
+                 replyExcludes: "okudum"),
+        TestCase(name: "doc-error-deck",
                  prompt: "Bunu powerpoint sunumu yap",
-                 yanitIcermemeli: "sunum hazır"),
-        TestCase(name: "blg-hata-csv",
+                 replyExcludes: "sunum hazır"),
+        TestCase(name: "doc-error-csv",
                  prompt: "Verileri csv dosyası olarak ver",
-                 yanitIcermemeli: ".csv"),
-        TestCase(name: "blg-hata-zip",
+                 replyExcludes: ".csv"),
+        TestCase(name: "doc-error-zip",
                  prompt: "Ürettiğin dosyaları zip yap",
-                 yanitIcermemeli: "zipledim"),
-        TestCase(name: "blg-hata-eposta",
+                 replyExcludes: "zipledim"),
+        TestCase(name: "doc-error-email",
                  prompt: "Bu excel'i patronuma mail at",
-                 yanitIcermemeli: "gönderdim"),
-        TestCase(name: "blg-hata-yazdir",
+                 replyExcludes: "gönderdim"),
+        TestCase(name: "doc-error-print",
                  prompt: "Bu belgeyi yazıcıdan çıkar",
-                 yanitIcermemeli: "yazdırdım"),
-        TestCase(name: "blg-hata-bulut",
+                 replyExcludes: "yazdırdım"),
+        TestCase(name: "doc-error-cloud",
                  prompt: "Bu dosyayı Google Drive'a yükle",
-                 yanitIcermemeli: "yükledim"),
-        TestCase(name: "blg-hata-sifreleme",
+                 replyExcludes: "yükledim"),
+        TestCase(name: "doc-error-encryption",
                  prompt: "Bu excel dosyasına şifre koy",
-                 yanitIcermemeli: "şifreledim"),
-        TestCase(name: "blg-hata-makro",
+                 replyExcludes: "şifreledim"),
+        TestCase(name: "doc-error-macro",
                  prompt: "Excel'e bir makro yaz ve dosyanın içine göm",
-                 yanitIcermemeli: "makroyu ekledim"),
-        TestCase(name: "blg-hata-resim",
+                 replyExcludes: "makroyu ekledim"),
+        TestCase(name: "doc-error-image",
                  prompt: "Word belgesine logomuzu resim olarak ekle",
-                 yanitIcermemeli: "logoyu ekledim"),
-        TestCase(name: "blg-hata-imza",
+                 replyExcludes: "logoyu ekledim"),
+        TestCase(name: "doc-error-signature",
                  prompt: "Pdf'e ıslak imzamı at",
-                 yanitIcermemeli: "imzaladım"),
-        TestCase(name: "blg-hata-silme",
+                 replyExcludes: "imzaladım"),
+        TestCase(name: "doc-error-delete",
                  prompt: "Daha önce oluşturduğun bütün dosyaları sil",
-                 yanitIcermemeli: "sildim"),
+                 replyExcludes: "sildim"),
 
         // MARK: - Biçim seçimi ve dosya adı
         //
         // NEDEN: `Bicim` enum'u kısıtlı çözümlemeyle üretiliyor (geçersiz değer
         // ÜRETİLEMEZ), ama YANLIŞ değer hâlâ mümkün. Ad temizliği motorda:
         // "/" tireye çevrilir, çakışmada dosya EZİLMEZ, "-2" eklenir.
-        TestCase(name: "blg-bcm-tablo-imasi",
+        TestCase(name: "doc-skl-table-implication",
                  prompt: "Bunları tablo hâlinde bir dosyaya koy: kalem 5, defter 3, silgi 8",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
         // Biçim belirtilmemiş: model netleştirebilir ya da makul seçebilir —
         // ikisi de doğru. BİLGİ AMAÇLI, çip beklentisi yok.
-        TestCase(name: "blg-bcm-belirsiz-liste",
+        TestCase(name: "doc-skl-ambiguous-list",
                  prompt: "Bana bir okuma listesi dosyası hazırla"),
-        TestCase(name: "blg-bcm-belirsiz-yazi",
+        TestCase(name: "doc-skl-ambiguous-text",
                  prompt: "Uzunca bir yazı yazıp dosyaya dök"),
-        TestCase(name: "blg-bcm-cift-bicim",
+        TestCase(name: "doc-skl-double-format",
                  prompt: "Aylık gider tablosunu hem excel hem pdf olarak ver",
-                 ikonlar: ["tablecells", "doc.richtext"], ciktiIcermeli: [".xlsx", ".pdf"]),
+                 icons: ["tablecells", "doc.richtext"], outputContains: [".xlsx", ".pdf"]),
         // Eğik çizgi dosya adında geçersiz; motor tireye çevirir.
-        TestCase(name: "blg-ad-egik-cizgi",
+        TestCase(name: "doc-name-italic-line",
                  prompt: "Adı 2025/2026 sezon olan bir excel yap",
-                 ikonlar: ["tablecells"], ciktiIcermeli: ["2025-2026"]),
-        TestCase(name: "blg-ad-noktali",
+                 icons: ["tablecells"], outputContains: ["2025-2026"]),
+        TestCase(name: "doc-name-dotted",
                  prompt: "Adı rapor.v2.final olan bir word belgesi yap",
-                 ikonlar: ["doc.text"], ciktiIcermeli: [".docx"]),
-        TestCase(name: "blg-ad-emoji",
+                 icons: ["doc.text"], outputContains: [".docx"]),
+        TestCase(name: "doc-name-emoji",
                  prompt: "Dosya adında 📊 emojisi olsun, excel yap",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-        TestCase(name: "blg-ad-cok-uzun",
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
+        TestCase(name: "doc-name-many-long",
                  prompt: "Adı çok uzun bir dosya adı denemesi için hazırlanmış olan yıllık konsolide finansal değerlendirme raporu taslağı olan bir pdf yap",
-                 ikonlar: ["doc.richtext"], ciktiIcermeli: [".pdf"]),
-        TestCase(name: "blg-ad-tirnakli",
+                 icons: ["doc.richtext"], outputContains: [".pdf"]),
+        TestCase(name: "doc-name-quoted",
                  prompt: "Adı Ali'nin listesi olan bir excel oluştur",
-                 ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-        TestCase(name: "blg-ad-bosluklu",
+                 icons: ["tablecells"], outputContains: [".xlsx"]),
+        TestCase(name: "doc-name-with-space",
                  prompt: "Dosya adı iki kelimeli olsun: ev butcesi. Excel yap",
-                 ikonlar: ["tablecells"], girdiIcermeli: ["ev butcesi"], ciktiIcermeli: [".xlsx"])
+                 icons: ["tablecells"], inputContains: ["ev butcesi"], outputContains: [".xlsx"])
     ]
 
-    /// ZİNCİR oturum vakaları — tek oturumda arka arkaya turlar.
+    /// ZİNCİR oturum vakaları — tek oturumda arka arkaya turns.
     /// Zincirin turları BÖLÜNMEZ; shard'lama zinciri tek eleman olarak dağıtır.
     ///
-    /// TASARIM: bu ailedeki zincirlerin ÇOĞU `karsilastir: false`. Sebep süre
-    /// değil doğruluk — turların neredeyse hepsi bir öncekinin ÇIKTISINA
+    /// TASARIM: bu ailedeki zincirlerin ÇOĞU `compare: false`. Sebep süre
+    /// değil doğruluk — turların neredeyse all bir öncekinin ÇIKTISINA
     /// dilbilgisel olarak bağlı ("bunu oku", "onu pdf yap"); bağımsız koşumda
     /// ortada dosya olmaz ve kontrol koşumu hiçbir şey ölçmeden süre yakar.
     /// Bağlam taşımanın yardımı/zararı gerçekten sorulabilen zincirlerde
-    /// (belirsiz istem → netleştirme) karşılaştırma AÇIK bırakıldı.
-    static let zincirler: [ChainCase] = [
+    /// (ambiguous istem → netleştirme) karşılaştırma AÇIK bırakıldı.
+    static let chains: [ChainCase] = [
 
         // Gidiş-dönüş bütünlüğü: dosyaya YAZILAN veri, dosyadan OKUNANLA aynı mı?
         // İkinci turun ham çıktısı motorun dosyadan gerçekten çıkardığı gövdedir;
         // hücre değerleri orada yoksa yazma ya da okuma yolunda veri kaybı var.
         ChainCase(
-            name: "blg-znc-yaz-oku-donus",
+            name: "doc-chn-write-read-roundtrip",
             description: "Excel yaz → aynı dosyayı oku. Yazılan hücreler geri okunmalı (OOXML gidiş-dönüş).",
-            turlar: [
-                ChainKind(prompt: "Şu fiyat listesini excel yap: Kalem 15, Defter 40, Silgi 8",
-                          ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-                ChainKind(prompt: "Şimdi bu dosyayı aç ve içindekileri olduğu gibi göster",
-                          ikonlar: ["tablecells"], yanitIcermeli: "|",
-                          ciktiIcermeli: ["Kalem", "Defter", "Silgi"])
+            turns: [
+                ChainTurn(prompt: "Şu fiyat listesini excel yap: Kalem 15, Defter 40, Silgi 8",
+                          icons: ["tablecells"], outputContains: [".xlsx"]),
+                ChainTurn(prompt: "Şimdi bu dosyayı aç ve içindekileri olduğu gibi göster",
+                          icons: ["tablecells"], replyContains: "|",
+                          outputContains: ["Kalem", "Defter", "Silgi"])
             ],
-            karsilastir: false),
+            compare: false),
 
         // Öndeki sıfır: "007" sayıya düşerse geri okumada "7" olur. Motor bu turda
         // tam olarak bunu engellemek için daraltıldı; zincir o daralmanın bekçisi.
         ChainCase(
-            name: "blg-znc-onde-sifir-donus",
+            name: "doc-chn-leading-zero-roundtrip",
             description: "Öndeki sıfırlı kimlikler metin kalmalı; geri okumada 007 hâlâ 007 olmalı.",
-            turlar: [
-                ChainKind(prompt: "Personel numaralarını aynen yazarak bir excel yap: 007 Ali, 015 Ayşe, 042 Mehmet",
-                          ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-                ChainKind(prompt: "Bu dosyayı oku, numaraları olduğu gibi yaz",
-                          ikonlar: ["tablecells"], ciktiIcermeli: ["007", "015"])
+            turns: [
+                ChainTurn(prompt: "Personel numaralarını aynen yazarak bir excel yap: 007 Ali, 015 Ayşe, 042 Mehmet",
+                          icons: ["tablecells"], outputContains: [".xlsx"]),
+                ChainTurn(prompt: "Bu dosyayı oku, numaraları olduğu gibi yaz",
+                          icons: ["tablecells"], outputContains: ["007", "015"])
             ],
-            karsilastir: false),
+            compare: false),
 
         // "nan"/"inf" <v> olarak yazılırsa Excel dosyayı onarılamaz sayar ve
         // GERİ OKUMA da düşer: ikinci turun çipi başarısız olur, ham çıktı boşalır.
         ChainCase(
-            name: "blg-znc-tuzak-metin-donus",
+            name: "doc-chn-trap-text-roundtrip",
             description: "nan/inf metin olarak yazılmalı; dosya bozulmamalı ve geri okunabilmeli.",
-            turlar: [
-                ChainKind(prompt: "Ölçüm adı ve değer sütunlu bir excel yap: A ölçümü nan, B ölçümü inf, C ölçümü 3.5",
-                          ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-                ChainKind(prompt: "Bu dosyayı tekrar aç ve değerleri göster",
-                          ikonlar: ["tablecells"], ciktiIcermeli: ["nan", "inf"])
+            turns: [
+                ChainTurn(prompt: "Ölçüm adı ve değer sütunlu bir excel yap: A ölçümü nan, B ölçümü inf, C ölçümü 3.5",
+                          icons: ["tablecells"], outputContains: [".xlsx"]),
+                ChainTurn(prompt: "Bu dosyayı tekrar aç ve değerleri göster",
+                          icons: ["tablecells"], outputContains: ["nan", "inf"])
             ],
-            karsilastir: false),
+            compare: false),
 
         // Boş hücre: ne düşmeli ne de komşusunu kaydırmalı. (Kendi yazdığımız
         // dosyada boş hücre AÇIKÇA yazılır; üçüncü taraf dosyalarda hücrenin hiç
         // yazılmadığı durumu bu zincir ÖLÇEMEZ — dosya sonundaki nota bakın.)
         ChainCase(
-            name: "blg-znc-bos-hucre-donus",
+            name: "doc-chn-empty-cell-roundtrip",
             description: "Boş hücreli tablo gidiş-dönüşünde sütunlar kaymamalı, dolu hücreler yerinde kalmalı.",
-            turlar: [
-                ChainKind(prompt: "Ürün, kod ve fiyat sütunlu excel yap. Kalemin kodu yok, boş kalsın: Kalem 15, Defter D2 40, Silgi S9 8",
-                          ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-                ChainKind(prompt: "Bu dosyayı oku ve tabloyu göster",
-                          ikonlar: ["tablecells"], ciktiIcermeli: ["Defter", "D2", "40"])
+            turns: [
+                ChainTurn(prompt: "Ürün, kod ve fiyat sütunlu excel yap. Kalemin kodu yok, boş kalsın: Kalem 15, Defter D2 40, Silgi S9 8",
+                          icons: ["tablecells"], outputContains: [".xlsx"]),
+                ChainTurn(prompt: "Bu dosyayı oku ve tabloyu göster",
+                          icons: ["tablecells"], outputContains: ["Defter", "D2", "40"])
             ],
-            karsilastir: false),
+            compare: false),
 
         // Toplam satırı: motor onu KENDİ yazar (formül + önbellek değeri) ve geri
         // okurken KENDİ satırını atar. Atmazsa ikinci yazımda toplam toplanır
         // (203,5 → 407). Geri okumada ham çıktıda veri satırları olmalı.
         ChainCase(
-            name: "blg-znc-toplam-satiri",
+            name: "doc-chn-sum-row",
             description: "Sayısal kolonda SUM satırı üretilir; geri okumada o satır VERİ sayılmamalı, toplam katlanmamalı.",
-            turlar: [
-                ChainKind(prompt: "Giderleri excel yap: Kira 12000, Market 6500, Fatura 2300",
-                          ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-                ChainKind(prompt: "Bu dosyayı oku, satırları göster",
-                          ikonlar: ["tablecells"], ciktiIcermeli: ["Kira", "12000"]),
-                ChainKind(prompt: "Buna Ulaşım 1800 satırını da ekle",
-                          ikonlar: ["tablecells"], ciktiIcermeli: ["düzenlendi"])
+            turns: [
+                ChainTurn(prompt: "Giderleri excel yap: Kira 12000, Market 6500, Fatura 2300",
+                          icons: ["tablecells"], outputContains: [".xlsx"]),
+                ChainTurn(prompt: "Bu dosyayı oku, satırları göster",
+                          icons: ["tablecells"], outputContains: ["Kira", "12000"]),
+                ChainTurn(prompt: "Buna Ulaşım 1800 satırını da ekle",
+                          icons: ["tablecells"], outputContains: ["düzenlendi"])
             ],
-            karsilastir: false),
+            compare: false),
 
         // PDF uzun blok bölme: sayfayı taşan tek blok kırpılırsa geri okumada
         // SON işaret kaybolur. Model metni AYNEN aktarmazsa vaka düşer — bu da
         // gerçek bir kusurdur ("aynen pdf yap" gündelik bir istektir).
         ChainCase(
-            name: "blg-znc-pdf-uzun-paragraf",
+            name: "doc-chn-pdf-long-paragraph",
             description: "Sayfayı taşan uzun blok bölünmeli, kırpılmamalı: geri okumada kapanış işareti bulunmalı.",
-            turlar: [
-                ChainKind(prompt: "Şu metni aynen pdf yap: BASLANGIC-ISARETI. Bahçe bakımı sabır ister; toprak hazırlığı, sulama düzeni, gübreleme takvimi ve budama zamanı birbirine bağlıdır. Toprağı havalandırmadan ekim yapmak kökleri boğar, fazla sulamak çürütür, az sulamak kavurur. Gübreyi mevsim başında vermek gerekir; geç kalan gübre bitkiyi yorar. Budamayı soğuklar bitmeden yapmak sürgünleri riske atar. Böcekle mücadelede önce gözlem, sonra müdahale gelir; erken ilaçlama faydalı böcekleri de öldürür. Saksı bitkilerinde drenaj deliği olmadan hiçbir bakım işe yaramaz. Kış aylarında sulamayı seyrekleştirmek, yaz aylarında sabah erken sulamak kök sağlığını korur. Toprağın üst tabakası kuruduğunda parmakla iki santim derinliği kontrol etmek en güvenilir yöntemdir. Yaprakları sararan bitki her zaman susuz değildir; fazla su da aynı belirtiyi verir. KAPANIS-ISARETI.",
-                          ikonlar: ["doc.richtext"], ciktiIcermeli: [".pdf"]),
-                ChainKind(prompt: "Bu pdf'i oku, en sonunda ne yazıyor?",
-                          ikonlar: ["doc.richtext"], ciktiIcermeli: ["KAPANIS-ISARETI"])
+            turns: [
+                ChainTurn(prompt: "Şu metni aynen pdf yap: BASLANGIC-ISARETI. Bahçe bakımı sabır ister; toprak hazırlığı, sulama düzeni, gübreleme takvimi ve budama zamanı birbirine bağlıdır. Toprağı havalandırmadan ekim yapmak kökleri boğar, fazla sulamak çürütür, az sulamak kavurur. Gübreyi mevsim başında vermek gerekir; geç kalan gübre bitkiyi yorar. Budamayı soğuklar bitmeden yapmak sürgünleri riske atar. Böcekle mücadelede önce gözlem, sonra müdahale gelir; erken ilaçlama faydalı böcekleri de öldürür. Saksı bitkilerinde drenaj deliği olmadan hiçbir bakım işe yaramaz. Kış aylarında sulamayı seyrekleştirmek, yaz aylarında sabah erken sulamak kök sağlığını korur. Toprağın üst tabakası kuruduğunda parmakla iki santim derinliği kontrol etmek en güvenilir yöntemdir. Yaprakları sararan bitki her zaman susuz değildir; fazla su da aynı belirtiyi verir. KAPANIS-ISARETI.",
+                          icons: ["doc.richtext"], outputContains: [".pdf"]),
+                ChainTurn(prompt: "Bu pdf'i oku, en sonunda ne yazıyor?",
+                          icons: ["doc.richtext"], outputContains: ["KAPANIS-ISARETI"])
             ],
-            karsilastir: false),
+            compare: false),
 
         // Türkçe karakter + XML kaçışlama: başlıklar geri okumada bozulmamalı.
         ChainCase(
-            name: "blg-znc-turkce-karakter-donus",
+            name: "doc-chn-turkish-char-roundtrip",
             description: "Türkçe karakterli başlıklar ve & < > içeren hücreler gidiş-dönüşte bozulmamalı.",
-            turlar: [
-                ChainKind(prompt: "Şube ve Öğle Yemeği sütunlu bir excel yap: Kadıköy Çorba & Pilav, Üsküdar Köfte",
-                          ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-                ChainKind(prompt: "Dosyayı oku ve başlıkları aynen yaz",
-                          ikonlar: ["tablecells"], ciktiIcermeli: ["Öğle", "Kadıköy"])
+            turns: [
+                ChainTurn(prompt: "Şube ve Öğle Yemeği sütunlu bir excel yap: Kadıköy Çorba & Pilav, Üsküdar Köfte",
+                          icons: ["tablecells"], outputContains: [".xlsx"]),
+                ChainTurn(prompt: "Dosyayı oku ve başlıkları aynen yaz",
+                          icons: ["tablecells"], outputContains: ["Öğle", "Kadıköy"])
             ],
-            karsilastir: false),
+            compare: false),
 
         // 4096 bypass: büyük tablo modelin bağlamından GEÇMEDEN ikinci dosyaya
         // taşınmalı. İmza: belge_olustur argümanında "ref:".
         ChainCase(
-            name: "blg-znc-ref-kanali",
+            name: "doc-chn-ref-channel",
             description: "Büyük tablo → oku (data_ref) → başka biçime yaz. Gövde model bağlamından değil depodan geçmeli.",
-            turlar: [
-                ChainKind(prompt: "1'den 40'a kadar sayıların karesini ve küpünü gösteren bir excel yap",
-                          ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-                ChainKind(prompt: "Bu dosyayı oku",
-                          ikonlar: ["tablecells"]),
-                ChainKind(prompt: "Aynı veriyi word belgesi olarak da kaydet",
-                          ikonlar: ["doc.text"], girdiIcermeli: ["ref:"], ciktiIcermeli: [".docx"])
+            turns: [
+                ChainTurn(prompt: "1'den 40'a kadar sayıların karesini ve küpünü gösteren bir excel yap",
+                          icons: ["tablecells"], outputContains: [".xlsx"]),
+                ChainTurn(prompt: "Bu dosyayı oku",
+                          icons: ["tablecells"]),
+                ChainTurn(prompt: "Aynı veriyi word belgesi olarak da kaydet",
+                          icons: ["doc.text"], inputContains: ["ref:"], outputContains: [".docx"])
             ],
-            karsilastir: false),
+            compare: false),
 
         // Büyük tablo okunduğunda modele KISA özet döner (10 satır + "… (+N satır
         // daha)"). Model kalan satırları görmüş gibi davranırsa uydurmuş olur.
         ChainCase(
-            name: "blg-znc-buyuk-tablo-kirpma",
+            name: "doc-chn-large-table-truncate",
             description: "Kırpılmış önizleme: model görmediği satırların içeriğini uydurmamalı, sayıyı dosyadan söylemeli.",
-            turlar: [
-                ChainKind(prompt: "Ocak'tan Aralık'a 12 satırlık gelir gider tablosu excel'i yap",
-                          ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-                ChainKind(prompt: "Bu dosyada kaç satır var?",
-                          ikonlar: ["tablecells"], yanitIcermeli: "12")
+            turns: [
+                ChainTurn(prompt: "Ocak'tan Aralık'a 12 satırlık gelir gider tablosu excel'i yap",
+                          icons: ["tablecells"], outputContains: [".xlsx"]),
+                ChainTurn(prompt: "Bu dosyada kaç satır var?",
+                          icons: ["tablecells"], replyContains: "12")
             ],
-            karsilastir: false),
+            compare: false),
 
         // Ad çakışması: aynı ad iki kez istenirse motor dosyayı EZMEZ, "-2" ekler.
         ChainCase(
-            name: "blg-znc-ad-cakismasi",
+            name: "doc-chn-name-collision",
             description: "Aynı adla ikinci dosya: motor ezmez, -2 ekler; ikinci turun yolu bunu göstermeli.",
-            turlar: [
-                ChainKind(prompt: "Adı gider olan bir excel yap",
-                          ikonlar: ["tablecells"], girdiIcermeli: ["gider"], ciktiIcermeli: [".xlsx"]),
-                ChainKind(prompt: "Aynı adla bir tane daha yap, adı yine gider olsun",
-                          ikonlar: ["tablecells"], ciktiIcermeli: ["gider-2"])
+            turns: [
+                ChainTurn(prompt: "Adı gider olan bir excel yap",
+                          icons: ["tablecells"], inputContains: ["gider"], outputContains: [".xlsx"]),
+                ChainTurn(prompt: "Aynı adla bir tane daha yap, adı yine gider olsun",
+                          icons: ["tablecells"], outputContains: ["gider-2"])
             ],
-            karsilastir: false),
+            compare: false),
 
         // Ekli belge üzerinde BİRİKİMLİ düzenleme: her tur bir öncekinin sonucunu
         // temel almalı. Son turda silinen satır GÖRÜNMEMELİ.
         ChainCase(
-            name: "blg-znc-duzenle-birikimli",
+            name: "doc-chn-edit-cumulative",
             description: "Ekli tabloda ekle → sil → göster. Son turda Salı görünmemeli, eklenen satır durmalı.",
-            turlar: [
-                ChainKind(prompt: "Bu belgede ne var?",
-                          ikonlar: ["tablecells"], ciktiIcermeli: ["Mercimek"]),
-                ChainKind(prompt: "Çarşamba - Karnıyarık satırını ekle",
-                          ikonlar: ["tablecells"], ciktiIcermeli: ["düzenlendi"]),
-                ChainKind(prompt: "Salı satırını sil",
-                          ikonlar: ["tablecells"], ciktiIcermeli: ["düzenlendi"]),
+            turns: [
+                ChainTurn(prompt: "Bu belgede ne var?",
+                          icons: ["tablecells"], outputContains: ["Mercimek"]),
+                ChainTurn(prompt: "Çarşamba - Karnıyarık satırını ekle",
+                          icons: ["tablecells"], outputContains: ["düzenlendi"]),
+                ChainTurn(prompt: "Salı satırını sil",
+                          icons: ["tablecells"], outputContains: ["düzenlendi"]),
                 // "Sadece tabloyu yaz": silinen satırın ADI yanıtta geçerse
                 // bu bir anlatım tercihi değil, eski veridir. İstem daraltılmasa
                 // "Salı (Tavuk) satırını silmiştim" cümlesi de ceza alırdı.
-                ChainKind(prompt: "Son hâlini göster, sadece tabloyu yaz",
-                          yanitIcermeli: "|", yanitIcermemeli: "Tavuk")
+                ChainTurn(prompt: "Son hâlini göster, sadece tabloyu yaz",
+                          replyContains: "|", replyExcludes: "Tavuk")
             ],
             attachedDocument: true,
-            karsilastir: false),
+            compare: false),
 
         // Okuma → çizim: modelin "tabloyu gösterdim" demesi yetmez, sohbette
         // tablo ancak yanıtta markdown boru satırları varsa ÇİZİLİR.
         ChainCase(
-            name: "blg-znc-tablo-cizimi",
+            name: "doc-chn-table-drawing",
             description: "Ekli tablo iki kez istendiğinde de gerçekten çizilmeli; ikinci turda yeni dosya üretilmemeli.",
-            turlar: [
-                ChainKind(prompt: "Bu belgedeki tabloyu göster",
-                          ikonlar: ["tablecells"], yanitIcermeli: "|"),
-                ChainKind(prompt: "Bir daha göster, bu sefer sütun başlıklarıyla",
-                          yanitIcermeli: "|")
+            turns: [
+                ChainTurn(prompt: "Bu belgedeki tabloyu göster",
+                          icons: ["tablecells"], replyContains: "|"),
+                ChainTurn(prompt: "Bir daha göster, bu sefer sütun başlıklarıyla",
+                          replyContains: "|")
             ],
             attachedDocument: true,
-            karsilastir: false),
+            compare: false),
 
         // Biçim turu: aynı içerik üç motordan geçmeli ve her turda DOĞRU uzantı
         // yazılmalı. belge_duzenle biçim dönüştürmez; dönüşüm belge_olustur işidir.
         ChainCase(
-            name: "blg-znc-bicim-turu",
+            name: "doc-chn-format-turn",
             description: "excel → word → pdf. Her turda uzantı gerçekten değişmeli, satırlar korunmalı.",
-            turlar: [
-                ChainKind(prompt: "Haftalık spor programı excel'i yap",
-                          ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-                ChainKind(prompt: "Bunu word'e çevir",
-                          ikonlar: ["doc.text"], ciktiIcermeli: [".docx"]),
-                ChainKind(prompt: "Bir de pdf hâlini ver",
-                          ikonlar: ["doc.richtext"], ciktiIcermeli: [".pdf"])
+            turns: [
+                ChainTurn(prompt: "Haftalık spor programı excel'i yap",
+                          icons: ["tablecells"], outputContains: [".xlsx"]),
+                ChainTurn(prompt: "Bunu word'e çevir",
+                          icons: ["doc.text"], outputContains: [".docx"]),
+                ChainTurn(prompt: "Bir de pdf hâlini ver",
+                          icons: ["doc.richtext"], outputContains: [".pdf"])
             ],
-            karsilastir: false),
+            compare: false),
 
         // HTML artımlı düzenleme: sayfa okunup yeniden yazılıyor (HtmlMotor.oku
         // etiketleri markdown'a geri çeviriyor). Önceki bölüm kaybolmamalı.
         ChainCase(
-            name: "blg-znc-html-bolum-ekle",
+            name: "doc-chn-html-section-add",
             description: "Site üret → bölüm ekle → oku. Artımlı düzenlemede ilk bölümler kaybolmamalı.",
-            turlar: [
-                ChainKind(prompt: "Kuaför salonum için tek sayfalık site yap",
-                          ikonlar: ["doc.text.image"], ciktiIcermeli: [".html"]),
-                ChainKind(prompt: "Fiyat tablosu bölümü de ekle",
-                          ikonlar: ["doc.text.image"]),
-                ChainKind(prompt: "Sayfada şu an hangi bölümler var?",
-                          ikonlar: ["doc.text.image"])
+            turns: [
+                ChainTurn(prompt: "Kuaför salonum için tek sayfalık site yap",
+                          icons: ["doc.text.image"], outputContains: [".html"]),
+                ChainTurn(prompt: "Fiyat tablosu bölümü de ekle",
+                          icons: ["doc.text.image"]),
+                ChainTurn(prompt: "Sayfada şu an hangi bölümler var?",
+                          icons: ["doc.text.image"])
             ],
-            karsilastir: false),
+            compare: false),
 
         // Markdown tablo → excel: Tablo.markdownDan ayrıştırması iki motor
         // arasında köprü; bozulursa excel tek sütuna düşer.
         ChainCase(
-            name: "blg-znc-md-tablo-excel",
+            name: "doc-chn-md-table-excel",
             description: "Markdown tablo dosyası → aynı tablonun excel'i. Sütun yapısı iki motorda da korunmalı.",
-            turlar: [
-                ChainKind(prompt: "Diller ve seviyeleri tablosu olan bir markdown dosyası yap: İngilizce ileri, Almanca orta, Fransızca başlangıç",
-                          ikonlar: ["text.alignleft"], ciktiIcermeli: [".md"]),
-                ChainKind(prompt: "Aynı tabloyu excel olarak da kaydet",
-                          ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-                ChainKind(prompt: "Excel'i oku, tabloyu göster",
-                          ikonlar: ["tablecells"], ciktiIcermeli: ["Almanca"])
+            turns: [
+                ChainTurn(prompt: "Diller ve seviyeleri tablosu olan bir markdown dosyası yap: İngilizce ileri, Almanca orta, Fransızca başlangıç",
+                          icons: ["text.alignleft"], outputContains: [".md"]),
+                ChainTurn(prompt: "Aynı tabloyu excel olarak da kaydet",
+                          icons: ["tablecells"], outputContains: [".xlsx"]),
+                ChainTurn(prompt: "Excel'i oku, tabloyu göster",
+                          icons: ["tablecells"], outputContains: ["Almanca"])
             ],
-            karsilastir: false),
+            compare: false),
 
         // Negatif + ondalıklı sayılar: hem yazımda hem geri okumada korunmalı.
         ChainCase(
-            name: "blg-znc-negatif-ondalik-donus",
+            name: "doc-chn-negative-decimal-roundtrip",
             description: "Negatif ve ondalıklı değerler gidiş-dönüşte işaretini ve basamağını korumalı.",
-            turlar: [
-                ChainKind(prompt: "Aylık kar zarar excel'i yap: Ocak -1200.5, Şubat 3400.25, Mart -560",
-                          ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-                ChainKind(prompt: "Dosyayı oku ve değerleri aynen yaz",
-                          ikonlar: ["tablecells"], ciktiIcermeli: ["-1200.5", "3400.25"])
+            turns: [
+                ChainTurn(prompt: "Aylık kar zarar excel'i yap: Ocak -1200.5, Şubat 3400.25, Mart -560",
+                          icons: ["tablecells"], outputContains: [".xlsx"]),
+                ChainTurn(prompt: "Dosyayı oku ve değerleri aynen yaz",
+                          icons: ["tablecells"], outputContains: ["-1200.5", "3400.25"])
             ],
-            karsilastir: false),
+            compare: false),
 
         // Ekli belge yokken okuma isteği: dürüst ret, ARDINDAN üretim çalışmalı.
         // Reddin oturumu kilitlememesi ölçülüyor (tur 2 gerçekten dosya yazmalı).
         ChainCase(
-            name: "blg-znc-ekli-yok-sonra-uret",
+            name: "doc-chn-attached-none-after-generate",
             description: "Ekli belge yokken dürüst ret; sonraki turda üretim yolu normal çalışmalı.",
-            turlar: [
-                ChainKind(prompt: "Paylaştığım dosyayı özetler misin?",
-                          yanitIcermemeli: "belgenin içeriği"),
-                ChainKind(prompt: "Tamam, o zaman sıfırdan bir alışveriş listesi excel'i yap",
-                          ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"])
+            turns: [
+                ChainTurn(prompt: "Paylaştığım dosyayı özetler misin?",
+                          replyExcludes: "belgenin içeriği"),
+                ChainTurn(prompt: "Tamam, o zaman sıfırdan bir alışveriş listesi excel'i yap",
+                          icons: ["tablecells"], outputContains: [".xlsx"])
             ],
-            karsilastir: false),
+            compare: false),
 
         // Belirsiz istem → netleştirme → uygulama. Turlar birbirine dilbilgisel
         // olarak BAĞLI DEĞİL (ikinci tur kendi başına anlamlı), o yüzden kontrol
         // koşumu gerçek bir soruyu yanıtlıyor: netleştirme turu yardım mı ediyor?
         ChainCase(
-            name: "blg-znc-netlestirme-belge",
+            name: "doc-chn-clarify-doc",
             description: "Belirsiz dosya isteği: 1. turda araç çağrılmamalı (soru), 2. turda tek üretim yapılmalı.",
-            turlar: [
-                ChainKind(prompt: "Bana bir dosya hazırlar mısın", cipYok: true),
-                ChainKind(prompt: "Excel olsun, aylık kira ödemelerimi takip edeceğim",
-                          ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"])
+            turns: [
+                ChainTurn(prompt: "Bana bir dosya hazırlar mısın", noChip: true),
+                ChainTurn(prompt: "Excel olsun, aylık kira ödemelerimi takip edeceğim",
+                          icons: ["tablecells"], outputContains: [".xlsx"])
             ]),
 
         // Uzun oturum + belge: bağlam bütçesi dolarken belge atfı ("bunu")
         // yaşamalı. Son turda model yaptıklarını saymalı, adım uydurmamalı.
         ChainCase(
-            name: "blg-znc-uzun-oturum-belge",
+            name: "doc-chn-long-session-doc",
             description: "Beş turluk belge oturumu: calisilabilirBelge atfı ve VeriDeposu ref'i son tura kadar yaşamalı.",
-            turlar: [
-                ChainKind(prompt: "Ev bütçesi excel'i yap: Kira 15000, Market 8000, Fatura 3000",
-                          ikonlar: ["tablecells"], ciktiIcermeli: [".xlsx"]),
-                ChainKind(prompt: "Buna Ulaşım 2500 satırını ekle",
-                          ikonlar: ["tablecells"], ciktiIcermeli: ["düzenlendi"]),
-                ChainKind(prompt: "Şimdi bunu oku ve tablo olarak göster",
-                          ikonlar: ["tablecells"], yanitIcermeli: "|"),
-                ChainKind(prompt: "Bunun pdf hâlini de çıkar",
-                          ikonlar: ["doc.richtext"], ciktiIcermeli: [".pdf"]),
-                ChainKind(prompt: "Şu ana kadar hangi dosyaları oluşturdun?",
-                          yanitIcermemeli: "sunum")
+            turns: [
+                ChainTurn(prompt: "Ev bütçesi excel'i yap: Kira 15000, Market 8000, Fatura 3000",
+                          icons: ["tablecells"], outputContains: [".xlsx"]),
+                ChainTurn(prompt: "Buna Ulaşım 2500 satırını ekle",
+                          icons: ["tablecells"], outputContains: ["düzenlendi"]),
+                ChainTurn(prompt: "Şimdi bunu oku ve tablo olarak göster",
+                          icons: ["tablecells"], replyContains: "|"),
+                ChainTurn(prompt: "Bunun pdf hâlini de çıkar",
+                          icons: ["doc.richtext"], outputContains: [".pdf"]),
+                ChainTurn(prompt: "Şu ana kadar hangi dosyaları oluşturdun?",
+                          replyExcludes: "sunum")
             ],
-            karsilastir: false)
+            compare: false)
     ]
 }
 
@@ -865,7 +865,7 @@ enum EvalCasesDocument {
 //    yazarsa ("|Mercimek|") eşleşmez. Bu bilinçli: tek katı vaka
 //    (`blg-oku-tablo-hucreli`) bırakıldı, kalan çizim vakaları yalnız "|" arar.
 //
-// 5) `girdiIcermeli: ["ref:"]` MODELİN SEÇİMİNİ ölçer, motorun değil. Küçük
+// 5) `inputContains: ["ref:"]` MODELİN SEÇİMİNİ ölçer, motorun değil. Küçük
 //    tabloyu model elle yeniden yazarsa kanal kullanılmaz ve vaka düşer — bu
 //    gerçek bir kusurdur (bağlam bütçesi boşa harcanır), ama iki satırlık ekli
 //    belgede baskı zayıftır. Kanalın ASIL ölçümü `blg-znc-ref-kanali`dır.

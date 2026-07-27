@@ -6,24 +6,38 @@ Version 1.0 · Every capability claim in this document was verified against the 
 
 The privacy frame in use: **the core runs on the device; web and connections engage only if you turn them on, and only in plain sight.** No text contains an absolute claim ("no data ever leaves the device", "fully offline").
 
-> **Localisation note.** This app ships a Turkish interface localisation (`tr` is one of the
-> eight locales in `Localizable.xcstrings`, whose source language is `en`). The strings in
-> the `tr-TR` blocks below are therefore **shipping listing copy for that locale**, in the
-> same class as the localised UI strings — not documentation. They are kept verbatim and
-> their character counts are measurements of those exact strings. All editorial and
-> instructional prose in this document is English.
+> ## The Turkish in this file is deliberate — a decision record
+>
+> The repository is English: identifiers, comments, tests, CLI output, documents. **This
+> file is the one declared exception**, and the exception is scoped as narrowly as it can be.
+>
+> **Why.** The app ships a Turkish interface localisation — `tr` is one of the eight
+> localisations in `Localizable.xcstrings` (`en` is the source language, so nine interface
+> languages in total; counted in the file). An App Store listing has one
+> submission per locale, so the `tr-TR` listing has to exist in Turkish or it cannot be
+> submitted at all. The strings in the `tr-TR` blocks below are **shipping copy for that
+> locale**, in exactly the same class as the localised UI strings — they are product, not
+> documentation. Translating them into English would not clean the repository up; it would
+> delete a deliverable.
+>
+> **What that covers, and nothing more.** Only the text inside a block labelled `tr-TR`.
+> Every heading, table header, note, rationale, recommendation and instruction in this
+> document is English, and the `en` variant is complete and self-sufficient in all of
+> §1–§6: nobody has to read Turkish to ship the English listing.
+>
+> **Ordering.** In every section the `en` variant comes first. `en` is the source language
+> of the string catalogues; `tr-TR` is a localisation of it, and the order says so.
+>
+> **The counts are measurements.** The character count printed next to each variant was
+> counted on that exact string, after the rename to `Tacet`. Editing a block without
+> recounting makes the number a lie — the App Store limits are hard limits.
+>
+> **This exception is not self-renewing.** It holds while the app ships a `tr` locale. If
+> `tr` is ever dropped from `Localizable.xcstrings`, these blocks go with it.
 
 ---
 
 ## 1. App name (30 characters)
-
-### tr-TR listing candidates
-
-| Candidate | Characters | Note |
-|---|---|---|
-| **Tacet — cihazında asistan** | 25 | **Recommended.** Name + a single attribute; carries the "assistant" and "device" search signal. |
-| Tacet — cihazda asistan | 23 | Shorter, weaker personal connection. |
-| Tacet: cihaz üstü asistan | 25 | A colon instead of a dash; the dash reads more conventionally on the App Store. |
 
 ### en listing candidates
 
@@ -32,6 +46,14 @@ The privacy frame in use: **the core runs on the device; web and connections eng
 | **Tacet — on-device assistant** | 27 | **Recommended.** |
 | Tacet — assistant on iPhone | 27 | Does not say that it runs on the device. |
 | Tacet: private assistant | 24 | "private" compresses the claim into one word, and it cannot be proved. |
+
+### tr-TR listing candidates
+
+| Candidate | Characters | Note |
+|---|---|---|
+| **Tacet — cihazında asistan** | 25 | **Recommended.** Name + a single attribute; carries the "assistant" and "device" search signal. |
+| Tacet — cihazda asistan | 23 | Shorter, weaker personal connection. |
+| Tacet: cihaz üstü asistan | 25 | A colon instead of a dash; the dash reads more conventionally on the App Store. |
 
 ### Spelling rule — CHANGED
 
@@ -65,6 +87,18 @@ In the store copy the explanation of the name is **never used as a claim** — t
 
 ## 2. Subtitle (30 characters)
 
+### en listing candidates
+
+| Candidate | Characters |
+|---|---|
+| **On-device personal assistant** | 28 |
+| Calendar, notes, documents | 26 |
+| A quiet on-device assistant | 27 |
+| Runs on your iPhone, not us | 27 |
+| The core runs on your phone | 27 |
+
+**Recommendation: "On-device personal assistant".**
+
 ### tr-TR listing candidates
 
 | Candidate | Characters |
@@ -80,81 +114,23 @@ single breath, sets up no absolute claim, and repeats nothing from the name. "Ç
 cihazda çalışır" is more honest-technical but says nothing about what the product does; it
 loses the reader at first contact.
 
-### en listing candidates
-
-| Candidate | Characters |
-|---|---|
-| **On-device personal assistant** | 28 |
-| Calendar, notes, documents | 26 |
-| A quiet on-device assistant | 27 |
-| Runs on your iPhone, not us | 27 |
-| The core runs on your phone | 27 |
-
-**Recommendation: "On-device personal assistant".**
 
 ---
 
 ## 3. Promotional text (170 characters)
 
-**tr-TR (164)**
-
-> Tacet takvimine bakar, hatırlatıcı kurar, notlarında arar, belge üretir. Çekirdeği iPhone'unda çalışır; web araması ve bağlantılar yalnız sen açarsan devreye girer.
-
 **en (168)**
 
 > Tacet reads your calendar, sets reminders, searches notes and builds documents. The core runs on your iPhone; web search and connections start only if you turn them on.
 
+**tr-TR (164)**
+
+> Tacet takvimine bakar, hatırlatıcı kurar, notlarında arar, belge üretir. Çekirdeği iPhone'unda çalışır; web araması ve bağlantılar yalnız sen açarsan devreye girer.
+
+
 ---
 
 ## 4. Description (4000 characters)
-
-### tr-TR (2 949 characters — limit 4000)
-
-```
-Tacet, iPhone'unda çalışan kişisel bir asistandır. Takvimine bakar, hatırlatıcı kurar, notlarında arar, belge üretir.
-
-Çekirdeği cihazında çalışır. Web araması ve bağlantılar yalnız sen açarsan, sen görerek devreye girer.
-
-ÇEKİRDEK CİHAZDA
-Yanıtları Apple Intelligence'ın cihaz üstü modeli üretir. Sohbetlerin, takvimin, kişilerin ve notların bu iş için telefonundan çıkmaz. Tacet'in sunucusu yok: hesap açmazsın, giriş yapmazsın, reklam ve ölçüm izleyicisi taşımaz.
-
-Cihaz dışına çıkan iki yüzey var, ikisi de varsayılan kapalı:
-· Web araması — kendi arama sunucunun adresini girersen Tacet web'de arar.
-· Bağlantılar — kendi MCP sunucunu eklersen onun araçlarını kullanır.
-Kutudan hazır adres gelmez. İkisini de sen açarsın, sorgunun gittiği yeri sen belirlersin.
-
-NELER YAPAR
-· Takvim — "Yarın neler var?" Etkinlikleri okur, yenisini ekler.
-· Hatırlatıcılar — hatırlatıcı kurar, bekleyenleri listeler.
-· Kişiler — rehberden numara ve e-posta bulur.
-· Notlar ve dosyalar — cihazındakiler arasında arar.
-· Belge üretir — Excel, Word, PDF, Markdown, düz metin, tek sayfalık web sayfası.
-· Belge okur — eklediğin PDF, Word, Excel, Markdown ya da metin dosyasını özetler, içinden soruya cevap verir.
-· Belge düzenler — ürettiği dosyaya satır ekler, çıkarır, başlığını değiştirir.
-· Hesap ve zaman — aritmetiği kafadan yapmaz, araçla yapar; iki tarih arasını sayar.
-· Kod — ağı ve dosya sistemi olmayan kapalı bir kutuda kısa JavaScript çalıştırır.
-· Hafıza — sohbetlerinden kalıcı notlar çıkarır, sonraki sohbette hatırlar. Hepsini görür, istediğini silersin.
-· Beceri — kendi çalışma kuralını yazarsın; tetikleyici kelimen geçtiğinde Tacet onu okur.
-· Sesle yaz — mikrofona bas, söylediklerin bu cihazda yazıya döner. Metni göndermeden görürsün.
-· Siri ve Kısayollar — soru sor, belge ürettir, hafızaya not ekle, üretilen dosyayı al.
-
-GÖRÜNÜR ARAÇLAR
-Tacet bir araca her dokunduğunda akışta iz kalır: "Takvim okundu · yarın". İze dokununca aracın ham girdisini ve çıktısını görürsün. Cihaz dışına giden bir çağrıda gönderilen içerik de aynı yerde durur. Kişisel verine dokunulmuş bir sohbette dışarı çıkan çağrı, sen onaylamadan gitmez.
-
-DÜRÜST SINIRLAR
-· Model küçük. Genel dünya bilgisi zayıf; emin olmadığında uydurmaz, bilmediğini söyler.
-· Uzun konuşmalarda bağlamı taşıyamayabilir; yeni sohbet çoğu zaman çözer.
-· Görsel üretmez, sesli yanıt vermez, e-posta ya da mesaj göndermez.
-· Hava durumu ve harita servisi yok.
-· Yalnız iPhone, yalnız dikey düzen.
-
-GEREKSİNİMLER
-· iOS 26 ve Apple Intelligence destekleyen bir iPhone (iPhone 15 Pro ve sonrası).
-· Apple Intelligence açık olmalı: Ayarlar > Apple Intelligence ve Siri. Kapalıyken Tacet yanıt üretemez ve bunu ekranda söyler.
-· Takvim, hatırlatıcı, kişiler ve mikrofon izni önden toplanmaz; her biri ilk gerektiğinde sorulur. Vermezsen kalan her şey çalışır.
-
-Arayüz dilleri: Türkçe, İngilizce, Almanca, İspanyolca, Fransızca, Japonca, Korece, Portekizce (Brezilya), Basitleştirilmiş Çince.
-```
 
 ### en (3 106 characters — limit 4000)
 
@@ -204,22 +180,71 @@ REQUIREMENTS
 Interface languages: Turkish, English, German, Spanish, French, Japanese, Korean, Portuguese (Brazil), Simplified Chinese.
 ```
 
+### tr-TR (2 949 characters — limit 4000)
+
+```
+Tacet, iPhone'unda çalışan kişisel bir asistandır. Takvimine bakar, hatırlatıcı kurar, notlarında arar, belge üretir.
+
+Çekirdeği cihazında çalışır. Web araması ve bağlantılar yalnız sen açarsan, sen görerek devreye girer.
+
+ÇEKİRDEK CİHAZDA
+Yanıtları Apple Intelligence'ın cihaz üstü modeli üretir. Sohbetlerin, takvimin, kişilerin ve notların bu iş için telefonundan çıkmaz. Tacet'in sunucusu yok: hesap açmazsın, giriş yapmazsın, reklam ve ölçüm izleyicisi taşımaz.
+
+Cihaz dışına çıkan iki yüzey var, ikisi de varsayılan kapalı:
+· Web araması — kendi arama sunucunun adresini girersen Tacet web'de arar.
+· Bağlantılar — kendi MCP sunucunu eklersen onun araçlarını kullanır.
+Kutudan hazır adres gelmez. İkisini de sen açarsın, sorgunun gittiği yeri sen belirlersin.
+
+NELER YAPAR
+· Takvim — "Yarın neler var?" Etkinlikleri okur, yenisini ekler.
+· Hatırlatıcılar — hatırlatıcı kurar, bekleyenleri listeler.
+· Kişiler — rehberden numara ve e-posta bulur.
+· Notlar ve dosyalar — cihazındakiler arasında arar.
+· Belge üretir — Excel, Word, PDF, Markdown, düz metin, tek sayfalık web sayfası.
+· Belge okur — eklediğin PDF, Word, Excel, Markdown ya da metin dosyasını özetler, içinden soruya cevap verir.
+· Belge düzenler — ürettiği dosyaya satır ekler, çıkarır, başlığını değiştirir.
+· Hesap ve zaman — aritmetiği kafadan yapmaz, araçla yapar; iki tarih arasını sayar.
+· Kod — ağı ve dosya sistemi olmayan kapalı bir kutuda kısa JavaScript çalıştırır.
+· Hafıza — sohbetlerinden kalıcı notlar çıkarır, sonraki sohbette hatırlar. Hepsini görür, istediğini silersin.
+· Beceri — kendi çalışma kuralını yazarsın; tetikleyici kelimen geçtiğinde Tacet onu okur.
+· Sesle yaz — mikrofona bas, söylediklerin bu cihazda yazıya döner. Metni göndermeden görürsün.
+· Siri ve Kısayollar — soru sor, belge ürettir, hafızaya not ekle, üretilen dosyayı al.
+
+GÖRÜNÜR ARAÇLAR
+Tacet bir araca her dokunduğunda akışta iz kalır: "Takvim okundu · yarın". İze dokununca aracın ham girdisini ve çıktısını görürsün. Cihaz dışına giden bir çağrıda gönderilen içerik de aynı yerde durur. Kişisel verine dokunulmuş bir sohbette dışarı çıkan çağrı, sen onaylamadan gitmez.
+
+DÜRÜST SINIRLAR
+· Model küçük. Genel dünya bilgisi zayıf; emin olmadığında uydurmaz, bilmediğini söyler.
+· Uzun konuşmalarda bağlamı taşıyamayabilir; yeni sohbet çoğu zaman çözer.
+· Görsel üretmez, sesli yanıt vermez, e-posta ya da mesaj göndermez.
+· Hava durumu ve harita servisi yok.
+· Yalnız iPhone, yalnız dikey düzen.
+
+GEREKSİNİMLER
+· iOS 26 ve Apple Intelligence destekleyen bir iPhone (iPhone 15 Pro ve sonrası).
+· Apple Intelligence açık olmalı: Ayarlar > Apple Intelligence ve Siri. Kapalıyken Tacet yanıt üretemez ve bunu ekranda söyler.
+· Takvim, hatırlatıcı, kişiler ve mikrofon izni önden toplanmaz; her biri ilk gerektiğinde sorulur. Vermezsen kalan her şey çalışır.
+
+Arayüz dilleri: Türkçe, İngilizce, Almanca, İspanyolca, Fransızca, Japonca, Korece, Portekizce (Brezilya), Basitleştirilmiş Çince.
+```
+
+
 ---
 
 ## 5. Keywords (100 characters, comma-separated, no spaces)
 
 Rule: do not repeat words from the name and subtitle (Apple already indexes those), use the singular, add no spaces.
 
-**tr-TR (92)**
-
-```
-yapay zeka,gizlilik,yerel,takvim,hatırlatıcı,not,arama,excel,word,pdf,belge,mcp,siri,kısayol
-```
-
 **en (99)**
 
 ```
 ai,private,local,llm,calendar,reminder,notes,search,excel,word,pdf,document,summarise,mcp,shortcuts
+```
+
+**tr-TR (92)**
+
+```
+yapay zeka,gizlilik,yerel,takvim,hatırlatıcı,not,arama,excel,word,pdf,belge,mcp,siri,kısayol
 ```
 
 **Change (audit round): the words for "offline" were REMOVED from both locales.** The previous version carried them on the grounds that "the keyword field is invisible, it is only for matching". That rationale is not good enough:
@@ -233,6 +258,21 @@ ai,private,local,llm,calendar,reminder,notes,search,excel,word,pdf,document,summ
 ---
 
 ## 6. Release note / What's New (1.0)
+
+**en**
+
+```
+First release.
+
+· Calendar, reminders, contacts and search across the notes and files on your device.
+· Builds Excel, Word, PDF, Markdown, text and single-page web documents; reads and edits the ones you attach.
+· Maths, date arithmetic and JavaScript in a closed sandbox.
+· Memory and skills you write yourself.
+· On-device dictation.
+· Siri and Shortcuts: ask, generate a document, add a note, hand over the last file.
+· Web search and connections — off by default, with your own server.
+· Nine languages, dark mode.
+```
 
 **tr-TR**
 
@@ -249,20 +289,6 @@ ai,private,local,llm,calendar,reminder,notes,search,excel,word,pdf,document,summ
 · Dokuz dil, koyu mod.
 ```
 
-**en**
-
-```
-First release.
-
-· Calendar, reminders, contacts and search across the notes and files on your device.
-· Builds Excel, Word, PDF, Markdown, text and single-page web documents; reads and edits the ones you attach.
-· Maths, date arithmetic and JavaScript in a closed sandbox.
-· Memory and skills you write yourself.
-· On-device dictation.
-· Siri and Shortcuts: ask, generate a document, add a note, hand over the last file.
-· Web search and connections — off by default, with your own server.
-· Nine languages, dark mode.
-```
 
 ---
 

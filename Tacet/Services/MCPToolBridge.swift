@@ -1,198 +1,203 @@
 //
-//  MCPAracKoprusu.swift
+//  MCPToolBridge.swift
 //  Tacet
 //
-//  MCP araç köprüsü (mcp §5.2, §5.4, §5.5). `ModelServisi.swift` içinden
-//  OLDUĞU GİBİ taşındı — davranış değişikliği yoktur.
+//  The MCP tool bridge (mcp §5.2, §5.4, §5.5). Moved out of `ModelService.swift`
+//  AS IT WAS — there is no behaviour change.
 //
 
 import Foundation
 import FoundationModels
 
-// MARK: - MCP araç köprüsü (mcp §5.2, §5.4, §5.5)
+// MARK: - The MCP tool bridge (mcp §5.2, §5.4, §5.5)
 
-/// Kayıtlı bir bağlantıyı çalışır `MCPAraci` örneklerine çeviren ve uzak çağrıyı
-/// yürüten katman. `MCPAraci` ağ API'sine dokunmaz, yalnızca `MCPCagirici`yi
-/// çağırır; ağ hâlâ tek yerde (`MCPIstemcisi`).
+/// The layer that turns a saved connection into working `MCPTool` instances and runs
+/// the remote call. `MCPTool` never touches the network API, it only calls
+/// `MCPInvoker`; the network is still in one place (`MCPClient`).
 ///
-/// İstemci bağlantı başına TEK örnektir: MCP oturum kimliği (`Mcp-Session-Id`)
-/// istemcinin içinde yaşıyor, her çağrıda yeni istemci kurmak her çağrıda yeni
-/// el sıkışma demek olurdu.
+/// The client is ONE instance per connection: the MCP session id (`Mcp-Session-Id`)
+/// lives inside the client, and building a new client on every call would mean a new
+/// handshake on every call.
 @MainActor
 final class MCPToolBridge: MCPInvoker {
 
     private struct Endpoint: Equatable { let url: URL; let key: String? }
 
-    private var ucNoktalar: [UUID: Endpoint] = [:]
-    private var istemciler: [UUID: MCPClient] = [:]
+    private var endpoints: [UUID: Endpoint] = [:]
+    private var clients: [UUID: MCPClient] = [:]
 
-    /// §5.5 sonuç işleme için — büyük çıktı modelden geçmeden buraya konur.
+    /// For the §5.5 result processing — large output is put here without passing
+    /// through the model.
     weak var dataStore: DataStore?
 
-    /// Dış yan etki bayrağının sahibi (denetim P0-3). Uzak çağrı sunucuya
-    /// ULAŞTIĞI anda `disEtkiIsaretle()` çağrılır ve o turda retry kapanır.
+    /// The owner of the external side-effect flag (audit P0-3). The moment the remote
+    /// call REACHES the server, `markSideEffect()` is called and retry closes for that
+    /// turn.
     weak var executor: ToolExecutor?
 
     init() {}
 
-    /// Bağlantının adresini kaydeder. Adres ya da anahtar değiştiyse istemci
-    /// atılır: eski oturum kimliğiyle yeni sunucuya konuşulmaz.
+    /// Saves the connection's address. If the address or the key changed the client is
+    /// thrown away: a new server is never spoken to with the old session id.
     func save(identity: UUID, url: URL, key: String?) {
         let new = Endpoint(url: url, key: key)
-        guard ucNoktalar[identity] != new else { return }
-        ucNoktalar[identity] = new
-        istemciler[identity] = nil
+        guard endpoints[identity] != new else { return }
+        endpoints[identity] = new
+        clients[identity] = nil
     }
 
-    /// Tüm bağlantılar gitti (silindi / hiç yok): istemcileri bırak.
+    /// All connections are gone (deleted / never existed): release the clients.
     func forget() {
-        ucNoktalar.removeAll()
-        istemciler.removeAll()
+        endpoints.removeAll()
+        clients.removeAll()
     }
 
     private func client(_ identity: UUID) -> MCPClient? {
-        if let available = istemciler[identity] { return available }
-        guard let uc = ucNoktalar[identity] else { return nil }
-        let new = MCPClient(url: uc.url, key: uc.key)
-        istemciler[identity] = new
+        if let available = clients[identity] { return available }
+        guard let endpoint = endpoints[identity] else { return nil }
+        let new = MCPClient(url: endpoint.url, key: endpoint.key)
+        clients[identity] = new
         return new
     }
 
-    // MARK: - Araç kurulumu
+    // MARK: - Tool setup
 
-    /// Sunucudan şemaları okur ve oturuma girecek araçları üretir.
+    /// Reads the schemas from the server and produces the tools that enter the session.
     ///
-    /// Modele giden tanım SUNUCUNUN HAM AÇIKLAMASI DEĞİL, ekleme anında
-    /// önbelleklenen özettir (§5.3) — ham açıklama 4096 pencereyi tek araçla
-    /// doldurabilir. Önbellekte olmayan araç (yeni eklenmiş, henüz özetlenmemiş)
-    /// bu turda atlanır; özet tazelenince gelir.
+    /// The definition that goes to the model is NOT THE SERVER'S RAW DESCRIPTION but the
+    /// summary cached at add time (§5.3) — a raw description can fill the 4096 window with
+    /// a single tool. A tool that is not in the cache (newly added, not yet summarised) is
+    /// skipped this turn; it arrives once the summary is refreshed.
     ///
-    /// Ağ erişilemezse boş dizi döner — bağlantı profili seçilemez, bugünkü
-    /// davranış sürer. Uydurma araç üretilmez.
-    func araclariKur(connectionID: UUID,
-                     name: String,
-                     ozetler: [ToolSummary],
-                     pool: Int,
-                     deviceData: DeviceDataSetting,
-                     gate: (any ApprovalGate)?,
-                     reporter: (any ToolReporter)?) async -> [MCPTool] {
-        guard let client = client(connectionID), !ozetler.isEmpty else { return [] }
-        guard let tanimlar = try? await client.tools() else { return [] }
+    /// If the network is unreachable an empty array is returned — the connection profile
+    /// cannot be selected and today's behaviour continues. No invented tool is produced.
+    func setUpTools(connectionID: UUID,
+                    name: String,
+                    summaries: [ToolSummary],
+                    pool: Int,
+                    deviceData: DeviceDataSetting,
+                    gate: (any ApprovalGate)?,
+                    reporter: (any ToolReporter)?) async -> [MCPTool] {
+        guard let client = client(connectionID), !summaries.isEmpty else { return [] }
+        guard let specs = try? await client.tools() else { return [] }
 
-        var ozetSozlugu: [String: String] = [:]
-        for summary in ozetler where !summary.isUnsupported { ozetSozlugu[summary.name] = summary.summary }
+        var summaryTable: [String: String] = [:]
+        for summary in summaries where !summary.isUnsupported { summaryTable[summary.name] = summary.summary }
 
-        // Sunucu sırası korunur (deterministik), önbellekte olmayan elenir ve
-        // HAVUZ tavanı ÇEVİRİDEN ÖNCE uygulanır: 200 araçlık sunucuda 200 şema
-        // çevirmenin anlamı yok. Havuz, oturum yuvasından (6) BİLEREK geniştir:
-        // yuvayı hangi araçların dolduracağına artık burada değil, kullanıcının
-        // o turki isteğine bakan `AracAlaka` karar veriyor (P1-6) ve bunun için
-        // seçebileceği bir havuz gerek. Havuz da 6 olsaydı alaka sıralaması
-        // sunucunun ilk 6'sını kendi içinde yeniden dizmekten öteye gidemezdi.
-        // Sınıflandırma tavandan ÖNCE: 200 araçlık bir sunucuda ilk 6 araç
-        // `komut_calistir`, `dosya_sil` olabilir ve saf sunucu sırası bu
-        // durumda oturumu yıkıcı araçlarla doldurup salt-okumaları dışarıda
-        // bırakır. Kararlı sıralama (`enumerate` ile bağ bozma) sunucu sırasını
-        // sınıf içinde korur, yani davranış hâlâ deterministik.
-        let suzulmus = tanimlar.filter { ozetSozlugu[$0.name] != nil }
-        let siniflar = suzulmus.map {
+        // The server order is preserved (deterministic), anything not in the cache is
+        // eliminated, and the POOL cap is applied BEFORE the conversion: there is no point
+        // converting 200 schemas on a 200-tool server. The pool is DELIBERATELY wider than
+        // the session slot (6): which tools fill the slot is no longer decided here but by
+        // `ToolRelevance`, which looks at the user's request in that turn (P1-6), and for
+        // that it needs a pool to choose from. Had the pool also been 6, the relevance
+        // ordering could do no more than reshuffle the server's first 6 among themselves.
+        // Classification comes BEFORE the cap: on a 200-tool server the first 6 tools may
+        // be `run_command`, `delete_file`, and in that case pure server order fills the
+        // session with destructive tools and leaves the read-only ones out. Stable sorting
+        // (tie-breaking with `enumerated`) keeps the server order within a class, so the
+        // behaviour is still deterministic.
+        let filtered = specs.filter { summaryTable[$0.name] != nil }
+        let classes = filtered.map {
             SideEffectClass.classify(name: $0.name,
-                                  summary: ozetSozlugu[$0.name] ?? "",
-                                  readOnlyHint: $0.readOnlyHint,
-                                  destructiveHint: $0.destructiveHint)
+                                     summary: summaryTable[$0.name] ?? "",
+                                     readOnlyHint: $0.readOnlyHint,
+                                     destructiveHint: $0.destructiveHint)
         }
-        let adaylar = zip(suzulmus, siniflar).enumerated()
-            .sorted { sol, sag in
-                let solYikici = sol.element.1.requiresApproval
-                let sagYikici = sag.element.1.requiresApproval
-                if solYikici != sagYikici { return !solYikici }
-                return sol.offset < sag.offset
+        let candidates = zip(filtered, classes).enumerated()
+            .sorted { left, right in
+                let leftDestructive = left.element.1.requiresApproval
+                let rightDestructive = right.element.1.requiresApproval
+                if leftDestructive != rightDestructive { return !leftDestructive }
+                return left.offset < right.offset
             }
             .map(\.element)
             .prefix(pool)
 
-        // Ad çakışması koleksiyon düzeyinde çözülür (P2-9). "get-user" ve
-        // "get_user" ikisi de `get_user`a indirgeniyordu ve model iki araçtan
-        // hangisini çağırdığını bilmiyordu; `adlariCoz` sırayı bozmadan
-        // ikisine FARKLI ad verir.
-        let cozulmusAdlar = MCPTool.resolveNames(adaylar.map { (remoteName: $0.0.name, server: name) })
+        // Name collisions are resolved at the collection level (P2-9). "get-user" and
+        // "get_user" both reduced to `get_user` and the model did not know which of the
+        // two it was calling; `resolveNames` gives them DIFFERENT names without disturbing
+        // the order.
+        let resolvedNames = MCPTool.resolveNames(candidates.map { (remoteName: $0.0.name, server: name) })
 
         var tools: [MCPTool] = []
-        for (order, (spec, sideEffect)) in adaylar.enumerated() {
-            // Şema çalışma anında çevrilir; çevrilemeyen araç ATLANIR (§5.2) —
-            // yanlış argüman üretmektense araç hiç olmasın.
-            guard let schema = try? MCPSchemaConverter.convert(spec: Self.tanimaCevir(spec)) else { continue }
+        for (order, (spec, sideEffect)) in candidates.enumerated() {
+            // The schema is converted at run time; a tool that cannot be converted is
+            // SKIPPED (§5.2) — better no tool at all than producing wrong arguments.
+            guard let schema = try? MCPSchemaConverter.convert(spec: Self.toSpec(spec)) else { continue }
             tools.append(MCPTool(connectionID: connectionID,
                                     connectionName: name,
                                     remoteName: spec.name,
-                                    summary: ozetSozlugu[spec.name] ?? "",
+                                    summary: summaryTable[spec.name] ?? "",
                                     parameters: schema,
                                     invoker: self,
                                     deviceData: deviceData,
                                     sideEffect: sideEffect,
                                     gate: gate,
                                     reporter: reporter,
-                                    resolvedName: cozulmusAdlar[order]))
+                                    resolvedName: resolvedNames[order]))
         }
         return tools
     }
 
-    /// İstemci tanımı → şema çevirisinin beklediği ham tanım.
-    /// Şemasız araç = argümansız araç: boş nesne şeması verilir, araç düşmez.
-    private static func tanimaCevir(_ spec: MCPClient.ToolSpec) -> MCPToolSpec {
-        let bosNesne = Data(#"{"type":"object","properties":{}}"#.utf8)
-        var data = bosNesne
+    /// The client spec → the raw spec the schema conversion expects.
+    /// A tool without a schema = a tool without arguments: an empty object schema is
+    /// given, and the tool is not dropped.
+    private static func toSpec(_ spec: MCPClient.ToolSpec) -> MCPToolSpec {
+        let emptyObject = Data(#"{"type":"object","properties":{}}"#.utf8)
+        var data = emptyObject
         if let schema = spec.schema, case .object = schema,
-           let kodlanmis = try? JSONEncoder().encode(schema) {
-            data = kodlanmis
+           let encoded = try? JSONEncoder().encode(schema) {
+            data = encoded
         }
         return MCPToolSpec(name: spec.name, description: spec.description, inputSchemaJSON: data)
     }
 
-    // MARK: - Uzak çağrı (MCPCagirici)
+    // MARK: - The remote call (MCPInvoker)
 
-    /// Onay kapısı bu çağrıdan ÖNCE `MCPAraci.call` içinde geçildi; buraya gelen
-    /// her şey kullanıcının gördüğü şeydir.
+    /// The approval gate was passed BEFORE this call, inside `MCPTool.call`; everything
+    /// that arrives here is what the user saw.
     func invoke(connectionID: UUID, toolName: String, argumentsJSON: String) async throws -> MCPOutcome {
         guard let client = client(connectionID) else {
             throw MCPClient.MCPError.unreachable
         }
-        // Model şemaya uygun JSON üretir; yine de ayrıştırılamayan girdiyi
-        // uydurmayız — argümansız çağrıya ineriz.
-        let argumanlar = JSONValue.parse(argumentsJSON) ?? .object([:])
-        let (text, hataliMi) = try await client.aracCagir(name: toolName, argumanlar: argumanlar)
+        // The model produces JSON that fits the schema; even so we do not invent input we
+        // cannot parse — we fall back to an argument-less call.
+        let arguments = JSONValue.parse(argumentsJSON) ?? .object([:])
+        let (text, isError) = try await client.callTool(name: toolName, arguments: arguments)
 
-        // BURASI P0-3'ÜN TEK NOKTASI. Çağrı DÖNDÜ demek, istek sunucuya ulaştı
-        // ve sunucu onu işledi demektir — issue açıldı, kayıt yazıldı, e-posta
-        // gitti olabilir. Bundan sonra bu turda AYNI istemi ikinci kez
-        // göndermek geri alınamaz bir tekrar üretir.
+        // THIS IS THE SINGLE POINT OF P0-3. The call RETURNED means the request reached
+        // the server and the server processed it — an issue may have been opened, a record
+        // written, an email sent. After this, sending the SAME prompt a second time in this
+        // turn produces an irreversible repeat.
         //
-        // `hataliMi` AYIRMAZ ve ayırmamalı: MCP'de `isError` sunucunun aracın
-        // sonucu hakkındaki yorumudur, işlemin hiç gerçekleşmediğinin kanıtı
-        // değil ("issue açıldı ama alan doğrulaması geçmedi" de isError döner).
-        // Yalnız `throw` eden yol (taşıma hatası) bayrağı kurmaz, çünkü orada
-        // istek sunucuya ulaşmamıştır.
-        executor?.disEtkiIsaretle()
+        // `isError` DOES NOT and MUST NOT make a difference: in MCP, `isError` is the
+        // server's own comment about the tool's result, not proof that the operation never
+        // happened ("the issue was opened but field validation failed" also returns
+        // isError). Only the `throw` path (a transport error) does not set the flag,
+        // because there the request never reached the server.
+        executor?.markSideEffect()
 
-        // §5.5: ham çıktı modele girmez; özet + kaynakRef gider, tamamı çipte kalır.
-        let islenmis = ConnectionService.sonucIsle(text, toolName: toolName, dataStore: dataStore)
-        let body = islenmis.toModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        // §5.5: the raw output does not enter the model; a summary + sourceRef go, and the
+        // whole of it stays in the chip.
+        let processed = ConnectionService.processOutcome(text, toolName: toolName, dataStore: dataStore)
+        let body = processed.toModel.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if hataliMi {
-            // Sunucunun KENDİ hatası (komut başarısız) — taşıma hatası değil.
-            // Model bunu okuyup anlatır; çip de "hata döndü" der, sessiz geçilmez.
+        if isError {
+            // The server's OWN error (the command failed) — not a transport error.
+            // The model reads it and reports it; the chip says "returned an error" too, so
+            // it is not passed over silently.
             return MCPOutcome(
                 chipDetail: String(localized: "\(toolName) returned an error"),
                 toModel: body.isEmpty
                     ? "remote_tool_error: the tool failed on the user's server without a message. Say this in one sentence."
                     : "remote_tool_error: \(body)",
-                rawOutput: islenmis.rawOutput)
+                rawOutput: processed.rawOutput)
         }
         return MCPOutcome(
             chipDetail: String(localized: "\(toolName) done"),
             toModel: body.isEmpty
                 ? "remote_tool_empty: the tool ran but returned nothing. Say this in one sentence; do not invent a result."
                 : body,
-            rawOutput: islenmis.rawOutput)
+            rawOutput: processed.rawOutput)
     }
 }

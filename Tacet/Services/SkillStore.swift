@@ -1,167 +1,169 @@
 //
-//  BeceriDeposu.swift
+//  SkillStore.swift
 //  Tacet
 //
-//  Beceri (skill) katmanı — Claude'un SKILL.md mantığı. Her aracın ayrıntılı
-//  kullanım kılavuzu `Beceriler/*.md` içinde (frontmatter + gövde); kullanıcının
-//  kendi yazdıkları SwiftData'da (KullaniciBecerisi). 4096 token penceresini
-//  şişirmemek için "progressive disclosure": hepsi birden değil, yalnızca o anki
-//  niyete uyan TEK beceri, o oturuma BİR KEZ enjekte edilir.
+//  The skill layer — Claude's SKILL.md logic. Each tool's detailed usage guide
+//  lives in `Skills/*.md` (frontmatter + body); the ones the user wrote
+//  themselves live in SwiftData (UserSkill). To avoid bloating the 4096 token
+//  window this is "progressive disclosure": not all of them at once, only the
+//  SINGLE skill matching the current intent, injected into that session ONCE.
 //
 
 import Foundation
 
-/// Bir beceri: ad, tetikleyici anahtar kelimeler ve kılavuz metni.
+/// A skill: name, triggering keywords and the guidance text.
 struct Skill {
     let name: String
     let triggers: [String]
     let text: String
-    /// Bu kılavuzun EMRETTİĞİ araçların adları (frontmatter `araclar:`).
-    /// Boşsa beceri araçtan bağımsızdır ve her profilde serbesttir.
+    /// The names of the tools this guide COMMANDS (frontmatter `tools:`).
+    /// If empty the skill is tool-independent and free in every profile.
     var tools: [String] = []
-    /// Kullanıcının kendi yazdığı mı — eşitlikte kullanıcınınki kazanır.
-    var kullanicininMi: Bool = false
+    /// Whether the user wrote it themselves — on a tie the user's own wins.
+    var isUserAuthored: Bool = false
 }
 
 enum SkillStore {
-    /// Enjeksiyonda tek beceriden alınacak en fazla karakter. Paket becerileri
-    /// insan referansı olarak daha uzun olabilir; modele giden kısım sınırlıdır.
-    static let enjeksiyonSiniri = 700
+    /// The most characters taken from a single skill at injection time. Bundled
+    /// skills may be longer as a human reference; the part that goes to the model
+    /// is capped.
+    static let injectionLimit = 700
 
-    /// Gövdede ÇEKİRDEĞİN bittiği yeri işaretleyen HTML yorumu. Markdown'da
-    /// görünmez, bu yüzden dosya insan için de okunur kalır.
+    /// The HTML comment marking where the CORE of the body ends. It is invisible
+    /// in Markdown, so the file stays readable for a human too.
     ///
-    /// Neden var: eski kesme gövdenin SONUNU atıyordu, ama somut `tool(args)`
-    /// örneği ile anti-halüsinasyon kuralları tam orada duruyordu — yani sınır
-    /// tam da becerinin var oluş sebebini yutuyordu (kod.md'de 327 karakter,
-    /// belge-olustur.md'de 729 karakter). Şimdi dosyalar "çekirdek-önce"
-    /// yazılıyor: örnek + kırılmaz kurallar işaretin ÜSTÜNDE, insan referansı
-    /// altında. Enjeksiyon çekirdeği TAM alır, artan bütçeye kuyruğu doldurur.
-    static let cekirdekIsareti = "<!--/core-->"
+    /// Why it exists: the old clipping dropped the END of the body, but the concrete
+    /// `tool(args)` example and the anti-hallucination rules sat exactly there — so
+    /// the limit was swallowing the very reason the skill existed (327 characters in
+    /// code.md, 729 characters in create-document.md). The files are now written
+    /// "core-first": example + unbreakable rules ABOVE the marker, human reference
+    /// below. The injection takes the core WHOLE and fills the remaining budget with
+    /// the tail.
+    static let coreMarker = "<!--/core-->"
 
-    /// Çekirdekten sonra kuyruktan parça almaya değer en küçük kalan bütçe.
-    /// Bunun altında tek satır bile anlamlı girmiyor; yarım kural eklemektense
-    /// hiç eklememek yeğdir.
-    private static let kuyrukEsigi = 80
+    /// The smallest remaining budget that still makes it worth taking a piece of the
+    /// tail. Below this not even one line fits meaningfully; adding no rule is better
+    /// than adding half a rule.
+    private static let tailThreshold = 80
 
-    /// Bundle'daki .md becerileri (bir kez yüklenir, salt-okunur).
+    /// The .md skills in the bundle (loaded once, read-only).
     static let package: [Skill] = load()
 
-    /// Kullanıcının eklediği beceriler — UI kaydettikçe `kullaniciyiYenile` ile tazelenir.
+    /// Skills the user added — refreshed with `reloadUser` as the UI saves them.
     private(set) static var user: [Skill] = []
 
-    /// Paket + kullanıcı; eşleşmede kullanıcınınki önce denenir.
+    /// Package + user; on matching the user's own is tried first.
     static var all: [Skill] { user + package }
 
-    /// SwiftData'daki kullanıcı becerilerini depoya yansıtır (yalnızca aktif olanlar).
-    static func reloadUser(_ modeller: [UserSkill]) {
-        user = modeller.compactMap { m in
+    /// Mirrors the user skills in SwiftData into the store (only the active ones).
+    static func reloadUser(_ models: [UserSkill]) {
+        user = models.compactMap { m in
             guard m.isActive, m.isValid else { return nil }
-            return Skill(name: m.name, triggers: m.triggers, text: m.body, kullanicininMi: true)
+            return Skill(name: m.name, triggers: m.triggers, text: m.body, isUserAuthored: true)
         }
     }
 
-    /// Ada göre beceri döndürür.
+    /// Returns the skill with the given name.
     static func skill(name: String) -> Skill? {
         all.first { $0.name == name }
     }
 
-    /// Verilen adların becerilerini tek metinde birleştirir.
+    /// Merges the skills with the given names into a single text.
     static func merge(_ names: [String]) -> String {
         names.compactMap { skill(name: $0) }
             .map { "## \($0.name)\n\($0.text)" }
             .joined(separator: "\n\n")
     }
 
-    /// Verilen mesaja en iyi uyan beceriyi döndürür (yoksa nil).
+    /// Returns the skill that best fits the given message (nil if none).
     ///
-    /// Puan, eşleşen tetikleyicilerin UZUNLUKLARI toplamıdır — adet değil. Böylece
-    /// özgül ifade genel kelimeyi yener: "bunu tablo olarak göster" cümlesinde
-    /// belge-oku'nun "tablo olarak"ı, belge-olustur'un "tablo"sunu geçer. Adet
-    /// sayılsaydı ikisi de 1 alır, sıra rastgele belirlerdi.
-    /// Eşit puanda `hepsi` sırası gereği kullanıcının becerisi kazanır.
+    /// The score is the sum of the LENGTHS of the matching triggers — not their count.
+    /// That way a specific phrase beats a generic word: in "show this as a table"
+    /// read-document's "as a table" beats create-document's "table". Had the count been
+    /// used, both would score 1 and the order would decide at random.
+    /// On an equal score the user's skill wins, by the order of `all`.
     ///
-    /// `mevcutAraclar` verilirse (aktif profilin araç setindeki `tool.name`
-    /// listesi) kılavuzun EMRETTİĞİ aracı bulundurmayan beceriler elenir —
-    /// tek doğruluk kaynağı araç setidir, elle tutulan bir profil haritası
-    /// değil. nil geçilirse eleme yapılmaz (test/önizleme yolu).
-    static func eslesen(_ question: String, mevcutAraclar: Set<String>? = nil) -> Skill? {
+    /// If `availableTools` is given (the list of `tool.name` in the active profile's
+    /// tool set), skills whose COMMANDED tool is not present are eliminated — the tool
+    /// set is the single source of truth, not a hand-maintained profile map. Passing
+    /// nil disables the elimination (the test/preview path).
+    static func matching(_ question: String, availableTools: Set<String>? = nil) -> Skill? {
         let s = question.lowercased()
-        var enIyi: (skill: Skill, skor: Int)?
-        for b in all {
-            guard aracVarMi(b, mevcutAraclar) else { continue }
-            let skor = b.triggers.reduce(0) { $0 + (contains(s, $1) ? $1.count : 0) }
-            if skor > 0, skor > (enIyi?.skor ?? 0) {
-                enIyi = (b, skor)
+        var best: (skill: Skill, score: Int)?
+        for candidate in all {
+            guard hasTools(candidate, availableTools) else { continue }
+            let score = candidate.triggers.reduce(0) { $0 + (contains(s, $1) ? $1.count : 0) }
+            if score > 0, score > (best?.score ?? 0) {
+                best = (candidate, score)
             }
         }
-        return enIyi?.skill
+        return best?.skill
     }
 
-    /// Becerinin bildirdiği TÜM araçlar oturumda var mı.
+    /// Are ALL the tools the skill declares present in the session?
     ///
-    /// Kapı "hepsi" üzerinden çünkü kılavuz iki adımlı bir akış anlatabiliyor
-    /// (belge-duzenle: önce `belge_oku`, sonra `belge_duzenle`); yarısı eksikse
-    /// kılavuz zaten uygulanamaz. Araç bildirmeyen beceri (hesap, kullanıcı
-    /// becerileri) her sette serbesttir.
-    static func aracVarMi(_ skill: Skill, _ mevcutAraclar: Set<String>?) -> Bool {
-        guard let available = mevcutAraclar, !skill.tools.isEmpty else { return true }
+    /// The gate is over "all" because a guide can describe a two-step flow
+    /// (edit-document: first `read_document`, then `edit_document`); if half of it is
+    /// missing the guide cannot be applied anyway. A skill that declares no tool
+    /// (calculation, user skills) is free in every set.
+    static func hasTools(_ skill: Skill, _ availableTools: Set<String>?) -> Bool {
+        guard let available = availableTools, !skill.tools.isEmpty else { return true }
         return skill.tools.allSatisfy(available.contains)
     }
 
-    /// Tetikleyici aramasında SÖZCÜK BAŞI şartı arar (ham alt-dizgi değil).
+    /// Trigger lookup requires a WORD START (not a raw substring).
     ///
-    /// Ham `contains` kısa tetikleyicileri sık sözcüklerin İÇİNDE buluyordu:
-    /// "alfabetik" içindeki "betik" kod becerisini, "yüzde"nin içindeki "yüz"ü
-    /// hesap becerisini çağırıyordu; yanlış kılavuz enjekte edilince model o
-    /// becerinin aracını zorlayıp şemaya uymayan bir çağrı üretiyordu. Türkçe
-    /// SONA ek aldığı için yalnızca sözcük BAŞI sınırlanır — "satır" hâlâ
-    /// "satırını" ile eşleşir, ki istenen budur.
+    /// A raw `contains` was finding short triggers INSIDE frequent words: "betik"
+    /// inside "alfabetik" called the code skill, "yüz" inside "yüzde" called the
+    /// calculation skill; with the wrong guide injected the model forced that skill's
+    /// tool and produced a call that did not match the schema. Because Turkish suffixes
+    /// attach at the END, only the word START is constrained — "satır" still matches
+    /// "satırını", which is what we want.
     ///
-    /// Boşluk kullanmayan yazılarda (CJK, Korece) sözcük sınırı diye bir şey
-    /// yok; oradaki tetikleyiciler için ham alt-dizgiye düşülür, aksi hâlde
-    /// hiç eşleşmezlerdi.
-    /// Sözcük BAŞI yetmediği uzunluk sınırı. Bunun altındaki tetikleyiciler
-    /// için sözcük SONU da aranır (tam sözcük eşleşmesi).
+    /// In scripts that use no spaces (CJK, Korean) there is no such thing as a word
+    /// boundary; for triggers there it falls back to a raw substring, otherwise they
+    /// would never match at all.
+    /// The length limit at which a word START is not enough. Below it, a word END is
+    /// required too (whole-word match).
     ///
-    /// Ölçülen hata: "ara" tetikleyicisi "**ara**lık"ı yakalıyordu, yani her
-    /// Aralık ayı sorusu Spotlight arama becerisini çağırıyor, 4096 bütçesinden
-    /// ~700 karakter yiyor ve modele alakasız kılavuz enjekte ediyordu. Aynı
-    /// tuzak "bul" → "bulut/bulmaca/bulunduğu"da da var.
+    /// MEASURED BUG: the trigger "ara" was catching "**ara**lık", i.e. every question
+    /// about the month of December called the Spotlight search skill, ate ~700
+    /// characters of the 4096 budget and injected an irrelevant guide into the model.
+    /// The same trap exists for "bul" → "bulut/bulmaca/bulunduğu".
     ///
-    /// Neden yalnız KISA tetikleyicilerde: Türkçe SONA ek alır, dolayısıyla
-    /// uzun tetikleyicilerde ön-ek eşleşmesi ŞART ("satır" → "satırını",
-    /// "çarp" → "çarparsak"). Ama kısa bir kök, kendisiyle akrabalığı olmayan
-    /// bambaşka sözcüklerin de başında durabiliyor — orada gürültü üretiyor.
+    /// Why only for SHORT triggers: Turkish takes suffixes at the END, so for long
+    /// triggers prefix matching is A MUST ("satır" → "satırını", "çarp" →
+    /// "çarparsak"). But a short root can also stand at the start of entirely unrelated
+    /// words — that is where it produces noise.
     ///
-    /// Eşik 4: 3 harfli kökler (ara/bul/oku/dök/pdf) tam sözcük ister, 4+
-    /// ön-ek eşleşmesini sürdürür. Eşiği 5 yapmak "çarp"ı kırardı.
+    /// Threshold 4: 3-letter roots (ara/bul/oku/dök/pdf) demand a whole word, 4+ keeps
+    /// prefix matching. Making the threshold 5 would break "çarp".
     ///
-    /// Asimetri bilinçli: yanlış beceri enjekte etmek modeli YANILTIR ve
-    /// bütçeden ~700 karakter yer; beceriyi kaçırmak yalnızca fazladan
-    /// kılavuzu kaybettirir — araç zaten oturumda durur. Kaçırmak ucuz,
-    /// yanlış eşleşmek pahalı; o yüzden kısa köklerde katı davranılır.
-    static let tamSozcukSiniri = 4
+    /// The asymmetry is deliberate: injecting the wrong skill MISLEADS the model and
+    /// costs ~700 characters of budget; missing a skill only loses the extra guidance —
+    /// the tool still stands in the session. Missing is cheap, mismatching is
+    /// expensive; hence the strictness on short roots.
+    static let wholeWordLimit = 4
 
     private static func contains(_ text: String, _ trigger: String) -> Bool {
         guard let first = trigger.unicodeScalars.first, first.value < 0x0590 else {
-            return text.contains(trigger)   // CJK/Korece: sınır kavramı yok
+            return text.contains(trigger)   // CJK/Korean: no boundary concept
         }
-        // Boşluk içeren tetikleyiciler ("kaç satır") zaten öbek; kısalık kuralı
-        // yalnız tek sözcüklük köklere uygulanır.
-        let tamSozcukGerek = trigger.count < tamSozcukSiniri && !trigger.contains(" ")
+        // Triggers containing a space ("kaç satır") are phrases already; the shortness
+        // rule applies only to single-word roots.
+        let needsWholeWord = trigger.count < wholeWordLimit && !trigger.contains(" ")
 
         var field = text.startIndex..<text.endIndex
         while let r = text.range(of: trigger, range: field) {
-            let bastaMi = r.lowerBound == text.startIndex
+            let atWordStart = r.lowerBound == text.startIndex
                 || !text[text.index(before: r.lowerBound)].isLetter
                 && !text[text.index(before: r.lowerBound)].isNumber
-            if bastaMi {
-                if !tamSozcukGerek { return true }
-                // Kısa tetikleyici: sonrasında harf/rakam gelmemeli.
-                let sonrasi = r.upperBound
-                if sonrasi == text.endIndex { return true }
-                let next = text[sonrasi]
+            if atWordStart {
+                if !needsWholeWord { return true }
+                // Short trigger: no letter/digit may follow it.
+                let after = r.upperBound
+                if after == text.endIndex { return true }
+                let next = text[after]
                 if !next.isLetter && !next.isNumber { return true }
             }
             guard r.lowerBound < text.endIndex else { break }
@@ -170,42 +172,43 @@ enum SkillStore {
         return false
     }
 
-    /// Metni satır sınırında en fazla `tavan` karaktere indirir (yarım kural kalmasın).
-    private static func satirdaKes(_ text: String, cap: Int) -> String {
+    /// Reduces the text to at most `cap` characters at a line boundary (so no half rule
+    /// is left behind).
+    private static func clipAtLine(_ text: String, cap: Int) -> String {
         guard text.count > cap else { return text }
         let clipped = String(text.prefix(cap))
         guard let last = clipped.range(of: "\n", options: .backwards) else { return clipped }
         return String(clipped[..<last.lowerBound])
     }
 
-    /// Gövdeyi (çekirdek, kuyruk) diye ayırır. İşaret yoksa çekirdek boştur ve
-    /// tüm gövde kuyruk sayılır — kullanıcı becerileri işaret koymak zorunda değil.
-    static func cekirdekAyir(_ text: String) -> (core: String, queue: String) {
+    /// Splits the body into (core, tail). If the marker is absent the core is empty and
+    /// the whole body counts as tail — user skills are not obliged to place a marker.
+    static func splitCore(_ text: String) -> (core: String, tail: String) {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let r = body.range(of: cekirdekIsareti) else { return ("", body) }
+        guard let r = body.range(of: coreMarker) else { return ("", body) }
         return (String(body[..<r.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines),
                 String(body[r.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
-    /// Modele gidecek gövde: ÇEKİRDEK ÖNCE, artan bütçeye kuyruk.
+    /// The body that goes to the model: CORE FIRST, tail into the remaining budget.
     ///
-    /// Çekirdek bütünlüğü sınırdan önce gelir; yine de bir beceri çekirdeği
-    /// tavanı aşarsa satırda kesilir (aksi hâlde tek bir dosya 4096 pencerenin
-    /// bütçesini sessizce yiyebilirdi).
-    static func enjeksiyonGovdesi(_ text: String) -> String {
-        let (core, queue) = cekirdekAyir(text)
-        guard !core.isEmpty else { return satirdaKes(queue, cap: enjeksiyonSiniri) }
+    /// Core integrity comes before the limit; even so, if a skill's core exceeds the cap
+    /// it is clipped at a line (otherwise a single file could silently eat the budget of
+    /// the 4096 window).
+    static func injectionBody(_ text: String) -> String {
+        let (core, tail) = splitCore(text)
+        guard !core.isEmpty else { return clipAtLine(tail, cap: injectionLimit) }
 
-        let body = satirdaKes(core, cap: enjeksiyonSiniri)
-        let remaining = enjeksiyonSiniri - body.count - 1   // -1: araya girecek "\n"
-        guard remaining >= kuyrukEsigi, !queue.isEmpty else { return body }
-        let ek = satirdaKes(queue, cap: remaining)
-        return ek.isEmpty ? body : body + "\n" + ek
+        let body = clipAtLine(core, cap: injectionLimit)
+        let remaining = injectionLimit - body.count - 1   // -1: the "\n" that goes between
+        guard remaining >= tailThreshold, !tail.isEmpty else { return body }
+        let extra = clipAtLine(tail, cap: remaining)
+        return extra.isEmpty ? body : body + "\n" + extra
     }
 
-    /// Modele verilecek biçim: çekirdek-önce gövde + "bunu anlatma" çitleri.
-    static func enjeksiyonMetni(_ skill: Skill) -> String {
-        let body = enjeksiyonGovdesi(skill.text)
+    /// The shape given to the model: core-first body + the "do not talk about this" fences.
+    static func injectionText(_ skill: Skill) -> String {
+        let body = injectionBody(skill.text)
         return """
         <guidance name="\(skill.name)">
         \(body)
@@ -215,18 +218,18 @@ enum SkillStore {
         """
     }
 
-    // MARK: - Yükleme
+    // MARK: - Loading
 
     private static func load() -> [Skill] {
-        let urller = Bundle.main.urls(forResourcesWithExtension: "md", subdirectory: nil) ?? []
-        return urller.compactMap { parse($0) }
+        let urls = Bundle.main.urls(forResourcesWithExtension: "md", subdirectory: nil) ?? []
+        return urls.compactMap { parse($0) }
     }
 
-    /// Frontmatter (--- name: … / triggers: … ---) + gövdeyi ayrıştırır.
+    /// Parses the frontmatter (--- name: … / triggers: … ---) plus the body.
     ///
-    /// ANAHTARLAR `Skills/*.md` DOSYALARIYLA BİRLİKTE İNGİLİZCEYE GEÇTİ. İkisi
-    /// ayrışırsa `tetikler` boş kalır ve alttaki guard TÜM paket becerilerini
-    /// sessizce düşürür: derleme yeşil, beceri katmanı ölü.
+    /// THE KEYS MOVED TO ENGLISH TOGETHER WITH THE `Skills/*.md` FILES. If the two
+    /// drift apart, `triggers` stays empty and the guard below silently drops ALL
+    /// bundled skills: the build is green, the skill layer is dead.
     private static func parse(_ url: URL) -> Skill? {
         guard let raw = try? String(contentsOf: url, encoding: .utf8) else { return nil }
         var name = url.deletingPathExtension().lastPathComponent
@@ -235,8 +238,8 @@ enum SkillStore {
         var body = raw
 
         let lines = raw.components(separatedBy: "\n")
-        if lines.first == "---", let kapanis = lines.dropFirst().firstIndex(of: "---") {
-            for line in lines[1..<kapanis] {
+        if lines.first == "---", let closing = lines.dropFirst().firstIndex(of: "---") {
+            for line in lines[1..<closing] {
                 let chunk = line.split(separator: ":", maxSplits: 1).map {
                     $0.trimmingCharacters(in: .whitespaces)
                 }
@@ -256,56 +259,57 @@ enum SkillStore {
                 default: break
                 }
             }
-            body = lines[(kapanis + 1)...].joined(separator: "\n")
+            body = lines[(closing + 1)...].joined(separator: "\n")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         }
         guard !triggers.isEmpty else { return nil }
         return Skill(name: name, triggers: triggers, text: body, tools: tools)
     }
 
-    // MARK: - Yeniden enjeksiyon (mesafeli işaret)
+    // MARK: - Re-injection (spaced mark)
 
-    /// Hangi becerinin hangi turda enjekte edildiğini tutan saf durum makinesi.
+    /// The pure state machine tracking which skill was injected in which turn.
     ///
-    /// Eski davranış: beceri bir kez enjekte edilip kalıcı işaretleniyordu.
-    /// Uzun turda transcript ilerledikçe kılavuz pencereden kayıyor, ama işaret
-    /// durduğu için bir daha asla girmiyordu — geç turlarda davranış sapması
-    /// tam da buradan geliyordu. İşaret artık MESAFELİ: aradan yeterince tur
-    /// geçtiyse kılavuz yeniden yürürlüğe girer.
+    /// Old behaviour: a skill was injected once and marked permanently. In a long
+    /// conversation the guide slid out of the window as the transcript advanced, but
+    /// because the mark stayed it never entered again — the behavioural drift in late
+    /// turns came from exactly this. The mark is now SPACED: once enough turns have
+    /// passed, the guide comes back into force.
     ///
-    /// Durum ModelServisi'nde tutulur, mantık burada durur — modelsiz test
-    /// edilebilsin diye.
+    /// The state is held in ModelService, the logic stays here — so it can be tested
+    /// without a model.
     struct InjectionState {
-        /// Kaç tur sonra aynı beceri yeniden enjekte edilebilir.
+        /// After how many turns the same skill may be injected again.
         ///
-        /// 6: bir beceri ~700 karakter yer ve 4096 penceresinde her turda
-        /// tekrarlamak bütçeyi yerdi; öte yandan çok büyük bir mesafede kılavuz
-        /// pencereden kayıp bir daha dönmezdi. 6 tur, tipik bir araç-kullanım
-        /// alışverişinin (soru → araç → yanıt) iki katıdır.
-        static let mesafe = 6
+        /// 6: a skill takes ~700 characters and repeating it every turn would eat the
+        /// budget of the 4096 window; on the other hand, at too large a distance the
+        /// guide would slide out of the window and never return. 6 turns is twice a
+        /// typical tool-use exchange (question → tool → answer).
+        static let distance = 6
 
-        /// Şu ana kadar işlenen tur sayısı (1'den başlar).
-        private(set) var kind = 0
-        private var sonEnjeksiyon: [String: Int] = [:]
+        /// The number of turns processed so far (starts at 1).
+        private(set) var turn = 0
+        private var lastInjection: [String: Int] = [:]
 
-        /// Her turun BAŞINDA bir kez çağrılır.
-        mutating func turBasla() { kind += 1 }
+        /// Called once at the START of every turn.
+        mutating func beginTurn() { turn += 1 }
 
-        /// Bu beceri bu turda enjekte edilmeli mi (hiç girmediyse ya da
-        /// üstünden `mesafe` tur geçtiyse).
-        func gerekliMi(_ name: String) -> Bool {
-            guard let last = sonEnjeksiyon[name] else { return true }
-            return kind - last >= Self.mesafe
+        /// Should this skill be injected in this turn (it never entered, or `distance`
+        /// turns have passed since)?
+        func isNeeded(_ name: String) -> Bool {
+            guard let last = lastInjection[name] else { return true }
+            return turn - last >= Self.distance
         }
 
-        /// Enjeksiyon GERÇEKTEN yapıldığında çağrılır. Profil uymadığı için
-        /// atlanan beceri işaretlenmez — doğru profile geçilince yeniden denenir.
-        mutating func mark(_ name: String) { sonEnjeksiyon[name] = kind }
+        /// Called when the injection ACTUALLY happened. A skill skipped because the
+        /// profile did not fit is not marked — it is retried once the right profile is
+        /// entered.
+        mutating func mark(_ name: String) { lastInjection[name] = turn }
 
-        /// Yeni oturum = yeni bağlam: sayaç ve işaretler sıfırlanır.
+        /// New session = new context: the counter and the marks are reset.
         mutating func reset() {
-            kind = 0
-            sonEnjeksiyon.removeAll()
+            turn = 0
+            lastInjection.removeAll()
         }
     }
 }

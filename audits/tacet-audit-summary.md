@@ -4,6 +4,19 @@ Source of authority: `audits/tacet-small-model-architecture-audit.md` §4 (P0 5 
 Excel report: `tacet-audit-report.xlsx` (produced with the app's own `ExcelEngine`, via `--eval-merge --audit`).
 Verdict data: `verdicts-full.json` (23 records · code, priority, goal, done, evidence, verdict, comment).
 
+> **`verdicts-full.json` IS GONE.** It is no longer in the repository; the line above
+> records what the workbook was built from, not something a reader can open today.
+> When the workbook was regenerated in English its AUDIT rows were carried over from
+> the previous export cell by cell, not re-derived. `audits/README.md` records which
+> deliverable is current and which is stale.
+>
+> **Symbol names in this document are given in their English form** even where the
+> Swift member has not been renamed in the source yet (`Tacet/Services/` was still
+> being translated when this was written). A `grep` for one of them can therefore
+> come back empty without the claim being wrong — check the Turkish name too before
+> concluding a symbol does not exist. Line numbers are from the day of the run and
+> drift with every edit.
+
 ## 0. Input coverage
 
 **This summary covers ALL 23 items.** The previous version covered only 11:
@@ -47,7 +60,7 @@ or the isolated before/after measurement the audit explicitly asked for.
 |---|---|---|
 | **P1-1** prompt core + profile appendix | **partial** | Token cost dropped by half (everyday 1238→635, document →598, search →581, connection →532), the language channel 3→2. But the ≤300 core target was not reached and the actual gain claim ("early summarisation is reduced") was never measured. Together with P0-1 it is the shared suspect for the code/search drift. |
 | **P1-2** in-turn profile recovery | **NOT MEASURED** | `secondProfile` + `recoveryNeeded` + the cancellation-safe trigger are live and in the right place. There is neither a deterministic assertion nor an eval case; the gain rests entirely on reading the code. The diagnosis `'make a weekly meal table' → none` shows the gaps persist. |
-| **P1-3** skill trigger word boundary | **partial** | The behaviour is right (`cloudy`/`in the December month`/`alphabetical` no longer match), the `wholeTermLimit = 4` threshold is justified. But the locking tests the audit asked for are NOT in SelfTestCases — this can regress silently today. |
+| **P1-3** skill trigger word boundary | **partial** | The behaviour is right (`cloudy`/`in the December month`/`alphabetical` no longer match), the `wholeWordLimit = 4` threshold is justified. But the locking tests the audit asked for are NOT in SelfTestCases — this can regress silently today. |
 | **P1-4** skill↔tool consistency | **partial** | The hand-written `skillProfiles` map was removed; matching is now bound to the real `tool.name` set of the active profile (cleaner than the audit's suggestion). What is missing is the consistency test: if a skill's `tools:` tag is misspelled the skill is silently never injected (fail-closed but INVISIBLE). |
 | **P1-5** tolerant table parser | **held** | `Table.blocks` drops no rows; the local lossy parser in `TacetReply` was deleted; `ExcelEngine` throws `unsupported` instead of silent single-column garbage. 5/5 self-test ✓. documentRead 85→99. |
 | **P1-6** schema budget + slot relevance order | **partial** | The schema half is live and **proved by mutation** (`nodeBudget = 48`; deleting the guards turns 4 tests red). The relevance half (`enum ToolRelevance`) was tested DEAD CODE — see §6. |
@@ -74,6 +87,12 @@ or the isolated before/after measurement the audit explicitly asked for.
 `clean-raw-shard0.json` (BEFORE) and `AFTER-raw.json` (AFTER) measure **the same 109
 cases** (intersection 109/109), so the comparison is matched. Unmeasurable turns: 0 in
 both runs.
+
+> **Neither raw file is in the repository any more** (checked, not assumed: a `find` for
+> `clean-raw-*.json` / `AFTER-*.json` returns nothing). The table below and the per-case
+> rows in `tacet-audit-report.xlsx` are all that survives of those two runs. Re-deriving
+> any of these numbers means re-running the suite, which — see risk 2 — would not be a
+> comparable measurement anyway while temperature is unpinned.
 
 | Category | BEFORE | AFTER | Δ | n |
 |---|---|---|---|---|

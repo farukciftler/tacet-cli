@@ -1,28 +1,30 @@
 //
-//  SesGirisi.swift
+//  VoiceInput.swift
 //  Tacet
 //
-//  Uygulama içi dikte. Mikrofondan gelen sesi CİHAZ ÜSTÜNDE yazıya çevirir ve
-//  giriş alanına canlı olarak akıtır. Otomatik gönderim YOKTUR — kullanıcı ne
-//  göndereceğini görür, düzeltir, sonra gönderir.
+//  In-app dictation. It turns the audio from the microphone into text ON DEVICE
+//  and streams it live into the input field. There is NO automatic send — the
+//  user sees what they are about to send, corrects it, and then sends.
 //
-//  NEDEN SpeechAnalyzer + DictationTranscriber:
-//  iOS 26'nın SpeechAnalyzer boru hattı tümüyle cihaz üstünde çalışır; sesin
-//  Apple sunucusuna gitme yolu yoktur. Eski `SFSpeechRecognizer` ise sessizce
-//  sunucuya düşebildiği için (requiresOnDeviceRecognition unutulduğunda) hiç
-//  kullanılmıyor. Modüllerden `DictationTranscriber` seçildi: klavye diktesinin
-//  kendi cihaz-üstü modellerini kullanır, yani arayüzün 9 dilinin tamamını
-//  kapsar — `SpeechTranscriber`ın dar dil listesi Türkçeyi dışarıda bırakabilir.
-//  Dil desteklenmiyorsa özellik AÇILMAZ ve kullanıcıya dürüstçe söylenir.
+//  WHY SpeechAnalyzer + DictationTranscriber:
+//  iOS 26's SpeechAnalyzer pipeline runs entirely on device; there is no path for
+//  the audio to reach an Apple server. The old `SFSpeechRecognizer` is not used at
+//  all, because it can silently fall back to the server (when
+//  requiresOnDeviceRecognition is forgotten). Of the modules, `DictationTranscriber`
+//  was chosen: it uses the keyboard dictation's own on-device models, so it covers
+//  all 9 languages of the interface — `SpeechTranscriber`'s narrow language list can
+//  leave Turkish out. If the language is not supported the feature DOES NOT OPEN and
+//  the user is told honestly.
 //
-//  Bu dosya ağ çağrısı yapmaz (ağ tekeli: MCPIstemcisi / WebAramaIstemcisi).
-//  Model varlığı eksikse indirmeyi sistemin kendi servisi (AssetInventory)
-//  yürütür; ses hiçbir koşulda dışarı çıkmaz.
+//  This file makes no network call (the network monopoly: MCPClient /
+//  WebSearchClient). If the model asset is missing, the system's own service
+//  (AssetInventory) performs the download; the audio never leaves under any
+//  condition.
 //
 
-// @preconcurrency: AVAudioConverter'ın dönüştürme bloğu `@Sendable` imzalı ama
-// SENKRON, aynı iş parçacığında çağrılır; girdi tamponunu yakalamak güvenlidir.
-// İşaret olmadan AVFAudio'nun Sendable eksikleri uyarı üretiyordu.
+// @preconcurrency: AVAudioConverter's conversion block has a `@Sendable` signature
+// but is SYNCHRONOUS, called on the same thread; capturing the input buffer is safe.
+// Without the marker, AVFAudio's missing Sendable conformances produced warnings.
 @preconcurrency import AVFoundation
 import Foundation
 import Observation
@@ -33,71 +35,72 @@ import UIKit
 @Observable
 final class VoiceInput {
 
-    /// Dinleme durumu. `.preparing` izin/model adımıdır — ilk açılışta model
-    /// indirmesi sürebildiği için ayrı bir durum olarak görünür.
+    /// The listening state. `.preparing` is the permission/model step — because the
+    /// model download can take a while on first launch, it appears as a separate state.
     enum State: Equatable {
         case idle
         case preparing
         case listening
     }
 
-    /// Dikteyi engelleyen sebep. Metin burada değil görünümde yazılır; servis
-    /// katmanı yerelleştirme taşımaz (repo üslubu: `Text("Türkçe")` görünümde).
+    /// The reason blocking dictation. The text is written in the view, not here; the
+    /// service layer carries no localisation (repo style: the `Text(...)` lives in the view).
     enum Block: Equatable {
         case microphonePermission
         case speechPermission
-        /// Seçili dilde cihaz-üstü dikte modeli yok — sunucuya DÜŞMEYİZ.
+        /// There is no on-device dictation model for the selected language — WE DO NOT
+        /// FALL BACK to a server.
         case languageMissing
         case couldNotStart
     }
 
     private(set) var state: State = .idle
-    /// Tanınan metin (kesinleşen + o an konuşulan). Görünüm bunu izler.
+    /// The recognised text (finalised + currently being spoken). The view observes this.
     private(set) var transcribed: String = ""
-    /// Kullanıcıya gösterilecek engel; görünüm okuduktan sonra nil'e çeker.
+    /// The block to show the user; the view sets it back to nil after reading it.
     var block: Block?
 
     var isRunning: Bool { state != .idle }
     var listening: Bool { state == .listening }
 
-    /// Ayarlar > uygulama sayfası — izin kapalıysa kullanıcıyı oraya yollarız.
+    /// Settings > the app page — if the permission is off we send the user there.
     static let settingsLink = URL(string: UIApplication.openSettingsURLString)
 
-    // İlk kelime beklenirken daha cömert davranırız: kullanıcı düğmeye basıp
-    // ne diyeceğini düşünürken mikrofon kapanmasın.
-    private static let ilkSesBeklemesi: TimeInterval = 5
-    private static let sessizlikSiniri: TimeInterval = 2.5
+    // We are more generous while waiting for the first word: the microphone must not
+    // close while the user presses the button and thinks about what to say.
+    private static let firstSoundWait: TimeInterval = 5
+    private static let silenceLimit: TimeInterval = 2.5
 
     private var engine: AVAudioEngine?
     private var evaluator: SpeechAnalyzer?
     private var writer: DictationTranscriber?
-    private var akisUcu: AsyncStream<AnalyzerInput>.Continuation?
-    private var sonucGorevi: Task<Void, Never>?
-    private var sessizlikGorevi: Task<Void, Never>?
+    private var streamEnd: AsyncStream<AnalyzerInput>.Continuation?
+    private var resultTask: Task<Void, Never>?
+    private var silenceTask: Task<Void, Never>?
 
-    private var kesinMetin = ""
-    private var geciciMetin = ""
-    private var sonSes = Date()
-    private var konusuldu = false
+    private var finalText = ""
+    private var volatileText = ""
+    private var lastSound = Date()
+    private var spoke = false
 
-    /// Başlatma sırasındaki `await`ler boyunca kullanıcı düğmeye tekrar basarsa
-    /// yarı kurulmuş bir oturumun `.dinliyor` diye açılmasını bu sayaç önler.
-    private var kusak = 0
+    /// If the user presses the button again during the `await`s of startup, this counter
+    /// prevents a half-built session from opening as `.listening`.
+    private var generation = 0
 
-    // MARK: - Dışarı açılan uçlar
+    // MARK: - The outward-facing entry points
 
     func start() async {
         guard state == .idle else { return }
         state = .preparing
-        kesinMetin = ""
-        geciciMetin = ""
+        finalText = ""
+        volatileText = ""
         transcribed = ""
-        konusuldu = false
-        let benimKusagim = kusak
+        spoke = false
+        let myGeneration = generation
 
         do {
-            try await izinAl()
-            let local = try await tanimaYereli()
+            try await requestPermissions()
+            let local = try await recognitionLocale()
 
             let writer = DictationTranscriber(
                 locale: local,
@@ -106,33 +109,33 @@ final class VoiceInput {
                 reportingOptions: [.volatileResults],
                 attributeOptions: []
             )
-            try await modeliHazirla(writer, local: local)
+            try await prepareModel(writer, local: local)
 
             guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [writer]) else {
-                throw VoiceError.hazirlanamadi
+                throw VoiceError.couldNotPrepare
             }
 
             let evaluator = SpeechAnalyzer(modules: [writer])
-            let (stream, uc) = AsyncStream<AnalyzerInput>.makeStream()
+            let (stream, end) = AsyncStream<AnalyzerInput>.makeStream()
             try await evaluator.start(inputSequence: stream)
 
-            // Buraya kadarki her adım `await` içeriyordu; arada durdurulduysak
-            // kurduğumuzu kendi elimizle toplayıp sessizce çekiliriz.
-            guard benimKusagim == kusak, state == .preparing else {
-                uc.finish()
+            // Every step up to here contained an `await`; if we were stopped in between we
+            // tear down what we built ourselves and withdraw silently.
+            guard myGeneration == generation, state == .preparing else {
+                end.finish()
                 await evaluator.cancelAndFinishNow()
                 return
             }
 
             self.writer = writer
             self.evaluator = evaluator
-            self.akisUcu = uc
-            sonuclariDinle(writer)
-            try motoruBaslat(hedefBicim: format, uc: uc)
+            self.streamEnd = end
+            listenForResults(writer)
+            try startEngine(targetFormat: format, end: end)
 
             state = .listening
-            sonSes = Date()
-            sessizlikGozcusu()
+            lastSound = Date()
+            watchSilence()
         } catch {
             let reason = (error as? VoiceError)?.block ?? .couldNotStart
             await stop()
@@ -140,106 +143,107 @@ final class VoiceInput {
         }
     }
 
-    /// Başlat/durdur simetrik: hata yolunda da, görünüm kaybolduğunda da buraya
-    /// gelinir. Mikrofon açık kalmaz.
+    /// Start/stop is symmetric: the error path and the view disappearing both arrive here.
+    /// The microphone is never left open.
     func stop() async {
         guard state != .idle else { return }
         state = .idle
-        kusak &+= 1
+        generation &+= 1
 
-        // Kapatma sırasında `await` var; alanlar ÖNCE boşaltılır ki bu arada
-        // başlayan yeni bir oturumun kurduklarını sonradan silmeyelim.
+        // There is an `await` during teardown; the fields are cleared FIRST so that we do
+        // not later delete what a new session started in the meantime has built.
         let engine = self.engine
         let evaluator = self.evaluator
-        let uc = self.akisUcu
-        let sonucGorevi = self.sonucGorevi
-        sessizlikGorevi?.cancel()
-        sessizlikGorevi = nil
+        let end = self.streamEnd
+        let resultTask = self.resultTask
+        silenceTask?.cancel()
+        silenceTask = nil
         self.engine = nil
         self.evaluator = nil
         self.writer = nil
-        self.akisUcu = nil
-        self.sonucGorevi = nil
+        self.streamEnd = nil
+        self.resultTask = nil
 
         if let engine {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
         }
-        uc?.finish()
+        end?.finish()
 
-        // Son kesin sonucu kaçırmamak için önce bitir, sonra dinlemeyi kes.
+        // Finalise first, then cut the listening off, so the last final result is not missed.
         if let evaluator {
             try? await evaluator.finalizeAndFinishThroughEndOfInput()
         }
-        sonucGorevi?.cancel()
+        resultTask?.cancel()
 
-        // Beklerken yeni bir dinleme başladıysa oturumu kapatmayız.
+        // If a new listening session started while we waited, we do not close the session.
         if state == .idle {
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         }
     }
 
-    // MARK: - İzinler
+    // MARK: - Permissions
 
     private enum VoiceError: Error {
-        case mikrofonYok
-        case konusmaYok
+        case noMicrophone
+        case noSpeech
         case languageMissing
-        case hazirlanamadi
+        case couldNotPrepare
 
         var block: Block {
             switch self {
-            case .mikrofonYok:   .microphonePermission
-            case .konusmaYok:    .speechPermission
-            case .languageMissing:        .languageMissing
-            case .hazirlanamadi: .couldNotStart
+            case .noMicrophone:     .microphonePermission
+            case .noSpeech:         .speechPermission
+            case .languageMissing:  .languageMissing
+            case .couldNotPrepare:  .couldNotStart
             }
         }
     }
 
-    /// IzinKapisi deseni: `denied` KALICIDIR, her seferinde yeniden sorulmaz —
-    /// doğrudan Ayarlar'a yönlendiren engel döner.
-    private func izinAl() async throws {
+    /// The PermissionGate pattern: `denied` IS PERMANENT, it is not asked again every
+    /// time — a block that routes straight to Settings is returned.
+    private func requestPermissions() async throws {
         switch AVAudioApplication.shared.recordPermission {
         case .granted:
             break
         case .denied:
-            throw VoiceError.mikrofonYok
+            throw VoiceError.noMicrophone
         default:
-            let verildi = await AVAudioApplication.requestRecordPermission()
-            if !verildi { throw VoiceError.mikrofonYok }
+            let granted = await AVAudioApplication.requestRecordPermission()
+            if !granted { throw VoiceError.noMicrophone }
         }
 
-        // Konuşma tanıma izni: cihaz-üstü boru hattı sesi dışarı çıkarmasa da
-        // kullanıcıya sormadan tanıma yapmayız. Info.plist anahtarı yoksa istem
-        // uygulamayı düşürür; o yüzden anahtarın varlığı önce kontrol edilir.
+        // Speech recognition permission: even though the on-device pipeline never lets the
+        // audio out, we do not recognise without asking the user. If the Info.plist key is
+        // missing the prompt crashes the app; that is why the key's presence is checked
+        // first.
         guard Bundle.main.object(forInfoDictionaryKey: "NSSpeechRecognitionUsageDescription") != nil else { return }
 
         switch SFSpeechRecognizer.authorizationStatus() {
         case .authorized:
             break
         case .denied, .restricted:
-            throw VoiceError.konusmaYok
+            throw VoiceError.noSpeech
         default:
-            let outcome = await Self.konusmaIzniIste()
-            if outcome != .authorized { throw VoiceError.konusmaYok }
+            let outcome = await Self.requestSpeechPermission()
+            if outcome != .authorized { throw VoiceError.noSpeech }
         }
     }
 
-    private static func konusmaIzniIste() async -> SFSpeechRecognizerAuthorizationStatus {
-        await withCheckedContinuation { devam in
-            // Sistem geri çağrımı tek kez çağırır; sarmalayıcı da tek resume eder.
+    private static func requestSpeechPermission() async -> SFSpeechRecognizerAuthorizationStatus {
+        await withCheckedContinuation { continuation in
+            // The system calls the callback once; the wrapper resumes once too.
             SFSpeechRecognizer.requestAuthorization { state in
-                devam.resume(returning: state)
+                continuation.resume(returning: state)
             }
         }
     }
 
-    // MARK: - Dil ve model
+    // MARK: - Language and model
 
-    /// Tanıma dili kullanıcının seçtiği yanıt/arayüz dilini izler; sabit "tr-TR"
-    /// yazmak İngilizce konuşan kullanıcıyı Türkçe modele mahkûm ederdi.
-    private func tanimaYereli() async throws -> Locale {
+    /// The recognition language follows the reply/interface language the user chose;
+    /// hardcoding "tr-TR" would condemn an English-speaking user to a Turkish model.
+    private func recognitionLocale() async throws -> Locale {
         let preference = LanguagePreference.shared
         let code: String
         if !preference.replyLanguage.isEmpty {
@@ -249,41 +253,41 @@ final class VoiceInput {
         } else {
             code = Locale.preferredLanguages.first ?? Locale.current.identifier
         }
-        guard let eslesen = await DictationTranscriber.supportedLocale(equivalentTo: Locale(identifier: code)) else {
+        guard let matched = await DictationTranscriber.supportedLocale(equivalentTo: Locale(identifier: code)) else {
             throw VoiceError.languageMissing
         }
-        return eslesen
+        return matched
     }
 
-    private func modeliHazirla(_ writer: DictationTranscriber, local: Locale) async throws {
+    private func prepareModel(_ writer: DictationTranscriber, local: Locale) async throws {
         let target = local.identifier(.bcp47)
         let installed = await DictationTranscriber.installedLocales
         if installed.contains(where: { $0.identifier(.bcp47) == target }) { return }
 
-        // Model eksikse sistem servisi indirir (bizim ağ kodumuz değil).
+        // If the model is missing the system service downloads it (not our network code).
         guard let request = try await AssetInventory.assetInstallationRequest(supporting: [writer]) else {
             throw VoiceError.languageMissing
         }
         try await request.downloadAndInstall()
     }
 
-    // MARK: - Sonuç akışı
+    // MARK: - The result stream
 
-    private func sonuclariDinle(_ writer: DictationTranscriber) {
-        sonucGorevi = Task { [weak self] in
+    private func listenForResults(_ writer: DictationTranscriber) {
+        resultTask = Task { [weak self] in
             do {
                 for try await outcome in writer.results {
                     guard let self else { return }
                     let chunk = String(outcome.text.characters)
                     if outcome.isFinal {
-                        self.kesinMetin += chunk
-                        self.geciciMetin = ""
+                        self.finalText += chunk
+                        self.volatileText = ""
                     } else {
-                        self.geciciMetin = chunk
+                        self.volatileText = chunk
                     }
-                    self.transcribed = self.kesinMetin + self.geciciMetin
-                    self.sonSes = Date()
-                    self.konusuldu = true
+                    self.transcribed = self.finalText + self.volatileText
+                    self.lastSound = Date()
+                    self.spoke = true
                 }
             } catch {
                 guard let self, self.state != .idle else { return }
@@ -293,16 +297,16 @@ final class VoiceInput {
         }
     }
 
-    /// Sessizlikte kendiliğinden dur: kullanıcı düğmeye basmayı unutursa
-    /// mikrofon açık kalmasın. Ölçüt sonuç akışıdır — konuşma varken sonuç
-    /// gelir, sustuğunda gelmez.
-    private func sessizlikGozcusu() {
-        sessizlikGorevi = Task { [weak self] in
+    /// Stop by itself on silence: if the user forgets to press the button, the microphone
+    /// must not stay open. The criterion is the result stream — while there is speech
+    /// results arrive, when it stops they do not.
+    private func watchSilence() {
+        silenceTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(500))
                 guard !Task.isCancelled, let self, self.state == .listening else { return }
-                let limit = self.konusuldu ? Self.sessizlikSiniri : Self.ilkSesBeklemesi
-                if Date().timeIntervalSince(self.sonSes) > limit {
+                let limit = self.spoke ? Self.silenceLimit : Self.firstSoundWait
+                if Date().timeIntervalSince(self.lastSound) > limit {
                     await self.stop()
                     return
                 }
@@ -310,25 +314,27 @@ final class VoiceInput {
         }
     }
 
-    // MARK: - Ses motoru
+    // MARK: - The audio engine
 
-    private func motoruBaslat(hedefBicim: AVAudioFormat, uc: AsyncStream<AnalyzerInput>.Continuation) throws {
+    private func startEngine(targetFormat: AVAudioFormat,
+                             end: AsyncStream<AnalyzerInput>.Continuation) throws {
         let session = AVAudioSession.sharedInstance()
-        // `.measurement`: sinyal işleme (AGC/EQ) kapanır, tanıma doğruluğu artar.
+        // `.measurement`: signal processing (AGC/EQ) is turned off, recognition accuracy
+        // goes up.
         try session.setCategory(.record, mode: .measurement, options: [])
         try session.setActive(true, options: .notifyOthersOnDeactivation)
 
         let engine = AVAudioEngine()
         let input = engine.inputNode
-        let girdiBicimi = input.outputFormat(forBus: 0)
-        guard girdiBicimi.sampleRate > 0 else { throw VoiceError.hazirlanamadi }
+        let inputFormat = input.outputFormat(forBus: 0)
+        guard inputFormat.sampleRate > 0 else { throw VoiceError.couldNotPrepare }
 
-        let donusturucu = SpeechTranscriber(target: hedefBicim)
-        // Tap gerçek-zamanlı ses iş parçacığında çalışır: MainActor'a dokunan
-        // hiçbir şey yakalanmaz, yalnız Sendable yerel değerler.
-        input.installTap(onBus: 0, bufferSize: 4096, format: girdiBicimi) { buffer, _ in
-            guard let ready = donusturucu.transform(buffer) else { return }
-            uc.yield(AnalyzerInput(buffer: ready))
+        let converter = SpeechTranscriber(target: targetFormat)
+        // The tap runs on the real-time audio thread: nothing touching MainActor is
+        // captured, only Sendable local values.
+        input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
+            guard let ready = converter.transform(buffer) else { return }
+            end.yield(AnalyzerInput(buffer: ready))
         }
 
         engine.prepare()
@@ -337,18 +343,18 @@ final class VoiceInput {
         } catch {
             input.removeTap(onBus: 0)
             try? session.setActive(false, options: .notifyOthersOnDeactivation)
-            throw VoiceError.hazirlanamadi
+            throw VoiceError.couldNotPrepare
         }
         self.engine = engine
     }
 }
 
-/// Mikrofonun doğal biçimini çözümleyicinin istediği biçime çevirir.
-/// Gerçek-zamanlı ses iş parçacığından çağrıldığı için bilinçli olarak
-/// yalıtımsızdır; örneği yalnız tek bir tap kapanışı kullanır.
+/// Converts the microphone's native format into the format the analyzer wants.
+/// It is deliberately un-isolated because it is called from the real-time audio thread;
+/// only a single tap closure uses the instance.
 private nonisolated final class SpeechTranscriber: @unchecked Sendable {
     private let target: AVAudioFormat
-    private var donusturucu: AVAudioConverter?
+    private var converter: AVAudioConverter?
 
     init(target: AVAudioFormat) {
         self.target = target
@@ -358,28 +364,28 @@ private nonisolated final class SpeechTranscriber: @unchecked Sendable {
         let source = buffer.format
         if source == target { return buffer }
 
-        if donusturucu == nil || donusturucu?.inputFormat != source {
+        if converter == nil || converter?.inputFormat != source {
             let new = AVAudioConverter(from: source, to: target)
-            // Ön-örnekleme kapalı: ilk örneklerin kalitesinden feragat edip
-            // canlı akışta zaman damgası kaymasını önleriz.
+            // Priming is off: we give up the quality of the first samples to avoid a
+            // timestamp drift in the live stream.
             new?.primeMethod = AVAudioConverterPrimeMethod.none
-            donusturucu = new
+            converter = new
         }
-        guard let donusturucu else { return nil }
+        guard let converter else { return nil }
 
         let ratio = target.sampleRate / source.sampleRate
-        let kapasite = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up))
-        guard kapasite > 0, let output = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: kapasite) else { return nil }
+        let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up))
+        guard capacity > 0, let output = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return nil }
 
-        var verildi = false
+        var delivered = false
         var error: NSError?
-        donusturucu.convert(to: output, error: &error) { _, state in
-            // Tek tamponluk dönüşüm: ikinci istekte "şimdilik veri yok" deriz.
-            if verildi {
+        converter.convert(to: output, error: &error) { _, state in
+            // A single-buffer conversion: on the second request we say "no data now".
+            if delivered {
                 state.pointee = .noDataNow
                 return nil
             }
-            verildi = true
+            delivered = true
             state.pointee = .haveData
             return buffer
         }

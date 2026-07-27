@@ -17,11 +17,13 @@ final class LanguagePreference {
 
     static let shared = LanguagePreference()
 
-    // The UserDefaults keys keep their old spelling on purpose: they are
-    // PERSISTED KEYS, not prose. Renaming them would drop the language choice
-    // of every existing install back to the default.
-    private static let replyKey = "tacet.yanitDili"
-    private static let uiKey = "tacet.arayuzDili"
+    // RENAMED WITH THE ENGLISH MIGRATION. These are PERSISTED KEYS, so a rename
+    // drops the language choice of every existing install back to "automatic".
+    // That is accepted here because the loss is one visible, one-time re-pick in
+    // Settings — unlike the Keychain service string (Keychain.swift), which is
+    // frozen because the secret behind it can never be shown or retyped again.
+    private static let replyKey = "tacet.replyLanguage"
+    private static let uiKey = "tacet.uiLanguage"
 
     /// "" = automatic (detect the language that was written). Otherwise a BCP47
     /// code, e.g. "en".

@@ -43,7 +43,7 @@ use tacet_core::{
 
 use crate::read_document::parse_xlsx;
 use crate::create_document::{
-    DocumentFormat, DocumentEngine, ExcelEngine, TextEngine, write_document, output_folder, markdown_dan,
+    DocumentFormat, DocumentEngine, ExcelEngine, TextEngine, write_document, output_folder, from_markdown,
 };
 use crate::data_store::Table;
 
@@ -424,7 +424,7 @@ impl EditDocumentTool {
         let mut warning = String::new();
         let table: Option<Table> = if format.table_shape() {
             let previous = fs::read(&path).ok().and_then(|b| parse_xlsx(&b).ok());
-            let new = markdown_dan(&new_content).filter(|t| !t.rows.is_empty());
+            let new = from_markdown(&new_content).filter(|t| !t.rows.is_empty());
             if let (Some(o), Some(y)) = (&previous, &new)
                 && o.column_count() > 0
                 && y.column_count() < o.column_count()

@@ -375,7 +375,7 @@ fn to_table(
             return Ok((t.headers.clone(), t.rows.clone()));
         }
         // There is a header but no rows: try to recover rows from the body.
-        if let Some(a) = body.and_then(markdown_dan).filter(|a| !a.rows.is_empty()) {
+        if let Some(a) = body.and_then(from_markdown).filter(|a| !a.rows.is_empty()) {
             return Ok((a.headers, a.rows));
         }
         return Ok((t.headers.clone(), Vec::new()));
@@ -390,7 +390,7 @@ fn to_table(
     }
 
     // 1) Is the body a markdown table? (the separator row is optional)
-    if let Some(a) = markdown_dan(text).filter(|a| !a.rows.is_empty()) {
+    if let Some(a) = from_markdown(text).filter(|a| !a.rows.is_empty()) {
         return Ok((a.headers, a.rows));
     }
 
@@ -622,7 +622,7 @@ const STYLES_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes
 /// throwing the data away because it is missing gains the user nothing. On the
 /// other hand, IF the separator row is there it does not count as data —
 /// otherwise the first row of the table would be a bunch of dashes.
-pub fn markdown_dan(raw: &str) -> Option<Table> {
+pub fn from_markdown(raw: &str) -> Option<Table> {
     let lines: Vec<&str> = raw
         .lines()
         .map(str::trim)
@@ -631,15 +631,15 @@ pub fn markdown_dan(raw: &str) -> Option<Table> {
         .collect();
     let (emit, remaining) = lines.split_first()?;
 
-    let headers = hucrelere_bol(emit);
+    let headers = split_into_cells(emit);
     if headers.is_empty() {
         return None;
     }
 
     let data: Vec<Vec<String>> = remaining
         .iter()
-        .filter(|s| !ayrac_satiri_mi(s))
-        .map(|s| hucrelere_bol(s))
+        .filter(|s| !is_separator_row(s))
+        .map(|s| split_into_cells(s))
         .filter(|h| !h.is_empty())
         .collect();
 
@@ -647,10 +647,10 @@ pub fn markdown_dan(raw: &str) -> Option<Table> {
 }
 
 /// Is this an alignment row like `| --- | :---: |`?
-fn ayrac_satiri_mi(line: &str) -> bool {
-    let hucreler = hucrelere_bol(line);
-    !hucreler.is_empty()
-        && hucreler.iter().all(|h| {
+fn is_separator_row(line: &str) -> bool {
+    let cells = split_into_cells(line);
+    !cells.is_empty()
+        && cells.iter().all(|h| {
             let h = h.trim();
             !h.is_empty() && h.chars().all(|c| c == '-' || c == ':')
         })
@@ -659,9 +659,9 @@ fn ayrac_satiri_mi(line: &str) -> bool {
 /// Splits a markdown row into cells. An escaped pipe (`\|`) DOES NOT COUNT as a
 /// separator — `Table::markdown_truncated` produces exactly that escape, so
 /// that cell boundaries survive when a stored table summary is read back.
-fn hucrelere_bol(line: &str) -> Vec<String> {
+fn split_into_cells(line: &str) -> Vec<String> {
     let body = line.trim().trim_start_matches('|').trim_end_matches('|');
-    let mut hucreler = Vec::new();
+    let mut cells = Vec::new();
     let mut active = String::new();
     let mut escape = false;
     for c in body.chars() {
@@ -676,7 +676,7 @@ fn hucrelere_bol(line: &str) -> Vec<String> {
         } else if c == '\\' {
             escape = true;
         } else if c == '|' {
-            hucreler.push(active.trim().to_string());
+            cells.push(active.trim().to_string());
             active = String::new();
         } else {
             active.push(c);
@@ -685,11 +685,11 @@ fn hucrelere_bol(line: &str) -> Vec<String> {
     if escape {
         active.push('\\');
     }
-    hucreler.push(active.trim().to_string());
-    if hucreler.iter().all(|h| h.is_empty()) {
+    cells.push(active.trim().to_string());
+    if cells.iter().all(|h| h.is_empty()) {
         return Vec::new();
     }
-    hucreler
+    cells
 }
 
 // ---------------------------------------------------------------------------
@@ -817,7 +817,7 @@ impl Tool for CreateDocumentTool {
                 // The body in the store is valid markdown for a `Table`; if Excel
                 // is requested it is converted back to a structured table.
                 if format.table_shape()
-                    && let Some(t) = markdown_dan(&record.body).filter(|t| !t.rows.is_empty())
+                    && let Some(t) = from_markdown(&record.body).filter(|t| !t.rows.is_empty())
                 {
                     table = Some(t);
                     body = None;
@@ -825,7 +825,7 @@ impl Tool for CreateDocumentTool {
                     body = Some(record.body);
                 }
             } else if format.table_shape()
-                && let Some(t) = body.as_deref().and_then(markdown_dan).filter(|t| !t.rows.is_empty())
+                && let Some(t) = body.as_deref().and_then(from_markdown).filter(|t| !t.rows.is_empty())
             {
                 table = Some(t);
                 body = None;
@@ -1002,7 +1002,7 @@ mod tests {
             ],
         );
         let md = table.markdown_truncated(usize::MAX);
-        let back = markdown_dan(&md).expect("the table must resolve");
+        let back = from_markdown(&md).expect("the table must resolve");
         assert_eq!(back.headers, vec!["Name", "Amount"]);
         assert_eq!(back.rows.len(), 2, "the separator row must not count as data");
         assert_eq!(back.rows[0][0], "Alice | Bob");
@@ -1200,7 +1200,7 @@ mod tests {
 
     /// Without XML escaping the produced sheet becomes unopenable.
     #[test]
-    fn xml_ozel_karakterleri_kacirilir() {
+    fn xml_special_chars_are_escaped() {
         let xml = sheet_xml(
             &["A&B".to_string()],
             &[vec!["<script>".to_string()], vec!["\"quote\"".to_string()]],

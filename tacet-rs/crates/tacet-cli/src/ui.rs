@@ -141,10 +141,15 @@ fn ensure_theme() {
 }
 
 /// Switches the live theme. `false` when the name is unknown.
+///
+/// MUST NOT touch THEME_INIT: `ensure_theme`'s initializer calls this
+/// function, and a `get_or_init` from inside its own initializer deadlocks the
+/// OnceLock (measured: the shell froze before the banner). The store alone is
+/// enough — if a switch somehow lands before the lazy init, the init only
+/// re-applies the same config value afterwards.
 pub fn set_theme(name: &str) -> bool {
     match THEMES.iter().position(|t| t.name == name) {
         Some(i) => {
-            THEME_INIT.get_or_init(|| ());
             ACTIVE_THEME.store(i, Ordering::Relaxed);
             true
         }
@@ -220,6 +225,44 @@ impl Color {
             text.to_string()
         }
     }
+}
+
+/// A single-key y/N question, read THROUGH CROSSTERM, not through std stdin.
+///
+/// WHY NOT `stdin().read_line`: the input field reads through crossterm, and
+/// crossterm slurps every byte already waiting on the tty into its own parser
+/// buffer. Input that arrived fast — a paste, a script feeding lines — is
+/// therefore sitting where std stdin can never see it, and a `read_line` would
+/// hang on an fd that looks empty. Reading the answer through the same channel
+/// consumes that buffer first. A human typing after the prompt behaves the
+/// same either way.
+pub fn ask_yes_no(color: &Color, question: &str) -> bool {
+    print!("{} [y/N]: ", color.paint(YELLOW, question));
+    let _ = std::io::stdout().flush();
+
+    let raw = enable_raw_mode().is_ok();
+    let mut answer = false;
+    loop {
+        match event::read() {
+            Ok(Event::Key(k)) if k.kind != KeyEventKind::Release => match k.code {
+                KeyCode::Char('y') | KeyCode::Char('Y')
+                | KeyCode::Char('e') | KeyCode::Char('E') => {
+                    answer = true;
+                    break;
+                }
+                KeyCode::Char('n') | KeyCode::Char('N')
+                | KeyCode::Enter | KeyCode::Esc => break,
+                _ => {}
+            },
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    if raw {
+        let _ = disable_raw_mode();
+    }
+    println!("{}", if answer { "y" } else { "n" });
+    answer
 }
 
 // ---------------------------------------------------------------------------

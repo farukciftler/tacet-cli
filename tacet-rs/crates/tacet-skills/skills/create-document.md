@@ -7,7 +7,10 @@ tools: create_document
 
 `create_document` writes the file; content goes in `content` as MARKDOWN.
 `format`: data/plan/budget -> "excel" (`content` MUST be a markdown table);
-prose/report -> "pdf"; note -> "markdown".
+prose/report -> "markdown"; plain note -> "text".
+
+Those three are the ONLY values this build accepts. A user asking for PDF, Word or
+docx still gets a file: pick the closest value above and say which one you produced.
 
 ## Table shape — EXAMPLE ONLY
 | Day | Lunch | Dinner |

@@ -1,354 +1,384 @@
 {
-  "sourceLanguage": "en",
-  "strings": {
-    "NSCalendarsFullAccessUsageDescription": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet liest deinen Kalender nur dann, wenn du es willst, und legt Termine auf diesem Gerät an. Sein Kern läuft auf dem Gerät; Websuche und Verbindungen greifen nur, wenn du sie aktivierst und es am Bildschirm siehst."
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet reads your calendar and adds events only when you ask, on this device. Its core runs on the device; web search and connections come into play only if you enable them and see it on screen."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet lee tu calendario y añade eventos solo cuando tú lo pides, en este dispositivo. Su núcleo se ejecuta en el dispositivo; la búsqueda web y las conexiones solo entran en juego si tú las activas y lo ves en pantalla."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet lit ton calendrier et ajoute des événements uniquement quand tu le demandes, sur cet appareil. Son cœur fonctionne sur l’appareil ; la recherche web et les connexions n’interviennent que si tu les actives et le vois à l’écran."
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet はあなたが望んだときだけ、この端末でカレンダーを読み、予定を追加します。中核は端末の中で動きます。ウェブ検索と接続は、あなたが有効にし、画面で見えるときだけ動きます。"
-          }
-        },
-        "ko": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet은 당신이 원할 때만 이 기기에서 캘린더를 읽고 일정을 추가합니다. 핵심은 기기 안에서 돌아갑니다. 웹 검색과 연결은 당신이 켜고 화면에서 볼 때만 작동합니다."
-          }
-        },
-        "pt-BR": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "O Tacet lê seu calendário e adiciona eventos só quando você pede, neste aparelho. O núcleo roda no aparelho; busca na web e conexões só entram em ação se você as ativar e vir na tela."
-          }
-        },
-        "tr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet takvimini yalnız senin istediğin anda, bu cihazda okur ve etkinlik ekler. Çekirdeği cihazda çalışır; web araması ve bağlantılar ancak sen açarsan, ekranda görerek devreye girer."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "只有在你要求时，Tacet 才会在本机读取你的日历并添加日程。它的核心运行在设备上；网页搜索和连接只有你开启并在屏幕上看到时才会启用。"
+  "sourceLanguage" : "en",
+  "strings" : {
+    "CFBundleDisplayName" : {
+      "comment" : "Bundle display name",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Tacet"
           }
         }
       }
     },
-    "NSCalendarsWriteOnlyAccessUsageDescription": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet legt nur dann, wenn du es willst, auf diesem Gerät Termine in deinem Kalender an; deinen Kalender liest es nicht."
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet only adds events to your calendar on this device when you ask; it doesn’t read your calendar."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet solo añade eventos a tu calendario en este dispositivo cuando tú lo pides; no lee tu calendario."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet ajoute des événements à ton calendrier sur cet appareil uniquement quand tu le demandes ; il ne lit pas ton calendrier."
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet はあなたが望んだときだけ、この端末でカレンダーに予定を追加します。カレンダーを読むことはしません。"
-          }
-        },
-        "ko": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet은 당신이 원할 때만 이 기기에서 캘린더에 일정을 추가합니다. 캘린더를 읽지는 않습니다."
-          }
-        },
-        "pt-BR": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "O Tacet só adiciona eventos ao seu calendário neste aparelho quando você pede; ele não lê seu calendário."
-          }
-        },
-        "tr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet takvimine yalnız senin istediğin anda, bu cihazda etkinlik ekler; takvimini okumaz."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "只有在你要求时，Tacet 才会在本机向你的日历添加日程；它不会读取你的日历。"
+    "CFBundleName" : {
+      "comment" : "Bundle name",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Tacet"
           }
         }
       }
     },
-    "NSContactsUsageDescription": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet sucht nur dann, wenn du es willst, auf diesem Gerät in deinen Kontakten. Sein Kern läuft auf dem Gerät; Websuche und Verbindungen greifen nur, wenn du sie aktivierst und es am Bildschirm siehst."
+    "NSCalendarsFullAccessUsageDescription" : {
+      "comment" : "Privacy - Calendars Full Access Usage Description",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet liest deinen Kalender nur dann, wenn du es willst, und legt Termine auf diesem Gerät an. Sein Kern läuft auf dem Gerät; Websuche und Verbindungen greifen nur, wenn du sie aktivierst und es am Bildschirm siehst."
           }
         },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet searches your contacts only when you ask, on this device. Its core runs on the device; web search and connections come into play only if you enable them and see it on screen."
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet reads your calendar and adds events only when you ask, on this device. Its core runs on the device; web search and connections come into play only if you enable them and see it on screen."
           }
         },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet busca en tus contactos solo cuando tú lo pides, en este dispositivo. Su núcleo se ejecuta en el dispositivo; la búsqueda web y las conexiones solo entran en juego si tú las activas y lo ves en pantalla."
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet lee tu calendario y añade eventos solo cuando tú lo pides, en este dispositivo. Su núcleo se ejecuta en el dispositivo; la búsqueda web y las conexiones solo entran en juego si tú las activas y lo ves en pantalla."
           }
         },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet cherche dans tes contacts uniquement quand tu le demandes, sur cet appareil. Son cœur fonctionne sur l’appareil ; la recherche web et les connexions n’interviennent que si tu les actives et le vois à l’écran."
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet lit ton calendrier et ajoute des événements uniquement quand tu le demandes, sur cet appareil. Son cœur fonctionne sur l’appareil ; la recherche web et les connexions n’interviennent que si tu les actives et le vois à l’écran."
           }
         },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet はあなたが望んだときだけ、この端末で連絡先を検索します。中核は端末の中で動きます。ウェブ検索と接続は、あなたが有効にし、画面で見えるときだけ動きます。"
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet はあなたが望んだときだけ、この端末でカレンダーを読み、予定を追加します。中核は端末の中で動きます。ウェブ検索と接続は、あなたが有効にし、画面で見えるときだけ動きます。"
           }
         },
-        "ko": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet은 당신이 원할 때만 이 기기에서 연락처를 검색합니다. 핵심은 기기 안에서 돌아갑니다. 웹 검색과 연결은 당신이 켜고 화면에서 볼 때만 작동합니다."
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet은 당신이 원할 때만 이 기기에서 캘린더를 읽고 일정을 추가합니다. 핵심은 기기 안에서 돌아갑니다. 웹 검색과 연결은 당신이 켜고 화면에서 볼 때만 작동합니다."
           }
         },
-        "pt-BR": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "O Tacet busca nos seus contatos só quando você pede, neste aparelho. O núcleo roda no aparelho; busca na web e conexões só entram em ação se você as ativar e vir na tela."
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O Tacet lê seu calendário e adiciona eventos só quando você pede, neste aparelho. O núcleo roda no aparelho; busca na web e conexões só entram em ação se você as ativar e vir na tela."
           }
         },
-        "tr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet kişilerinde yalnız senin istediğin anda, bu cihazda arama yapar. Çekirdeği cihazda çalışır; web araması ve bağlantılar ancak sen açarsan, ekranda görerek devreye girer."
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet takvimini yalnız senin istediğin anda, bu cihazda okur ve etkinlik ekler. Çekirdeği cihazda çalışır; web araması ve bağlantılar ancak sen açarsan, ekranda görerek devreye girer."
           }
         },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "只有在你要求时，Tacet 才会在本机搜索你的通讯录。它的核心运行在设备上；网页搜索和连接只有你开启并在屏幕上看到时才会启用。"
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "只有在你要求时，Tacet 才会在本机读取你的日历并添加日程。它的核心运行在设备上；网页搜索和连接只有你开启并在屏幕上看到时才会启用。"
           }
         }
       }
     },
-    "NSMicrophoneUsageDescription": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet hört nur zu, wenn du die Mikrofontaste drückst; deine Stimme wird auf diesem Gerät zu Text."
+    "NSCalendarsWriteOnlyAccessUsageDescription" : {
+      "comment" : "Privacy - Calendars Write Only Usage Description",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet legt nur dann, wenn du es willst, auf diesem Gerät Termine in deinem Kalender an; deinen Kalender liest es nicht."
           }
         },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet listens only while you press the microphone button; your voice becomes text on this device."
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet only adds events to your calendar on this device when you ask; it doesn’t read your calendar."
           }
         },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet escucha solo cuando pulsas el botón del micrófono; tu voz se convierte en texto en este dispositivo."
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet solo añade eventos a tu calendario en este dispositivo cuando tú lo pides; no lee tu calendario."
           }
         },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet écoute uniquement quand tu appuies sur le bouton du micro ; ta voix devient du texte sur cet appareil."
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet ajoute des événements à ton calendrier sur cet appareil uniquement quand tu le demandes ; il ne lit pas ton calendrier."
           }
         },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet はあなたがマイクボタンを押したときだけ聞きます。声はこの端末で文字になります。"
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet はあなたが望んだときだけ、この端末でカレンダーに予定を追加します。カレンダーを読むことはしません。"
           }
         },
-        "ko": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet은 당신이 마이크 버튼을 누를 때만 듣습니다. 음성은 이 기기에서 글로 바뀝니다."
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet은 당신이 원할 때만 이 기기에서 캘린더에 일정을 추가합니다. 캘린더를 읽지는 않습니다."
           }
         },
-        "pt-BR": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "O Tacet escuta só quando você aperta o botão do microfone; sua voz vira texto neste aparelho."
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O Tacet só adiciona eventos ao seu calendário neste aparelho quando você pede; ele não lê seu calendário."
           }
         },
-        "tr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet yalnız sen mikrofon düğmesine bastığında dinler; sesin bu cihazda yazıya çevrilir."
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet takvimine yalnız senin istediğin anda, bu cihazda etkinlik ekler; takvimini okumaz."
           }
         },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "只有你按下麦克风按钮时 Tacet 才会聆听；你的语音在本机转成文字。"
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "只有在你要求时，Tacet 才会在本机向你的日历添加日程；它不会读取你的日历。"
           }
         }
       }
     },
-    "NSRemindersFullAccessUsageDescription": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet erstellt und liest deine Erinnerungen nur dann, wenn du es willst, auf diesem Gerät. Sein Kern läuft auf dem Gerät; Websuche und Verbindungen greifen nur, wenn du sie aktivierst und es am Bildschirm siehst."
+    "NSContactsUsageDescription" : {
+      "comment" : "Privacy - Contacts Usage Description",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet sucht nur dann, wenn du es willst, auf diesem Gerät in deinen Kontakten. Sein Kern läuft auf dem Gerät; Websuche und Verbindungen greifen nur, wenn du sie aktivierst und es am Bildschirm siehst."
           }
         },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet sets and reads your reminders only when you ask, on this device. Its core runs on the device; web search and connections come into play only if you enable them and see it on screen."
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet searches your contacts only when you ask, on this device. Its core runs on the device; web search and connections come into play only if you enable them and see it on screen."
           }
         },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet crea y lee tus recordatorios solo cuando tú lo pides, en este dispositivo. Su núcleo se ejecuta en el dispositivo; la búsqueda web y las conexiones solo entran en juego si tú las activas y lo ves en pantalla."
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet busca en tus contactos solo cuando tú lo pides, en este dispositivo. Su núcleo se ejecuta en el dispositivo; la búsqueda web y las conexiones solo entran en juego si tú las activas y lo ves en pantalla."
           }
         },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet crée et lit tes rappels uniquement quand tu le demandes, sur cet appareil. Son cœur fonctionne sur l’appareil ; la recherche web et les connexions n’interviennent que si tu les actives et le vois à l’écran."
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet cherche dans tes contacts uniquement quand tu le demandes, sur cet appareil. Son cœur fonctionne sur l’appareil ; la recherche web et les connexions n’interviennent que si tu les actives et le vois à l’écran."
           }
         },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet はあなたが望んだときだけ、この端末でリマインダーを作成し、読みます。中核は端末の中で動きます。ウェブ検索と接続は、あなたが有効にし、画面で見えるときだけ動きます。"
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet はあなたが望んだときだけ、この端末で連絡先を検索します。中核は端末の中で動きます。ウェブ検索と接続は、あなたが有効にし、画面で見えるときだけ動きます。"
           }
         },
-        "ko": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet은 당신이 원할 때만 이 기기에서 미리 알림을 만들고 읽습니다. 핵심은 기기 안에서 돌아갑니다. 웹 검색과 연결은 당신이 켜고 화면에서 볼 때만 작동합니다."
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet은 당신이 원할 때만 이 기기에서 연락처를 검색합니다. 핵심은 기기 안에서 돌아갑니다. 웹 검색과 연결은 당신이 켜고 화면에서 볼 때만 작동합니다."
           }
         },
-        "pt-BR": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "O Tacet cria e lê seus lembretes só quando você pede, neste aparelho. O núcleo roda no aparelho; busca na web e conexões só entram em ação se você as ativar e vir na tela."
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O Tacet busca nos seus contatos só quando você pede, neste aparelho. O núcleo roda no aparelho; busca na web e conexões só entram em ação se você as ativar e vir na tela."
           }
         },
-        "tr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet hatırlatıcılarını yalnız senin istediğin anda, bu cihazda kurar ve okur. Çekirdeği cihazda çalışır; web araması ve bağlantılar ancak sen açarsan, ekranda görerek devreye girer."
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet kişilerinde yalnız senin istediğin anda, bu cihazda arama yapar. Çekirdeği cihazda çalışır; web araması ve bağlantılar ancak sen açarsan, ekranda görerek devreye girer."
           }
         },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "只有在你要求时，Tacet 才会在本机创建并读取你的提醒事项。它的核心运行在设备上；网页搜索和连接只有你开启并在屏幕上看到时才会启用。"
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "只有在你要求时，Tacet 才会在本机搜索你的通讯录。它的核心运行在设备上；网页搜索和连接只有你开启并在屏幕上看到时才会启用。"
           }
         }
       }
     },
-    "NSSpeechRecognitionUsageDescription": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet wandelt deine Worte in Text um; die Erkennung findet auf diesem Gerät statt."
+    "NSMicrophoneUsageDescription" : {
+      "comment" : "Privacy - Microphone Usage Description",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet hört nur zu, wenn du die Mikrofontaste drückst; deine Stimme wird auf diesem Gerät zu Text."
           }
         },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet turns what you say into text; recognition happens on this device."
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet listens only while you press the microphone button; your voice becomes text on this device."
           }
         },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet convierte lo que dices en texto; el reconocimiento ocurre en este dispositivo."
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet escucha solo cuando pulsas el botón del micrófono; tu voz se convierte en texto en este dispositivo."
           }
         },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet transforme ce que tu dis en texte ; la reconnaissance a lieu sur cet appareil."
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet écoute uniquement quand tu appuies sur le bouton du micro ; ta voix devient du texte sur cet appareil."
           }
         },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet は話した内容を文字にします。認識はこの端末の上で行われます。"
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet はあなたがマイクボタンを押したときだけ聞きます。声はこの端末で文字になります。"
           }
         },
-        "ko": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet은 당신이 말한 내용을 글로 바꿉니다. 인식은 이 기기 위에서 이루어집니다."
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet은 당신이 마이크 버튼을 누를 때만 듣습니다. 음성은 이 기기에서 글로 바뀝니다."
           }
         },
-        "pt-BR": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "O Tacet transforma o que você fala em texto; o reconhecimento acontece neste aparelho."
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O Tacet escuta só quando você aperta o botão do microfone; sua voz vira texto neste aparelho."
           }
         },
-        "tr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet söylediklerini yazıya çevirir; tanıma bu cihazın üzerinde yapılır."
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet yalnız sen mikrofon düğmesine bastığında dinler; sesin bu cihazda yazıya çevrilir."
           }
         },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tacet 会把你说的话转成文字；识别在本机完成。"
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "只有你按下麦克风按钮时 Tacet 才会聆听；你的语音在本机转成文字。"
+          }
+        }
+      }
+    },
+    "NSRemindersFullAccessUsageDescription" : {
+      "comment" : "Privacy - Reminders Full Access Usage Description",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet erstellt und liest deine Erinnerungen nur dann, wenn du es willst, auf diesem Gerät. Sein Kern läuft auf dem Gerät; Websuche und Verbindungen greifen nur, wenn du sie aktivierst und es am Bildschirm siehst."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet sets and reads your reminders only when you ask, on this device. Its core runs on the device; web search and connections come into play only if you enable them and see it on screen."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet crea y lee tus recordatorios solo cuando tú lo pides, en este dispositivo. Su núcleo se ejecuta en el dispositivo; la búsqueda web y las conexiones solo entran en juego si tú las activas y lo ves en pantalla."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet crée et lit tes rappels uniquement quand tu le demandes, sur cet appareil. Son cœur fonctionne sur l’appareil ; la recherche web et les connexions n’interviennent que si tu les actives et le vois à l’écran."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet はあなたが望んだときだけ、この端末でリマインダーを作成し、読みます。中核は端末の中で動きます。ウェブ検索と接続は、あなたが有効にし、画面で見えるときだけ動きます。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet은 당신이 원할 때만 이 기기에서 미리 알림을 만들고 읽습니다. 핵심은 기기 안에서 돌아갑니다. 웹 검색과 연결은 당신이 켜고 화면에서 볼 때만 작동합니다."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O Tacet cria e lê seus lembretes só quando você pede, neste aparelho. O núcleo roda no aparelho; busca na web e conexões só entram em ação se você as ativar e vir na tela."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet hatırlatıcılarını yalnız senin istediğin anda, bu cihazda kurar ve okur. Çekirdeği cihazda çalışır; web araması ve bağlantılar ancak sen açarsan, ekranda görerek devreye girer."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "只有在你要求时，Tacet 才会在本机创建并读取你的提醒事项。它的核心运行在设备上；网页搜索和连接只有你开启并在屏幕上看到时才会启用。"
+          }
+        }
+      }
+    },
+    "NSSpeechRecognitionUsageDescription" : {
+      "comment" : "Privacy - Speech Recognition Usage Description",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet wandelt deine Worte in Text um; die Erkennung findet auf diesem Gerät statt."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet turns what you say into text; recognition happens on this device."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet convierte lo que dices en texto; el reconocimiento ocurre en este dispositivo."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet transforme ce que tu dis en texte ; la reconnaissance a lieu sur cet appareil."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet は話した内容を文字にします。認識はこの端末の上で行われます。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet은 당신이 말한 내용을 글로 바꿉니다. 인식은 이 기기 위에서 이루어집니다."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O Tacet transforma o que você fala em texto; o reconhecimento acontece neste aparelho."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet söylediklerini yazıya çevirir; tanıma bu cihazın üzerinde yapılır."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tacet 会把你说的话转成文字；识别在本机完成。"
           }
         }
       }
     }
   },
-  "version": "1.0"
+  "version" : "1.0"
 }

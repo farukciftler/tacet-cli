@@ -306,9 +306,14 @@ impl MemoryStore {
     /// `MAX_NOTES`).
     ///
     /// The score is the SUM OF LENGTHS of the matching keys — the SAME rule as
-    /// the skill layer, the same implementation. Deterministic code, not the
-    /// model, decides which memory enters which turn; that way the same message
-    /// always brings back the same note and the behaviour stays testable.
+    /// the skill layer, the same implementation. Scoring is ADDITIVE, and that is
+    /// the whole point: when two of a note's keys match, their lengths ADD UP, so
+    /// a note whose specific phrase matched beats a note that only caught a short
+    /// generic word. Counting matches instead (1 per key) would make "specific"
+    /// and "generic" worth the same and let a one-word note shadow the right one.
+    /// Deterministic code, not the model, decides which memory enters which turn;
+    /// that way the same message always brings back the same note and the
+    /// behaviour stays testable.
     pub fn matching(&self, message: &str) -> Vec<&MemoryNote> {
         let m = lowercase(message);
         let mut scored: Vec<(&MemoryNote, usize)> = self

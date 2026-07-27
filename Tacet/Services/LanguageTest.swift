@@ -1,99 +1,105 @@
 //
-//  DilTesti.swift
+//  LanguageTest.swift
 //  Tacet
 //
-//  Çok dilli değerlendirme (--language). 9 dilde (tr + en/zh/ja/es/de/fr/ko/pt) çekirdek
-//  istemleri gerçek model üzerinde koşar: doğru araç seçimi (dil-nötr çip ikonuyla)
-//  ve yanıtın o dilde olup olmadığı (log'dan gözle) ölçülür. Sonuç dosyaya yazılır.
+//  The multilingual evaluation (--language). It runs the core prompts in 9
+//  languages (tr + en/zh/ja/es/de/fr/ko/pt) against the real model: the correct
+//  tool choice (via the language-neutral chip icon) and whether the reply is in
+//  that language are measured. The outcome is written to a file.
+//
+//  THE PROMPTS BELOW ARE TEST FIXTURES, NOT UI TEXT: each one must stay in the
+//  language of its own row — that is precisely what is being measured.
 //
 
 #if DEBUG
 import Foundation
 import NaturalLanguage
 
-// MARK: - Dil çapası (P1-9)
+// MARK: - The language anchor (P1-9)
 
-/// Yanıtın GERÇEKTEN kullanıcının dilinde olup olmadığını saptar.
+/// Determines whether the reply is REALLY in the user's language.
 ///
-/// Eskiden bu ölçüt "gözle bak"tı: kod yalnız araç seçimini (çip ikon önekini)
-/// sayıyor, yanıt metni log'a 55 karakter kırpılıp basılıyordu. Dil kayması —
-/// özellikle araç çıktısının diline sürüklenme — hiçbir sayıya yansımıyordu,
-/// dolayısıyla gerileme sessizce geçebilirdi.
+/// This criterion used to be "look at it by eye": the code counted only the tool
+/// choice (the chip icon prefix), and the reply text was clipped to 55 characters and
+/// printed into the log. A language drift — especially drifting into the language of
+/// the tool output — was reflected in no number at all, so a regression could pass
+/// silently.
 ///
-/// `NLLanguageRecognizer` KISA metinde güvenilmezdir ("Merhaba" tek başına
-/// pekâlâ "id" dönebilir). Bu yüzden iki koruma var: (a) aday diller
-/// kısıtlanır — testte koştuğumuz dokuz dil dışına çıkılmaz, (b) güven eşiği
-/// altındaki saptama BAŞARISIZLIK SAYILMAZ, `nil` döner. Ölçemediğimiz şeyi
-/// kusur diye raporlamak, ölçmemekten daha kötüdür.
+/// `NLLanguageRecognizer` is unreliable on SHORT text ("Merhaba" on its own can very
+/// well come back as "id"). Hence two guards: (a) the candidate languages are
+/// constrained — it cannot go outside the nine languages we run in the test, (b) a
+/// detection below the confidence threshold IS NOT COUNTED AS A FAILURE, it returns
+/// `nil`. Reporting what we could not measure as a defect is worse than not measuring.
 enum LanguageAnchor {
-    /// Testte koştuğumuz diller — tanıyıcı bunların dışına çıkamaz.
-    static let adaylar: [NLLanguage] = [
+    /// The languages we run in the test — the recogniser cannot go outside them.
+    static let candidates: [NLLanguage] = [
         .turkish, .english, .simplifiedChinese, .japanese, .spanish,
         .german, .french, .korean, .portuguese
     ]
 
-    /// Dil kodu eşlemesi (rapor satırında "tr"/"zh" gibi görünsün).
-    static let kodlar: [NLLanguage: String] = [
+    /// The language code mapping (so the report line shows "tr"/"zh").
+    static let codes: [NLLanguage: String] = [
         .turkish: "tr", .english: "en", .simplifiedChinese: "zh",
         .traditionalChinese: "zh", .japanese: "ja", .spanish: "es",
         .german: "de", .french: "fr", .korean: "ko", .portuguese: "pt"
     ]
 
-    /// Güven tabanı. 0.50 keyfi değil: aday listesi dokuza kısıtlıyken rastgele
-    /// tahminin beklentisi ~0.11; 0.50 onun dört katından fazlası ama tek
-    /// cümlelik gerçek yanıtları da eleyecek kadar yüksek değil.
-    static let guvenTabani = 0.50
+    /// The confidence floor. 0.50 is not arbitrary: with the candidate list constrained
+    /// to nine, the expectation of a random guess is ~0.11; 0.50 is more than four times
+    /// that, yet not so high that it eliminates genuine one-sentence replies.
+    static let confidenceFloor = 0.50
 
-    /// Metnin baskın dili — saptanamazsa (çok kısa / güven düşük) `nil`.
-    /// `nil` "dil yanlış" DEĞİL, "ölçülemedi" demektir.
+    /// The dominant language of the text — `nil` if it cannot be determined (too short /
+    /// low confidence). `nil` does NOT mean "wrong language", it means "not measurable".
     static func language(_ text: String) -> String? {
-        let temiz = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Rakam ve noktalama tek başına dil taşımaz; harf sayısı taban şart.
-        guard temiz.filter({ $0.isLetter }).count >= 8 else { return nil }
-        let tanici = NLLanguageRecognizer()
-        tanici.languageConstraints = adaylar
-        tanici.processString(temiz)
-        let olasiliklar = tanici.languageHypotheses(withMaximum: 3)
-        guard let (en, guven) = olasiliklar.max(by: { $0.value < $1.value }),
-              guven >= guvenTabani else { return nil }
-        return kodlar[en]
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Digits and punctuation carry no language on their own; a letter count is the
+        // baseline requirement.
+        guard clean.filter({ $0.isLetter }).count >= 8 else { return nil }
+        let recognizer = NLLanguageRecognizer()
+        recognizer.languageConstraints = candidates
+        recognizer.processString(clean)
+        let hypotheses = recognizer.languageHypotheses(withMaximum: 3)
+        guard let (best, confidence) = hypotheses.max(by: { $0.value < $1.value }),
+              confidence >= confidenceFloor else { return nil }
+        return codes[best]
     }
 
-    /// Beklenen dilden sapma var mı. Üç değerli: `.dogru` / `.sapti(bulunan)`
-    /// / `.olculemedi`. Rapor satırı üçünü de ayrı gösterir.
+    /// Is there a drift from the expected language? Three-valued: `.correct` /
+    /// `.drifted(found)` / `.notMeasured`. The report line shows all three separately.
     enum Outcome: Equatable {
-        case dogru(String)
-        case sapti(expected: String, bulunan: String)
-        case olculemedi
+        case correct(String)
+        case drifted(expected: String, found: String)
+        case notMeasured
 
-        var isareti: String {
+        var mark: String {
             switch self {
-            case .dogru(let d): return "dil:\(d) ✓"
-            case .sapti(let b, let g): return "dil:\(g) ✗ (beklenen \(b))"
-            case .olculemedi: return "dil:? ⊘"
+            case .correct(let code): return "lang:\(code) ✓"
+            case .drifted(let expected, let found): return "lang:\(found) ✗ (expected \(expected))"
+            case .notMeasured: return "lang:? ⊘"
             }
         }
     }
 
     static func audit(_ text: String, expected: String) -> Outcome {
-        guard let bulunan = language(text) else { return .olculemedi }
-        return bulunan == expected ? .dogru(bulunan)
-                                   : .sapti(expected: expected, bulunan: bulunan)
+        guard let found = language(text) else { return .notMeasured }
+        return found == expected ? .correct(found)
+                                 : .drifted(expected: expected, found: found)
     }
 }
 
 @MainActor
 enum LanguageTest {
-    struct V { let name: String; let prompt: String; let icon: String }  // ikon "" = araç beklenmiyor
+    struct V { let name: String; let prompt: String; let icon: String }  // icon "" = no tool expected
 
     static func languages() -> [(String, [V])] {
         [
             ("tr", [
-                V(name: "selam",   prompt: "Merhaba", icon: ""),
-                V(name: "hesap",   prompt: "125 çarpı 8 kaç eder?", icon: "function"),
-                V(name: "zaman",   prompt: "Saat kaç?", icon: ""),
-                V(name: "takvim",  prompt: "Yarın takvimimde ne var?", icon: "calendar"),
-                V(name: "hatirlat",prompt: "Beni 18:00'de aramam için hatırlat", icon: "bell"),
+                V(name: "greet",   prompt: "Merhaba", icon: ""),
+                V(name: "calc",    prompt: "125 çarpı 8 kaç eder?", icon: "function"),
+                V(name: "time",    prompt: "Saat kaç?", icon: ""),
+                V(name: "cal",     prompt: "Yarın takvimimde ne var?", icon: "calendar"),
+                V(name: "remind",  prompt: "Beni 18:00'de aramam için hatırlat", icon: "bell"),
                 V(name: "excel",   prompt: "Haftalık yemek listesi için excel yap", icon: "tablecells"),
             ]),
             ("en", [
@@ -167,49 +173,49 @@ enum LanguageTest {
 
     static func run() async {
         let service = ModelService()
-        let sonucURL = DocumentContext.testKlasoru().appendingPathComponent("dil-sonuc.txt")
+        let outcomeURL = DocumentContext.testFolder().appendingPathComponent("language-outcome.txt")
         guard service.state.isReady else {
-            try? "MODEL HAZIR DEĞİL".write(to: sonucURL, atomically: true, encoding: .utf8)
+            try? "MODEL NOT READY".write(to: outcomeURL, atomically: true, encoding: .utf8)
             return
         }
 
-        var log: [String] = ["=== TACET ÇOK DİLLİ TEST ===", ""]
-        var gecen = 0, total = 0
-        // İkinci eksen (P1-9): yanıt gerçekten kullanıcının dilinde mi.
-        // `dilOlculemedi` ayrı sayılır — payda ile karıştırılırsa dil skoru
-        // kısa yanıtların sayısına göre oynar.
-        var dilGecen = 0, dilOlculen = 0, dilOlculemedi = 0
+        var log: [String] = ["=== TACET MULTILINGUAL TEST ===", ""]
+        var passed = 0, total = 0
+        // The second axis (P1-9): is the reply really in the user's language?
+        // `languageNotMeasured` is counted separately — mixing it into the denominator
+        // would make the language score swing with the number of short replies.
+        var languagePassed = 0, languageMeasured = 0, languageNotMeasured = 0
 
-        for (language, vakalar) in languages() {
+        for (language, cases) in languages() {
             log.append("──── \(language.uppercased()) ────")
-            for v in vakalar {
+            for v in cases {
                 service.resetChat()
-                let (text, traces) = await service.yanitla(v.prompt) { _ in }
-                let ikonlar = traces.map(\.icon)
+                let (text, traces) = await service.respond(v.prompt) { _ in }
+                let icons = traces.map(\.icon)
                 let toolOk = v.icon.isEmpty
-                    ? true   // araçsız vakalarda araç seçimini zorlamıyoruz; yanıt dilini gözlüyoruz
-                    : ikonlar.contains { $0.hasPrefix(v.icon) }
+                    ? true   // in tool-less cases we do not force a tool choice; we watch the reply language
+                    : icons.contains { $0.hasPrefix(v.icon) }
                 total += 1
-                if toolOk { gecen += 1 }
-                let dilSonuc = LanguageAnchor.audit(text, expected: language)
-                switch dilSonuc {
-                case .dogru:      dilOlculen += 1; dilGecen += 1
-                case .sapti:      dilOlculen += 1
-                case .olculemedi: dilOlculemedi += 1
+                if toolOk { passed += 1 }
+                let languageOutcome = LanguageAnchor.audit(text, expected: language)
+                switch languageOutcome {
+                case .correct:     languageMeasured += 1; languagePassed += 1
+                case .drifted:     languageMeasured += 1
+                case .notMeasured: languageNotMeasured += 1
                 }
                 let short = text.replacingOccurrences(of: "\n", with: " ").prefix(55)
-                log.append("\(toolOk ? "✓" : "✗") [\(v.name)] araç:\(ikonlar) · "
-                           + "\(dilSonuc.isareti) · \"\(short)\"")
-                let search = (["=== çalışıyor: araç \(gecen)/\(total) · dil \(dilGecen)/\(dilOlculen) ==="]
+                log.append("\(toolOk ? "✓" : "✗") [\(v.name)] tool:\(icons) · "
+                           + "\(languageOutcome.mark) · \"\(short)\"")
+                let running = (["=== running: tool \(passed)/\(total) · language \(languagePassed)/\(languageMeasured) ==="]
                            + log.dropFirst()).joined(separator: "\n")
-                try? search.write(to: sonucURL, atomically: true, encoding: .utf8)
+                try? running.write(to: outcomeURL, atomically: true, encoding: .utf8)
             }
             log.append("")
         }
-        log[0] = "=== TACET ÇOK DİLLİ TEST: araç seçimi \(gecen)/\(total)"
-            + " · yanıt dili \(dilGecen)/\(dilOlculen)"
-            + (dilOlculemedi > 0 ? " (\(dilOlculemedi) ölçülemedi)" : "") + " ==="
-        try? log.joined(separator: "\n").write(to: sonucURL, atomically: true, encoding: .utf8)
+        log[0] = "=== TACET MULTILINGUAL TEST: tool choice \(passed)/\(total)"
+            + " · reply language \(languagePassed)/\(languageMeasured)"
+            + (languageNotMeasured > 0 ? " (\(languageNotMeasured) not measured)" : "") + " ==="
+        try? log.joined(separator: "\n").write(to: outcomeURL, atomically: true, encoding: .utf8)
     }
 }
 #endif

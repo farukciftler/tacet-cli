@@ -1,75 +1,82 @@
 //
-//  WebAramaAyari.swift
+//  WebSearchSetting.swift
 //  Tacet
 //
-//  Web araması ayarı (web-arama-spec §5.1): kullanıcının kendi SearXNG kök
-//  adresi + aç/kapa. Token yoktur, dolayısıyla Keychain gerekmez; UserDefaults
-//  yeterli. Görünüm katmanı aynı anahtarları @AppStorage ile bağlayabilir —
-//  anahtar adları burada tek yerde tanımlıdır.
+//  The web search setting (web-search-spec §5.1): the user's own SearXNG root
+//  address + on/off. There is no token, so no Keychain is needed; UserDefaults is
+//  enough. The view layer can bind the same keys with @AppStorage — the key names
+//  are defined here, in one place.
 //
-//  VARSAYILAN KAPALI (spec §2.1): uygulama hiçbir sunucu adresi ön tanımlı
-//  getirmez. Yalnızca DEBUG derlemede geliştirici örneği okunabilir ve o da
-//  ancak derleme bayrağıyla verilmişse. App Store sürümünde alan boştur.
+//  OFF BY DEFAULT (spec §2.1): the app ships no predefined server address. Only a
+//  DEBUG build can read the developer example, and only if it was supplied through
+//  a build flag. In the App Store build the field is empty.
 //
-//  Ön tanımlı bir sunucu adresi gömmek bir kez denendi ve GERİ ALINDI: tek
-//  kullanıcılı kurulumda zararsız görünüyor, ama uygulama çok kullanıcılı
-//  yayına çıktığında o adresin sahibi herkesin arama sorgularını taşıyan bir
-//  veri işleyicisine dönüşür ve "sorgu senin sunucundan öteye gitmez" vaadi
-//  ilk kullanıcıdan sonra anlamını yitirir. Sunucuyu kullanıcı girer.
+//  Embedding a predefined server address was tried once and REVERTED: in a
+//  single-user setup it looks harmless, but once the app ships to many users the
+//  owner of that address turns into a data processor carrying everyone's search
+//  queries, and the promise "your query never goes beyond your own server" loses
+//  its meaning after the first user. The user enters the server.
 //
 
 import Foundation
 
 enum WebSearchSetting {
 
-    // MARK: - UserDefaults anahtarları
-    // Görünüm katmanı: @AppStorage(WebAramaAyari.aktifAnahtar)
+    // MARK: - UserDefaults keys
+    // View layer: @AppStorage(WebSearchSetting.activeKey)
+    //
+    // RENAMED WITH THE ENGLISH MIGRATION: a value stored under the old Turkish key
+    // is not read. A user who had configured a server has to enter it again once —
+    // the same trade-off as LanguagePreference, and the opposite of the Keychain
+    // service string, which stays frozen because its secret is unrecoverable.
 
-    static let activeKey = "tacet.webArama.aktif"
-    static let rootKey = "tacet.webArama.kokURL"
+    static let activeKey = "tacet.webSearch.active"
+    static let rootKey = "tacet.webSearch.rootURL"
 
-    // MARK: - Aç/kapa
+    // MARK: - On/off
 
-    /// Arama açık mı. Sunucu tanımlıyken bile tek dokunuşla kapatılabilir.
+    /// Is search on? It can be switched off with a single tap even while a server is
+    /// configured.
     ///
-    /// Adres geçersiz/boşsa bayrak açık olsa bile `false` döner: "açık ama
-    /// çalışmayan" bir ara durum yoktur — araç ya profile girer ya girmez.
+    /// If the address is invalid/empty it returns `false` even when the flag is on:
+    /// there is no "on but not working" intermediate state — the tool either enters the
+    /// profile or it does not.
     static var isActive: Bool {
         get {
             guard UserDefaults.standard.bool(forKey: activeKey) else { return false }
-            return kokURL != nil
+            return rootURL != nil
         }
         set { UserDefaults.standard.set(newValue, forKey: activeKey) }
     }
 
-    // MARK: - Kök adres
+    // MARK: - Root address
 
-    /// Kullanıcının yazdığı ham metin (doğrulanmamış) — Ayarlar alanı bunu gösterir.
+    /// The raw text the user typed (unvalidated) — the Settings field shows this.
     static var rawRoot: String {
         get {
-            let kayitli = UserDefaults.standard.string(forKey: rootKey) ?? ""
+            let saved = UserDefaults.standard.string(forKey: rootKey) ?? ""
             #if DEBUG
-            // Geliştirici kolaylığı; App Store derlemesinde bu dal yok.
-            if kayitli.isEmpty {
+            // A developer convenience; this branch does not exist in the App Store build.
+            if saved.isEmpty {
                 return ProcessInfo.processInfo.environment["TACET_SEARX_URL"] ?? ""
             }
             #endif
-            return kayitli
+            return saved
         }
         set { UserDefaults.standard.set(newValue, forKey: rootKey) }
     }
 
-    /// Doğrulanmış kök adres. Geçersizse `nil` — çağıran ağ koduna hiç girmez.
-    static var kokURL: URL? { validate(rawRoot) }
+    /// The validated root address. `nil` if invalid — the caller never enters network code.
+    static var rootURL: URL? { validate(rawRoot) }
 
-    /// Adres kuralı (mcp §3.1 ile aynı): yalnızca `https://`. Düz `http://`
-    /// YALNIZCA yerel ağ adreslerinde kabul edilir — kullanıcı kendi ağındaki
-    /// bir kutuya bağlanıyorsa TLS zorlamak gereksiz bir bariyer olur, ama
-    /// internete düz metin sorgu çıkması kabul edilemez.
+    /// The address rule (same as mcp §3.1): `https://` only. Plain `http://` is
+    /// accepted ONLY for local-network addresses — if the user is connecting to a box
+    /// on their own network, forcing TLS is a pointless barrier, but a plaintext query
+    /// leaving for the internet is unacceptable.
     static func validate(_ raw: String) -> URL? {
-        let temiz = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !temiz.isEmpty,
-              let url = URL(string: temiz),
+        let clean = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty,
+              let url = URL(string: clean),
               let schema = url.scheme?.lowercased(),
               let host = url.host?.lowercased(), !host.isEmpty
         else { return nil }
@@ -78,14 +85,14 @@ enum WebSearchSetting {
         case "https":
             return url
         case "http":
-            return yerelAgMi(host) ? url : nil
+            return isLocalNetwork(host) ? url : nil
         default:
             return nil
         }
     }
 
-    /// Yerel ağ konağı mı — loopback, `.local` (Bonjour) ve RFC1918 blokları.
-    static func yerelAgMi(_ host: String) -> Bool {
+    /// Is it a local-network host — loopback, `.local` (Bonjour) and the RFC1918 blocks.
+    static func isLocalNetwork(_ host: String) -> Bool {
         if host == "localhost" || host == "::1" { return true }
         if host.hasSuffix(".local") { return true }
 

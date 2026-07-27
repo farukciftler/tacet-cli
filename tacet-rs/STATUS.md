@@ -691,16 +691,28 @@ three references inside `tacet-rs` pointed at the old path. It was verified (`ls
 that all three targets EXIST at the new path, so the fix is a measurement, not a
 guess:
 
-| file | old | new |
+| file | old | today |
 | --- | --- | --- |
 | `README.md` | `../<old-name>/` | `../Tacet/` |
-| `crates/tacet-skills/src/skill.rs` | `<old-name>/Beceriler/*.md` | `Tacet/Beceriler/*.md` |
-| `crates/tacet-mcp/README.md` | `<old-name>/Servis/MCPIstemcisi.swift` | `Tacet/Servis/MCPIstemcisi.swift` |
+| `crates/tacet-skills/src/skill.rs` | `<old-name>/Beceriler/*.md` | `Tacet/Skills/*.md` |
+| `crates/tacet-mcp/README.md` | `<old-name>/Servis/MCPIstemcisi.swift` | `Tacet/Services/MCPClient.swift` |
 
 (The old brand name is written with a placeholder in this table DELIBERATELY: had
 it been written verbatim, this very file would have falsified the "0 matches"
 measurement below. The same placeholder convention was used in the previous round
 too.)
+
+> **THIS COLUMN WENT STALE AND WAS CORRECTED IN THE LANGUAGE ROUND.** What the
+> naming round actually wrote into those two files was `Tacet/Beceriler/*.md` and
+> `Tacet/Servis/MCPIstemcisi.swift` — correct on the day, dead the moment the
+> Swift directory and file names were translated (`Beceriler/` → `Skills/`,
+> `Servis/` → `Services/`, `MCPIstemcisi.swift` → `MCPClient.swift`). The
+> right-hand column above is now the path that EXISTS TODAY, checked against the
+> source (`skill.rs:3`, `tacet-mcp/README.md:15`) and against the file system,
+> not against this document's own history. The recurring shape once more: a
+> cross-reference written into a comment is not compiled, so nothing goes red
+> when the thing it points at is renamed. The header of the column was changed
+> from "new" to "today" for that reason — "new" is a claim with an expiry date.
 
 Two more failures came out of the same file:
 
@@ -736,10 +748,21 @@ Catalog size depends on two conditions. The two cases MEASURED on this machine:
 
 The record was measured by writing it by hand
 (`{"ad":"web-arama","durum":"acik","ayarlar":{"adres":"http://localhost:8888"}}`)
-— this is the shape the `a_hand_written_file_is_readable` test already supports;
-nothing went on the network and the user's real configuration directory was NOT
+— nothing went on the network and the user's real configuration directory was NOT
 TOUCHED (`TACET_HOME` was pointed at the scratchpad; at the end of the round
 `~/.tacet` still does not exist).
+
+> DO NOT "FIX" THE JSON ABOVE. It is quoted exactly as it was typed on the day of
+> the measurement, in the pre-rename key names, and that is what makes it evidence.
+> It is ALSO still a live regression fixture: those keys are the LEGACY on-disk
+> shape that `Record::parse` maps onto the current names (`ad`→`name`,
+> `durum`→`state`, `ayarlar`→`settings`, `adres`→`address`, `web-arama`→`web-search`),
+> so this line doubles as the reader's example of what an existing user's file
+> looks like. The CURRENT shape — the one anyone writing a new file should copy —
+> is the English one in `a_hand_written_file_is_readable`
+> (`addon.rs`): `{ "name": "web-search", "kind": "web-search", "state": "open",
+> "settings": { "address": "…" } }`. Both parse; only the English one is ever
+> written back out.
 
 **The shield-less machine cases (7 / 9) WERE NOT MEASURED** — on this machine the
 code shield discovery passes, and the way to disable the shield is not an

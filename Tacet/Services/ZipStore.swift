@@ -1,180 +1,184 @@
 //
-//  ZipDeposu.swift
+//  ZipStore.swift
 //  Tacet
 //
-//  Saf Swift zip paketleyici/açıcı. .xlsx ve .docx OOXML zip'idir; harici paket
-//  ya da ağ kullanmadan cihazda üretmek/okumak için minimal ZIP uygulaması.
-//  Yazma: STORE (sıkıştırmasız) — geçerli OOXML. Okuma: STORE + DEFLATE
-//  (Apple Compression, ham deflate) — kullanıcı dosyaları çoğu zaman deflate'tir.
+//  Pure-Swift zip packer/unpacker. .xlsx and .docx are OOXML zips; a minimal ZIP
+//  implementation so they can be produced/read on device without an external
+//  package or the network.
+//  Writing: STORE (uncompressed) — valid OOXML. Reading: STORE + DEFLATE
+//  (Apple Compression, raw deflate) — user files are deflate most of the time.
 //
 
 import Foundation
 import Compression
 
 struct ZipEntry {
-    let name: String     // zip içi yol, ör. "xl/workbook.xml"
+    let name: String     // path inside the zip, e.g. "xl/workbook.xml"
     let data: Data
 }
 
 enum ZipError: LocalizedError {
     case malformed(String)
-    var errorDescription: String? { "Zip okunamadı" }
+    /// USER-FACING TEXT. It goes through `String(localized:)` so the nine
+    /// localisations each show their own; the xcstrings key is the English string.
+    var errorDescription: String? { String(localized: "Couldn’t read the zip") }
 }
 
 enum ZipStore {
 
-    // MARK: - Yazma (STORE)
+    // MARK: - Writing (STORE)
 
-    static func package(_ girisler: [ZipEntry]) -> Data {
-        var body = Data()          // yerel başlıklar + veri
-        var central = Data()         // merkezi dizin
+    static func package(_ entries: [ZipEntry]) -> Data {
+        var body = Data()            // local headers + data
+        var central = Data()         // central directory
         var counter = 0
 
-        for g in girisler {
-            let adBytes = Array(g.name.utf8)
-            let crc = crc32(g.data)
-            let size = UInt32(g.data.count)
+        for entry in entries {
+            let nameBytes = Array(entry.name.utf8)
+            let crc = crc32(entry.data)
+            let size = UInt32(entry.data.count)
             let offset = UInt32(body.count)
 
             // Local file header
             var local = Data()
-            local.le32(0x04034b50)          // imza
-            local.le16(20)                  // gerekli sürüm
-            local.le16(0)                   // bayrak
-            local.le16(0)                   // yöntem: STORE
-            local.le16(0); local.le16(0)    // zaman/tarih
+            local.le32(0x04034b50)          // signature
+            local.le16(20)                  // version needed
+            local.le16(0)                   // flag
+            local.le16(0)                   // method: STORE
+            local.le16(0); local.le16(0)    // time/date
             local.le32(crc)
-            local.le32(size)               // sıkıştırılmış
-            local.le32(size)               // sıkıştırılmamış
-            local.le16(UInt16(adBytes.count))
+            local.le32(size)               // compressed
+            local.le32(size)               // uncompressed
+            local.le16(UInt16(nameBytes.count))
             local.le16(0)                   // extra
-            local.append(contentsOf: adBytes)
+            local.append(contentsOf: nameBytes)
             body.append(local)
-            body.append(g.data)
+            body.append(entry.data)
 
-            // Merkezi dizin kaydı
+            // Central directory record
             central.le32(0x02014b50)
             central.le16(20); central.le16(20)
             central.le16(0); central.le16(0)
             central.le16(0); central.le16(0)
             central.le32(crc)
             central.le32(size); central.le32(size)
-            central.le16(UInt16(adBytes.count))
-            central.le16(0); central.le16(0)  // extra, yorum
-            central.le16(0); central.le16(0)  // disk, iç öznitelik
-            central.le32(0)                  // dış öznitelik
-            central.le32(offset)              // yerel başlık ofseti
-            central.append(contentsOf: adBytes)
+            central.le16(UInt16(nameBytes.count))
+            central.le16(0); central.le16(0)  // extra, comment
+            central.le16(0); central.le16(0)  // disk, internal attribute
+            central.le32(0)                  // external attribute
+            central.le32(offset)              // local header offset
+            central.append(contentsOf: nameBytes)
             counter += 1
         }
 
-        let merkezOfset = UInt32(body.count)
-        let merkezBoyut = UInt32(central.count)
+        let centralOffset = UInt32(body.count)
+        let centralSize = UInt32(central.count)
 
         var outcome = body
         outcome.append(central)
-        // Merkezi dizin sonu kaydı (EOCD)
+        // End of central directory record (EOCD)
         outcome.le32(0x06054b50)
         outcome.le16(0); outcome.le16(0)
         outcome.le16(UInt16(counter)); outcome.le16(UInt16(counter))
-        outcome.le32(merkezBoyut)
-        outcome.le32(merkezOfset)
-        outcome.le16(0)                       // yorum uzunluğu
+        outcome.le32(centralSize)
+        outcome.le32(centralOffset)
+        outcome.le16(0)                       // comment length
         return outcome
     }
 
-    // MARK: - Okuma (STORE + DEFLATE)
+    // MARK: - Reading (STORE + DEFLATE)
 
-    /// Tek parçanın açılmış üst sınırı — beyan edilen boyuta güvenip 4 GB
-    /// ayırmayalım (zip bombası / bozuk alan).
-    /// 256 MB tek bir telefon için cömertti; hiçbir docx/xlsx parçası bu
-    /// büyüklüğe meşru olarak ulaşmaz.
-    private static let enBuyukParca = 64 * 1024 * 1024
-    /// Tüm arşivin açılmış üst sınırı.
-    private static let enBuyukToplam = 512 * 1024 * 1024
+    /// The inflated upper bound for a single entry — let us not trust the declared
+    /// size and allocate 4 GB (zip bomb / corrupt field).
+    /// 256 MB was generous for a single phone; no legitimate docx/xlsx entry reaches
+    /// that size.
+    private static let maxEntry = 64 * 1024 * 1024
+    /// The inflated upper bound for the whole archive.
+    private static let maxTotal = 512 * 1024 * 1024
 
-    /// Zip'i açar. GİRDİ KULLANICIDAN GELİR: her uzunluk alanı yalan söyleyebilir.
-    /// Bu yüzden hiçbir dilim/okuma sınır denetimsiz yapılmaz; bozuk dosyada
-    /// çökmek yerine `ZipHatasi.bozuk` fırlatılır.
+    /// Opens the zip. THE INPUT COMES FROM THE USER: every length field can lie.
+    /// That is why no slice/read is done without a bounds check; on a corrupt file
+    /// `ZipError.malformed` is thrown instead of crashing.
     static func open(_ zip: Data) throws -> [String: Data] {
         let bytes = [UInt8](zip)
-        guard let eocd = eocdBul(bytes) else { throw ZipError.malformed("EOCD yok") }
-        let kayitSayisi = try need16(bytes, eocd + 10, "EOCD kayıt sayısı")
-        var offset = try need32(bytes, eocd + 16, "EOCD merkez ofseti")
-        guard offset <= bytes.count else { throw ZipError.malformed("merkez ofseti dosya dışında") }
+        guard let eocd = findEOCD(bytes) else { throw ZipError.malformed("no EOCD") }
+        let recordCount = try need16(bytes, eocd + 10, "EOCD record count")
+        var offset = try need32(bytes, eocd + 16, "EOCD central offset")
+        guard offset <= bytes.count else { throw ZipError.malformed("central offset outside the file") }
 
         var outcome: [String: Data] = [:]
-        var toplamAcilan = 0
+        var totalInflated = 0
 
-        for _ in 0..<kayitSayisi {
-            guard bytes.count - offset >= 46 else { throw ZipError.malformed("merkezi dizin kaydı kesik") }
-            let signature = try need32(bytes, offset, "merkezi dizin imzası")
-            guard signature == 0x02014b50 else { throw ZipError.malformed("merkezi dizin kaydı") }
+        for _ in 0..<recordCount {
+            guard bytes.count - offset >= 46 else { throw ZipError.malformed("central directory record truncated") }
+            let signature = try need32(bytes, offset, "central directory signature")
+            guard signature == 0x02014b50 else { throw ZipError.malformed("central directory record") }
 
-            let yontem = try need16(bytes, offset + 10, "sıkıştırma yöntemi")
-            let sikBoyut = try need32(bytes, offset + 20, "sıkıştırılmış boyut")
-            let hamBoyut = try need32(bytes, offset + 24, "ham boyut")
-            let adLen = try need16(bytes, offset + 28, "ad uzunluğu")
-            let extraLen = try need16(bytes, offset + 30, "extra uzunluğu")
-            let yorumLen = try need16(bytes, offset + 32, "yorum uzunluğu")
-            let yerelOfset = try need32(bytes, offset + 42, "yerel başlık ofseti")
+            let method = try need16(bytes, offset + 10, "compression method")
+            let compressedSize = try need32(bytes, offset + 20, "compressed size")
+            let rawSize = try need32(bytes, offset + 24, "raw size")
+            let nameLen = try need16(bytes, offset + 28, "name length")
+            let extraLen = try need16(bytes, offset + 30, "extra length")
+            let commentLen = try need16(bytes, offset + 32, "comment length")
+            let localOffset = try need32(bytes, offset + 42, "local header offset")
 
-            // Kaydın TAMAMI dosyanın içinde mi? adLen yalan söylerse ad dilimi taşardı.
-            let kayitBoyut = 46 + adLen + extraLen + yorumLen
-            guard bytes.count - offset >= kayitBoyut else { throw ZipError.malformed("kayıt sınırı") }
-            let name = String(decoding: bytes[(offset + 46)..<(offset + 46 + adLen)], as: UTF8.self)
-            let sonrakiOfset = offset + kayitBoyut
+            // Is the WHOLE record inside the file? If nameLen lies, the name slice would overflow.
+            let recordSize = 46 + nameLen + extraLen + commentLen
+            guard bytes.count - offset >= recordSize else { throw ZipError.malformed("record bound") }
+            let name = String(decoding: bytes[(offset + 46)..<(offset + 46 + nameLen)], as: UTF8.self)
+            let nextOffset = offset + recordSize
 
             // Find the data start from the local header.
-            guard bytes.count - yerelOfset >= 30 else { throw ZipError.malformed("yerel başlık sınırı") }
-            let yerelImza = try need32(bytes, yerelOfset, "yerel başlık imzası")
-            guard yerelImza == 0x04034b50 else { throw ZipError.malformed("yerel başlık") }
-            let yAdLen = try need16(bytes, yerelOfset + 26, "yerel ad uzunluğu")
-            let yExtraLen = try need16(bytes, yerelOfset + 28, "yerel extra uzunluğu")
-            let veriBas = yerelOfset + 30 + yAdLen + yExtraLen
-            // Çıkarma ile karşılaştır: toplama taşmasına yer bırakma.
-            guard veriBas <= bytes.count, bytes.count - veriBas >= sikBoyut else {
-                throw ZipError.malformed("veri sınırı")
+            guard bytes.count - localOffset >= 30 else { throw ZipError.malformed("local header bound") }
+            let localSignature = try need32(bytes, localOffset, "local header signature")
+            guard localSignature == 0x04034b50 else { throw ZipError.malformed("local header") }
+            let localNameLen = try need16(bytes, localOffset + 26, "local name length")
+            let localExtraLen = try need16(bytes, localOffset + 28, "local extra length")
+            let dataStart = localOffset + 30 + localNameLen + localExtraLen
+            // Compare with subtraction: leave no room for an addition overflow.
+            guard dataStart <= bytes.count, bytes.count - dataStart >= compressedSize else {
+                throw ZipError.malformed("data bound")
             }
-            guard hamBoyut <= enBuyukParca else { throw ZipError.malformed("parça çok büyük: \(name)") }
+            guard rawSize <= maxEntry else { throw ZipError.malformed("entry too large: \(name)") }
 
-            let cozulen: Data
-            switch yontem {
+            let inflated: Data
+            switch method {
             case 0:
-                cozulen = Data(bytes[veriBas..<(veriBas + sikBoyut)])
+                inflated = Data(bytes[dataStart..<(dataStart + compressedSize)])
             case 8:
-                if sikBoyut == 0 {
-                    cozulen = Data()
+                if compressedSize == 0 {
+                    inflated = Data()
                 } else {
-                    let raw = Data(bytes[veriBas..<(veriBas + sikBoyut)])
-                    guard let c = inflate(raw, hamBoyut: hamBoyut) else {
-                        throw ZipError.malformed("deflate çözülemedi: \(name)")
+                    let raw = Data(bytes[dataStart..<(dataStart + compressedSize)])
+                    guard let c = inflate(raw, rawSize: rawSize) else {
+                        throw ZipError.malformed("deflate could not be inflated: \(name)")
                     }
-                    cozulen = c
+                    inflated = c
                 }
             default:
-                // Desteklenmeyen yöntem: boş veri koymak sessiz yalan olur
-                // (çağıran "içerik yok" yerine "boş belge" görür). Parçayı atla.
-                offset = sonrakiOfset
+                // Unsupported method: putting empty data there would be a silent lie
+                // (the caller sees "empty document" instead of "no content"). Skip the entry.
+                offset = nextOffset
                 continue
             }
 
-            toplamAcilan += cozulen.count
-            guard toplamAcilan <= enBuyukToplam else { throw ZipError.malformed("açılan içerik çok büyük") }
-            outcome[name] = cozulen
-            offset = sonrakiOfset
+            totalInflated += inflated.count
+            guard totalInflated <= maxTotal else { throw ZipError.malformed("inflated content too large") }
+            outcome[name] = inflated
+            offset = nextOffset
         }
         return outcome
     }
 
-    private static func eocdBul(_ b: [UInt8]) -> Int? {
+    private static func findEOCD(_ b: [UInt8]) -> Int? {
         guard b.count >= 22 else { return nil }
         var i = b.count - 22
         let lower = max(0, b.count - 22 - 65_536)
         while i >= lower {
-            // İmza yetmez: yorum uzunluğu dosya sonuyla tutmalı (rastgele eşleşme).
+            // The signature is not enough: the comment length must agree with the end
+            // of the file (random match).
             if read32(b, i) == 0x06054b50,
-               let yorumLen = read16(b, i + 20), i + 22 + Int(yorumLen) <= b.count {
+               let commentLen = read16(b, i + 20), i + 22 + Int(commentLen) <= b.count {
                 return i
             }
             i -= 1
@@ -182,39 +186,39 @@ enum ZipStore {
         return nil
     }
 
-    /// Ham DEFLATE çözme (Apple Compression, COMPRESSION_ZLIB = ham deflate).
-    /// `hamBoyut` 0 ise (bazı yazıcılar boyutu yalnız data descriptor'a koyar)
-    /// tampon büyütülerek yeniden denenir.
-    private static func inflate(_ data: Data, hamBoyut: Int) -> Data? {
+    /// Raw DEFLATE inflation (Apple Compression, COMPRESSION_ZLIB = raw deflate).
+    /// If `rawSize` is 0 (some writers put the size only in the data descriptor) the
+    /// buffer is grown and the attempt is repeated.
+    private static func inflate(_ data: Data, rawSize: Int) -> Data? {
         guard !data.isEmpty else { return Data() }
-        // BEYAN EDİLEN BOYUT AYIRMA EMRİ DEĞİLDİR. 64 baytlık çöp veri
-        // `hamBoyut = 256 MB` bildirdiğinde eskiden 256 MB'lık tampon
-        // ayrılıyordu (ölçüldü) — çökme değil, jetsam yolu. Sıkıştırılmış
-        // boyuttan türeyen makul bir tahminle başlanır; yetmezse döngü zaten
-        // büyütür ve tavan yine beyan edilen boyuttur.
-        let cap = hamBoyut > 0 ? min(hamBoyut, enBuyukParca) : enBuyukParca
-        var kapasite = min(cap, max(data.count * 8, 64 * 1024))
+        // A DECLARED SIZE IS NOT AN ALLOCATION ORDER. When 64 bytes of garbage data
+        // declared `rawSize = 256 MB`, a 256 MB buffer used to be allocated (measured)
+        // — not a crash, but the road to jetsam. It starts from a sensible estimate
+        // derived from the compressed size; if that is not enough the loop grows it
+        // anyway, and the ceiling is still the declared size.
+        let cap = rawSize > 0 ? min(rawSize, maxEntry) : maxEntry
+        var capacity = min(cap, max(data.count * 8, 64 * 1024))
         for _ in 0..<8 {
-            guard kapasite > 0, kapasite <= enBuyukParca else { return nil }
-            var output = Data(count: kapasite)
-            let ayrilan = kapasite
-            let yazilan = output.withUnsafeMutableBytes { (d: UnsafeMutableRawBufferPointer) -> Int in
+            guard capacity > 0, capacity <= maxEntry else { return nil }
+            var output = Data(count: capacity)
+            let allocated = capacity
+            let written = output.withUnsafeMutableBytes { (d: UnsafeMutableRawBufferPointer) -> Int in
                 data.withUnsafeBytes { (s: UnsafeRawBufferPointer) -> Int in
                     guard let db = d.baseAddress?.assumingMemoryBound(to: UInt8.self),
                           let sb = s.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return 0 }
-                    return compression_decode_buffer(db, ayrilan, sb, data.count, nil, COMPRESSION_ZLIB)
+                    return compression_decode_buffer(db, allocated, sb, data.count, nil, COMPRESSION_ZLIB)
                 }
             }
-            guard yazilan > 0 else { return nil }
-            // Tamponun sonuna dayanmak "kesilmiş olabilir" demektir → büyüt.
-            // Tavana dayandıysak büyüyecek yer yok; elde olan sonuçtur.
-            if yazilan < ayrilan || ayrilan >= cap { return output.prefix(yazilan) }
-            kapasite = min(kapasite * 4, cap)
+            guard written > 0 else { return nil }
+            // Hitting the end of the buffer means "it may have been truncated" → grow.
+            // If we hit the ceiling there is no room to grow; what we have is the result.
+            if written < allocated || allocated >= cap { return output.prefix(written) }
+            capacity = min(capacity * 4, cap)
         }
         return nil
     }
 
-    // MARK: - Küçük okuyucular (sınır denetimli)
+    // MARK: - Small readers (bounds checked)
 
     private static func need16(_ b: [UInt8], _ i: Int, _ cause: String) throws -> Int {
         guard let v = read16(b, i) else { throw ZipError.malformed(cause) }
@@ -236,7 +240,7 @@ enum ZipStore {
 
     // MARK: - CRC32
 
-    private static let crcTablo: [UInt32] = {
+    private static let crcTable: [UInt32] = {
         (0..<256).map { i -> UInt32 in
             var c = UInt32(i)
             for _ in 0..<8 { c = (c & 1) != 0 ? (0xEDB88320 ^ (c >> 1)) : (c >> 1) }
@@ -246,7 +250,7 @@ enum ZipStore {
 
     static func crc32(_ data: Data) -> UInt32 {
         var crc: UInt32 = 0xFFFFFFFF
-        for b in data { crc = crcTablo[Int((crc ^ UInt32(b)) & 0xFF)] ^ (crc >> 8) }
+        for b in data { crc = crcTable[Int((crc ^ UInt32(b)) & 0xFF)] ^ (crc >> 8) }
         return crc ^ 0xFFFFFFFF
     }
 }

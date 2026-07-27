@@ -1,40 +1,42 @@
 //
-//  AracYurutucu.swift
+//  ToolExecutor.swift
 //  Tacet
 //
-//  Araç çipi ↔ tool eşlemesi (spec §7.4). Tek doğruluk kaynağı: aracın kendisi.
-//  Tool çağrısı başlayınca "çalışıyor" çipi düşer; tool dönünce çip son
-//  durumuna geçer. Çip metni araç tarafından üretilir, modele yazdırılmaz.
+//  The tool chip ↔ tool mapping (spec §7.4). The single source of truth: the tool
+//  itself. When a tool call starts a "running" chip drops; when the tool returns
+//  the chip moves to its final state. The chip text is produced by the tool, it is
+//  never written by the model.
 //
 
 import Foundation
 import Observation
 
-/// Bir onay isteğinin sonucu. `Bool` YETMEZDİ: "kullanıcı reddetti" ile
-/// "kullanıcıya HİÇ sorulamadı" aynı `false`a düşüyor, araç ikisini de ret
-/// diye modele raporluyordu — model de "paylaşmayı reddettiniz" diyordu.
-/// Oysa çakışma yolunda kullanıcı o soruyu hiç görmemiştir; söylenen şey
-/// kullanıcının yaptığı bir şey hakkında YALANDIR.
+/// The outcome of an approval request. `Bool` WAS NOT ENOUGH: "the user declined" and
+/// "the user was NEVER asked" both fell to the same `false`, and the tool reported both
+/// to the model as a refusal — so the model said "you declined to share". But on the
+/// contention path the user never even saw that question; what is being said is A LIE
+/// about something the user did.
 ///
-/// Tip DOSYA DÜZEYİNDEDİR, `AracYurutucu` içinde değil: `OnayKapisi` sözleşmesi
-/// (Araclar/MCPAraci.swift) bunu döndürür ve o protokolün amacı araçları somut
-/// yürütücüden bağımsız tutmaktır.
+/// The type is AT FILE LEVEL, not inside `ToolExecutor`: the `ApprovalGate` contract
+/// (Tools/MCPTool.swift) returns it, and the purpose of that protocol is to keep the
+/// tools independent of the concrete executor.
 enum ApprovalDecision: Equatable {
-    /// Onaylandı — ya da oturum temiz olduğu için hiç sorulmadı.
+    /// Approved — or never asked, because the session was clean.
     case accepted
-    /// Kullanıcı "gönderme" dedi (ya da bu kaynak bu oturumda zaten reddedilmişti).
+    /// The user said "do not send" (or this source had already been declined this session).
     case denied
-    /// Aynı anda başka bir onay bekleniyordu; bu istek kullanıcıya hiç
-    /// gösterilmedi. Ret DEĞİLDİR: sonraki turda yeniden denenebilir.
+    /// Another approval was pending at the same time; this request was never shown to the
+    /// user. It IS NOT a refusal: it can be retried on the next turn.
     case busy
-    /// Tur iptal edildi ("dur") ya da yeni tur başladı; karar hiç alınmadı.
+    /// The turn was cancelled ("stop") or a new turn started; no decision was ever taken.
     case cancelled
 
-    /// Modele dönen İngilizce OLGU cümlesi; `nil` = kapı açık, akış continuation eder.
+    /// The English FACT sentence returned to the model; `nil` = the gate is open and the
+    /// flow continues.
     ///
-    /// Dördü de AYRI cümledir: "reddetti" kullanıcının yaptığı bir şeydir,
-    /// diğer ikisi değildir. Model bunları ayırt edemezse kullanıcıya onun
-    /// hiç vermediği bir karar atfeder.
+    /// All four are SEPARATE sentences: "declined" is something the user did, the other
+    /// two are not. If the model cannot tell them apart it attributes to the user a
+    /// decision they never made.
     var toModel: String? {
         switch self {
         case .accepted:
@@ -50,217 +52,223 @@ enum ApprovalDecision: Equatable {
     }
 }
 
-/// Araçların çip yaşam döngüsünü bildirdiği arayüz. MainActor — UI durumu.
+/// The interface through which tools report the chip lifecycle. MainActor — UI state.
 @MainActor
 protocol ToolReporter: AnyObject, Sendable {
-    /// "Çalışıyor" çipi düşürür, çip kimliğini döndürür.
+    /// Drops a "running" chip and returns the chip id.
     func start(icon: String, text: String) -> UUID
-    /// Çipi son durumuna geçirir. Verilmeyen alanlar korunur.
+    /// Moves the chip to its final state. Fields not supplied are preserved.
     func update(_ id: UUID, state: ToolState, text: String?, rawInput: String?, rawOutput: String?, filePath: String?)
 }
 
-/// Aktif turdaki araç çiplerini biriktiren yürütücü. ModelServisi sahibidir;
-/// SohbetGorunumu canlı çipleri buradan gözlemler, tur bitince Mesaj'a taşınır.
+/// The executor that accumulates the tool chips of the active turn. ModelService owns
+/// it; ChatView observes the live chips from here, and at the end of the turn they move
+/// into Message.
 @MainActor
 @Observable
 final class ToolExecutor: ToolReporter {
-    /// Aktif turda düşen çipler, çağrı sırasına göre.
+    /// The chips dropped in the active turn, in call order.
     private(set) var traces: [ToolTrace] = []
 
-    /// Bu turda "dünyayı değiştiren" (`.yazildi`) bir araç çalıştı mı — etkinlik
-    /// yazıldı, hatırlatıcı kuruldu, belge üretildi/düzenlendi.
+    /// Did a tool that "changes the world" (`.written`) run in this turn — an event was
+    /// written, a reminder was set, a document was produced/edited.
     ///
-    /// YAPIŞKAN: hata kurtarma yolu retry'dan önce `newTurn(yanEtkiyiUnut: false)`
-    /// çağırıyor; bayrak orada sıfırlansaydı yan etkinin olup olmadığı bilgisi
-    /// tam da ihtiyaç duyulduğu anda kaybolurdu. Yalnızca gerçek yeni tur
-    /// (`newTurn(yanEtkiyiUnut:)` varsayılanı) sıfırlar.
-    private(set) var dunyaDegisti = false
+    /// STICKY: the error recovery path calls `newTurn(forgetSideEffects: false)` before a
+    /// retry; had the flag been reset there, the information about whether a side effect
+    /// happened would be lost exactly when it is needed. Only a real new turn (the default
+    /// of `newTurn(forgetSideEffects:)`) resets it.
+    private(set) var worldChanged = false
 
-    /// Bu turda UZAK (cihaz dışı) bir çağrı başarıyla döndü mü — yani
-    /// kullanıcının kendi sunucusunda bir yan etki oluşmuş OLABİLİR.
+    /// Did a REMOTE (off-device) call return successfully in this turn — i.e. a side
+    /// effect MAY have occurred on the user's own server.
     ///
-    /// `dunyaDegisti`den AYRI bir eksendir ve ayrı olmak zorundadır: o bayrak
-    /// yalnızca `.yazildi` çipiyle kurulur, uzak çağrı ise bilerek `.okundu`
-    /// bırakılıyor (`MCPAraci.uzagaCagir`: `.yazildi` yerel geri alma/kurtarma
-    /// mantığını tetikler ve uzak çağrı için yanlış olur). Sonuç: Jira issue'su
-    /// açan bir çağrıdan SONRA oluşan genel bir hata `hataKurtar`ı retry'a
-    /// sokuyor, AYNI istem ikinci kez gidiyor ve ikinci issue açılıyordu.
+    /// It is a SEPARATE axis from `worldChanged` and it has to be: that flag is set only
+    /// by a `.written` chip, whereas a remote call is deliberately left `.read`
+    /// (`MCPTool.callRemote`: `.written` triggers the local undo/recovery logic and would
+    /// be wrong for a remote call). The consequence: a general error occurring AFTER a
+    /// call that opened a Jira issue put `recoverFromError` into a retry, the SAME prompt
+    /// went a second time, and a second issue was opened.
     ///
-    /// `dunyaDegisti` gibi YAPIŞKAN: kurtarma yolu `newTurn(yanEtkiyiUnut: false)`
-    /// çağırdığında korunur, yalnız gerçek yeni tur sıfırlar.
+    /// STICKY like `worldChanged`: it is preserved when the recovery path calls
+    /// `newTurn(forgetSideEffects: false)`, and only a real new turn resets it.
     ///
-    /// SINIF AYRIMI YAPILMAZ (salt-okuma/yazma). Sınıflandırma (`YanEtkiSinifi`)
-    /// sunucunun ipuçlarına ve ad sezgisine dayanan bir TAHMİNDİR; "salt-okuma"
-    /// sanılan bir uzak aracın kayıt tuttuğu, sayaç artırdığı, e-posta
-    /// tetiklediği durumda geri alınamaz. Bir retry'ı fazladan engellemenin
-    /// maliyeti bir hata balonu; kaçırmanın maliyeti çift dış yan etki.
-    private(set) var disEtkiOlusabilir = false
+    /// NO CLASS DISTINCTION IS MADE (read-only/write). The classification
+    /// (`SideEffectClass`) is a GUESS resting on the server's hints and name intuition; if
+    /// a remote tool believed to be "read-only" keeps a record, increments a counter or
+    /// triggers an email, that cannot be undone. The cost of blocking one retry too many
+    /// is an error bubble; the cost of missing one is a doubled external side effect.
+    private(set) var mayHaveExternalEffect = false
 
-    /// Uzak çağrı BAŞARIYLA döndükten sonra çağrılır. Tek yön; tur boyunca kalır.
-    func disEtkiIsaretle() { disEtkiOlusabilir = true }
+    /// Called after a remote call returned SUCCESSFULLY. One-way; it stays for the turn.
+    func markSideEffect() { mayHaveExternalEffect = true }
 
-    /// Retry güvenli mi — `hataKurtar` tek karar noktası olarak bunu okur.
-    /// İki eksen de temizse aynı istem ikinci kez gönderilebilir.
-    var retryGuvenli: Bool { !dunyaDegisti && !disEtkiOlusabilir }
+    /// Is a retry safe — `recoverFromError` reads this as the single decision point.
+    /// If both axes are clean, the same prompt can be sent a second time.
+    var retryIsSafe: Bool { !worldChanged && !mayHaveExternalEffect }
 
-    // MARK: - Kirli oturum (mcp §5.6)
+    // MARK: - Tainted session (mcp §5.6)
 
-    /// Bu oturumda kişisel veri aracı (Takvim, Kişi, Arama/Spotlight, Belge*,
-    /// Hatırlatıcı) en az bir kez BAŞARIYLA çalıştı mı.
+    /// Has a personal-data tool (Calendar, Contact, Search/Spotlight, Document*,
+    /// Reminder) run SUCCESSFULLY at least once in this session?
     ///
-    /// Oturum boyunca TEMİZLENMEZ ve `newTurn()` bunu sıfırlamaz: bağlam
-    /// özetlemesiyle yeni bir session açıldığında özetin kendisi kişisel veri
-    /// taşıyabilir, dolayısıyla kirlilik de taşınır. Yalnızca gerçek sohbet
-    /// sıfırlaması (`sohbetiSifirla()`) temizler.
+    /// It IS NOT CLEARED during the session and `newTurn()` does not reset it: when a new
+    /// session is opened through context summarisation, the summary itself can carry
+    /// personal data, so the taint carries too. Only a real chat reset (`resetChat()`)
+    /// clears it.
     ///
-    /// Modelin bu bayrağa erişimi yoktur; kapı kodda, modelde değil (mcp §2.2).
+    /// The model has no access to this flag; the gate is in code, not in the model (mcp §2.2).
     private(set) var sessionTainted = false
 
-    /// Kişisel veri aracının başarılı çağrısından sonra çağrılır. Tek yön.
+    /// Called after a successful call of a personal-data tool. One-way.
     func taint() { sessionTainted = true }
 
-    /// Bu oturumda kullanıcının paylaşımı reddettiği kaynaklar. Aynı kaynak
-    /// için ikinci onay çipi üretilmez; sonraki denemeler sessizce aynı reddi
-    /// alır — model ısrar döngüsüne giremez (mcp §3.3).
-    private var reddedilenKaynaklar: Set<String> = []
+    /// The sources for which the user declined sharing in this session. No second approval
+    /// chip is produced for the same source; later attempts silently receive the same
+    /// refusal — the model cannot enter an insistence loop (mcp §3.3).
+    private var declinedSources: Set<String> = []
 
-    /// Şu an kullanıcı kararı bekleyen istek. Görünüm katmanı bunu gözler ve
-    /// `OnaySayfasi`nı sunar; karar `onayKarariVer(_:)` ile geri gelir.
+    /// The request currently awaiting a user decision. The view layer observes this and
+    /// presents the approval sheet; the decision comes back via `decideApproval(_:)`.
     private(set) var pendingApproval: ApprovalRequest?
 
-    /// Kararı bekleyen `onayIste` çağrısının devamı. Aynı anda en fazla bir tane.
-    private var onayDevami: CheckedContinuation<ApprovalDecision, Never>?
+    /// The continuation of the `requestApprovalDecision` call awaiting a decision. At most
+    /// one at a time.
+    private var approvalContinuation: CheckedContinuation<ApprovalDecision, Never>?
 
-    /// Kullanıcıya sorulacak tek bir paylaşım isteği.
+    /// A single sharing request to be put to the user.
     struct ApprovalRequest: Identifiable, Equatable {
         let id = UUID()
-        /// Bağlantı/sunucu adı — "ev sunucusu", "arama sunucusu".
+        /// The connection/server name — "home server", "search server".
         let source: String
         let toolName: String
-        /// GÖNDERİLECEK ARGÜMANLARIN AYNISI. Kategori özeti değil.
+        /// EXACTLY THE ARGUMENTS THAT WILL BE SENT. Not a category summary.
         let content: String
-        /// Bu isteğin akıştaki çipi.
+        /// This request's chip in the flow.
         let traceID: UUID
     }
 
-    /// Cihaz dışına veri çıkarmadan önce çağrılır. `.kabul` dışında hiçbir şey
-    /// gönderilmez.
+    /// Called before any data leaves the device. Nothing is sent other than on `.accepted`.
     ///
-    /// - Oturum kirli değilse SORMADAN `.kabul` döner: onay nadirse okunur (mcp §2.4).
-    /// - Kaynak bu oturumda bir kez reddedildiyse çip düşmeden `.reddedildi` döner.
-    /// - Başka bir kapı açıksa `.mesgul` — bu RET DEĞİLDİR, soru hiç sorulmadı.
-    /// - Aksi halde akışa "onay bekleniyor" çipi düşer ve kullanıcı kararı beklenir.
+    /// - If the session is not tainted it returns `.accepted` WITHOUT ASKING: an approval
+    ///   is read only if it is rare (mcp §2.4).
+    /// - If the source was declined once in this session it returns `.denied` without
+    ///   dropping a chip.
+    /// - If another gate is open it returns `.busy` — this IS NOT a refusal, the question
+    ///   was never asked.
+    /// - Otherwise an "awaiting approval" chip drops into the flow and the user's decision
+    ///   is awaited.
     ///
-    /// - Parameter icerik: gönderilecek argümanların aynısı; kullanıcı onay
-    ///   sayfasında birebir bunu görür.
+    /// - Parameter content: exactly the arguments that will be sent; the user sees this
+    ///   verbatim on the approval sheet.
     ///
-    /// Onay kapısının TAM sonucu — TEK giriş noktası. `Bool` döndüren kısa
-    /// biçimler kaldırıldı: orada ret, çakışma ve iptal aynı `false`a düşüyordu
-    /// ve yeni bir çağıranın bu ayrımı sessizce kaybetmesi an meselesiydi.
+    /// The FULL outcome of the approval gate — the SINGLE entry point. The short forms
+    /// returning `Bool` were removed: there, refusal, contention and cancellation all fell
+    /// to the same `false`, and a new caller silently losing that distinction was only a
+    /// matter of time.
     ///
-    /// - Parameter zorunlu: true ise oturum temiz olsa da sorulur. Yıkıcı uzak
-    ///   araçlar bunu kullanır: orada soru "cihazdan ne çıkıyor" değil,
-    ///   "kullanıcının sunucusunda ne değişiyor" — kirlilikle ilgisiz.
+    /// - Parameter required: if true the question is asked even when the session is clean.
+    ///   Destructive remote tools use it: there the question is not "what leaves the
+    ///   device" but "what changes on the user's server" — unrelated to the taint.
     func requestApprovalDecision(source: String,
                           toolName: String,
                           content: String,
                           required: Bool = false) async -> ApprovalDecision {
         guard sessionTainted || required else { return .accepted }
-        if reddedilenKaynaklar.contains(source) { return .denied }
-        // Aynı anda ikinci bir kapı açmayız — kullanıcı iki sheet arasında
-        // sıkışmaz. Ama bu RET DEĞİLDİR: soru hiç sorulmadı, çip de düşmez.
+        if declinedSources.contains(source) { return .denied }
+        // We do not open a second gate at the same time — the user must not be trapped
+        // between two sheets. But this IS NOT a refusal: the question was never asked and
+        // no chip drops.
         if pendingApproval != nil { return .busy }
 
         let traceID = start(icon: "hand.raised", text: L10n.connectionAwaitingApproval(source))
         update(traceID, state: .awaitingApproval, rawInput: content)
 
         let decision: ApprovalDecision = await withCheckedContinuation { continuation in
-            onayDevami = continuation
+            approvalContinuation = continuation
             pendingApproval = ApprovalRequest(source: source, toolName: toolName,
                                       content: content, traceID: traceID)
         }
 
         switch decision {
         case .accepted:
-            // Çip normal yaşam döngüsüne döner: aracın kendi çipi devralır,
-            // bekleme çipi akışta iz bırakmaz.
+            // The chip returns to the normal lifecycle: the tool's own chip takes over and
+            // the waiting chip leaves no trace in the flow.
             traces.removeAll { $0.id == traceID }
         case .denied:
-            reddedilenKaynaklar.insert(source)
+            declinedSources.insert(source)
             update(traceID, state: .notSent, text: L10n.connectionNotSent(source))
         case .cancelled, .busy:
-            // İPTAL RET DEĞİLDİR: kaynak oturum boyunca kara listeye ALINMAZ.
-            // Kullanıcı "dur"a bastı diye bir sunucuya bir daha hiç veri
-            // gönderememek, onun hiç vermediği bir karara kalıcılık yüklemek
-            // olurdu. Çip yine de "gönderilmedi" kalır — hiçbir şey çıkmadı.
+            // CANCELLATION IS NOT A REFUSAL: the source IS NOT blacklisted for the
+            // session. Never being able to send data to a server again because the user
+            // pressed "stop" would load permanence onto a decision they never made. The
+            // chip still stays "not sent" — nothing left.
             update(traceID, state: .notSent, text: L10n.connectionNotSent(source))
         }
         return decision
     }
 
-    /// Kullanıcının onay sayfasındaki kararı. Sayfayı kapatmak = `false`.
+    /// The user's decision on the approval sheet. Dismissing the sheet = `false`.
     func decideApproval(_ accepted: Bool) {
-        onayiCoz(accepted ? .accepted : .denied)
+        resolveApproval(accepted ? .accepted : .denied)
     }
 
-    /// Bekleyen bir onay varsa İPTAL olarak çözer — turun iptali askıda bir
-    /// continuation bırakmasın (aksi halde araç görevi bir sonraki mesaja kadar
-    /// askıda sızar ve onay sayfası ekranda kalır).
+    /// If an approval is pending, resolves it as CANCELLED — a turn cancellation must not
+    /// leave a suspended continuation behind (otherwise the tool task leaks in suspension
+    /// until the next message and the approval sheet stays on screen).
     ///
-    /// `newTurn()` ve `ModelServisi.durdur()` çağırır; ikisi de dışarıdan
-    /// erişilebilmeli.
-    func bekleyenOnayiCoz() { onayiCoz(.cancelled) }
+    /// `newTurn()` and `ModelService.stop()` call it; both must be able to reach it.
+    func resolvePendingApproval() { resolveApproval(.cancelled) }
 
-    /// Continuation TEK KEZ resume edilir: alan resume'dan ÖNCE nil'lenir,
-    /// ikinci çağrı `guard`da düşer. (Çift resume çalışma anı çökmesidir ve
-    /// `durdur()` ile kullanıcının onay sayfasındaki kararı yarışabilir.)
-    private func onayiCoz(_ decision: ApprovalDecision) {
-        guard let continuation = onayDevami else { return }
-        onayDevami = nil
+    /// The continuation is resumed EXACTLY ONCE: the field is nil'ed BEFORE the resume, so
+    /// a second call falls out at the `guard`. (A double resume is a run-time crash, and
+    /// `stop()` can race the user's decision on the approval sheet.)
+    private func resolveApproval(_ decision: ApprovalDecision) {
+        guard let continuation = approvalContinuation else { return }
+        approvalContinuation = nil
         pendingApproval = nil
         continuation.resume(returning: decision)
     }
 
-    // MARK: - Tur yaşam döngüsü
+    // MARK: - Turn lifecycle
 
-    /// Tur başına sıfırlanan dış sayaçların kancası (kod-spec §5.4: kod deneme
-    /// sayacı `AracYurutucu.newTurn`'da sıfırlanır). Sahibi (ModelServisi)
-    /// kurar; jenerik tutulur — bu sınıf sayaç türlerini tanımaz. Kanca TEK
-    /// noktadan tetiklendiği için `newTurn` çağıran gelecekteki bir yol
-    /// sayaç sıfırlamayı unutamaz.
-    var turKancasi: (() -> Void)?
+    /// The hook for external counters reset per turn (code-spec §5.4: the code attempt
+    /// counter is reset in `ToolExecutor.newTurn`). The owner (ModelService) installs it;
+    /// it is kept generic — this class knows nothing about counter types. Because the hook
+    /// fires from a SINGLE point, a future path calling `newTurn` cannot forget to reset
+    /// the counter.
+    var turnHook: (() -> Void)?
 
-    /// Yeni tur — önceki turun çipleri Mesaj'a taşındıktan sonra sıfırlanır.
+    /// A new turn — reset after the previous turn's chips have been moved into Message.
     ///
-    /// `yanEtkiyiUnut: false` = "bu gerçek bir yeni tur DEĞİL, aynı turun
-    /// kurtarma denemesi". O durumda ne yan etki bayrakları ne de ÇİPLER
-    /// sıfırlanır (denetim P2-8).
+    /// `forgetSideEffects: false` = "this is NOT a real new turn, it is a recovery attempt
+    /// of the same turn". In that case neither the side-effect flags nor the CHIPS are
+    /// reset (audit P2-8).
     ///
-    /// Çiplerin de korunması bilinçli bir geri dönüştür: eski davranış
-    /// `izler = []`i koşulsuz yapıyordu ve kurtarma sonrası kullanıcı ilk
-    /// denemede hangi aracın çalıştığını göremiyordu — tam da hata teşhisinin
-    /// en çok ihtiyaç duyduğu bilgi, hata anında siliniyordu. İki deneme aynı
-    /// aracı çalıştırırsa iki çip görünür; bu bir kusur değil, olan bitenin
-    /// kendisidir ("bir kez denendi, hata aldı, yeniden denendi").
+    /// Preserving the chips too is a deliberate reversal: the old behaviour did
+    /// `traces = []` unconditionally and after a recovery the user could not see which
+    /// tool had run on the first attempt — exactly the information error diagnosis needs
+    /// most was being deleted at the moment of the error. If two attempts run the same
+    /// tool, two chips appear; that is not a defect, it is what actually happened ("it was
+    /// tried once, it errored, it was tried again").
     ///
-    /// Kirli oturum bayrağını ve ret önbelleğini BİLEREK sıfırlamaz — ikisi de
-    /// oturum ömürlüdür (mcp §5.6, §3.3).
-    func newTurn(yanEtkiyiUnut: Bool = true) {
-        bekleyenOnayiCoz()
-        if yanEtkiyiUnut {
+    /// It DELIBERATELY does not reset the tainted-session flag or the refusal cache — both
+    /// are session-lived (mcp §5.6, §3.3).
+    func newTurn(forgetSideEffects: Bool = true) {
+        resolvePendingApproval()
+        if forgetSideEffects {
             traces = []
-            dunyaDegisti = false
-            disEtkiOlusabilir = false
+            worldChanged = false
+            mayHaveExternalEffect = false
         }
-        turKancasi?()
+        turnHook?()
     }
 
-    /// Gerçek sohbet sıfırlaması: oturum ömürlü ne varsa burada biter —
-    /// kirlilik ve ret önbelleği dahil. Yeni sohbet temiz başlar.
+    /// A real chat reset: everything session-lived ends here — the taint and the refusal
+    /// cache included. A new chat starts clean.
     func resetChat() {
         newTurn()
         sessionTainted = false
-        reddedilenKaynaklar.removeAll()
+        declinedSources.removeAll()
     }
 
     func start(icon: String, text: String) -> UUID {
@@ -275,7 +283,7 @@ final class ToolExecutor: ToolReporter {
                   rawInput: String? = nil,
                   rawOutput: String? = nil,
                   filePath: String? = nil) {
-        if state == .written { dunyaDegisti = true }
+        if state == .written { worldChanged = true }
         guard let i = traces.firstIndex(where: { $0.id == id }) else { return }
         traces[i].state = state
         if let text { traces[i].text = text }

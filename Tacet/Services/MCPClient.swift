@@ -1,38 +1,41 @@
 //
-//  MCPIstemcisi.swift
+//  MCPClient.swift
 //  Tacet
 //
-//  Uygulamadaki TEK ağ kodu (mcp-baglanti-spec §5.1, §2.1). Başka hiçbir katman
-//  URLSession'a dokunmaz. Hiç bağlantı eklenmemişse burası hiç çağrılmaz ve
-//  uygulamanın ağ trafiği sıfırdır.
+//  The ONLY network code in the app (mcp-connection-spec §5.1, §2.1). No other
+//  layer touches URLSession. If no connection has been added, this is never called
+//  and the app's network traffic is zero.
 //
-//  ELLE YAZILDI — resmî `modelcontextprotocol/swift-sdk` KULLANILMADI (spec §5.2'den
-//  bilinçli sapma). Projede sıfır SPM paketi var; sıfır bağımlılık ürünün kimliği
-//  (OOXML zip'i bile saf Swift). v1'in ihtiyacı üç metot: initialize, tools/list,
-//  tools/call. Taşıma: Streamable HTTP — JSON-RPC 2.0 gövdeleri HTTP POST ile
-//  gider, yanıt `application/json` ya da `text/event-stream` (SSE) olabilir.
+//  HAND-WRITTEN — the official `modelcontextprotocol/swift-sdk` WAS NOT USED (a
+//  deliberate deviation from spec §5.2). The project has zero SPM packages; zero
+//  dependencies is the product's identity (even the OOXML zip is pure Swift). What
+//  v1 needs is three methods: initialize, tools/list, tools/call. Transport:
+//  Streamable HTTP — JSON-RPC 2.0 bodies go over HTTP POST, and the response can be
+//  `application/json` or `text/event-stream` (SSE).
 //
-//  Zaman aşımı 120 sn (§5.7): uzak taraf build gibi uzun işler yapabilir.
-//  İptal: çağıran Task iptal edilirse (uygulama arka plana gitti) istek düşer ve
-//  `.iptal` döner — çip "yarıda kaldı" olur, sessiz kaybolma yoktur.
+//  Timeout 120 s (§5.7): the remote side can do long work such as a build.
+//  Cancellation: if the calling Task is cancelled (the app went to the background)
+//  the request drops and `.cancelled` is returned — the chip becomes "stopped
+//  partway", there is no silent disappearance.
 //
 
 import Foundation
 
-// MARK: - JSON değeri
+// MARK: - JSON value
 
-/// Şemasız JSON. MCP araç şemaları ve argümanları derleme anında bilinmediği için
-/// gereken en küçük gösterim. (Kod tabanında başka JSON tipi yok.)
+/// Schema-less JSON. The smallest representation needed, because MCP tool schemas and
+/// arguments are not known at compile time. (There is no other JSON type in the code
+/// base.)
 ///
-/// `nonisolated` KASITLI: proje `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` ile
-/// derleniyor, yani izolasyonu belirtilmemiş her tip varsayılan olarak MainActor'a
-/// bağlanır. Saf bir değer tipinin arayüz kuyruğuna bağlanmasının anlamı yok:
-/// `MCPIstemcisi` bir actor ve ağ yanıtlarını MainActor dışında çözüyor, orada
-/// `metinMi`/`diziMi` gibi üyelere dokunmak Swift 6 dilinde HATA olurdu.
-/// Tip zaten `Sendable` — izolasyondan çıkması güvenli.
+/// `nonisolated` IS DELIBERATE: the project builds with
+/// `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, so every type whose isolation is not
+/// stated binds to MainActor by default. Binding a pure value type to the UI queue
+/// makes no sense: `MCPClient` is an actor and decodes network responses off
+/// MainActor, where touching members like `asText`/`asArray` would be an ERROR in the
+/// Swift 6 language mode. The type is already `Sendable` — leaving isolation is safe.
 nonisolated indirect enum JSONValue: Codable, Hashable, Sendable {
     case none
-    case mantik(Bool)
+    case bool(Bool)
     case number(Double)
     case text(String)
     case array([JSONValue])
@@ -41,7 +44,7 @@ nonisolated indirect enum JSONValue: Codable, Hashable, Sendable {
     init(from decoder: Decoder) throws {
         let k = try decoder.singleValueContainer()
         if k.decodeNil() { self = .none }
-        else if let v = try? k.decode(Bool.self) { self = .mantik(v) }
+        else if let v = try? k.decode(Bool.self) { self = .bool(v) }
         else if let v = try? k.decode(Double.self) { self = .number(v) }
         else if let v = try? k.decode(String.self) { self = .text(v) }
         else if let v = try? k.decode([JSONValue].self) { self = .array(v) }
@@ -53,7 +56,7 @@ nonisolated indirect enum JSONValue: Codable, Hashable, Sendable {
         var k = encoder.singleValueContainer()
         switch self {
         case .none:          try k.encodeNil()
-        case .mantik(let v): try k.encode(v)
+        case .bool(let v):   try k.encode(v)
         case .number(let v):   try k.encode(v)
         case .text(let v):  try k.encode(v)
         case .array(let v):   try k.encode(v)
@@ -61,70 +64,74 @@ nonisolated indirect enum JSONValue: Codable, Hashable, Sendable {
         }
     }
 
-    // Gezinme kolaylıkları — MCP yanıtları elle okunur.
+    // Navigation conveniences — MCP responses are read by hand.
     subscript(_ key: String) -> JSONValue? {
         if case .object(let s) = self { return s[key] }
         return nil
     }
-    var metinMi: String? { if case .text(let v) = self { return v }; return nil }
-    var diziMi: [JSONValue]? { if case .array(let v) = self { return v }; return nil }
-    var mantikMi: Bool? { if case .mantik(let v) = self { return v }; return nil }
+    var asText: String? { if case .text(let v) = self { return v }; return nil }
+    var asArray: [JSONValue]? { if case .array(let v) = self { return v }; return nil }
+    var asBool: Bool? { if case .bool(let v) = self { return v }; return nil }
 
-    /// Düz metin gösterimi — onay sayfasında kullanıcıya gösterilecek argüman
-    /// metni ve çip ham girdisi bundan üretilir.
-    var duzMetin: String {
-        let kodlayici = JSONEncoder()
-        kodlayici.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? kodlayici.encode(self),
+    /// The plain-text rendering — the argument text shown to the user on the approval
+    /// sheet and the chip's raw input are produced from this.
+    var plainText: String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(self),
               let s = String(data: data, encoding: .utf8) else { return "" }
         return s
     }
 
-    /// JSON metninden ayrıştırır (MCPAraci modelin ürettiği argüman metnini böyle verir).
+    /// Parses from JSON text (this is how MCPTool hands over the argument text the model
+    /// produced).
     static func parse(_ text: String) -> JSONValue? {
         guard let data = text.data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(JSONValue.self, from: data)
     }
 }
 
-// MARK: - İstemci
+// MARK: - Client
 
-/// Tek bir MCP sunucusuyla konuşan istemci. Bağlantı başına bir örnek; oturum
-/// kimliği (`Mcp-Session-Id`) örnek içinde yaşar.
+/// The client that talks to a single MCP server. One instance per connection; the
+/// session id (`Mcp-Session-Id`) lives inside the instance.
 actor MCPClient {
 
-    /// Bu istemcinin konuştuğu MCP sürümü. Sunucu farklı bir sürüm önerirse
-    /// onunkine uyulur (MCP sürüm anlaşması).
-    private static let protokolSurumu = "2025-06-18"
+    /// The MCP version this client speaks. If the server proposes a different version,
+    /// its choice is followed (MCP version negotiation).
+    private static let protocolVersion = "2025-06-18"
 
-    /// §5.7 — build gibi uzun işler için. Hem URLSession'a hem de SSE okumasına uygulanır.
-    static let zamanAsimi: TimeInterval = 120
+    /// §5.7 — for long work such as a build. Applied both to URLSession and to the SSE
+    /// read.
+    static let timeout: TimeInterval = 120
 
-    /// `tools/list` sayfalama döngüsünün üst sınırı — kötü davranan sunucu
-    /// sonsuz cursor döndürüp uygulamayı döndürmesin.
-    private static let enFazlaSayfa = 20
+    /// The upper bound of the `tools/list` pagination loop — a badly behaved server must
+    /// not spin the app by returning an endless cursor.
+    private static let maxPages = 20
 
-    /// Araç sayısı tavanı: 4096 pencereye zaten 6–8 araç giriyor; binlerce aracı
-    /// belleğe almanın anlamı yok, içe aktarma da özetlemede boğulur.
-    private static let enFazlaArac = 200
+    /// The tool-count cap: only 6–8 tools fit into the 4096 window anyway; there is no
+    /// point loading thousands of tools into memory, and the import would drown in
+    /// summarisation too.
+    private static let maxTools = 200
 
-    /// Sunucudan gelen tek araç tanımı.
-    /// `nonisolated` — actor içinde tanımlı olsa da saf veri; hem ağ tarafında
-    /// hem MainActor'daki `BaglantiServisi`nde serbestçe gezmeli.
+    /// A single tool spec coming from the server.
+    /// `nonisolated` — even though it is declared inside the actor it is pure data; it
+    /// must travel freely both on the network side and in `ConnectionService` on
+    /// MainActor.
     nonisolated struct ToolSpec: Sendable, Hashable {
         let name: String
-        /// Ham açıklama — 100–500 token olabilir; bağlama BU HÂLİYLE GİRMEZ,
-        /// `BaglantiServisi` özetler (§5.3).
+        /// The raw description — it can be 100–500 tokens; it DOES NOT ENTER the context
+        /// IN THIS FORM, `ConnectionService` summarises it (§5.3).
         let description: String
-        /// `inputSchema` (JSON Şeması). MCPAraci bunu çalışma anında
-        /// `DynamicGenerationSchema`ya çevirir.
+        /// `inputSchema` (JSON Schema). MCPTool converts it to a
+        /// `DynamicGenerationSchema` at run time.
         let schema: JSONValue?
-        /// MCP `annotations.readOnlyHint` — sunucu "bu araç hiçbir şey
-        /// değiştirmez" diyorsa true. Sunucu söylemediyse nil.
+        /// MCP `annotations.readOnlyHint` — true if the server says "this tool changes
+        /// nothing". nil if the server said nothing.
         let readOnlyHint: Bool?
-        /// MCP `annotations.destructiveHint` — sunucu "bu araç yıkıcı" diyorsa
-        /// true. İPUCUDUR, güvence değil: sunucu yalan söyleyebilir ya da hiç
-        /// bildirmeyebilir, o yüzden `MCPAraci` ayrıca ad sözlüğüne bakar.
+        /// MCP `annotations.destructiveHint` — true if the server says "this tool is
+        /// destructive". It IS A HINT, not a guarantee: the server may lie or may not
+        /// report at all, which is why `MCPTool` also consults a name dictionary.
         let destructiveHint: Bool?
 
         init(name: String, description: String, schema: JSONValue?,
@@ -137,158 +144,161 @@ actor MCPClient {
         }
     }
 
-    /// Hata yolları düz dille ayrışır (§3.1): kullanıcıya neden söylenir.
-    /// `nonisolated` — ağ tarafında fırlatılır, MainActor'da gösterilir.
+    /// The error paths separate in plain language (§3.1): the user is told the reason.
+    /// `nonisolated` — thrown on the network side, displayed on MainActor.
     nonisolated enum MCPError: Error, Equatable, Sendable {
-        case zamanAsimi
-        case yetki                  // 401/403 — anahtar yok ya da geçersiz
-        case tls                    // sertifika/TLS el sıkışması
-        case unreachable            // ağ yok, sunucu kapalı, DNS
-        case server(String)         // JSON-RPC error ya da HTTP 4xx/5xx
-        case bicimsiz               // yanıt MCP'ye uymuyor
-        case cancelled                  // uygulama arka plana gitti / kullanıcı durdurdu
+        case timedOut
+        case unauthorized           // 401/403 — no key, or an invalid one
+        case tls                    // certificate / TLS handshake
+        case unreachable            // no network, server down, DNS
+        case server(String)         // a JSON-RPC error or HTTP 4xx/5xx
+        case malformed              // the response does not conform to MCP
+        case cancelled              // the app went to the background / the user stopped
 
-        /// Kullanıcıya gösterilecek cümle. Dramatize etmez, ne olduğunu söyler.
+        /// The sentence shown to the user. It does not dramatise, it says what happened.
         var description: String {
             switch self {
-            case .zamanAsimi:  return String(localized: "timed out")
-            case .yetki:       return String(localized: "access key was rejected")
+            case .timedOut:     return String(localized: "timed out")
+            case .unauthorized: return String(localized: "access key was rejected")
             case .tls:         return String(localized: "couldn’t establish a secure connection")
             case .unreachable: return String(localized: "couldn’t reach the server")
             case .server(let m):
                 return m.isEmpty ? String(localized: "server returned an error")
                                  : String(localized: "server returned an error: \(m)")
-            case .bicimsiz:    return String(localized: "couldn’t make sense of the server’s response")
-            case .cancelled:       return String(localized: "stopped partway")
+            case .malformed:    return String(localized: "couldn’t make sense of the server’s response")
+            case .cancelled:    return String(localized: "stopped partway")
             }
         }
     }
 
-    /// Sunucu `Mcp-Session-Id`mizi tanımadı (HTTP 404). Yalnızca bu dosyanın
-    /// içinde yaşayan işaret: `MCPHatasi` kullanıcıya gösterilen sözleşmedir,
-    /// bu ise taşıma katmanının kendi kendine toparlanma sinyali.
+    /// The server did not recognise our `Mcp-Session-Id` (HTTP 404). A marker that lives
+    /// only inside this file: `MCPError` is the contract shown to the user, whereas this
+    /// is the transport layer's own self-recovery signal.
     private nonisolated struct SessionDropped: Error {}
 
-    /// Oturum düştüğünde ÇAĞRISI TEKRARLANABİLEN metotlar. Ölçüt yan etkidir:
-    /// bu ikisi sunucuda hiçbir şey değiştirmez, ikinci kez çalışmaları zararsız.
-    /// `tools/call` bilerek DIŞARIDA — istek sunucuya ulaşıp yan etkisini
-    /// bırakmış da olabilir (yanıt yolda kaybolmuş olabilir), tekrar göndermek
-    /// e-postayı iki kez yollardı. Dünya değiştiyse retry yok.
-    private static let yenidenDenenebilir: Set<String> = ["initialize", "tools/list"]
+    /// The methods whose CALL CAN BE REPEATED when the session drops. The criterion is the
+    /// side effect: these two change nothing on the server, so running them a second time
+    /// is harmless. `tools/call` is deliberately LEFT OUT — the request may have reached
+    /// the server and left its side effect (the response may have been lost on the way),
+    /// and sending it again would send the email twice. If the world changed, no retry.
+    private static let retryable: Set<String> = ["initialize", "tools/list"]
 
     private let url: URL
-    /// Bearer anahtarı — Keychain'den alınmış kopya; belleğin dışına yazılmaz.
+    /// The bearer key — a copy taken from the Keychain; it is never written outside memory.
     private let key: String?
     private let session: URLSession
 
-    /// `initialize` yanıtındaki `Mcp-Session-Id` başlığı; varsa sonraki her
-    /// istekte taşınır. Sunucu oturum tutmuyorsa nil kalır (geçerli davranış).
-    private var oturumKimligi: String?
-    /// Sunucuyla uzlaşılan sürüm — el sıkışmadan sonra başlıkta gider.
-    private var uzlasilanSurum: String = MCPClient.protokolSurumu
-    private var elSikisildi = false
+    /// The `Mcp-Session-Id` header from the `initialize` response; if present it is
+    /// carried on every later request. It stays nil if the server keeps no session (valid
+    /// behaviour).
+    private var sessionID: String?
+    /// The version negotiated with the server — it goes in the header after the handshake.
+    private var negotiatedVersion: String = MCPClient.protocolVersion
+    private var didHandshake = false
     private var counter = 0
 
     init(url: URL, key: String?) {
         self.url = url
         self.key = key
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = MCPClient.zamanAsimi
-        config.timeoutIntervalForResource = MCPClient.zamanAsimi
-        // Çerez/önbellek yok: uzak sunucuyla ilişkimiz istekten ibaret.
+        config.timeoutIntervalForRequest = MCPClient.timeout
+        config.timeoutIntervalForResource = MCPClient.timeout
+        // No cookies/cache: our relationship with the remote server is the request, nothing more.
         config.httpCookieAcceptPolicy = .never
         config.httpShouldSetCookies = false
         config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         self.session = URLSession(configuration: config)
     }
 
-    // MARK: - Üç metot (v1 kapsamı)
+    // MARK: - The three methods (v1 scope)
 
-    /// El sıkışma. Bir kez yapılır; sonraki çağrılar dokunmaz.
-    func elSikis() async throws {
-        guard !elSikisildi else { return }
-        let outcome = try await invoke(metot: "initialize", parametre: .object([
-            "protocolVersion": .text(Self.protokolSurumu),
+    /// The handshake. Done once; later calls do not touch it.
+    func handshake() async throws {
+        guard !didHandshake else { return }
+        let outcome = try await invoke(method: "initialize", params: .object([
+            "protocolVersion": .text(Self.protocolVersion),
             "capabilities": .object(["tools": .object([:])]),
             "clientInfo": .object(["name": .text("tacet"), "version": .text("1.0")]),
         ]))
-        if let s = outcome["protocolVersion"]?.metinMi, !s.isEmpty { uzlasilanSurum = s }
-        elSikisildi = true
-        // MCP el sıkışmasının ikinci yarısı: sunucuya hazır olduğumuzu bildiren
-        // bildirim (yanıt beklenmez). Bunu atlarsak katı sunucular tools/list'i
-        // reddediyor — ayrı bir "metot" değil, initialize'ın parçası.
-        try? await notify(metot: "notifications/initialized")
+        if let s = outcome["protocolVersion"]?.asText, !s.isEmpty { negotiatedVersion = s }
+        didHandshake = true
+        // The second half of the MCP handshake: the notification telling the server we are
+        // ready (no response is expected). If we skip it, strict servers refuse tools/list
+        // — it is not a separate "method", it is part of initialize.
+        try? await notify(method: "notifications/initialized")
     }
 
-    /// Sunucunun araçları. Sayfalama (`nextCursor`) sonuna kadar döner.
+    /// The server's tools. Pagination (`nextCursor`) is followed to the end.
     func tools() async throws -> [ToolSpec] {
-        try await elSikis()
+        try await handshake()
         var total: [ToolSpec] = []
         var caret: String?
-        var sheet = 0
+        var page = 0
         repeat {
-            sheet += 1
-            var parametre: [String: JSONValue] = [:]
-            if let caret { parametre["cursor"] = .text(caret) }
-            let outcome = try await invoke(metot: "tools/list", parametre: .object(parametre))
-            for item in outcome["tools"]?.diziMi ?? [] {
-                guard let name = item["name"]?.metinMi, !name.isEmpty else { continue }
-                let notlar = item["annotations"]
+            page += 1
+            var params: [String: JSONValue] = [:]
+            if let caret { params["cursor"] = .text(caret) }
+            let outcome = try await invoke(method: "tools/list", params: .object(params))
+            for item in outcome["tools"]?.asArray ?? [] {
+                guard let name = item["name"]?.asText, !name.isEmpty else { continue }
+                let annotations = item["annotations"]
                 total.append(ToolSpec(name: name,
-                                         description: item["description"]?.metinMi ?? "",
-                                         schema: item["inputSchema"],
-                                         readOnlyHint: notlar?["readOnlyHint"]?.mantikMi,
-                                         destructiveHint: notlar?["destructiveHint"]?.mantikMi))
+                                      description: item["description"]?.asText ?? "",
+                                      schema: item["inputSchema"],
+                                      readOnlyHint: annotations?["readOnlyHint"]?.asBool,
+                                      destructiveHint: annotations?["destructiveHint"]?.asBool))
             }
-            let next = outcome["nextCursor"]?.metinMi
-            // Aynı imleci tekrar veren sunucu döngüye sokmasın.
+            let next = outcome["nextCursor"]?.asText
+            // A server repeating the same cursor must not put us in a loop.
             caret = (next == caret) ? nil : next
-        } while caret != nil && sheet < Self.enFazlaSayfa && total.count < Self.enFazlaArac
+        } while caret != nil && page < Self.maxPages && total.count < Self.maxTools
 
-        return Array(total.prefix(Self.enFazlaArac))
+        return Array(total.prefix(Self.maxTools))
     }
 
-    /// Aracı çağırır ve içeriği düz metne indirger.
+    /// Calls the tool and reduces the content to plain text.
     ///
-    /// ÖNEMLİ: onay kapısı bu çağrıdan ÖNCE, `AracYurutucu.onayIste` ile geçilir.
-    /// Buraya gelen her şey kullanıcının gördüğü ve onayladığı şeydir.
-    /// - Returns: (metin, sunucuHatasi) — `isError` sunucunun kendi hatasıdır
-    ///   (komut başarısız), taşıma hatası değildir; model onu okuyup anlatır.
-    func aracCagir(name: String, argumanlar: JSONValue) async throws -> (text: String, hataliMi: Bool) {
-        try await elSikis()
-        let outcome = try await invoke(metot: "tools/call", parametre: .object([
+    /// IMPORTANT: the approval gate is passed BEFORE this call, via
+    /// `ToolExecutor.requestApprovalDecision`. Everything that arrives here is what the
+    /// user saw and approved.
+    /// - Returns: (text, serverError) — `isError` is the server's own error (the command
+    ///   failed), not a transport error; the model reads it and reports it.
+    func callTool(name: String, arguments: JSONValue) async throws -> (text: String, isError: Bool) {
+        try await handshake()
+        let outcome = try await invoke(method: "tools/call", params: .object([
             "name": .text(name),
-            "arguments": argumanlar,
+            "arguments": arguments,
         ]))
-        let parcalar: [String] = (outcome["content"]?.diziMi ?? []).compactMap { item in
-            if let t = item["text"]?.metinMi { return t }
-            // Metin dışı içerik (görsel/ses) v1'de taşınmaz; sessizce yutmayalım.
-            if let kind = item["type"]?.metinMi, kind != "text" {
-                return "[\(kind) içeriği — gösterilemiyor]"
+        let parts: [String] = (outcome["content"]?.asArray ?? []).compactMap { item in
+            if let t = item["text"]?.asText { return t }
+            // Non-text content (image/audio) is not carried in v1; let us not swallow it
+            // silently. THIS STRING GOES TO THE MODEL — it stays English.
+            if let kind = item["type"]?.asText, kind != "text" {
+                return "[\(kind) content — cannot be displayed]"
             }
             return nil
         }
-        let text = parcalar.joined(separator: "\n")
-        return (text, outcome["isError"]?.mantikMi ?? false)
+        let text = parts.joined(separator: "\n")
+        return (text, outcome["isError"]?.asBool ?? false)
     }
 
-    // MARK: - JSON-RPC taşıması
+    // MARK: - The JSON-RPC transport
 
-    private func sonrakiKimlik() -> Int { counter += 1; return counter }
+    private func nextIdentity() -> Int { counter += 1; return counter }
 
-    private func istekKur(body: Data) -> URLRequest {
+    private func buildRequest(body: Data) -> URLRequest {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = Self.zamanAsimi
+        request.timeoutInterval = Self.timeout
         request.httpBody = body
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        // İki biçimi de kabul ederiz; sunucu hangisini seçerse ona göre okuruz.
+        // We accept both formats; whichever the server picks is how we read it.
         request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
-        if elSikisildi {
-            request.setValue(uzlasilanSurum, forHTTPHeaderField: "MCP-Protocol-Version")
+        if didHandshake {
+            request.setValue(negotiatedVersion, forHTTPHeaderField: "MCP-Protocol-Version")
         }
-        if let oturumKimligi {
-            request.setValue(oturumKimligi, forHTTPHeaderField: "Mcp-Session-Id")
+        if let sessionID {
+            request.setValue(sessionID, forHTTPHeaderField: "Mcp-Session-Id")
         }
         if let key, !key.isEmpty {
             request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
@@ -296,85 +306,85 @@ actor MCPClient {
         return request
     }
 
-    /// Yanıt beklemeyen bildirim (JSON-RPC notification: `id` yok).
-    private func notify(metot: String) async throws {
-        let body: [String: JSONValue] = ["jsonrpc": .text("2.0"), "method": .text(metot)]
+    /// A notification expecting no response (JSON-RPC notification: no `id`).
+    private func notify(method: String) async throws {
+        let body: [String: JSONValue] = ["jsonrpc": .text("2.0"), "method": .text(method)]
         guard let data = try? JSONEncoder().encode(JSONValue.object(body)) else { return }
-        _ = try? await session.data(for: istekKur(body: data))
+        _ = try? await session.data(for: buildRequest(body: data))
     }
 
-    /// Tek JSON-RPC çağrısı — `result` nesnesini döndürür.
+    /// A single JSON-RPC call — returns the `result` object.
     ///
-    /// - Parameter yenidenDenendi: tek denemelik bayrak. Oturum toparlama
-    ///   yolunda `true` geçilir; ikinci bir 404 artık toparlanmaz, düz hata
-    ///   döner. Özyineleme böylece sonsuza gitmez.
-    private func invoke(metot: String, parametre: JSONValue,
-                       yenidenDenendi: Bool = false) async throws -> JSONValue {
-        let identity = sonrakiKimlik()
+    /// - Parameter retried: a one-shot flag. `true` is passed on the session recovery
+    ///   path; a second 404 is no longer recovered from and a plain error is returned. The
+    ///   recursion therefore never goes on forever.
+    private func invoke(method: String, params: JSONValue,
+                        retried: Bool = false) async throws -> JSONValue {
+        let identity = nextIdentity()
         let body: [String: JSONValue] = [
             "jsonrpc": .text("2.0"),
             "id": .number(Double(identity)),
-            "method": .text(metot),
-            "params": parametre,
+            "method": .text(method),
+            "params": params,
         ]
         guard let data = try? JSONEncoder().encode(JSONValue.object(body)) else {
-            throw MCPError.bicimsiz
+            throw MCPError.malformed
         }
-        let request = istekKur(body: data)
+        let request = buildRequest(body: data)
 
-        // URLSession'ın kendi zaman aşımı SSE akışında güvenilir tetiklenmiyor
-        // (bayt gelmeye devam ettikçe sayaç sıfırlanır); üst sınırı biz koyarız.
+        // URLSession's own timeout does not fire reliably on an SSE stream (the counter
+        // resets as long as bytes keep arriving); we impose the upper bound ourselves.
         let reply: JSONValue
         do {
-            reply = try await zamanSinirli(Self.zamanAsimi) { [self] in
-                try await self.akisOku(request: request, identity: identity)
+            reply = try await withTimeLimit(Self.timeout) { [self] in
+                try await self.readStream(request: request, identity: identity)
             }
         } catch is SessionDropped {
-            // Sunucu yeniden başlamış ya da oturumun süresi dolmuş. Yerel durumu
-            // sıfırlamazsak ölü kimlik her istekte tekrar gönderilir ve bağlantı
-            // uygulama yeniden açılana dek HER çağrıda düşer.
-            oturumKimligi = nil
-            elSikisildi = false
-            guard !yenidenDenendi, Self.yenidenDenenebilir.contains(metot) else {
+            // The server restarted or the session expired. If we do not reset the local
+            // state, the dead id is sent again on every request and the connection drops on
+            // EVERY call until the app is reopened.
+            sessionID = nil
+            didHandshake = false
+            guard !retried, Self.retryable.contains(method) else {
                 throw MCPError.server("HTTP 404")
             }
-            // El sıkışma yeniden kurulur; `initialize`ın kendisi için gereksiz —
-            // çağrının kendisi zaten o.
-            if metot != "initialize" { try await elSikis() }
-            return try await invoke(metot: metot, parametre: parametre,
-                                   yenidenDenendi: true)
+            // The handshake is re-established; unnecessary for `initialize` itself — that
+            // call already is the handshake.
+            if method != "initialize" { try await handshake() }
+            return try await invoke(method: method, params: params, retried: true)
         }
 
         if let error = reply["error"] {
-            let message = error["message"]?.metinMi ?? ""
+            let message = error["message"]?.asText ?? ""
             throw MCPError.server(message)
         }
-        guard let outcome = reply["result"] else { throw MCPError.bicimsiz }
+        guard let outcome = reply["result"] else { throw MCPError.malformed }
         return outcome
     }
 
-    /// İsteği gönderir, gövdeyi biçimine göre okur ve bizim `id`li yanıtı döndürür.
-    private func akisOku(request: URLRequest, identity: Int) async throws -> JSONValue {
-        let baytlar: URLSession.AsyncBytes
+    /// Sends the request, reads the body according to its format and returns the response
+    /// carrying our `id`.
+    private func readStream(request: URLRequest, identity: Int) async throws -> JSONValue {
+        let bytes: URLSession.AsyncBytes
         let reply: URLResponse
         do {
-            (baytlar, reply) = try await session.bytes(for: request)
+            (bytes, reply) = try await session.bytes(for: request)
         } catch {
-            throw Self.hataCevir(error)
+            throw Self.convertError(error)
         }
 
-        guard let http = reply as? HTTPURLResponse else { throw MCPError.bicimsiz }
-        // Oturum kimliği el sıkışmada gelir; sonraki isteklerde taşınır.
-        if let kimlikBasligi = http.value(forHTTPHeaderField: "Mcp-Session-Id"), !kimlikBasligi.isEmpty {
-            oturumKimligi = kimlikBasligi
+        guard let http = reply as? HTTPURLResponse else { throw MCPError.malformed }
+        // The session id arrives with the handshake; it is carried on later requests.
+        if let idHeader = http.value(forHTTPHeaderField: "Mcp-Session-Id"), !idHeader.isEmpty {
+            sessionID = idHeader
         }
         switch http.statusCode {
         case 200..<300: break
-        case 401, 403:  throw MCPError.yetki
-        // Spec: sunucu tanımadığı oturum kimliği için 404 döner ve istemciden
-        // yeniden `initialize` bekler. Yanlış adres de 404 verir; o durumda
-        // toparlanma bir kez daha deneyip aynı hataya düşer (bir fazladan
-        // istek), kullanıcının gördüğü sonuç değişmez.
+        case 401, 403:  throw MCPError.unauthorized
+        // Spec: the server returns 404 for a session id it does not recognise and expects
+        // the client to `initialize` again. A wrong address also gives 404; in that case
+        // the recovery tries once more and falls into the same error (one extra request),
+        // and the outcome the user sees does not change.
         case 404:       throw SessionDropped()
         default:        throw MCPError.server("HTTP \(http.statusCode)")
         }
@@ -382,72 +392,72 @@ actor MCPClient {
         let kind = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
 
         if kind.contains("text/event-stream") {
-            return try await sseOku(baytlar, identity: identity)
+            return try await readSSE(bytes, identity: identity)
         }
 
-        // Düz JSON: satırları toplayıp tek gövde olarak çöz.
+        // Plain JSON: collect the lines and decode as a single body.
         var body = Data()
         do {
-            for try await byte in baytlar {
+            for try await byte in bytes {
                 try Task.checkCancellation()
                 body.append(byte)
             }
         } catch {
-            throw Self.hataCevir(error)
+            throw Self.convertError(error)
         }
-        guard let resolve = try? JSONDecoder().decode(JSONValue.self, from: body) else {
-            throw MCPError.bicimsiz
+        guard let decoded = try? JSONDecoder().decode(JSONValue.self, from: body) else {
+            throw MCPError.malformed
         }
-        // Sunucu toplu (batch) dizi döndürmüş olabilir — bizim id'yi seç.
-        if let array = resolve.diziMi {
-            guard let benim = array.first(where: { Self.kimlikEsit($0, identity) }) else {
-                throw MCPError.bicimsiz
+        // The server may have returned a batch array — pick out our id.
+        if let array = decoded.asArray {
+            guard let mine = array.first(where: { Self.identityMatches($0, identity) }) else {
+                throw MCPError.malformed
             }
-            return benim
+            return mine
         }
-        return resolve
+        return decoded
     }
 
-    /// SSE ayrıştırması: `data:` satırları biriktirilir, BOŞ SATIRDA olay tamamlanır.
-    /// Bizim `id`mize ait yanıt gelene kadar okumaya devam eder (sunucu araya
-    /// ilerleme/log olayları koyabilir).
-    private func sseOku(_ baytlar: URLSession.AsyncBytes, identity: Int) async throws -> JSONValue {
+    /// SSE parsing: `data:` lines are accumulated and the event completes ON AN EMPTY LINE.
+    /// It keeps reading until the response carrying our `id` arrives (the server may
+    /// interleave progress/log events).
+    private func readSSE(_ bytes: URLSession.AsyncBytes, identity: Int) async throws -> JSONValue {
         var buffer: [String] = []
 
-        func olayiCoz() -> JSONValue? {
+        func resolveEvent() -> JSONValue? {
             guard !buffer.isEmpty else { return nil }
-            let gövde = buffer.joined(separator: "\n")
+            let body = buffer.joined(separator: "\n")
             buffer.removeAll()
-            guard let data = gövde.data(using: .utf8),
-                  let resolve = try? JSONDecoder().decode(JSONValue.self, from: data) else { return nil }
-            if let array = resolve.diziMi {
-                return array.first(where: { Self.kimlikEsit($0, identity) })
+            guard let data = body.data(using: .utf8),
+                  let decoded = try? JSONDecoder().decode(JSONValue.self, from: data) else { return nil }
+            if let array = decoded.asArray {
+                return array.first(where: { Self.identityMatches($0, identity) })
             }
-            return Self.kimlikEsit(resolve, identity) ? resolve : nil
+            return Self.identityMatches(decoded, identity) ? decoded : nil
         }
 
         do {
-            for try await line in baytlar.lines {
+            for try await line in bytes.lines {
                 try Task.checkCancellation()
                 if line.isEmpty {
-                    if let event = olayiCoz() { return event }
+                    if let event = resolveEvent() { return event }
                     continue
                 }
-                if line.hasPrefix(":") { continue }        // yorum/heartbeat
-                guard line.hasPrefix("data:") else { continue } // event:/id:/retry: ilgilendirmez
+                if line.hasPrefix(":") { continue }        // comment/heartbeat
+                guard line.hasPrefix("data:") else { continue } // event:/id:/retry: are of no interest
                 var chunk = String(line.dropFirst(5))
                 if chunk.hasPrefix(" ") { chunk.removeFirst() }
                 buffer.append(chunk)
             }
         } catch {
-            throw Self.hataCevir(error)
+            throw Self.convertError(error)
         }
-        // Akış kapandı: son olay boş satırla kapanmamış olabilir.
-        if let event = olayiCoz() { return event }
-        throw MCPError.bicimsiz
+        // The stream closed: the last event may not have been closed by an empty line.
+        if let event = resolveEvent() { return event }
+        throw MCPError.malformed
     }
 
-    private nonisolated static func kimlikEsit(_ object: JSONValue, _ identity: Int) -> Bool {
+    private nonisolated static func identityMatches(_ object: JSONValue, _ identity: Int) -> Bool {
         guard let field = object["id"] else { return false }
         switch field {
         case .number(let v): return Int(v) == identity
@@ -456,14 +466,14 @@ actor MCPClient {
         }
     }
 
-    /// URLError/CancellationError → düz dille ayrışan MCPHatasi (§3.1).
-    private nonisolated static func hataCevir(_ error: Error) -> MCPError {
+    /// URLError/CancellationError → an MCPError that separates in plain language (§3.1).
+    private nonisolated static func convertError(_ error: Error) -> MCPError {
         if error is CancellationError { return .cancelled }
         if let mcp = error as? MCPError { return mcp }
         guard let u = error as? URLError else { return .unreachable }
         switch u.code {
         case .timedOut:
-            return .zamanAsimi
+            return .timedOut
         case .cancelled:
             return .cancelled
         case .secureConnectionFailed, .serverCertificateHasBadDate,
@@ -472,30 +482,31 @@ actor MCPClient {
              .clientCertificateRequired, .appTransportSecurityRequiresSecureConnection:
             return .tls
         case .userAuthenticationRequired:
-            return .yetki
+            return .unauthorized
         default:
             return .unreachable
         }
     }
 }
 
-// MARK: - Süre sınırı
+// MARK: - Time limit
 
-/// İşi verilen süre içinde bitirir; bitmezse `zamanAsimi` fırlatır ve işi iptal eder.
-/// Dışarıdan gelen iptal (uygulama arka plana gitti) aynen aşağı geçer.
+/// Finishes the work within the given time; if it does not finish it throws `timedOut`
+/// and cancels the work. A cancellation coming from outside (the app went to the
+/// background) passes straight down.
 ///
-/// `nonisolated` — varsayılan MainActor izolasyonu bu yardımcıyı arayüz kuyruğuna
-/// bağlardı; 120 saniyelik bir ağ beklemesinin orada işi yok.
-private nonisolated func zamanSinirli<T: Sendable>(_ second: TimeInterval,
-                                       _ is: @escaping @Sendable () async throws -> T) async throws -> T {
-    try await withThrowingTaskGroup(of: T.self) { grup in
-        grup.addTask { try await `is`() }
-        grup.addTask {
-            try await Task.sleep(nanoseconds: UInt64(second * 1_000_000_000))
-            throw MCPClient.MCPError.zamanAsimi
+/// `nonisolated` — the default MainActor isolation would bind this helper to the UI
+/// queue; a 120-second network wait has no business there.
+private nonisolated func withTimeLimit<T: Sendable>(_ seconds: TimeInterval,
+                                                    _ work: @escaping @Sendable () async throws -> T) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask { try await work() }
+        group.addTask {
+            try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            throw MCPClient.MCPError.timedOut
         }
-        guard let first = try await grup.next() else { throw MCPClient.MCPError.bicimsiz }
-        grup.cancelAll()
+        guard let first = try await group.next() else { throw MCPClient.MCPError.malformed }
+        group.cancelAll()
         return first
     }
 }

@@ -458,23 +458,23 @@ fn attribute<'a>(attributes: &'a str, needle: &str) -> Option<&'a str> {
 fn parse_shared_strings(xml: &str) -> Vec<String> {
     let mut values = Vec::new();
     let mut body = String::new();
-    let mut si_ici = false;
-    let mut topluyor = false;
+    let mut inside_si = false;
+    let mut collecting = false;
 
     for part in chunk(xml) {
         match part {
             Chunk::Open { name: "si", .. } => {
-                si_ici = true;
+                inside_si = true;
                 body.clear();
             }
             // In rich text a single <si> carries more than one <t>; they are all
             // joined, otherwise a formatted cell is read half.
-            Chunk::Open { name: "t", .. } if si_ici => topluyor = true,
-            Chunk::Text(m) if topluyor => body.push_str(&varlik_coz(m)),
-            Chunk::Close("t") => topluyor = false,
+            Chunk::Open { name: "t", .. } if inside_si => collecting = true,
+            Chunk::Text(m) if collecting => body.push_str(&resolve_entity(m)),
+            Chunk::Close("t") => collecting = false,
             Chunk::Close("si") => {
                 values.push(std::mem::take(&mut body));
-                si_ici = false;
+                inside_si = false;
             }
             _ => {}
         }
@@ -487,8 +487,8 @@ fn parse_sheet(xml: &str, shared: &[String]) -> Vec<Vec<String>> {
     let mut lines: Vec<Vec<String>> = Vec::new();
     let mut active: Vec<String> = Vec::new();
     let mut body = String::new();
-    let mut topluyor = false;
-    let mut paylasilan_mi = false;
+    let mut collecting = false;
+    let mut is_shared = false;
     let mut column: Option<usize> = None;
 
     for part in chunk(xml) {
@@ -499,18 +499,18 @@ fn parse_sheet(xml: &str, shared: &[String]) -> Vec<Vec<String>> {
                 attributes,
                 self_closing,
             } => {
-                paylasilan_mi = attribute(attributes, "t") == Some("s");
+                is_shared = attribute(attributes, "t") == Some("s");
                 column = attribute(attributes, "r").and_then(column_index);
                 body.clear();
                 if self_closing {
-                    hucre_yerlestir(&mut active, column, String::new());
+                    place_cell(&mut active, column, String::new());
                 }
             }
-            Chunk::Open { name: "t" | "v", .. } => topluyor = true,
-            Chunk::Text(m) if topluyor => body.push_str(&varlik_coz(m)),
-            Chunk::Close("t" | "v") => topluyor = false,
+            Chunk::Open { name: "t" | "v", .. } => collecting = true,
+            Chunk::Text(m) if collecting => body.push_str(&resolve_entity(m)),
+            Chunk::Close("t" | "v") => collecting = false,
             Chunk::Close("c") => {
-                let value = if paylasilan_mi {
+                let value = if is_shared {
                     // A malformed index leaves the cell empty rather than
                     // panicking: the input may be a file somebody else produced.
                     body
@@ -522,7 +522,7 @@ fn parse_sheet(xml: &str, shared: &[String]) -> Vec<Vec<String>> {
                 } else {
                     body.clone()
                 };
-                hucre_yerlestir(&mut active, column, value);
+                place_cell(&mut active, column, value);
                 body.clear();
             }
             Chunk::Close("row") => lines.push(std::mem::take(&mut active)),
@@ -537,7 +537,7 @@ fn parse_sheet(xml: &str, shared: &[String]) -> Vec<Vec<String>> {
 /// The Swift version added the cells in order; since Excel does not write a
 /// `<c>` for an empty cell, after one gap the whole row shifted one column
 /// left. With the `r="C2"` reference available there is no reason to repeat that bug.
-fn hucre_yerlestir(line: &mut Vec<String>, column: Option<usize>, value: String) {
+fn place_cell(line: &mut Vec<String>, column: Option<usize>, value: String) {
     match column {
         Some(i) => {
             while line.len() < i {
@@ -576,7 +576,7 @@ fn column_index(cell_ref: &str) -> Option<usize> {
 }
 
 /// XML entity resolution — the set OOXML produces.
-fn varlik_coz(raw: &str) -> String {
+fn resolve_entity(raw: &str) -> String {
     if !raw.contains('&') {
         return raw.to_string();
     }
