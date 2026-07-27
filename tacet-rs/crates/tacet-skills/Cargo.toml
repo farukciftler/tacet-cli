@@ -1,0 +1,27 @@
+[package]
+name = "tacet-skills"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# NO NETWORK: this crate only reads local files (the bundled .md files + the
+# `skills` directory under the config dir). By rule, network calls exist only
+# in tacet-web and tacet-mcp.
+[dependencies]
+# NEW (NOT an external dependency, a workspace-internal contract crate).
+# Reason: where the config directory lives is a SHARED agreement between the
+# skill, memory and MCP layers, and as long as it was hand-written in three
+# separate places nothing guaranteed the three stayed the same. `tacet-core`
+# depends on nothing, so the layering direction stays intact too (the rejection
+# reason given for tacet-engine does not apply here: the engine sits on top,
+# the core sits at the bottom).
+tacet-core.workspace = true
+
+# WHY DEV-DEPENDENCY ONLY: `INJECTION_LIMIT` and `tacet_engine::GUIDE_LIMIT`
+# MUST be the SAME number — one feeds the other. Linking against tacet-engine
+# in production would invert the layering direction (the skill layer must not
+# know the engine's internal representation). A dev-dependency instead catches
+# the numbers drifting apart AT COMPILE TIME and adds nothing to the production
+# graph.
+[dev-dependencies]
+tacet-engine.workspace = true

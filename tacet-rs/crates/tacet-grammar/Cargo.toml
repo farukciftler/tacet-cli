@@ -1,0 +1,20 @@
+[package]
+name = "tacet-grammar"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Almost no dependencies. A tokenizer crate is DELIBERATELY ABSENT: the masking
+# interface is defined over &[String], so this crate stays unchanged no matter
+# which tokenizer is used, and the "pull in no ready-made crates" identity holds.
+[dependencies]
+tacet-core.workspace = true
+# The dependency direction is deliberate: grammar depends on engine, engine does
+# NOT depend on grammar. The `Constrainer` contract lives in the engine, its
+# implementation (call.rs) lives here. The other way round would force the
+# engine to know the grammar's internal representation.
+tacet-engine.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

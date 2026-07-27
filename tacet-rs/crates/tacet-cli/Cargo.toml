@@ -1,0 +1,113 @@
+[package]
+name = "tacet-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# THE BINARY IS NAMED `tacet`, the crate is named `tacet-cli`. The user types
+# `tacet` in the terminal; `cargo install --path crates/tacet-cli` puts that name
+# in ~/.cargo/bin.
+#
+# WHY THE TWO DIFFER: the binary's name is the command the user TYPES, the crate
+# name is the workspace's internal order. The `-cli` suffix says which crate is
+# the binary; that does not concern the user. Both carry the same brand
+# (`tacet`), but they are NOT REQUIRED to be the same string.
+[[bin]]
+name = "tacet"
+path = "src/main.rs"
+
+# clap ONLY HERE: argument parsing is a shell matter, none of the library layers
+# should see it. The engine is taken with its default features (NO candle) —
+# when `--engine candle` is asked for, this crate is rebuilt with the `candle`
+# feature; the default `cargo build` finishes in seconds.
+[dependencies]
+tacet-core.workspace = true
+tacet-tools.workspace = true
+tacet-grammar.workspace = true
+tacet-engine.workspace = true
+# The skill and memory layers are wired into PRODUCTION at the shell phase: on
+# every turn the shell picks the skill/notes that wake and adds them to the
+# prompt. Neither has NETWORK; their store is a local file. The layer crates are
+# fed straight from here, without creating a second "tool list".
+tacet-skills.workspace = true
+tacet-memory.workspace = true
+tacet-eval.workspace = true
+# For `tacet model download`. NOT A NEW EXTERNAL DEPENDENCY: `tacet-web` is
+# already a workspace member and was ALREADY in this binary's graph through
+# `tacet-tools` (web_search); the line here only makes the indirect one DIRECT.
+#
+# THE NETWORK MONOPOLY IS NOT BROKEN. The rule was "network calls exist only in
+# tacet-web and tacet-mcp", not "nobody may call them". This crate OPENS NO
+# SOCKET and DOES NOT PULL `ureq` (it is not in the manifest); it calls
+# `tacet_web::download` and in return supplies the terminal side — the `[y/N]`
+# approval question and the progress line. The split is deliberate: the side
+# asking the question is the shell, the side going on the network is tacet-web.
+#
+# WHY IT WAS NEEDED: `tacet_web::download` was written, tested and NEVER CALLED
+# FROM PRODUCTION — exactly this repo's recurring failure ("a mechanism is built,
+# it is not wired into production, and because the build is green nobody
+# notices"). The absence of the dependency line was the only obstacle.
+tacet-web.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+# crossterm ONLY HERE — by the user's explicit decision, and the boundary is the
+# same as clap's: the terminal is a SHELL matter, the core layers (tacet-core,
+# tacet-engine, tacet-grammar, tacet-tools, tacet-zip) stay zero-dependency. It
+# was DELIBERATELY not added to the workspace `[workspace.dependencies]` list:
+# standing there would have meant "any crate may pull it".
+#
+# WHY IT IS NEEDED: Tacet's only real interface is this binary and there were two
+# measured failures there. (1) While the model was generating, the keys the user
+# pressed got between the output through the terminal ECHO ("tacet> kindHello!
+# How can I ihelp you?"). LOCKING input for the duration of generation requires
+# raw mode; it cannot be done with an ANSI escape, it needs a terminal setting
+# (termios).
+# (2) In the 5-15 seconds before the first token the screen looked frozen; the
+# only interface that swallows key events while drawing a spinner is again this
+# one.
+# Calling termios by hand meant a libc dependency + separate code per platform;
+# not a winning trade.
+#
+# `bracketed-paste` WAS ADDED LATER and for one concrete failure: when a
+# multi-line text is PASTED into the framed input field, the terminal sends it as
+# separate key events and every newline inside counts as ENTER — that is, the
+# first line of the pasted text goes to the model and the rest is lost. With this
+# feature on, a paste is a SINGLE `Event::Paste`. The feature list is still
+# trimmed: `derive-more` and `serde` were not taken.
+#
+# `windows` IS MANDATORY, not a preference. Crossterm 0.29 carries this in its
+# own source (src/lib.rs:263):
+#   #[cfg(all(windows, not(feature = "windows")))]
+#   compile_error!("Compiling on Windows with \"windows\" feature disabled...")
+# That is, with the feature off the binary DOES NOT COMPILE on Windows — it does
+# not break at runtime, it never compiles. It used to be off and the
+# "cross-platform" claim was a lie exactly there. The feature's cost OUTSIDE
+# Windows IS ZERO: `winapi` and `crossterm_winapi` sit under
+# `[target."cfg(windows)".dependencies]` in crossterm and add not one line to the
+# macOS/Linux resolution (confirmed with `cargo tree --target ...`).
+crossterm = { version = "0.29", default-features = false, features = [
+    "events",
+    "bracketed-paste",
+    "windows",
+] }
+
+# TEST-ONLY (adds nothing to the production graph). The rationale is the same as
+# `tacet-skills`'s `tacet-engine` dev-dependency: "memory, skills and MCP point at
+# THE SAME config directory" is an INVARIANT and this crate is the only place that
+# sees all three layers. In production MCP is reached through
+# `tacet-tools::mcp`; to measure the invariant, `tacet_mcp::config` itself is
+# needed (see main.rs,
+# `memory_skills_and_mcp_point_at_the_same_config_directory`).
+[dev-dependencies]
+tacet-mcp.workspace = true
+
+[features]
+default = []
+candle = ["tacet-engine/candle"]
+# Apple GPU (Metal): turns on candle's metal kernel. A SEPARATE feature — see
+# tacet-engine/Cargo.toml. With `--features metal` a real model decodes ~2x
+# faster. metal must also turn on the CLI's own `candle` cfg flag: otherwise
+# `tacet-engine` is built with metal but the `#[cfg(feature="candle")]` in
+# main.rs stays off and the binary falls back to FakeEngine without ever seeing
+# the real engine.
+metal = ["candle", "tacet-engine/metal"]

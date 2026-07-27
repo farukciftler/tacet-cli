@@ -1,0 +1,37 @@
+[package]
+name = "tacet-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+
+# Workspace-internal CONTRACT crate (NOT an external dependency, and it sees no
+# network either). Only for `env_var`: the rule "an empty value counts as
+# undefined" must live in ONE place. Copying the rule here would mean two copies
+# drifting apart silently — that is exactly why it was centralized for
+# memory/skills/MCP.
+tacet-core.workspace = true
+
+# DEPENDENCY RATIONALE — `ureq`.
+#
+# The zero-dependency identity is not "write everything by hand", it is "do not
+# replace what CAN be written by hand with a dependency". zip/deflate/crc32 were
+# written by hand because the subset we needed was a few hundred lines and its
+# input was data we produced ourselves. TLS is NOT like that: when the X.509
+# chain, certificate validation, the TLS 1.3 handshake and the cipher suites are
+# written by hand, what comes out is not "fewer dependencies" but a SECURITY
+# HOLE. A badly written validator silently accepts every certificate and the
+# user's query goes to the man in the middle.
+#
+# `reqwest` WAS EVALUATED and REJECTED: it drags the tokio runtime along with
+# it. tokio was deliberately removed in the root Cargo.toml ("this crate must
+# NOT CHOOSE a runtime") and reversing that decision for the sake of a single
+# GET request is disproportionate.
+#
+# `ureq` was chosen: synchronous, chooses no runtime, hands TLS to rustls.
+# `default-features = false` + `rustls` only: the gzip, cookie, charset and
+# proxy features are not pulled in — we read plain JSON from SearXNG, anything
+# more is attack surface.
+ureq = { version = "3", default-features = false, features = ["rustls"] }

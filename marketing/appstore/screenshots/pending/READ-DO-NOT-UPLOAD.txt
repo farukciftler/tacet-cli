@@ -1,0 +1,44 @@
+THE FRAME IN THIS FOLDER CANNOT BE PUBLISHED.
+
+Frame: 07-connections (the Connections board, empty state)
+Status: THE CODE BLOCKER IS RESOLVED — STILL HELD BACK BY THE BRAND
+
+RATIONALE (the original reason this frame was pulled)
+Sitting inside the framing, fully legible, is this sentence:
+
+    "Unless you connect, <OLD BRAND> does not go online."
+    (the product's OLD NAME is legible in the framing; the name is not repeated here)
+
+Source at the time: Tacet/Views/ConnectionBoard.swift:179
+
+That sentence is ABSOLUTE and WRONG. Connections (MCP) and web search are TWO
+INDEPENDENT surfaces. Even with no MCP server connected, if the user has turned
+web search on the app goes online. The sentence claimed a global property from a
+local panel.
+
+THE OTHER PLACES THE SAME SENTENCE APPEARED — ALL NOW FIXED
+Re-scanned while this package was being updated (measured, not assumed):
+
+  Views/ConnectionBoard.swift  -> now: "Connect your own MCP server and Tacet can
+                                  use its tools. Until you do, this surface stays
+                                  closed."
+  Views/Settings.swift         -> now: "No search server. Connect your own SearXNG
+                                  server and Tacet can search the web. Until you
+                                  do, web search stays off."
+  Views/Capabilities.swift     -> now: "Connect your own search server and Tacet
+                                  searches the web. Until you do, web search stays
+                                  off. Settings > Web search."
+
+The suggested fix from the previous version of this note was adopted almost
+verbatim. So there is no longer a CODE reason to hold this frame back.
+
+WHY IT IS STILL HELD BACK
+The frame itself is still the old capture: it shows the OLD BRAND and it still
+contains the old absolute sentence, because the image was never recaptured. See
+§5.4 of the package README — every frame in the set has the same problem.
+
+WHAT HAPPENS NEXT
+Recapture this frame from a current build, then re-run the caption generator
+script and put it back into the `raw/` + `captioned-*/` sets as 07. The frame is
+valuable: it was the only one showing the "off by default, you are the one who
+turns it on" promise on a single screen.

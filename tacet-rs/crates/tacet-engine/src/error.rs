@@ -1,0 +1,43 @@
+//! Engine errors.
+//!
+//! A SEPARATE type from `ToolError`: a tool error is something shown to the
+//! user as a chip and returned to the model as fixed text; an engine error is
+//! the TURN LOOP itself breaking (weights would not load, context overflowed,
+//! the constraint contradicted itself). Squeezing both into one enum would make
+//! the question "what gets returned to the model" meaningless — when the engine
+//! is down there is no model to return to.
+
+use std::path::PathBuf;
+
+#[derive(Debug, thiserror::Error)]
+pub enum EngineError {
+    /// The model file (GGUF/safetensors) is missing or unreadable.
+    #[error("could not load model file: {0}")]
+    ModelNotLoaded(PathBuf),
+
+    /// The tokenizer would not load, or text could not be turned into tokens.
+    #[error("tokenization failed: {0}")]
+    Tokenization(String),
+
+    /// The prompt did not fit the context budget even AFTER truncation.
+    #[error("prompt did not fit the context budget: {measured} > {budget}")]
+    BudgetExceeded { measured: usize, budget: usize },
+
+    /// The constrainer rejected the incoming token despite the mask. This is a
+    /// logic error (masking and advancing have drifted apart) and must not be
+    /// swallowed silently.
+    #[error("constraint rejected the token: {0}")]
+    ConstraintViolation(u32),
+
+    /// FakeEngine ran out of script — meaning the test's scenario is incomplete.
+    #[error("no steps left in the fake engine script (call {call})")]
+    ScriptExhausted { call: usize },
+
+    #[error("inference failed: {0}")]
+    Inference(String),
+
+    #[error("could not read model file")]
+    Io(#[from] std::io::Error),
+}
+
+pub type EngineResult<T> = Result<T, EngineError>;

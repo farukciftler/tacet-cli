@@ -1,0 +1,29 @@
+[package]
+name = "tacet-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# NO NETWORK: memory NEVER LEAVES THE DEVICE. This crate only reads/writes
+# `memory.json` under the config directory; by rule, network calls exist only
+# in tacet-web and tacet-mcp.
+[dependencies]
+# serde/serde_json are ALREADY workspace dependencies (NOT a new dependency).
+# Plain JSON was chosen over SQLite for the disk format; the reasoning is at
+# the top of store.rs.
+serde.workspace = true
+serde_json.workspace = true
+
+# Workspace-internal contract crate (NOT an external dependency).
+# `default_path` NO LONGER COMPUTES the config directory itself; the path lives
+# in one place, `tacet_core::env` — because we have to point at the same
+# directory as skills and MCP. Forgetting this declaration used to break the
+# build (`unresolved module tacet_core`, store.rs:141).
+tacet-core.workspace = true
+
+# For trigger matching. WHY A DEPENDENCY: "memory matching uses the SAME rule
+# as skills" is a spec clause; copying the rule would mean two implementations
+# and the copies would silently drift apart. The direction is not arbitrary —
+# the rule was born, measured, in the skill layer (see
+# tacet-skills/src/matching.rs).
+tacet-skills.workspace = true
