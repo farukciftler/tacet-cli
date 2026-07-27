@@ -1,0 +1,700 @@
+//! The input field — frame, slash command list, token counter.
+//!
+//! WHY IT EXISTS: input was read with `std::io::stdin().read_line` and the
+//! screen held a single `›`. That had three concrete consequences:
+//!   1. Where the user typed WAS NOT DISTINGUISHABLE from where the model
+//!      typed — a `›` following a long answer looked like a continuation of the
+//!      answer.
+//!   2. Slash commands could only be used FROM MEMORY; you had to type
+//!      `/help` and come back.
+//!   3. The tokens spent and the room left in the 4096 window WERE NOT VISIBLE
+//!      — yet when the budget fills, old turns drop SILENTLY.
+//!
+//! All three require configuring the terminal's INPUT side: without raw mode
+//! there is no key-by-key filtering, no caret, and no list you can overwrite.
+//! `crossterm` was ALREADY in this crate (see Cargo.toml); no new dependency was
+//! added, an existing capability was used.
+//!
+//! IF THERE IS NO TTY NONE OF THIS HAPPENS. On piped input (a script, CI,
+//! `--message`) `read` falls straight through to `read_line` and writes NOT ONE
+//! EXTRA BYTE to the screen — today's scripts see exactly the same output.
+//!
+//! BRAND: NO green dot / status dot / badge. The frame and the counter are DIM
+//! (grey), the typed text is normal ink. There is no accent colour. The name is
+//! "Tacet", capitalised; lowercase `tacet` is only THE BINARY's name (the
+//! command typed in a shell), not the brand's.
+
+use crate::ui::{BOLD, RESET, Screen, brass_code, dim_code, reset_code};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use std::io::Write;
+
+/// The shell's slash commands — the list is HERE, the single source.
+///
+/// Descriptions are one line: while the list is open there is room for one line
+/// per command on screen; a two-line description scrolls the list and makes the
+/// selection impossible to follow.
+pub struct Command {
+    pub name: &'static str,
+    pub description: &'static str,
+}
+
+pub const COMMANDS: &[Command] = &[
+    Command {
+        name: "/help",
+        description: "the list of commands",
+    },
+    Command {
+        name: "/tools",
+        description: "the tools in the catalog and their descriptions",
+    },
+    Command {
+        name: "/grammar",
+        description: "the grammar generated from a tool's schema",
+    },
+    Command {
+        name: "/eval",
+        description: "run the logic eval set (fake engine, seconds)",
+    },
+    Command {
+        name: "/memory",
+        description: "the saved memory notes",
+    },
+    Command {
+        name: "/history",
+        description: "this session's conversation history",
+    },
+    Command {
+        name: "/model",
+        description: "the active engine, template and constraint",
+    },
+    Command {
+        name: "/clear",
+        description: "delete the conversation history (memory stays)",
+    },
+    Command {
+        name: "/plugins",
+        description: "the installed addons and their state",
+    },
+    Command {
+        name: "/addon",
+        description: "install, remove or toggle an addon (e.g. /addon install web-search)",
+    },
+    Command {
+        name: "/config",
+        description: "view or set personal defaults (model, engine, theme)",
+    },
+    Command {
+        name: "/themes",
+        description: "list colour themes or switch: /themes night",
+    },
+    Command {
+        name: "/quit",
+        description: "exit",
+    },
+];
+
+/// The most rows shown in the list.
+const LIST_CAP: usize = 8;
+/// The frame's maximum width. On a wide terminal, drawing the screen edge to
+/// edge makes the input field a "wall" rather than a "window".
+const MAX_WIDTH: usize = 78;
+const MIN_WIDTH: usize = 28;
+
+pub enum Input {
+    Line(String),
+    /// EOF (ctrl-d) or a read error — the session ends.
+    Done,
+}
+
+/// Case-folds so a typed prefix matches regardless of capitalisation.
+///
+/// HISTORICAL RECORD: this used to fold Turkish letters to their ASCII
+/// counterparts (`ı`->`i`, `ç`->`c`, `ğ`->`g`, `ş`->`s`, `ö`->`o`, `ü`->`u`)
+/// because the command names were Turkish (`/yardım`, `/çık`) and a user whose
+/// keyboard had no Turkish letters could not reach the list at all. The command
+/// names are English now, so the folding matched nothing and was dropped. IF A
+/// LOCALIZED COMMAND NAME EVER COMES BACK, THE FOLDING HAS TO COME BACK WITH
+/// IT.
+fn simplify(s: &str) -> String {
+    s.chars().flat_map(|c| c.to_lowercase()).collect()
+}
+
+/// The commands matching the typed prefix. A bare `/` lists everything.
+pub fn matches(buffer: &str) -> Vec<&'static Command> {
+    let query = simplify(buffer);
+    COMMANDS
+        .iter()
+        .filter(|c| simplify(c.name).starts_with(&query))
+        .collect()
+}
+
+/// Should the buffer open the slash command list: it MUST START with `/` and
+/// NO SPACE MAY HAVE BEEN TYPED yet (what follows a space is an argument, not a
+/// command).
+fn list_needed(buffer: &str) -> bool {
+    buffer.starts_with('/') && !buffer.contains(char::is_whitespace)
+}
+
+/// The guard that closes raw mode on every exit. Even on an early return via
+/// `?` or a panic, the terminal is not left in raw mode for the user — in that
+/// state the shell is broken in practice.
+struct RawMode(bool);
+
+impl RawMode {
+    fn open() -> Self {
+        let open = enable_raw_mode().is_ok();
+        if open {
+            // Let a paste arrive as a single event: otherwise the newlines
+            // inside the pasted text count as ENTER and the first line is sent
+            // while the rest is lost.
+            let mut out = std::io::stdout();
+            let _ = out.write_all(b"\x1b[?2004h");
+            let _ = out.flush();
+        }
+        RawMode(open)
+    }
+}
+
+impl Drop for RawMode {
+    fn drop(&mut self) {
+        if self.0 {
+            let mut out = std::io::stdout();
+            let _ = out.write_all(b"\x1b[?2004l");
+            let _ = out.flush();
+            let _ = disable_raw_mode();
+        }
+    }
+}
+
+/// Reads one line. `state` is the counter line sitting under the input field.
+///
+/// `history` is the messages sent in this session; up/down arrow walks them. It
+/// is a list that stays inside the shell, it IS NOT WRITTEN to disk.
+pub fn read(screen: &Screen, state: &str, history: &mut Vec<String>) -> Input {
+    if !screen.tty() {
+        // Piped input: the old behaviour, verbatim. No prompt is printed.
+        let mut line = String::new();
+        return match std::io::stdin().read_line(&mut line) {
+            Ok(0) | Err(_) => Input::Done,
+            Ok(_) => Input::Line(line.trim().to_string()),
+        };
+    }
+    let _raw = RawMode::open();
+    // The block bounds the BORROW of `history` by the editor's lifetime: the
+    // same list is WRITTEN TO below.
+    let result = {
+        let mut e = Editor::new(state, history);
+        e.run()
+    };
+    drop(_raw);
+    match result {
+        Input::Line(s) => {
+            if !s.trim().is_empty() && history.last().map(String::as_str) != Some(s.as_str()) {
+                history.push(s.clone());
+            }
+            Input::Line(s)
+        }
+        other => other,
+    }
+}
+
+struct Editor<'a> {
+    buffer: String,
+    /// The caret's BYTE index — multi-byte letters exist, and holding a
+    /// character index would mean rescanning on every edit.
+    caret: usize,
+    state: &'a str,
+    history: &'a [String],
+    history_i: Option<usize>,
+    selection: usize,
+    /// Esc closed the list — it does not open again until the user types `/`.
+    dismissed: bool,
+    /// The index, within the drawn block, of the line the caret was left on in
+    /// the last draw.
+    caret_line: usize,
+    first_draw: bool,
+    note: Option<&'static str>,
+}
+
+impl<'a> Editor<'a> {
+    fn new(state: &'a str, history: &'a [String]) -> Self {
+        Self {
+            buffer: String::new(),
+            caret: 0,
+            state,
+            history,
+            history_i: None,
+            selection: 0,
+            dismissed: false,
+            caret_line: 0,
+            first_draw: true,
+            note: None,
+        }
+    }
+
+    fn list_open(&self) -> bool {
+        !self.dismissed && list_needed(&self.buffer)
+    }
+
+    fn run(&mut self) -> Input {
+        loop {
+            self.draw();
+            let event = match event::read() {
+                Ok(e) => e,
+                Err(_) => return Input::Done,
+            };
+            match event {
+                Event::Paste(text) => {
+                    let clean: String = text.replace("\r\n", "\n").replace('\r', "\n");
+                    self.add(&clean);
+                }
+                Event::Key(k) if k.kind == KeyEventKind::Press => {
+                    if let Some(result) = self.key(k) {
+                        self.clear();
+                        return result;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// `Some(...)` = the read is finished.
+    fn key(&mut self, k: KeyEvent) -> Option<Input> {
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let lower = k.modifiers.contains(KeyModifiers::ALT);
+        self.note = None;
+        match k.code {
+            KeyCode::Enter => {
+                // ALT/SHIFT+Enter: add a line. Most terminals do not
+                // distinguish SHIFT; ALT arrives everywhere, both are accepted.
+                if lower || k.modifiers.contains(KeyModifiers::SHIFT) {
+                    self.add("\n");
+                    return None;
+                }
+                // While the list is open ENTER SELECTS (it does not send): the
+                // behaviour a completion list should have — the user does not
+                // end up having sent the command before seeing it.
+                if self.list_open()
+                    && let Some(c) = matches(&self.buffer).get(self.selection)
+                {
+                    self.buffer = c.name.to_string();
+                    self.caret = self.buffer.len();
+                    self.dismissed = true;
+                    self.selection = 0;
+                    return None;
+                }
+                let line = self.buffer.trim().to_string();
+                return Some(Input::Line(line));
+            }
+            KeyCode::Tab => {
+                if self.list_open()
+                    && let Some(c) = matches(&self.buffer).get(self.selection)
+                {
+                    self.buffer = c.name.to_string();
+                    self.caret = self.buffer.len();
+                    self.dismissed = true;
+                    self.selection = 0;
+                }
+            }
+            KeyCode::Esc => {
+                if self.list_open() {
+                    self.dismissed = true;
+                }
+            }
+            KeyCode::Up => {
+                if self.list_open() {
+                    let n = matches(&self.buffer).len();
+                    if n > 0 {
+                        self.selection = (self.selection + n - 1) % n;
+                    }
+                } else {
+                    self.walk_history(-1);
+                }
+            }
+            KeyCode::Down => {
+                if self.list_open() {
+                    let n = matches(&self.buffer).len();
+                    if n > 0 {
+                        self.selection = (self.selection + 1) % n;
+                    }
+                } else {
+                    self.walk_history(1);
+                }
+            }
+            KeyCode::Left => self.caret = previous_boundary(&self.buffer, self.caret),
+            KeyCode::Right => self.caret = next_boundary(&self.buffer, self.caret),
+            KeyCode::Home => self.caret = 0,
+            KeyCode::End => self.caret = self.buffer.len(),
+            KeyCode::Backspace => {
+                let new = previous_boundary(&self.buffer, self.caret);
+                if new < self.caret {
+                    self.buffer.replace_range(new..self.caret, "");
+                    self.caret = new;
+                    self.selection = 0;
+                    if !self.buffer.starts_with('/') {
+                        self.dismissed = false;
+                    }
+                }
+            }
+            KeyCode::Delete => {
+                let new = next_boundary(&self.buffer, self.caret);
+                if new > self.caret {
+                    self.buffer.replace_range(self.caret..new, "");
+                    self.selection = 0;
+                }
+            }
+            KeyCode::Char('c') if ctrl => {
+                if self.buffer.is_empty() {
+                    // On an empty line ctrl-c NEITHER CRASHES NOR EXITS: exiting
+                    // must be an explicit intent (see the empty-line note in
+                    // main.rs).
+                    self.note = Some("/quit or ctrl-d to exit");
+                } else {
+                    self.buffer.clear();
+                    self.caret = 0;
+                    self.dismissed = false;
+                }
+            }
+            KeyCode::Char('d') if ctrl => {
+                if self.buffer.is_empty() {
+                    return Some(Input::Done);
+                }
+                let new = next_boundary(&self.buffer, self.caret);
+                if new > self.caret {
+                    self.buffer.replace_range(self.caret..new, "");
+                }
+            }
+            KeyCode::Char('a') if ctrl => self.caret = 0,
+            KeyCode::Char('e') if ctrl => self.caret = self.buffer.len(),
+            KeyCode::Char('u') if ctrl => {
+                self.buffer.replace_range(..self.caret, "");
+                self.caret = 0;
+            }
+            KeyCode::Char('k') if ctrl => {
+                self.buffer.truncate(self.caret);
+            }
+            KeyCode::Char('w') if ctrl => {
+                let new = word_start(&self.buffer, self.caret);
+                self.buffer.replace_range(new..self.caret, "");
+                self.caret = new;
+            }
+            KeyCode::Char(c) if !ctrl => {
+                let s = c.to_string();
+                self.add(&s);
+            }
+            _ => {}
+        }
+        None
+    }
+
+    fn add(&mut self, text: &str) {
+        self.buffer.insert_str(self.caret, text);
+        self.caret += text.len();
+        self.selection = 0;
+        self.history_i = None;
+        if text.starts_with('/') && self.caret == 1 {
+            self.dismissed = false;
+        }
+    }
+
+    fn walk_history(&mut self, direction: i32) {
+        if self.history.is_empty() {
+            return;
+        }
+        let last = self.history.len() - 1;
+        self.history_i = match (self.history_i, direction) {
+            (None, -1) => Some(last),
+            (None, _) => None,
+            (Some(0), -1) => Some(0),
+            (Some(i), -1) => Some(i - 1),
+            (Some(i), _) if i >= last => None,
+            (Some(i), _) => Some(i + 1),
+        };
+        self.buffer = match self.history_i {
+            Some(i) => self.history[i].clone(),
+            None => String::new(),
+        };
+        self.caret = self.buffer.len();
+    }
+
+    // -----------------------------------------------------------------------
+    // Drawing
+    // -----------------------------------------------------------------------
+
+    /// The lines to draw + the caret's (line, column) position.
+    fn lines(&self) -> (Vec<String>, usize, usize) {
+        let width = width();
+        let inner = width.saturating_sub(4); // "│ " ... " │"
+        let text_width = inner.saturating_sub(2); // the "› " prefix
+        let mut lines = Vec::new();
+        let rule = "─".repeat(width.saturating_sub(2));
+        lines.push(dim(&format!("╭{rule}╮")));
+
+        // Find which logical line the caret is on and which character of that
+        // line it sits at.
+        let ahead = &self.buffer[..self.caret];
+        let caret_line_no = ahead.matches('\n').count();
+        let caret_column = ahead.rsplit('\n').next().unwrap_or("").chars().count();
+
+        let logical: Vec<&str> = self.buffer.split('\n').collect();
+        let mut caret_at = (1usize, 0usize);
+        for (i, line) in logical.iter().enumerate() {
+            let marker = if i == 0 { "› " } else { "  " };
+            // A long line IS SHIFTED RIGHT (not wrapped): wrapping makes the
+            // number of visual lines drawn depend on the content and breaks the
+            // overwrite arithmetic (how many lines to move up).
+            let (visible, shift) = window(
+                line,
+                text_width,
+                if i == caret_line_no { caret_column } else { 0 },
+            );
+            let fill = " ".repeat(text_width.saturating_sub(visible.chars().count()));
+            // The prompt marker is BRASS — the same role the landing page's
+            // demo gives its `$` and `tacet>` symbols: "you speak here".
+            let (d, r, b) = (dim_code(), reset_code(), brass_code());
+            lines.push(format!("{d}│{r} {b}{marker}{r}{visible}{fill} {d}│{r}"));
+            if i == caret_line_no {
+                caret_at = (lines.len() - 1, 2 + 2 + (caret_column - shift));
+            }
+        }
+        lines.push(dim(&format!("╰{rule}╯")));
+
+        if self.list_open() {
+            let hits = matches(&self.buffer);
+            if hits.is_empty() {
+                lines.push(dim("  (no matching command — esc closes)"));
+            }
+            for (i, c) in hits.iter().take(LIST_CAP).enumerate() {
+                let selected = i == self.selection.min(hits.len().saturating_sub(1));
+                let name = format!("{:<10}", c.name);
+                let (d, r) = (dim_code(), reset_code());
+                let line = if selected {
+                    format!("  {d}›{r} {BOLD}{name}{RESET} {d}{}{r}", c.description)
+                } else {
+                    format!("    {d}{name} {}{r}", c.description)
+                };
+                lines.push(line);
+            }
+            if hits.len() > LIST_CAP {
+                lines.push(dim(&format!("    … {} more", hits.len() - LIST_CAP)));
+            }
+            lines.push(dim("  ↑↓ select · tab/enter complete · esc close"));
+        }
+
+        let lower = match self.note {
+            Some(n) => format!("  {n}"),
+            None => format!("  {}", self.state),
+        };
+        lines.push(dim(&truncate(&lower, width)));
+        (lines, caret_at.0, caret_at.1)
+    }
+
+    fn draw(&mut self) {
+        let (lines, caret_line, caret_column) = self.lines();
+        let mut out = String::new();
+        // ERASE THE PREVIOUS DRAW. The caret was last left on line
+        // `caret_line`; we move UP relative to that. The absolute caret position
+        // IS NOT USED: the terminal may have scrolled in between and the
+        // absolute position would point at the wrong place; relative motion
+        // scrolls along with it.
+        if !self.first_draw {
+            if self.caret_line > 0 {
+                out.push_str(&format!("\x1b[{}A", self.caret_line));
+            }
+            out.push_str("\r\x1b[J");
+        }
+        self.first_draw = false;
+        out.push_str(&lines.join("\r\n"));
+        // Bring the caret back to the input line.
+        let last = lines.len() - 1;
+        if last > caret_line {
+            out.push_str(&format!("\x1b[{}A", last - caret_line));
+        }
+        out.push('\r');
+        if caret_column > 0 {
+            out.push_str(&format!("\x1b[{caret_column}C"));
+        }
+        self.caret_line = caret_line;
+        let mut stdout = std::io::stdout();
+        let _ = stdout.write_all(out.as_bytes());
+        let _ = stdout.flush();
+    }
+
+    /// Erases the input field from the screen — the sent message is reprinted by
+    /// `main`, the frame must not be left behind.
+    fn clear(&mut self) {
+        let mut out = String::new();
+        if self.caret_line > 0 {
+            out.push_str(&format!("\x1b[{}A", self.caret_line));
+        }
+        out.push_str("\r\x1b[J");
+        let mut stdout = std::io::stdout();
+        let _ = stdout.write_all(out.as_bytes());
+        let _ = stdout.flush();
+    }
+}
+
+fn dim(text: &str) -> String {
+    format!("{}{text}{}", dim_code(), reset_code())
+}
+
+/// The terminal width — a sensible default if it cannot be measured.
+fn width() -> usize {
+    let w = crossterm::terminal::size()
+        .map(|(w, _)| w as usize)
+        .unwrap_or(80);
+    w.clamp(MIN_WIDTH, MAX_WIDTH)
+}
+
+/// Fits the text into a window `wide` characters across; SHIFTS RIGHT if needed
+/// so the caret stays visible. The second value returned is the shift amount (in
+/// characters).
+fn window(line: &str, wide: usize, caret: usize) -> (String, usize) {
+    let n = line.chars().count();
+    if n <= wide {
+        return (line.to_string(), 0);
+    }
+    let shift = caret.saturating_sub(wide.saturating_sub(1));
+    let visible: String = line.chars().skip(shift).take(wide).collect();
+    (visible, shift)
+}
+
+fn truncate(text: &str, wide: usize) -> String {
+    if text.chars().count() <= wide {
+        return text.to_string();
+    }
+    text.chars()
+        .take(wide.saturating_sub(1))
+        .collect::<String>()
+        + "…"
+}
+
+/// The previous CHARACTER boundary — so we never land in the middle of a
+/// multi-byte letter.
+fn previous_boundary(s: &str, i: usize) -> usize {
+    let mut j = i;
+    loop {
+        if j == 0 {
+            return 0;
+        }
+        j -= 1;
+        if s.is_char_boundary(j) {
+            return j;
+        }
+    }
+}
+
+fn next_boundary(s: &str, i: usize) -> usize {
+    let mut j = i;
+    loop {
+        if j >= s.len() {
+            return s.len();
+        }
+        j += 1;
+        if s.is_char_boundary(j) {
+            return j;
+        }
+    }
+}
+
+/// The start of the word to the left of the caret (ctrl-w).
+fn word_start(s: &str, i: usize) -> usize {
+    let mut j = i;
+    while j > 0 {
+        let k = previous_boundary(s, j);
+        if !s[k..j].chars().all(char::is_whitespace) {
+            break;
+        }
+        j = k;
+    }
+    while j > 0 {
+        let k = previous_boundary(s, j);
+        if s[k..j].chars().all(char::is_whitespace) {
+            break;
+        }
+        j = k;
+    }
+    j
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The list opens ONLY while a command is being typed: a user typing
+    /// `/grammar web_search` is entering an argument, not picking a command.
+    #[test]
+    fn when_the_list_opens() {
+        assert!(list_needed("/"));
+        assert!(list_needed("/he"));
+        assert!(!list_needed("/grammar "));
+        assert!(!list_needed("hello"));
+        assert!(!list_needed(""));
+    }
+
+    /// Matching DOES NOT CARE about capitalisation.
+    #[test]
+    fn matching_ignores_capitalisation() {
+        let h: Vec<&str> = matches("/HeL").iter().map(|c| c.name).collect();
+        assert_eq!(h, vec!["/help"]);
+        let q: Vec<&str> = matches("/Q").iter().map(|c| c.name).collect();
+        assert_eq!(q, vec!["/quit"]);
+        let g: Vec<&str> = matches("/gr").iter().map(|c| c.name).collect();
+        assert_eq!(g, vec!["/grammar"]);
+        assert_eq!(matches("/").len(), COMMANDS.len());
+        assert!(matches("/zzz").is_empty());
+    }
+
+    /// Every command must have a description — an explicit condition of the
+    /// request.
+    #[test]
+    fn every_command_has_a_description() {
+        for c in COMMANDS {
+            assert!(!c.description.is_empty(), "{}", c.name);
+            assert!(c.name.starts_with('/'));
+        }
+    }
+
+    /// Caret motion over multi-byte letters DOES NOT PANIC.
+    ///
+    /// The data stays non-ASCII deliberately: with ASCII input every byte is a
+    /// character boundary and this test would pass even with the boundary walk
+    /// removed.
+    #[test]
+    fn the_caret_walks_on_character_boundaries() {
+        let s = "çığ";
+        assert_eq!(previous_boundary(s, s.len()), 4);
+        assert_eq!(next_boundary(s, 0), 2);
+        assert_eq!(previous_boundary(s, 0), 0);
+        assert_eq!(next_boundary(s, s.len()), s.len());
+    }
+
+    #[test]
+    fn word_deletion() {
+        let s = "hello world";
+        assert_eq!(word_start(s, s.len()), 6);
+        assert_eq!(&s[..word_start(s, s.len())], "hello ");
+        assert_eq!(word_start("one", 3), 0);
+    }
+
+    /// A long line SHIFTS RIGHT and the caret stays inside the window.
+    #[test]
+    fn a_long_line_shifts() {
+        let s: String = "abcdefghij".repeat(5);
+        // The caret is at the END of the text: the window shows the last 9
+        // characters, the 10th column is left to the caret itself (otherwise the
+        // caret fell outside the frame).
+        let (v, shift) = window(&s, 10, 50);
+        assert!(v.chars().count() <= 10, "{}", v.chars().count());
+        assert!(50 - shift < 10, "the caret must stay inside the window");
+        // It is visible with the caret in the middle too.
+        let (v3, shift3) = window(&s, 10, 25);
+        assert!(v3.chars().count() <= 10);
+        assert!(25 - shift3 < 10);
+        let (v2, shift2) = window("short", 10, 2);
+        assert_eq!(v2, "short");
+        assert_eq!(shift2, 0);
+    }
+}

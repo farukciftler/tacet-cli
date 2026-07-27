@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest,   target: aarch64-apple-darwin,      ext: "" }
+          - { os: macos-13,       target: x86_64-apple-darwin,       ext: "" }
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu,  ext: "" }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc,    ext: ".exe" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      # Released without inference features on purpose. `candle` pulls a large
+      # tree and `metal` is Apple-only; a user who wants real inference builds
+      # with `cargo install tacet-cli --features metal|candle`. The released
+      # binary still runs eval, tools, model discovery and the addon flow.
+      - run: cargo build --release -p tacet-cli --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          bin="target/${{ matrix.target }}/release/tacet${{ matrix.ext }}"
+          name="tacet-${{ github.ref_name }}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp "$bin" "dist/$name/"
+          cp README.md LICENSE "dist/$name/"
+          cd dist
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            7z a "$name.zip" "$name" >/dev/null
+          else
+            tar czf "$name.tar.gz" "$name"
+          fi
+          # The bare, UNVERSIONED binary as well. `tacet update --install`
+          # fetches this one: taking the archive would mean the updater had to
+          # unpack tar or zip, which is either a new crate dependency or a
+          # dependency on whatever happens to be installed on the user's box.
+          # The name is a contract with crates/tacet-cli/src/update.rs
+          # (`asset_name`) — change one, change both. It carries no version, so
+          # it cannot collide with the archive above.
+          cp "$name/tacet${{ matrix.ext }}" "tacet-${{ matrix.target }}${{ matrix.ext }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/tacet-${{ matrix.target }}${{ matrix.ext }}
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - name: Checksums
+        run: |
+          cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
+      # `tacet update` reads this release's tag and assets. The asset naming
+      # scheme above is a contract with src/update.rs — change one, change both.
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

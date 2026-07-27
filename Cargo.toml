@@ -1,0 +1,50 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/tacet-core",
+    "crates/tacet-zip",
+    "crates/tacet-grammar",
+    "crates/tacet-engine",
+    "crates/tacet-tools",
+    "crates/tacet-skills",
+    "crates/tacet-memory",
+    "crates/tacet-web",
+    "crates/tacet-mcp",
+    "crates/tacet-eval",
+    "crates/tacet-cli",
+]
+
+# The dependency list is deliberately short: Tacet's identity is built on
+# "pulling in no ready-made crates" (OOXML zip/deflate/crc32 are written by
+# hand). Adding a line here is an architectural decision, not a convenience.
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+
+# REMOVED — `anyhow` and `tokio`: both were declared here but NO crate pulled
+# them in. A dead manifest line looks harmless and is not: because it stands in
+# the list it counts as "already permitted" and nobody asks for a rationale on
+# the next addition. On top of that, for tokio the code says the opposite —
+# tacet-engine and tacet-core write "this crate MUST NOT PICK an executor, so
+# no tokio". A dependency comes back when it is needed, with its rationale.
+
+tacet-core = { path = "crates/tacet-core" }
+tacet-zip = { path = "crates/tacet-zip" }
+tacet-grammar = { path = "crates/tacet-grammar" }
+tacet-engine = { path = "crates/tacet-engine" }
+tacet-tools = { path = "crates/tacet-tools" }
+tacet-skills = { path = "crates/tacet-skills" }
+tacet-memory = { path = "crates/tacet-memory" }
+# THE NETWORK MONOPOLY: a network call exists ONLY in these two crates. No
+# other crate opens a socket; so the rule can be audited by eye rather than by
+# an `audit` script, the HTTP dependency also stands only in these two manifests.
+tacet-web = { path = "crates/tacet-web" }
+tacet-mcp = { path = "crates/tacet-mcp" }
+tacet-eval = { path = "crates/tacet-eval" }

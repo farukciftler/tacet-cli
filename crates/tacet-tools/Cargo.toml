@@ -1,0 +1,29 @@
+[package]
+name = "tacet-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tacet-core.workspace = true
+tacet-zip.workspace = true
+# For the `remember` tool: the notes are not owned by this crate but by
+# tacet-memory.
+tacet-memory.workspace = true
+# The network layer of the `web_search`/`web_fetch` tools. The HTTP client
+# (`ureq`) IS NOT ADDED HERE: this crate opens no socket, it only converts the
+# types tacet-web returns into the tool contract. So that the network monopoly is
+# visible at the manifest level too.
+tacet-web.workspace = true
+# The network layer of the `mcp` bridge. The same rule: `ureq` IS NOT ADDED HERE,
+# this crate opens no socket — it converts tacet-mcp's types into the `Tool`
+# contract, and that is all.
+tacet-mcp.workspace = true
+serde_json.workspace = true
+
+# `wait` — the MCP approval gate tests have to drive the real
+# `ToolExecutor::execute` path (async). NOT a production dependency: if the
+# direction were tacet-engine -> tacet-tools the layer order would invert, and a
+# dev-dependency does not touch that order.
+[dev-dependencies]
+tacet-engine.workspace = true

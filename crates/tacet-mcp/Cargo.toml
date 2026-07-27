@@ -1,0 +1,31 @@
+[package]
+name = "tacet-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# THE NETWORK MONOPOLY: no crate outside this one and `tacet-web` opens a
+# socket. So that the rule stays auditable, the HTTP dependency lives only in
+# those two manifests.
+#
+# `ureq` RATIONALE: Tacet's identity is "pull in no ready-made crates" (even the
+# OOXML zip was written by hand), but HTTPS is the exception to that — writing
+# TLS by hand would be irresponsible from a security point of view, and the
+# whole purpose of the zero-dependency discipline is to be safe. `ureq` was
+# chosen because (a) it BLOCKS: there is no runtime in this dependency tree,
+# `tacet_engine::wait` drives the futures on a single thread by busy-waiting;
+# pulling in tokio would impose a runtime on the entire architecture, (b) it
+# gives the body as a `Read`, so we can read the SSE stream line by line
+# (`reqwest`'s blocking mode does that, but still carries tokio behind it).
+[dependencies]
+tacet-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+# The SAME line as in `tacet-web`, deliberately identical. If the two network
+# crates pulled in two different HTTP stacks the TLS surface would double as
+# well; one stack, one place to audit. The long form of the rationale is written
+# in `crates/tacet-web/Cargo.toml` — it is not repeated here, because two copies
+# of a rationale drift apart sooner or later.
+ureq = { version = "3", default-features = false, features = ["rustls"] }

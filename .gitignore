@@ -1,0 +1,12 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# Model weights are never committed: gigabytes, and not ours to redistribute.
+*.gguf
+*.safetensors
+tokenizer.json
+
+# Local state
+.tacet/
+.DS_Store

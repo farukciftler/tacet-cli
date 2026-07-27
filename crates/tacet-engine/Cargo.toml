@@ -1,0 +1,54 @@
+[package]
+name = "tacet-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# DEPENDENCY DECISION: the default build pulls only core + serde/thiserror.
+# Real inference (candle) sits behind an OPTIONAL feature and is ABSENT by
+# default. Two reasons: (1) zero-dependency identity — the candle tree alone is
+# bigger than the rest of the project; (2) build time — all eval and CI run on
+# FakeEngine, and there is no payoff in dragging a minutes-long weight build
+# into that.
+[dependencies]
+tacet-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+# --- Only under the `candle` feature ---
+# The network monopoly rule holds here too: these crates load models from a
+# LOCAL file, they do not download — candle-transformers' `hf-hub` extension is
+# deliberately NOT enabled.
+# candle-nn is not used directly (candle-transformers already pulls it), so it
+# is not declared here: an unused dependency sitting in the list gets assumed
+# "necessary" and over time actually becomes so.
+candle-core = { version = "0.11", optional = true }
+candle-transformers = { version = "0.11", optional = true }
+tokenizers = { version = "0.22", optional = true, default-features = false, features = [
+    "onig",
+] }
+
+[features]
+default = []
+candle = ["dep:candle-core", "dep:candle-transformers", "dep:tokenizers"]
+
+# Apple GPU. A SEPARATE feature, because candle-core/metal also builds the
+# objc2 + metal kernel tree and does not build at all on non-Metal targets
+# (Linux CI). When on, the `Device` default becomes Metal — MEASURED: decode
+# 31 -> 73 tokens/s, prefill 113 -> 775 tokens/s (Qwen2.5-3B q4_k_m). That gap
+# is far too large to leave behind a flag the user has to go looking for.
+metal = ["candle", "candle-core/metal", "candle-transformers/metal"]
+
+# The measurement example DOES NOT COMPILE without candle. Unmarked, a default
+# `cargo test --workspace` would try to build it and go red because the candle
+# types are missing — i.e. the mere existence of the example would break a run
+# that has nothing to do with it.
+[[example]]
+name = "measure"
+required-features = ["candle"]
+
+# The Gemma3 probe needs candle too (same reason).
+[[example]]
+name = "gemma_probe"
+required-features = ["candle"]

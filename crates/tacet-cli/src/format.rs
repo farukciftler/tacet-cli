@@ -1,0 +1,674 @@
+//! Markdown formatting — designed for STREAMING output.
+//!
+//! WHY IT EXISTS: the model produces `**bold**`, `` `code` ``, `# heading`,
+//! `- bullet` and tables; on screen these came out with their raw markers. What
+//! the user saw was markdown source code, not text.
+//!
+//! THE HARD PART IS THE STREAM. Text arrives token by token: the second star of
+//! a `**` pair, the space after a heading line's `#`, the second row of a table
+//! — none of them may be in hand "right now". There are two wrong solutions and
+//! we rejected both:
+//!
+//!  * **Buffer everything and print at the end.** It would kill the stream;
+//!    filling the 5-15 second wait with flowing text is one of the reasons this
+//!    shell exists.
+//!  * **Open the style the moment a marker is seen.** Printing BOLD as soon as
+//!    `**` arrives and then waiting for the close bolds the rest of the line if
+//!    the close never comes (the model ended the sentence some other way,
+//!    generation was cut off). A broken screen is exactly this.
+//!
+//! THE PATH CHOSEN — **defer the decision, smallest possible buffer**:
+//! everything flows character by character; ONLY the fragment awaiting a
+//! decision is held.
+//!   * at the START OF A LINE: the first few characters that determine the
+//!     structure (`#`, `- `, `|`, ```` ``` ````) — a delay of a few characters
+//!     at most,
+//!   * INSIDE a line: the body of an opened but unclosed marker — printed with
+//!     its style when the close arrives, printed RAW if the line ends before it
+//!     closes (so in the worst case the user sees today's output, not a broken
+//!     screen).
+//!
+//! A TABLE is the one exception: column width can only be known once all the
+//! rows have arrived, so a block starting with `|` is collected and printed when
+//! the block ends. The alternative was printing an unaligned table — the exact
+//! opposite of the request.
+//!
+//! IF IT IS NOT A TTY NONE OF THIS HAPPENS. A formatter built with
+//! `colored=false` is TRANSPARENT: it hands the input back byte for byte.
+//! Piped output staying parseable (and today's scripts not breaking) matters
+//! more than decoration.
+
+use crate::ui::{BOLD, REVERSE, dim_code, reset_code};
+
+/// The most characters held while awaiting a decision at the start of a line.
+/// Only lines made up entirely of whitespace hit this cap; hitting it means
+/// "plain line".
+const PREFIX_CAP: usize = 16;
+
+/// How much body an unclosed marker may hold at most. If the model produces a
+/// single `*` or `` ` `` and carries on, the whole text must not end up in the
+/// buffer — past a certain point, saying "that was not a marker" and printing
+/// raw is better than holding the answer hostage.
+const MARKER_CAP: usize = 200;
+
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    /// The line's structure has not been decided yet.
+    LineStart,
+    /// The line's body is flowing.
+    Body,
+    /// A table row starting with `|` is being collected raw.
+    TableRow,
+    /// A code block line: printed with NO parsing at all until end of line.
+    RawLine,
+    /// The rest of the line is dropped; if `nl`, a newline is printed at the end.
+    Skip { nl: bool },
+}
+
+#[derive(Clone, Copy)]
+enum Marker {
+    Code,
+    Bold,
+}
+
+impl Marker {
+    fn raw_prefix(self) -> &'static str {
+        match self {
+            Marker::Code => "`",
+            Marker::Bold => "**",
+        }
+    }
+    fn style(self) -> &'static str {
+        match self {
+            Marker::Code => REVERSE,
+            Marker::Bold => BOLD,
+        }
+    }
+}
+
+/// The start-of-line decision.
+enum Decision {
+    Plain,
+    Heading,
+    Bullet(String),
+    Ordered(String, String),
+    Quote,
+    Table,
+    /// ```` ``` ```` — a code block fence (opens or closes).
+    Fence,
+    /// `---` horizontal separator.
+    Separator,
+}
+
+/// The state machine that turns streaming text into ANSI.
+pub struct Formatter {
+    colored: bool,
+    mode: Mode,
+    /// Raw characters at the start of a line awaiting the decision.
+    prefix: String,
+    /// An opened but unclosed marker and the body collected so far.
+    marker: Option<(Marker, String)>,
+    /// A single `*` was seen; bold opens if a second one arrives.
+    star: bool,
+    /// The style applied to the whole line (heading/quote) — REPRINTED when an
+    /// inner style closes, otherwise `RESET` would erase that one too.
+    line_style: Option<&'static str>,
+    /// Are we between ```` ``` ```` fences — markdown is not parsed inside.
+    code_block: bool,
+    table: Vec<String>,
+    table_row: String,
+    output: String,
+}
+
+impl Formatter {
+    pub fn new(colored: bool) -> Self {
+        Self {
+            colored,
+            mode: Mode::LineStart,
+            prefix: String::new(),
+            marker: None,
+            star: false,
+            line_style: None,
+            code_block: false,
+            table: Vec::new(),
+            table_row: String::new(),
+            output: String::new(),
+        }
+    }
+
+    /// Feeds a chunk; returns the part that IS PRINTABLE to the screen.
+    pub fn feed(&mut self, chunk: &str) -> String {
+        if !self.colored {
+            return chunk.to_string();
+        }
+        self.output.clear();
+        for c in chunk.chars() {
+            self.char(c);
+        }
+        std::mem::take(&mut self.output)
+    }
+
+    /// The stream ended: whatever is left in the buffer is printed RAW. NO
+    /// newline is added — the caller (the end of the answer) prints that itself.
+    pub fn finish(&mut self) -> String {
+        if !self.colored {
+            return String::new();
+        }
+        self.output.clear();
+        if self.mode == Mode::TableRow {
+            let s = std::mem::take(&mut self.table_row);
+            self.table.push(s);
+        }
+        self.drain_table();
+        // An unclosed marker: print raw. Showing the user today's output is
+        // preferred over breaking the screen.
+        if self.star {
+            self.star = false;
+            self.output.push('*');
+        }
+        if let Some((marker, body)) = self.marker.take() {
+            self.output.push_str(marker.raw_prefix());
+            self.output.push_str(&body);
+        }
+        let prefix = std::mem::take(&mut self.prefix);
+        self.output.push_str(&prefix);
+        if self.line_style.take().is_some() {
+            self.output.push_str(reset_code());
+        }
+        self.mode = Mode::LineStart;
+        std::mem::take(&mut self.output)
+    }
+
+    /// One-shot formatting (no stream).
+    pub fn all(colored: bool, text: &str) -> String {
+        let mut f = Formatter::new(colored);
+        let mut s = f.feed(text);
+        s.push_str(&f.finish());
+        s
+    }
+
+    // -----------------------------------------------------------------------
+
+    fn char(&mut self, c: char) {
+        match self.mode {
+            Mode::Skip { nl } => {
+                if c == '\n' {
+                    if nl {
+                        self.output.push('\n');
+                    }
+                    self.mode = Mode::LineStart;
+                }
+            }
+            Mode::RawLine => {
+                if c == '\n' {
+                    if self.line_style.take().is_some() && self.colored {
+                        self.output.push_str(reset_code());
+                    }
+                    self.output.push('\n');
+                    self.mode = Mode::LineStart;
+                } else {
+                    self.output.push(c);
+                }
+            }
+            Mode::TableRow => {
+                if c == '\n' {
+                    let s = std::mem::take(&mut self.table_row);
+                    self.table.push(s);
+                    self.mode = Mode::LineStart;
+                } else {
+                    self.table_row.push(c);
+                }
+            }
+            Mode::LineStart => self.line_start_char(c),
+            Mode::Body => self.body_char(c),
+        }
+    }
+
+    fn line_start_char(&mut self, c: char) {
+        if c == '\n' {
+            // An empty line CLOSES the table: the block is over, it is printed
+            // in its aligned form.
+            let prefix = std::mem::take(&mut self.prefix);
+            self.drain_table();
+            self.output.push_str(&prefix);
+            self.output.push('\n');
+            return;
+        }
+        self.prefix.push(c);
+
+        // INSIDE a code block the only decision is `is the fence closing`; every
+        // other line is printed RAW (in code, `*` and `#` are not markdown).
+        if self.code_block {
+            let t = self.prefix.trim_start();
+            if t.chars().all(|c| c == '`') && t.len() < 3 {
+                return; // could become ```, wait
+            }
+            if t.starts_with("```") {
+                self.code_block = false;
+                self.prefix.clear();
+                self.mode = Mode::Skip { nl: false };
+                return;
+            }
+            // Inline markdown IS NOT LOOKED FOR on a code line: `**` is an
+            // operator there.
+            let prefix = std::mem::take(&mut self.prefix);
+            if self.colored {
+                self.output.push_str(dim_code());
+                self.line_style = Some(dim_code());
+            }
+            self.output.push_str("  ");
+            self.output.push_str(&prefix);
+            self.mode = Mode::RawLine;
+            return;
+        }
+
+        match prefix_decision(&self.prefix) {
+            Some(d) => self.apply_decision(d),
+            None => {
+                if self.prefix.chars().count() >= PREFIX_CAP {
+                    self.apply_decision(Decision::Plain);
+                }
+            }
+        }
+    }
+
+    fn apply_decision(&mut self, decision: Decision) {
+        // The table block must be printed BEFORE the output of the line that
+        // comes after it.
+        if !matches!(decision, Decision::Table) {
+            self.drain_table();
+        }
+        let prefix = std::mem::take(&mut self.prefix);
+        match decision {
+            Decision::Plain => {
+                self.mode = Mode::Body;
+                // The held prefix was UNDECIDED raw text: it is fed back into
+                // the body machine so `**bold**` works at the start of a line
+                // too.
+                for c in prefix.chars() {
+                    self.body_char(c);
+                }
+            }
+            Decision::Heading => {
+                let s = paint_open(self.colored, BOLD);
+                self.output.push_str(&s);
+                self.line_style = Some(BOLD);
+                self.mode = Mode::Body;
+            }
+            Decision::Bullet(space) => {
+                self.output.push_str(&format!("{space}  • "));
+                self.mode = Mode::Body;
+            }
+            Decision::Ordered(space, tag) => {
+                self.output.push_str(&format!("{space}  {tag}"));
+                self.mode = Mode::Body;
+            }
+            Decision::Quote => {
+                let s = paint_open(self.colored, dim_code());
+                self.output.push_str(&s);
+                self.output.push_str("  │ ");
+                self.line_style = Some(dim_code());
+                self.mode = Mode::Body;
+            }
+            Decision::Table => {
+                self.table_row = prefix;
+                self.mode = Mode::TableRow;
+            }
+            Decision::Fence => {
+                self.code_block = true;
+                self.mode = Mode::Skip { nl: false };
+            }
+            Decision::Separator => {
+                let line = paint(self.colored, dim_code(), "  ────────");
+                self.output.push_str(&line);
+                self.mode = Mode::Skip { nl: true };
+            }
+        }
+    }
+
+    fn body_char(&mut self, c: char) {
+        if c == '\n' {
+            self.end_line();
+            return;
+        }
+        if let Some((marker, mut body)) = self.marker.take() {
+            match marker {
+                Marker::Code if c == '`' => {
+                    self.write_span(marker, &body);
+                    return;
+                }
+                _ => {}
+            }
+            body.push(c);
+            if matches!(marker, Marker::Bold) && body.ends_with("**") {
+                body.truncate(body.len() - 2);
+                self.write_span(marker, &body);
+                return;
+            }
+            if body.chars().count() > MARKER_CAP {
+                // The close never came: this was not a marker. Print raw.
+                self.output.push_str(marker.raw_prefix());
+                self.output.push_str(&body);
+                return;
+            }
+            self.marker = Some((marker, body));
+            return;
+        }
+        if self.star {
+            self.star = false;
+            if c == '*' {
+                self.marker = Some((Marker::Bold, String::new()));
+                return;
+            }
+            // A single star: we do not distinguish markdown italics, it is
+            // printed raw.
+            self.output.push('*');
+        }
+        match c {
+            '`' => self.marker = Some((Marker::Code, String::new())),
+            '*' => self.star = true,
+            _ => self.output.push(c),
+        }
+    }
+
+    fn write_span(&mut self, marker: Marker, body: &str) {
+        if !self.colored {
+            self.output.push_str(body);
+            return;
+        }
+        self.output.push_str(marker.style());
+        self.output.push_str(body);
+        self.output.push_str(reset_code());
+        // The line style (heading/quote/code line) was erased by RESET; put it
+        // back.
+        if let Some(s) = self.line_style {
+            self.output.push_str(s);
+        }
+    }
+
+    fn end_line(&mut self) {
+        if self.star {
+            self.star = false;
+            self.output.push('*');
+        }
+        if let Some((marker, body)) = self.marker.take() {
+            self.output.push_str(marker.raw_prefix());
+            self.output.push_str(&body);
+        }
+        if self.line_style.take().is_some() && self.colored {
+            self.output.push_str(reset_code());
+        }
+        self.output.push('\n');
+        self.mode = Mode::LineStart;
+    }
+
+    /// Prints the collected table rows ALIGNED.
+    fn drain_table(&mut self) {
+        if self.table.is_empty() {
+            return;
+        }
+        let raw = std::mem::take(&mut self.table);
+        let text = draw_table(&raw, self.colored);
+        self.output.push_str(&text);
+    }
+}
+
+/// Decides the line's structure. `None` = not clear yet, wait for a character.
+fn prefix_decision(prefix: &str) -> Option<Decision> {
+    let body = prefix.trim_start_matches([' ', '\t']);
+    let space = prefix[..prefix.len() - body.len()].to_string();
+    let first = body.chars().next()?; // whitespace only: wait
+    match first {
+        '`' => {
+            if body.chars().all(|c| c == '`') && body.chars().count() < 3 {
+                return None;
+            }
+            if body.starts_with("```") {
+                return Some(Decision::Fence);
+            }
+            Some(Decision::Plain)
+        }
+        '#' => {
+            let n = body.chars().take_while(|&c| c == '#').count();
+            let Some(next) = body.chars().nth(n) else {
+                // Still stacking `#`: it can be a heading up to 6.
+                return if n <= 6 { None } else { Some(Decision::Plain) };
+            };
+            if next == ' ' && n <= 6 {
+                Some(Decision::Heading)
+            } else {
+                Some(Decision::Plain)
+            }
+        }
+        '-' | '*' | '+' => match body.chars().nth(1) {
+            None => None,
+            Some(' ') => Some(Decision::Bullet(space)),
+            Some(x) if x == first && first != '*' => match body.chars().nth(2) {
+                None => None,
+                Some(y) if y == first => Some(Decision::Separator),
+                _ => Some(Decision::Plain),
+            },
+            _ => Some(Decision::Plain),
+        },
+        '|' => Some(Decision::Table),
+        '>' => match body.chars().nth(1) {
+            None => None,
+            Some(' ') => Some(Decision::Quote),
+            _ => Some(Decision::Plain),
+        },
+        c if c.is_ascii_digit() => {
+            let digits = body.chars().take_while(|c| c.is_ascii_digit()).count();
+            let remaining: Vec<char> = body.chars().skip(digits).collect();
+            match remaining.first() {
+                None => {
+                    if digits <= 3 {
+                        None
+                    } else {
+                        Some(Decision::Plain)
+                    }
+                }
+                Some('.') | Some(')') => match remaining.get(1) {
+                    None => None,
+                    Some(' ') => {
+                        let tag: String = body.chars().take(digits + 2).collect();
+                        Some(Decision::Ordered(space, tag))
+                    }
+                    _ => Some(Decision::Plain),
+                },
+                _ => Some(Decision::Plain),
+            }
+        }
+        _ => Some(Decision::Plain),
+    }
+}
+
+fn paint(colored: bool, code: &str, text: &str) -> String {
+    if colored {
+        format!("{code}{text}{}", reset_code())
+    } else {
+        text.to_string()
+    }
+}
+
+fn paint_open(colored: bool, code: &str) -> String {
+    if colored {
+        code.to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Turns raw `| a | b |` rows into text with aligned columns.
+///
+/// THE PIPE CHARACTERS ARE DROPPED. Drawing a frame with `|` in a terminal
+/// drowns the line in noise; the alignment itself already reads as a column.
+/// The header row is bold, with a thin separator line under it.
+pub fn draw_table(raw: &[String], colored: bool) -> String {
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    for s in raw {
+        let t = s.trim();
+        let t = t.strip_prefix('|').unwrap_or(t);
+        let t = t.strip_suffix('|').unwrap_or(t);
+        let cells: Vec<String> = t.split('|').map(|c| c.trim().to_string()).collect();
+        // A `|---|:--:|` separator row: not data, a format declaration.
+        let separator = cells
+            .iter()
+            .all(|c| !c.is_empty() && c.chars().all(|c| c == '-' || c == ':' || c == ' '));
+        if separator {
+            continue;
+        }
+        rows.push(cells);
+    }
+    if rows.is_empty() {
+        return String::new();
+    }
+    let columns = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    let mut width = vec![0usize; columns];
+    for r in &rows {
+        for (i, c) in r.iter().enumerate() {
+            width[i] = width[i].max(c.chars().count());
+        }
+    }
+    let mut output = String::new();
+    for (i, r) in rows.iter().enumerate() {
+        let mut line = String::from("  ");
+        for (j, c) in r.iter().enumerate() {
+            line.push_str(c);
+            if j + 1 < r.len() {
+                line.push_str(&" ".repeat(width[j] - c.chars().count() + 2));
+            }
+        }
+        let line = line.trim_end().to_string();
+        if i == 0 {
+            output.push_str(&paint(colored, BOLD, &line));
+            output.push('\n');
+            let divider: Vec<String> = width.iter().map(|w| "─".repeat(*w)).collect();
+            output.push_str(&paint(
+                colored,
+                dim_code(),
+                &format!("  {}", divider.join("  ")),
+            ));
+        } else {
+            output.push_str(&line);
+        }
+        output.push('\n');
+    }
+    output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::RESET;
+
+    /// A helper that feeds the stream CHUNK BY CHUNK and joins the result: this
+    /// is how a real stream arrives and every bug shows up exactly at a chunk
+    /// boundary.
+    fn chunked(text: &str, size: usize) -> String {
+        let mut f = Formatter::new(true);
+        let mut output = String::new();
+        let chars: Vec<char> = text.chars().collect();
+        for set in chars.chunks(size) {
+            let p: String = set.iter().collect();
+            output.push_str(&f.feed(&p));
+        }
+        output.push_str(&f.finish());
+        output
+    }
+
+    /// It must give the same result REGARDLESS OF CHUNK SIZE. This test breaking
+    /// is "the screen is broken" measured by machine.
+    ///
+    /// The text is deliberately NOT pure ASCII: multi-byte characters are what
+    /// separate `chars().count()` from `len()`, and dropping them would take the
+    /// column-width and buffer arithmetic out of coverage.
+    #[test]
+    fn chunk_size_does_not_change_the_result() {
+        let text = "# Heading\n\nThis has **bold** and `code` — ölçü.\n\n- first\n- second\n";
+        let single = chunked(text, 1000);
+        for size in [1, 2, 3, 5, 7, 13] {
+            assert_eq!(chunked(text, size), single, "chunk size {size}");
+        }
+    }
+
+    #[test]
+    fn bold_and_code_are_rendered() {
+        let c = chunked("This is **bold** and `code`.\n", 1);
+        assert!(c.contains(&format!("{BOLD}bold{RESET}")), "{c:?}");
+        assert!(c.contains(&format!("{REVERSE}code{RESET}")), "{c:?}");
+        assert!(
+            !c.contains("**"),
+            "the stars must not stay on screen: {c:?}"
+        );
+    }
+
+    /// An UNCLOSED marker DOES NOT BREAK the screen: it is printed raw, no style
+    /// is opened.
+    #[test]
+    fn an_unclosed_marker_is_printed_raw() {
+        let c = chunked("2 **3 = 6 and it goes on\n", 1);
+        assert!(c.contains("**3 = 6 and it goes on"), "{c:?}");
+        assert!(
+            !c.contains(BOLD),
+            "an unopened bold style must not be written: {c:?}"
+        );
+        // Even when the line ends, an unclosed buffer is released.
+        let d = chunked("half `code", 1);
+        assert!(d.contains("half `code"), "{d:?}");
+    }
+
+    #[test]
+    fn heading_and_bullet() {
+        let c = chunked("## Notes\n- one\n  - inner\n1. numbered\n", 1);
+        assert!(c.contains(&format!("{BOLD}Notes")), "{c:?}");
+        assert!(!c.contains("## "), "{c:?}");
+        assert!(c.contains("  • one"), "{c:?}");
+        assert!(c.contains("    • inner"), "{c:?}");
+        assert!(c.contains("  1. numbered"), "{c:?}");
+    }
+
+    /// The non-ASCII cell (`ölçü`) is deliberate: with ASCII-only data a width
+    /// computed from BYTES instead of CHARACTERS would still pass.
+    #[test]
+    fn the_table_is_aligned() {
+        let c = chunked(
+            "| name | ölçü |\n|---|---|\n| a | 1 |\n| longname | 22 |\n\n",
+            1,
+        );
+        assert!(
+            !c.contains('|'),
+            "the pipe characters must not remain: {c:?}"
+        );
+        assert!(c.contains("longname  22"), "{c:?}");
+        // The header's 'name' column must line up with the width of 'longname'.
+        assert!(c.contains("name      ölçü"), "{c:?}");
+    }
+
+    /// WITH NO TTY IT IS TRANSPARENT: the output is the input verbatim, not a
+    /// single ANSI byte.
+    #[test]
+    fn without_color_it_is_transparent() {
+        let text = "# Heading\n**bold** `code`\n| a | b |\n";
+        let mut f = Formatter::new(false);
+        let mut c = f.feed(text);
+        c.push_str(&f.finish());
+        assert_eq!(c, text);
+        assert!(!c.contains('\x1b'));
+    }
+
+    /// Markdown IS NOT PARSED inside a code block — `**` is code there.
+    #[test]
+    fn no_markers_inside_a_code_block() {
+        let c = chunked("```rust\nlet a = **b;\n```\nend\n", 1);
+        assert!(c.contains("let a = **b;"), "{c:?}");
+        assert!(!c.contains("```"), "{c:?}");
+        assert!(c.contains("end"), "{c:?}");
+    }
+
+    /// A one-word answer IS NOT SWALLOWED (even with no newline).
+    #[test]
+    fn a_single_word_is_not_swallowed() {
+        assert_eq!(chunked("Yes.", 1), "Yes.");
+        assert_eq!(chunked("Yes", 1), "Yes");
+    }
+}
