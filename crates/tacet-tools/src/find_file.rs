@@ -757,8 +757,14 @@ mod tests {
         let mut ctx = context(&root, store);
         let outcome = block_on(FindFileTool::new().run(json!({"pattern": "target"}), &mut ctx));
 
+        // The separator is the platform's, not `/`. What the guarantee is about
+        // is that the path stays RELATIVE; asserting a forward slash would make
+        // this a test of Unix rather than of the guarantee, and it failed on
+        // Windows for exactly that reason.
+        let expected = Path::new("sub").join("folder").join("target.md");
+        let expected = expected.to_string_lossy();
         assert!(
-            outcome.to_model.contains("sub/folder/target.md"),
+            outcome.to_model.contains(expected.as_ref()),
             "{}",
             outcome.to_model
         );
