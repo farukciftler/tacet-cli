@@ -88,7 +88,9 @@ const ADDON_CLOSED: &str = "the web search addon is CLOSED: `tacet addon open we
 /// distinction — offering to "open" something that is not installed would be
 /// the exact wrong-sentence bug the constant above documents.
 pub fn web_installed() -> bool {
-    tacet_web::addon::read().map(|r| r.find(WEB_SEARCH).is_some()).unwrap_or(false)
+    tacet_web::addon::read()
+        .map(|r| r.find(WEB_SEARCH).is_some())
+        .unwrap_or(false)
 }
 
 /// The right sentence to print while the gate is closed: is it not installed, or
@@ -114,7 +116,13 @@ pub fn list(json: bool) -> ExitCode {
         // A BROKEN REGISTRY IS NOT SILENTLY SWALLOWED: saying "no addons at all"
         // would push the user to reinstall what they had installed.
         Err(e) => {
-            eprintln!("{}", color.paint(YELLOW, &format!("the addon registry could not be read: {e}")));
+            eprintln!(
+                "{}",
+                color.paint(
+                    YELLOW,
+                    &format!("the addon registry could not be read: {e}")
+                )
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -144,11 +152,17 @@ pub fn list(json: bool) -> ExitCode {
     match &path {
         Some(p) => {
             let note = if p.is_file() { "" } else { " (missing)" };
-            println!("{}", color.paint(DIM, &format!("registry: {}{note}", p.display())));
+            println!(
+                "{}",
+                color.paint(DIM, &format!("registry: {}{note}", p.display()))
+            );
         }
         None => println!(
             "{}",
-            color.paint(DIM, "registry: the config directory could not be resolved (TACET_HOME can be set)")
+            color.paint(
+                DIM,
+                "registry: the config directory could not be resolved (TACET_HOME can be set)"
+            )
         ),
     }
     println!();
@@ -161,7 +175,11 @@ pub fn list(json: bool) -> ExitCode {
 
     for a in record.all() {
         let state = if a.open { "open" } else { "closed" };
-        println!("{}  {}", color.paint(BOLD, &a.name), color.paint(DIM, state));
+        println!(
+            "{}  {}",
+            color.paint(BOLD, &a.name),
+            color.paint(DIM, state)
+        );
         println!("  {} {}", color.paint(DIM, "kind:"), a.kind);
         for (key, value) in &a.settings {
             println!("  {} {value}", color.paint(DIM, &format!("{key}:")));
@@ -193,15 +211,24 @@ pub fn list(json: bool) -> ExitCode {
 pub fn install(name: &str, address: Option<String>, local: bool, no_approval: bool) -> ExitCode {
     let color = Color::setup();
     if name != WEB_SEARCH {
-        eprintln!("{}", color.paint(YELLOW, &format!("unknown addon: '{name}'")));
-        eprintln!("{}", color.paint(DIM, &format!("  installable: {WEB_SEARCH}")));
+        eprintln!(
+            "{}",
+            color.paint(YELLOW, &format!("unknown addon: '{name}'"))
+        );
+        eprintln!(
+            "{}",
+            color.paint(DIM, &format!("  installable: {WEB_SEARCH}"))
+        );
         return ExitCode::FAILURE;
     }
 
     // IF THE FLAGS CLASH WE STOP: silently picking one of the two could have
     // installed a local container instead of the user's server.
     if local && address.is_some() {
-        eprintln!("{}", color.paint(YELLOW, "--local and --address cannot be given together"));
+        eprintln!(
+            "{}",
+            color.paint(YELLOW, "--local and --address cannot be given together")
+        );
         return ExitCode::FAILURE;
     }
 
@@ -234,7 +261,10 @@ enum InstallPath {
 /// server address".
 fn ask_path(color: &Color) -> Option<InstallPath> {
     println!("{}", color.paint(BOLD, "web search addon"));
-    println!("{}", color.paint(DIM, "search runs through your own SearXNG server."));
+    println!(
+        "{}",
+        color.paint(DIM, "search runs through your own SearXNG server.")
+    );
     println!();
     println!("  1) set up a local SearXNG (docker required)");
     println!("  2) enter my own server address");
@@ -250,7 +280,10 @@ fn ask_path(color: &Color) -> Option<InstallPath> {
             Some(InstallPath::Address(a.trim().to_string()))
         }
         other => {
-            eprintln!("{}", color.paint(YELLOW, &format!("invalid choice: '{other}'")));
+            eprintln!(
+                "{}",
+                color.paint(YELLOW, &format!("invalid choice: '{other}'"))
+            );
             None
         }
     }
@@ -277,7 +310,10 @@ fn read_line() -> Option<String> {
 fn install_with_address(color: &Color, address: &str) -> ExitCode {
     let address = address.trim().trim_end_matches('/');
     if let Err(e) = tacet_web::address_is_valid(address) {
-        eprintln!("{}", color.paint(YELLOW, &format!("the address was not accepted: {e}")));
+        eprintln!(
+            "{}",
+            color.paint(YELLOW, &format!("the address was not accepted: {e}"))
+        );
         eprintln!(
             "{}",
             color.paint(
@@ -287,7 +323,10 @@ fn install_with_address(color: &Color, address: &str) -> ExitCode {
         );
         eprintln!(
             "{}",
-            color.paint(DIM, "  a query going unencrypted to a remote server is read at every hop in between.")
+            color.paint(
+                DIM,
+                "  a query going unencrypted to a remote server is read at every hop in between."
+            )
         );
         return ExitCode::FAILURE;
     }
@@ -295,11 +334,23 @@ fn install_with_address(color: &Color, address: &str) -> ExitCode {
     println!("{}", color.paint(DIM, &format!("trying: {address}")));
     match verify(address) {
         Ok(n) => {
-            println!("{}", color.paint(BOLD, &format!("✓ the server answered ({n} results)")));
+            println!(
+                "{}",
+                color.paint(BOLD, &format!("✓ the server answered ({n} results)"))
+            );
         }
         Err(e) => {
-            eprintln!("{}", color.paint(YELLOW, &format!("✗ could not be verified: {e}")));
-            eprintln!("{}", color.paint(DIM, "  the addon WAS NOT INSTALLED — a non-working address is not recorded."));
+            eprintln!(
+                "{}",
+                color.paint(YELLOW, &format!("✗ could not be verified: {e}"))
+            );
+            eprintln!(
+                "{}",
+                color.paint(
+                    DIM,
+                    "  the addon WAS NOT INSTALLED — a non-working address is not recorded."
+                )
+            );
             return ExitCode::FAILURE;
         }
     }
@@ -317,15 +368,27 @@ fn write_registry(color: &Color, address: &str) -> ExitCode {
     let mut record = match tacet_web::addon::read() {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("{}", color.paint(YELLOW, &format!("the addon registry could not be read: {e}")));
+            eprintln!(
+                "{}",
+                color.paint(
+                    YELLOW,
+                    &format!("the addon registry could not be read: {e}")
+                )
+            );
             return ExitCode::FAILURE;
         }
     };
     record.add(Addon::new(WEB_SEARCH, WEB_SEARCH).with_setting(ADDRESS_KEY, address));
     match tacet_web::addon::write(&record) {
         Ok(path) => {
-            println!("{}", color.paint(DIM, &format!("registry: {}", path.display())));
-            println!("{}", color.paint(BOLD, "the web search addon is installed and open."));
+            println!(
+                "{}",
+                color.paint(DIM, &format!("registry: {}", path.display()))
+            );
+            println!(
+                "{}",
+                color.paint(BOLD, "the web search addon is installed and open.")
+            );
             println!(
                 "{}",
                 color.paint(DIM, "the web_search/web_fetch tools are in the catalog now; they can be used in chat.")
@@ -340,7 +403,10 @@ fn write_registry(color: &Color, address: &str) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("{}", color.paint(YELLOW, &format!("the registry could not be written: {e}")));
+            eprintln!(
+                "{}",
+                color.paint(YELLOW, &format!("the registry could not be written: {e}"))
+            );
             ExitCode::FAILURE
         }
     }
@@ -354,30 +420,69 @@ fn write_registry(color: &Color, address: &str) -> ExitCode {
 /// not be found and what the alternative is are written out one by one.
 fn install_local(color: &Color, no_approval: bool) -> ExitCode {
     let Some(version) = docker_version() else {
-        eprintln!("{}", color.paint(YELLOW, "docker not found — a local SearXNG cannot be set up."));
-        eprintln!("{}", color.paint(DIM, "  `docker --version` did not run (not on PATH, or the daemon is down)."));
-        eprintln!("{}", color.paint(DIM, "  options:"));
-        eprintln!("{}", color.paint(DIM, "   • install Docker Desktop / docker engine and repeat this command"));
         eprintln!(
             "{}",
-            color.paint(DIM, "   • use your own server: tacet addon install web-search --address https://...")
+            color.paint(
+                YELLOW,
+                "docker not found — a local SearXNG cannot be set up."
+            )
+        );
+        eprintln!(
+            "{}",
+            color.paint(
+                DIM,
+                "  `docker --version` did not run (not on PATH, or the daemon is down)."
+            )
+        );
+        eprintln!("{}", color.paint(DIM, "  options:"));
+        eprintln!(
+            "{}",
+            color.paint(
+                DIM,
+                "   • install Docker Desktop / docker engine and repeat this command"
+            )
+        );
+        eprintln!(
+            "{}",
+            color.paint(
+                DIM,
+                "   • use your own server: tacet addon install web-search --address https://..."
+            )
         );
         return ExitCode::FAILURE;
     };
     println!("{}", color.paint(DIM, &format!("docker: {version}")));
 
     let Some(compose) = compose_command() else {
-        eprintln!("{}", color.paint(YELLOW, "docker is there but compose is not."));
-        eprintln!("{}", color.paint(DIM, "  neither `docker compose version` nor `docker-compose --version` ran."));
         eprintln!(
             "{}",
-            color.paint(DIM, "   • use your own server: tacet addon install web-search --address https://...")
+            color.paint(YELLOW, "docker is there but compose is not.")
+        );
+        eprintln!(
+            "{}",
+            color.paint(
+                DIM,
+                "  neither `docker compose version` nor `docker-compose --version` ran."
+            )
+        );
+        eprintln!(
+            "{}",
+            color.paint(
+                DIM,
+                "   • use your own server: tacet addon install web-search --address https://..."
+            )
         );
         return ExitCode::FAILURE;
     };
 
     let Some(dir) = searxng_dir() else {
-        eprintln!("{}", color.paint(YELLOW, "the config directory could not be resolved (TACET_HOME can be set)"));
+        eprintln!(
+            "{}",
+            color.paint(
+                YELLOW,
+                "the config directory could not be resolved (TACET_HOME can be set)"
+            )
+        );
         return ExitCode::FAILURE;
     };
 
@@ -392,7 +497,10 @@ fn install_local(color: &Color, no_approval: bool) -> ExitCode {
     println!("  address   : {LOCAL_ADDRESS}  (binds to 127.0.0.1 only)");
     println!(
         "{}",
-        color.paint(DIM, "  the image is a few hundred MB and is pulled by docker.")
+        color.paint(
+            DIM,
+            "  the image is a few hundred MB and is pulled by docker."
+        )
     );
     if !take_approval(color, no_approval) {
         println!("{}", color.paint(DIM, "cancelled — nothing was written."));
@@ -400,18 +508,37 @@ fn install_local(color: &Color, no_approval: bool) -> ExitCode {
     }
 
     if let Err(e) = write_config(&dir) {
-        eprintln!("{}", color.paint(YELLOW, &format!("the config could not be written: {e}")));
+        eprintln!(
+            "{}",
+            color.paint(YELLOW, &format!("the config could not be written: {e}"))
+        );
         return ExitCode::FAILURE;
     }
-    println!("{}", color.paint(DIM, &format!("written: {}", dir.display())));
+    println!(
+        "{}",
+        color.paint(DIM, &format!("written: {}", dir.display()))
+    );
 
     match compose_up(&compose, &dir) {
-        Ok(()) => println!("{}", color.paint(DIM, "the container was started; waiting for it to come up…")),
+        Ok(()) => println!(
+            "{}",
+            color.paint(DIM, "the container was started; waiting for it to come up…")
+        ),
         Err(e) => {
-            eprintln!("{}", color.paint(YELLOW, &format!("docker compose failed: {e}")));
             eprintln!(
                 "{}",
-                color.paint(DIM, &format!("  try by hand: cd {} && {} up -d", dir.display(), compose.join(" ")))
+                color.paint(YELLOW, &format!("docker compose failed: {e}"))
+            );
+            eprintln!(
+                "{}",
+                color.paint(
+                    DIM,
+                    &format!(
+                        "  try by hand: cd {} && {} up -d",
+                        dir.display(),
+                        compose.join(" ")
+                    )
+                )
             );
             return ExitCode::FAILURE;
         }
@@ -420,13 +547,28 @@ fn install_local(color: &Color, no_approval: bool) -> ExitCode {
     // THE HEALTH QUERY goes through tacet-web; this file opens no socket.
     match wait_until_ready(color) {
         Some(n) => {
-            println!("{}", color.paint(BOLD, &format!("✓ SearXNG answered ({n} results)")));
+            println!(
+                "{}",
+                color.paint(BOLD, &format!("✓ SearXNG answered ({n} results)"))
+            );
             write_registry(color, LOCAL_ADDRESS)
         }
         None => {
-            eprintln!("{}", color.paint(YELLOW, "✗ SearXNG did not answer within the expected time."));
-            eprintln!("{}", color.paint(DIM, &format!("  logs: {} logs", compose.join(" "))));
-            eprintln!("{}", color.paint(DIM, "  the addon WAS NOT INSTALLED — a non-working address is not recorded."));
+            eprintln!(
+                "{}",
+                color.paint(YELLOW, "✗ SearXNG did not answer within the expected time.")
+            );
+            eprintln!(
+                "{}",
+                color.paint(DIM, &format!("  logs: {} logs", compose.join(" ")))
+            );
+            eprintln!(
+                "{}",
+                color.paint(
+                    DIM,
+                    "  the addon WAS NOT INSTALLED — a non-working address is not recorded."
+                )
+            );
             ExitCode::FAILURE
         }
     }
@@ -434,7 +576,10 @@ fn install_local(color: &Color, no_approval: bool) -> ExitCode {
 
 fn take_approval(color: &Color, no_approval: bool) -> bool {
     if no_approval {
-        println!("{}", color.paint(DIM, "  (--no-approval: no question was asked)"));
+        println!(
+            "{}",
+            color.paint(DIM, "  (--no-approval: no question was asked)")
+        );
         return true;
     }
     print!("  Continue? [y/N] ");
@@ -499,7 +644,9 @@ fn compose_command() -> Option<Vec<String>> {
 /// text (port taken, daemon down, image could not be pulled) is more informative
 /// than any summary we would rewrite.
 fn compose_up(compose: &[String], dir: &Path) -> Result<(), String> {
-    let (binary, prefixes) = compose.split_first().ok_or("the compose command is empty")?;
+    let (binary, prefixes) = compose
+        .split_first()
+        .ok_or("the compose command is empty")?;
     let output = Command::new(binary)
         .args(prefixes)
         .args(["up", "-d"])
@@ -511,7 +658,11 @@ fn compose_up(compose: &[String], dir: &Path) -> Result<(), String> {
         return Ok(());
     }
     let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    Err(if error.is_empty() { format!("exit code {}", output.status) } else { error })
+    Err(if error.is_empty() {
+        format!("exit code {}", output.status)
+    } else {
+        error
+    })
 }
 
 /// Waits for the container to come up; returns the number of results that came
@@ -531,7 +682,13 @@ fn wait_until_ready(color: &Color) -> Option<usize> {
             return Some(n);
         }
         if i == 1 {
-            println!("{}", color.paint(DIM, "  (the first start can take minutes, including the image pull)"));
+            println!(
+                "{}",
+                color.paint(
+                    DIM,
+                    "  (the first start can take minutes, including the image pull)"
+                )
+            );
         }
         std::thread::sleep(INTERVAL);
     }
@@ -624,7 +781,11 @@ fn secret_key() -> String {
         .unwrap_or(0);
     let pid = u128::from(std::process::id());
     let stack = &now as *const u128 as usize as u128;
-    format!("{:032x}{:032x}", now ^ (pid << 64), stack.wrapping_mul(0x9E37_79B9_7F4A_7C15))
+    format!(
+        "{:032x}{:032x}",
+        now ^ (pid << 64),
+        stack.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+    )
 }
 
 /// EXACTLY 32 bytes from the operating system's pool. `None` = the source is
@@ -646,12 +807,21 @@ pub fn remove(name: &str) -> ExitCode {
     let mut record = match tacet_web::addon::read() {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("{}", color.paint(YELLOW, &format!("the addon registry could not be read: {e}")));
+            eprintln!(
+                "{}",
+                color.paint(
+                    YELLOW,
+                    &format!("the addon registry could not be read: {e}")
+                )
+            );
             return ExitCode::FAILURE;
         }
     };
     if !record.delete(name) {
-        eprintln!("{}", color.paint(YELLOW, &format!("not installed: '{name}'")));
+        eprintln!(
+            "{}",
+            color.paint(YELLOW, &format!("not installed: '{name}'"))
+        );
         return ExitCode::FAILURE;
     }
     match tacet_web::addon::write(&record) {
@@ -660,7 +830,10 @@ pub fn remove(name: &str) -> ExitCode {
             if name == WEB_SEARCH {
                 println!(
                     "{}",
-                    color.paint(DIM, "the web_search/web_fetch tools dropped out of the catalog.")
+                    color.paint(
+                        DIM,
+                        "the web_search/web_fetch tools dropped out of the catalog."
+                    )
                 );
                 // THE CONTAINER IS NOT STOPPED BY ITSELF. It may have been started
                 // during install, but stopping it (and deleting its data) is the
@@ -692,7 +865,10 @@ pub fn remove(name: &str) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("{}", color.paint(YELLOW, &format!("the registry could not be written: {e}")));
+            eprintln!(
+                "{}",
+                color.paint(YELLOW, &format!("the registry could not be written: {e}"))
+            );
             ExitCode::FAILURE
         }
     }
@@ -710,24 +886,39 @@ pub fn set_state(name: &str, open: bool) -> ExitCode {
     let mut record = match tacet_web::addon::read() {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("{}", color.paint(YELLOW, &format!("the addon registry could not be read: {e}")));
+            eprintln!(
+                "{}",
+                color.paint(
+                    YELLOW,
+                    &format!("the addon registry could not be read: {e}")
+                )
+            );
             return ExitCode::FAILURE;
         }
     };
     if record.set_state(name, open).is_none() {
-        eprintln!("{}", color.paint(YELLOW, &format!("not installed: '{name}'")));
+        eprintln!(
+            "{}",
+            color.paint(YELLOW, &format!("not installed: '{name}'"))
+        );
         return ExitCode::FAILURE;
     }
     match tacet_web::addon::write(&record) {
         Ok(_) => {
             println!(
                 "{}",
-                color.paint(BOLD, &format!("'{name}' was {}.", if open { "opened" } else { "closed" }))
+                color.paint(
+                    BOLD,
+                    &format!("'{name}' was {}.", if open { "opened" } else { "closed" })
+                )
             );
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("{}", color.paint(YELLOW, &format!("the registry could not be written: {e}")));
+            eprintln!(
+                "{}",
+                color.paint(YELLOW, &format!("the registry could not be written: {e}"))
+            );
             ExitCode::FAILURE
         }
     }
@@ -740,15 +931,27 @@ pub fn try_addon(name: &str, json: bool) -> ExitCode {
     let record = match tacet_web::addon::read() {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("{}", color.paint(YELLOW, &format!("the addon registry could not be read: {e}")));
+            eprintln!(
+                "{}",
+                color.paint(
+                    YELLOW,
+                    &format!("the addon registry could not be read: {e}")
+                )
+            );
             return ExitCode::FAILURE;
         }
     };
     let Some(a) = record.find(name) else {
         if json {
-            println!("{}", serde_json::json!({ "name": name, "installed": false, "working": false }));
+            println!(
+                "{}",
+                serde_json::json!({ "name": name, "installed": false, "working": false })
+            );
         } else {
-            eprintln!("{}", color.paint(YELLOW, &format!("not installed: '{name}'")));
+            eprintln!(
+                "{}",
+                color.paint(YELLOW, &format!("not installed: '{name}'"))
+            );
             if name == WEB_SEARCH {
                 eprintln!("{}", color.paint(DIM, &format!("  {ADDON_MISSING}")));
             }
@@ -756,7 +959,13 @@ pub fn try_addon(name: &str, json: bool) -> ExitCode {
         return ExitCode::FAILURE;
     };
     if a.kind != WEB_SEARCH {
-        eprintln!("{}", color.paint(YELLOW, &format!("'{}' cannot be tried: kind {}", a.name, a.kind)));
+        eprintln!(
+            "{}",
+            color.paint(
+                YELLOW,
+                &format!("'{}' cannot be tried: kind {}", a.name, a.kind)
+            )
+        );
         return ExitCode::FAILURE;
     }
     // THE ADDRESS IS RESOLVED THE SAME WAY AS IN PRODUCTION:
@@ -770,7 +979,10 @@ pub fn try_addon(name: &str, json: bool) -> ExitCode {
     };
 
     if !json {
-        println!("{}", color.paint(DIM, &format!("sending a query: {address}")));
+        println!(
+            "{}",
+            color.paint(DIM, &format!("sending a query: {address}"))
+        );
     }
     match verify(&address) {
         Ok(n) => {
@@ -826,8 +1038,7 @@ pub fn try_addon(name: &str, json: bool) -> ExitCode {
 /// "address" or "page" also appear in document requests, and advertising the addon
 /// every time they do is noise the user learns to ignore.
 pub fn is_web_request(message: &str) -> bool {
-    tacet_tools::router::score_intent(message).dominant()
-        == tacet_tools::router::IntentProfile::Web
+    tacet_tools::router::score_intent(message).dominant() == tacet_tools::router::IntentProfile::Web
 }
 
 #[cfg(test)]
@@ -849,8 +1060,14 @@ mod tests {
     fn compose_binds_to_loopback_only() {
         let t = compose_text();
         assert!(t.contains("\"127.0.0.1:8888:8080\""), "{t}");
-        assert!(!t.contains("\"8888:8080\""), "the port is open to all interfaces: {t}");
-        assert!(t.contains(IMAGE), "the image name is not in the compose file: {t}");
+        assert!(
+            !t.contains("\"8888:8080\""),
+            "the port is open to all interfaces: {t}"
+        );
+        assert!(
+            t.contains(IMAGE),
+            "the image name is not in the compose file: {t}"
+        );
     }
 
     /// The port written in compose and the address written to the registry must be
@@ -858,7 +1075,10 @@ mod tests {
     /// the install would say "not working".
     #[test]
     fn the_compose_port_matches_the_registry_address() {
-        assert!(LOCAL_ADDRESS.ends_with(&LOCAL_PORT.to_string()), "{LOCAL_ADDRESS}");
+        assert!(
+            LOCAL_ADDRESS.ends_with(&LOCAL_PORT.to_string()),
+            "{LOCAL_ADDRESS}"
+        );
         assert!(compose_text().contains(&format!("127.0.0.1:{LOCAL_PORT}:")));
     }
 
@@ -889,9 +1109,17 @@ mod tests {
         assert_ne!(ADDON_MISSING, ADDON_CLOSED);
         // Whatever state the registry is in on this machine, the chosen sentence
         // must match that state.
-        let installed =
-            tacet_web::addon::read().map(|r| r.find(WEB_SEARCH).is_some()).unwrap_or(false);
-        assert_eq!(closed_gate_message(), if installed { ADDON_CLOSED } else { ADDON_MISSING });
+        let installed = tacet_web::addon::read()
+            .map(|r| r.find(WEB_SEARCH).is_some())
+            .unwrap_or(false);
+        assert_eq!(
+            closed_gate_message(),
+            if installed {
+                ADDON_CLOSED
+            } else {
+                ADDON_MISSING
+            }
+        );
     }
 
     /// THE PRODUCTION HINT trigger: it wakes on a web question, not on a greeting.
@@ -907,7 +1135,9 @@ mod tests {
     fn a_web_request_is_sensed() {
         assert!(is_web_request("what is the current dollar price"));
         assert!(is_web_request("what is the weather like in Istanbul?"));
-        assert!(is_web_request("can you summarize this address https://example.test/post"));
+        assert!(is_web_request(
+            "can you summarize this address https://example.test/post"
+        ));
         assert!(!is_web_request("hello"));
         assert!(!is_web_request("multiply 17 by 45"));
         assert!(!is_web_request("create the budget table as xlsx"));

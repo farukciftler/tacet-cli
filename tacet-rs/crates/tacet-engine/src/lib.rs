@@ -32,15 +32,15 @@ pub mod token;
 #[cfg(feature = "candle")]
 pub mod candle_engine;
 
-pub use constraint::{ConstraintSession, Constrainer, FreeConstraint};
+pub use constraint::{Constrainer, ConstraintSession, FreeConstraint};
 pub use error::{EngineError, EngineResult};
 pub use executor::wait;
+pub use fake::{FakeEngine, FakeStep};
 pub use prompt::{GUIDE_LIMIT, Prompt, Role, Turn};
 pub use provider::{
     EngineProvider, Generation, GenerationFuture, SamplingSetting, StopReason, boxed_generation,
 };
 pub use session::{MAX_TURNS, SYSTEM_INSTRUCTIONS};
-pub use fake::{FakeEngine, FakeStep};
 pub use thinking::extract as extract_thinking;
 pub use token::{CONTEXT_BUDGET, GENERATION_SHARE, TokenCounter, TruncationReport};
 
@@ -50,10 +50,10 @@ pub use candle_engine::{Architecture, CandleEngine, ModelSetting};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use tacet_core::{
         ArgSchema, Field, Tool, ToolCatalog, ToolContext, ToolFuture, ToolOutcome, boxed,
     };
-    use std::sync::Arc;
 
     // --- Test helpers ---
 
@@ -99,7 +99,10 @@ mod tests {
 
     impl Constrainer for ToyConstraint {
         fn session(&self) -> Box<dyn ConstraintSession> {
-            Box::new(ToySession { forbidden: self.forbidden, counter: 0 })
+            Box::new(ToySession {
+                forbidden: self.forbidden,
+                counter: 0,
+            })
         }
         fn name(&self) -> &str {
             "toy"
@@ -132,7 +135,10 @@ mod tests {
             .with_history([Turn::user("hello"), Turn::assistant("hi")]);
 
         let m = prompt.text();
-        let at = |needle: &str| m.find(needle).unwrap_or_else(|| panic!("missing: {needle}"));
+        let at = |needle: &str| {
+            m.find(needle)
+                .unwrap_or_else(|| panic!("missing: {needle}"))
+        };
 
         assert!(at("<system>") < at("<tools>"));
         assert!(at("<tools>") < at("<history>"));
@@ -242,7 +248,13 @@ mod tests {
         // push the model outside the training distribution.
         let roles: Vec<&str> = m
             .match_indices("<start_of_turn>")
-            .map(|(i, c)| if m[i + c.len()..].starts_with("user") { "user" } else { "model" })
+            .map(|(i, c)| {
+                if m[i + c.len()..].starts_with("user") {
+                    "user"
+                } else {
+                    "model"
+                }
+            })
             .collect();
         assert!(
             roles.windows(2).all(|p| p[0] != p[1]),
@@ -258,17 +270,22 @@ mod tests {
     fn gemma_keeps_the_guide_in_front_of_the_question() {
         use crate::prompt::Template;
         for with_history in [false, true] {
-            let mut prompt =
-                Prompt::new("s", "the real question here").with_guide("GUIDE TEXT");
+            let mut prompt = Prompt::new("s", "the real question here").with_guide("GUIDE TEXT");
             if with_history {
                 prompt = prompt.with_history([Turn::user("earlier")]);
             }
             let m = prompt.text_with_template(Template::Gemma);
             let g = m.find("GUIDE TEXT").expect("no guide");
             let q = m.find("the real question here").expect("no question");
-            assert!(g < q, "guide is not in front of the question (with_history={with_history}):\n{m}");
+            assert!(
+                g < q,
+                "guide is not in front of the question (with_history={with_history}):\n{m}"
+            );
             // Both are inside THE SAME turn: no role boundary may come between.
-            assert!(!m[g..q].contains("<start_of_turn>"), "a role boundary got in between:\n{m}");
+            assert!(
+                !m[g..q].contains("<start_of_turn>"),
+                "a role boundary got in between:\n{m}"
+            );
         }
     }
 
@@ -288,7 +305,10 @@ mod tests {
         use crate::prompt::Template;
         // The template is a property OF THE ENGINE; since a mismatch produces
         // silent breakage, keeping the default plain is deliberate.
-        assert_eq!(FakeEngine::script(Vec::<FakeStep>::new()).template(), Template::Plain);
+        assert_eq!(
+            FakeEngine::script(Vec::<FakeStep>::new()).template(),
+            Template::Plain
+        );
     }
 
     #[test]
@@ -320,8 +340,14 @@ mod tests {
         // eventually drift — plus in a 4096 window the full schema alone was
         // eating a large part of the budget.
         assert!(m.contains("calendar_read(day: text)"), "\n{m}");
-        assert!(!m.contains("\"required\""), "the full JSON Schema leaked:\n{m}");
-        assert!(!m.contains("additionalProperties"), "the full JSON Schema leaked:\n{m}");
+        assert!(
+            !m.contains("\"required\""),
+            "the full JSON Schema leaked:\n{m}"
+        );
+        assert!(
+            !m.contains("additionalProperties"),
+            "the full JSON Schema leaked:\n{m}"
+        );
     }
 
     /// The required/optional distinction MUST BE VISIBLE in the signature: the
@@ -333,7 +359,10 @@ mod tests {
             Field::new("expression", ArgSchema::text()).required(),
             Field::new("digits", ArgSchema::integer()),
         ]);
-        assert_eq!(schema.short_signature(), "expression: text, digits?: integer");
+        assert_eq!(
+            schema.short_signature(),
+            "expression: text, digits?: integer"
+        );
     }
 
     #[test]
@@ -377,7 +406,10 @@ mod tests {
         let mut prompt = full_prompt(40, 200);
         let report = counter.truncate(&mut prompt);
 
-        assert!(report.dropped_turns > 0, "old turns should have been dropped");
+        assert!(
+            report.dropped_turns > 0,
+            "old turns should have been dropped"
+        );
         // The cheap thing was sacrificed first: the guide and the question were
         // never reached.
         assert!(!report.guide_dropped);
@@ -402,7 +434,10 @@ mod tests {
         // to generation).
         let short = Prompt::new("instructions", "hello");
         let short_cap = counter.generation_cap(&short);
-        assert!(short_cap > 1024, "the empty window was not given to generation: {short_cap}");
+        assert!(
+            short_cap > 1024,
+            "the empty window was not given to generation: {short_cap}"
+        );
         // And it must NOT EXCEED the window.
         assert!(short_cap + counter.prompt_estimate(&short) <= 4096);
 
@@ -410,7 +445,10 @@ mod tests {
         let mut full = full_prompt(40, 200);
         counter.truncate(&mut full);
         let full_cap = counter.generation_cap(&full);
-        assert!(full_cap >= 1024, "the minimum share was not preserved: {full_cap}");
+        assert!(
+            full_cap >= 1024,
+            "the minimum share was not preserved: {full_cap}"
+        );
         assert!(full_cap + counter.prompt_estimate(&full) <= 4096 + 1024);
         // The full prompt's cap must be smaller than the short prompt's cap.
         assert!(full_cap < short_cap);
@@ -594,7 +632,10 @@ mod tests {
     #[test]
     fn output_is_marked_half_finished_when_the_token_cap_is_hit() {
         let engine = FakeEngine::script(["a long output"]);
-        let setting = SamplingSetting { max_tokens: 4, ..Default::default() };
+        let setting = SamplingSetting {
+            max_tokens: 4,
+            ..Default::default()
+        };
         let g = wait(engine.generate(&Prompt::new("S", "q"), None, setting)).unwrap();
 
         assert_eq!(g.text, "a lo");
@@ -646,7 +687,10 @@ mod architecture_tests {
     fn known_architectures_go_to_the_right_module_and_template() {
         assert_eq!(Architecture::resolve("qwen2").unwrap(), Architecture::Qwen2);
         assert_eq!(Architecture::resolve("qwen3").unwrap(), Architecture::Qwen3);
-        assert_eq!(Architecture::resolve("gemma3").unwrap(), Architecture::Gemma3);
+        assert_eq!(
+            Architecture::resolve("gemma3").unwrap(),
+            Architecture::Gemma3
+        );
 
         // The template is TIED to the architecture: the Qwen family uses ChatML,
         // Gemma its own format. A mismatch is silent breakage (the model does not
@@ -665,7 +709,10 @@ mod architecture_tests {
             let result = Architecture::resolve(name);
             assert!(result.is_err(), "'{name}' was accepted silently");
             let message = result.unwrap_err().to_string();
-            assert!(message.contains("unsupported GGUF architecture"), "{message}");
+            assert!(
+                message.contains("unsupported GGUF architecture"),
+                "{message}"
+            );
             assert!(message.contains("qwen2, qwen3, gemma3"), "{message}");
         }
     }

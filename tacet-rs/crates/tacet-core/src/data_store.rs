@@ -90,12 +90,21 @@ impl DataStore for InMemoryDataStore {
 
     fn take(&self, source_ref: &SourceRef) -> Option<Record> {
         let inner = self.inner.lock().expect("data store lock");
-        inner.records.iter().find(|r| &r.source_ref == source_ref).cloned()
+        inner
+            .records
+            .iter()
+            .find(|r| &r.source_ref == source_ref)
+            .cloned()
     }
 
     fn of_kind(&self, kind: &str) -> Vec<Record> {
         let inner = self.inner.lock().expect("data store lock");
-        inner.records.iter().filter(|r| r.kind == kind).cloned().collect()
+        inner
+            .records
+            .iter()
+            .filter(|r| r.kind == kind)
+            .cloned()
+            .collect()
     }
 
     fn clear(&self) {

@@ -366,7 +366,11 @@ impl MemoryStore {
         if lines.is_empty() {
             return None;
         }
-        Some(format!("<memory>\n{}</memory>\n{}", lines.concat(), CLOSING))
+        Some(format!(
+            "<memory>\n{}</memory>\n{}",
+            lines.concat(),
+            CLOSING
+        ))
     }
 
     // -----------------------------------------------------------------------
@@ -499,13 +503,20 @@ mod tests {
     #[test]
     fn the_filters_drop_short_long_and_keyless_notes() {
         let mut s = MemoryStore::in_memory();
-        assert_eq!(s.add("short", MemoryKind::Fact, &keys(&["a"])), Err(MemoryError::TooShort));
+        assert_eq!(
+            s.add("short", MemoryKind::Fact, &keys(&["a"])),
+            Err(MemoryError::TooShort)
+        );
         assert_eq!(
             s.add(&"a".repeat(TEXT_LIMIT + 1), MemoryKind::Fact, &keys(&["a"])),
             Err(MemoryError::TooLong)
         );
         assert_eq!(
-            s.add("The user is a vegetarian.", MemoryKind::Fact, &keys(&["  ", ""])),
+            s.add(
+                "The user is a vegetarian.",
+                MemoryKind::Fact,
+                &keys(&["  ", ""])
+            ),
             Err(MemoryError::NoKeys)
         );
         assert_eq!(s.count(), 0, "none of them may be stored");
@@ -519,7 +530,11 @@ mod tests {
             MemoryKind::Preference,
             &keys(&["food"]),
         );
-        assert_eq!(outcome, Err(MemoryError::Duplicate), "same after lowercase + trim");
+        assert_eq!(
+            outcome,
+            Err(MemoryError::Duplicate),
+            "same after lowercase + trim"
+        );
         assert_eq!(s.count(), 2);
     }
 
@@ -527,12 +542,20 @@ mod tests {
     fn at_the_cap_no_new_note_is_taken_and_no_old_one_is_dropped() {
         let mut s = MemoryStore::in_memory();
         for i in 0..TOTAL_CAP {
-            s.add(&format!("The user stated fact number {i}."), MemoryKind::Fact, &keys(&["fact"]))
-                .unwrap();
+            s.add(
+                &format!("The user stated fact number {i}."),
+                MemoryKind::Fact,
+                &keys(&["fact"]),
+            )
+            .unwrap();
         }
         assert!(s.is_full());
         assert_eq!(
-            s.add("The user said something else.", MemoryKind::Fact, &keys(&["else"])),
+            s.add(
+                "The user said something else.",
+                MemoryKind::Fact,
+                &keys(&["else"])
+            ),
             Err(MemoryError::Full)
         );
         // NO silent eviction: the old notes are still in place.
@@ -589,7 +612,9 @@ mod tests {
             let text = format!("{i} {}", "u".repeat(TEXT_LIMIT - 2));
             s.add(&text, MemoryKind::Fact, &keys(&["food"])).unwrap();
         }
-        let text = s.injection_text("what shall the food be").expect("there is a match");
+        let text = s
+            .injection_text("what shall the food be")
+            .expect("there is a match");
         assert!(
             text.chars().count() <= INJECTION_LIMIT,
             "budget exceeded: {}",
@@ -621,14 +646,22 @@ mod tests {
         // It can also be deleted through a key.
         assert_eq!(s.forget("school"), 1);
         assert_eq!(s.count(), 0);
-        assert_eq!(s.forget(""), 0, "an empty phrase must not delete everything");
+        assert_eq!(
+            s.forget(""),
+            0,
+            "an empty phrase must not delete everything"
+        );
     }
 
     #[test]
     fn forget_obeys_the_term_rule() {
         let mut s = MemoryStore::in_memory();
-        s.add("The user was born in December.", MemoryKind::Fact, &keys(&["birth"]))
-            .unwrap();
+        s.add(
+            "The user was born in December.",
+            MemoryKind::Fact,
+            &keys(&["birth"]),
+        )
+        .unwrap();
         // "ara" is a short root: it must not hold inside "aralik", otherwise the
         // loss is irreversible. (Turkish data kept: this is the measured case.)
         assert_eq!(s.forget("ara"), 0);
@@ -639,9 +672,15 @@ mod tests {
     fn update_checks_the_limits_and_duplication() {
         let mut s = filled_store();
         let id = s.notes()[0].id;
-        assert!(s.update(id, "The user is a vegan.", &keys(&["food"])).is_ok());
+        assert!(
+            s.update(id, "The user is a vegan.", &keys(&["food"]))
+                .is_ok()
+        );
         assert_eq!(s.notes()[0].text, "The user is a vegan.");
-        assert_eq!(s.update(id, "short", &keys(&["food"])), Err(MemoryError::TooShort));
+        assert_eq!(
+            s.update(id, "short", &keys(&["food"])),
+            Err(MemoryError::TooShort)
+        );
         // It cannot be made equal to another note's text.
         assert_eq!(
             s.update(id, "The user works as a teacher.", &keys(&["work"])),
@@ -654,7 +693,10 @@ mod tests {
         let s = filled_store();
         let mut w = NoteWatcher::new();
         assert_eq!(w.filter(s.matching("restaurant")).len(), 1);
-        assert!(w.filter(s.matching("restaurant")).is_empty(), "once per session");
+        assert!(
+            w.filter(s.matching("restaurant")).is_empty(),
+            "once per session"
+        );
         w.reset();
         assert_eq!(w.filter(s.matching("restaurant")).len(), 1);
     }
@@ -666,10 +708,18 @@ mod tests {
         let path = dir.join("memory.json");
 
         let mut s = MemoryStore::from_file(&path);
-        s.add("The user is a vegetarian.", MemoryKind::Preference, &keys(&["food"]))
-            .unwrap();
-        s.add("The user works as a teacher.", MemoryKind::Identity, &keys(&["work"]))
-            .unwrap();
+        s.add(
+            "The user is a vegetarian.",
+            MemoryKind::Preference,
+            &keys(&["food"]),
+        )
+        .unwrap();
+        s.add(
+            "The user works as a teacher.",
+            MemoryKind::Identity,
+            &keys(&["work"]),
+        )
+        .unwrap();
         s.save().unwrap();
 
         let mut back = MemoryStore::from_file(&path);
@@ -677,7 +727,11 @@ mod tests {
         assert_eq!(back.notes()[0].kind, MemoryKind::Preference);
         // A new note MUST NOT COLLIDE with the old ids.
         let fresh = back
-            .add("The user lives in Istanbul.", MemoryKind::Fact, &keys(&["city"]))
+            .add(
+                "The user lives in Istanbul.",
+                MemoryKind::Fact,
+                &keys(&["city"]),
+            )
             .unwrap();
         assert!(back.notes().iter().filter(|n| n.id == fresh).count() == 1);
         assert!(fresh > 2);
@@ -702,7 +756,10 @@ mod tests {
         let s = MemoryStore::from_file(&path);
         assert_eq!(s.count(), 0);
         // The corrupt file MUST NOT HAVE BEEN OVERWRITTEN: the user can recover it.
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ this is not json ]]");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "{ this is not json ]]"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -733,8 +790,12 @@ mod tests {
     #[test]
     fn an_in_memory_store_does_not_touch_the_disk() {
         let mut s = MemoryStore::in_memory();
-        s.add("The user is a vegetarian.", MemoryKind::Preference, &keys(&["food"]))
-            .unwrap();
+        s.add(
+            "The user is a vegetarian.",
+            MemoryKind::Preference,
+            &keys(&["food"]),
+        )
+        .unwrap();
         assert!(s.path().is_none());
         assert!(s.save().is_ok(), "save without a path silently succeeds");
     }
@@ -753,7 +814,9 @@ mod tests {
     fn the_key_limit_is_enforced_on_save() {
         let mut s = MemoryStore::in_memory();
         let many: Vec<String> = (0..20).map(|i| format!("k{i}")).collect();
-        let id = s.add("The user said something.", MemoryKind::Fact, &many).unwrap();
+        let id = s
+            .add("The user said something.", MemoryKind::Fact, &many)
+            .unwrap();
         let note = s.notes().iter().find(|n| n.id == id).unwrap();
         assert_eq!(note.keys.len(), KEY_LIMIT);
     }

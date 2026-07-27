@@ -56,11 +56,7 @@ impl Skill {
     /// trimming happens in one place the "what is saved is what goes to the
     /// model" guarantee holds; in two places the board would show 900
     /// characters while the model saw 500.
-    pub fn users(
-        name: impl Into<String>,
-        triggers: Vec<String>,
-        text: impl Into<String>,
-    ) -> Self {
+    pub fn users(name: impl Into<String>, triggers: Vec<String>, text: impl Into<String>) -> Self {
         let raw: String = text.into();
         let trimmed: String = raw.chars().take(USER_BODY_LIMIT).collect();
         Self {
@@ -181,7 +177,10 @@ mod tests {
         let full = vec!["read_document".to_string(), "edit_document".to_string()];
         let half = vec!["read_document".to_string()];
         assert!(s.has_tools(Some(&full)));
-        assert!(!s.has_tools(Some(&half)), "a half flow must not be injected");
+        assert!(
+            !s.has_tools(Some(&half)),
+            "a half flow must not be injected"
+        );
         assert!(s.has_tools(None), "None = no filtering");
     }
 

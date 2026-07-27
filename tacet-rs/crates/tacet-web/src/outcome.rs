@@ -47,7 +47,11 @@ pub fn parse(body: &str) -> WebResult<Vec<SearchOutcome>> {
     // If there is an infobox it goes FIRST: for queries like "how many lira is
     // a dollar" the direct answer is in there, while the top organic result is
     // usually a news page that contains that answer.
-    if let Some(box_) = root.get("infoboxes").and_then(Value::as_array).and_then(|a| a.first()) {
+    if let Some(box_) = root
+        .get("infoboxes")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+    {
         let content = text_field(box_, "content");
         if !content.is_empty() {
             let url = box_
@@ -87,7 +91,12 @@ pub fn parse(body: &str) -> WebResult<Vec<SearchOutcome>> {
 
 /// Turns a JSON field into text; missing or `null` gives an empty string.
 fn text_field(value: &Value, name: &str) -> String {
-    value.get(name).and_then(Value::as_str).unwrap_or_default().trim().to_string()
+    value
+        .get(name)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 /// Extracts the domain from a URL. NOT a full URL parser, and it must not be:
@@ -203,12 +212,18 @@ mod tests {
 
     #[test]
     fn a_non_array_results_field_is_invalid_json() {
-        assert!(matches!(parse(r#"{"results":"none"}"#), Err(WebError::InvalidJson(_))));
+        assert!(matches!(
+            parse(r#"{"results":"none"}"#),
+            Err(WebError::InvalidJson(_))
+        ));
     }
 
     #[test]
     fn domain_drops_the_port_the_user_info_and_the_path() {
-        assert_eq!(domain("https://user@www.mgm.gov.tr:8443/tahmin?il=34"), "www.mgm.gov.tr");
+        assert_eq!(
+            domain("https://user@www.mgm.gov.tr:8443/tahmin?il=34"),
+            "www.mgm.gov.tr"
+        );
         assert_eq!(domain("http://localhost:8080/a"), "localhost");
         assert_eq!(domain("broken-address"), "broken-address");
         assert_eq!(domain(""), "");

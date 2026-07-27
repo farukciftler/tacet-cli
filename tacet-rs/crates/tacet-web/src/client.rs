@@ -69,7 +69,10 @@ impl WebSearchClient {
     }
 
     pub fn with_address(base: impl Into<String>) -> Self {
-        Self { base: base.into().trim_end_matches('/').to_string(), timeout: DEFAULT_TIMEOUT }
+        Self {
+            base: base.into().trim_end_matches('/').to_string(),
+            timeout: DEFAULT_TIMEOUT,
+        }
     }
 
     pub fn with_timeout(mut self, duration: Duration) -> Self {
@@ -94,7 +97,11 @@ impl WebSearchClient {
     /// going online, and so it can be shown to the user VERBATIM in the chip
     /// detail as "what went out" (spec §3.2, the transparency pattern).
     pub fn request_url(&self, query: &str, language: Option<&str>) -> String {
-        let mut u = format!("{}/search?q={}&format=json&safesearch=1", self.base, escape(query));
+        let mut u = format!(
+            "{}/search?q={}&format=json&safesearch=1",
+            self.base,
+            escape(query)
+        );
         if let Some(l) = language.map(str::trim).filter(|l| !l.is_empty()) {
             u.push_str("&language=");
             u.push_str(&escape(l));
@@ -145,7 +152,9 @@ impl WebSearchClient {
     /// `text.rs` — its simplicity is deliberate).
     pub fn page_text(&self, address: &str) -> WebResult<String> {
         if !address.starts_with("https://") && !address.starts_with("http://") {
-            return Err(WebError::InvalidAddress(format!("unsupported scheme: {address}")));
+            return Err(WebError::InvalidAddress(format!(
+                "unsupported scheme: {address}"
+            )));
         }
         let raw = self.fetch(address)?;
         let text = to_text(&raw);
@@ -208,13 +217,17 @@ fn convert(error: &ureq::Error) -> WebError {
 /// IT IS CHECKED WITH THE QUERY STRING DROPPED: `.../report.pdf?v=2` is a PDF too.
 pub fn is_fetchable(address: &str) -> bool {
     const SKIPPED_EXTENSIONS: [&str; 14] = [
-        ".pdf", ".zip", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".jpg", ".jpeg",
-        ".png", ".gif", ".mp4", ".mp3",
+        ".pdf", ".zip", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".jpg", ".jpeg", ".png",
+        ".gif", ".mp4", ".mp3",
     ];
     if !address.starts_with("https://") && !address.starts_with("http://") {
         return false;
     }
-    let path = address.split(['?', '#']).next().unwrap_or(address).to_ascii_lowercase();
+    let path = address
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(address)
+        .to_ascii_lowercase();
     !SKIPPED_EXTENSIONS.iter().any(|e| path.ends_with(e))
 }
 
@@ -255,7 +268,9 @@ pub fn address_is_valid(base: &str) -> WebResult<()> {
             )))
         };
     }
-    Err(WebError::InvalidAddress("the address must start with https://".into()))
+    Err(WebError::InvalidAddress(
+        "the address must start with https://".into(),
+    ))
 }
 
 /// Is the host a local network address.
@@ -304,7 +319,10 @@ mod tests {
     #[test]
     fn a_trailing_slash_in_the_base_does_not_produce_a_double_slash() {
         let c = WebSearchClient::with_address("https://example.test/searxng/");
-        assert!(c.request_url("a", None).starts_with("https://example.test/searxng/search?"));
+        assert!(
+            c.request_url("a", None)
+                .starts_with("https://example.test/searxng/search?")
+        );
     }
 
     #[test]
@@ -321,7 +339,10 @@ mod tests {
         let u = c.request_url("çay & kahve?", None);
         // "ç" is two bytes (C3 A7) and both must be escaped separately.
         assert!(u.contains("%C3%A7ay"), "{u}");
-        assert!(u.contains("%26"), "& must not leak as a query separator: {u}");
+        assert!(
+            u.contains("%26"),
+            "& must not leak as a query separator: {u}"
+        );
         assert!(u.contains("%3F"), "? must be escaped: {u}");
     }
 
@@ -336,14 +357,18 @@ mod tests {
 
     #[test]
     fn plain_http_is_rejected_for_a_remote_server() {
-        let e = WebSearchClient::with_address("http://remote.test").search("a", None).unwrap_err();
+        let e = WebSearchClient::with_address("http://remote.test")
+            .search("a", None)
+            .unwrap_err();
         assert!(matches!(e, WebError::InvalidAddress(_)), "{e:?}");
     }
 
     #[test]
     fn plain_http_is_accepted_on_the_local_network() {
         // It must pass the address gate; a network error is expected after that.
-        let e = WebSearchClient::with_address("http://localhost:8888").search("a", None).unwrap_err();
+        let e = WebSearchClient::with_address("http://localhost:8888")
+            .search("a", None)
+            .unwrap_err();
         assert!(!matches!(e, WebError::InvalidAddress(_)), "{e:?}");
     }
 
@@ -352,10 +377,15 @@ mod tests {
     /// installing anything.
     #[test]
     fn nothing_goes_online_when_the_address_is_undefined() {
-        let e = WebSearchClient::with_address("").search("a", None).unwrap_err();
+        let e = WebSearchClient::with_address("")
+            .search("a", None)
+            .unwrap_err();
         match e {
             WebError::InvalidAddress(m) => {
-                assert!(m.contains("addon add"), "the message must show the way: {m}")
+                assert!(
+                    m.contains("addon add"),
+                    "the message must show the way: {m}"
+                )
             }
             other => panic!("unexpected error: {other:?}"),
         }
@@ -363,39 +393,58 @@ mod tests {
 
     #[test]
     fn address_is_valid_makes_the_same_decision_as_the_client() {
-        for address in
-            ["https://example.test", "http://localhost:8888", "http://remote.test", "example.test", ""]
-        {
+        for address in [
+            "https://example.test",
+            "http://localhost:8888",
+            "http://remote.test",
+            "example.test",
+            "",
+        ] {
             let free = address_is_valid(address).is_ok();
-            let client = WebSearchClient::with_address(address).validate_address().is_ok();
+            let client = WebSearchClient::with_address(address)
+                .validate_address()
+                .is_ok();
             assert_eq!(free, client, "the two rules diverged for '{address}'");
         }
     }
 
     #[test]
     fn an_address_without_a_scheme_is_rejected() {
-        let e = WebSearchClient::with_address("example.test").search("a", None).unwrap_err();
+        let e = WebSearchClient::with_address("example.test")
+            .search("a", None)
+            .unwrap_err();
         assert!(matches!(e, WebError::InvalidAddress(_)));
     }
 
     #[test]
     fn an_empty_query_is_rejected_without_going_online() {
         let c = WebSearchClient::with_address("https://example.test");
-        assert!(matches!(c.search("   ", None), Err(WebError::InvalidAddress(_))));
+        assert!(matches!(
+            c.search("   ", None),
+            Err(WebError::InvalidAddress(_))
+        ));
     }
 
     #[test]
     fn page_text_rejects_an_unsupported_scheme() {
         let c = WebSearchClient::with_address("https://example.test");
-        assert!(matches!(c.page_text("file:///etc/passwd"), Err(WebError::InvalidAddress(_))));
-        assert!(matches!(c.page_text("javascript:alert(1)"), Err(WebError::InvalidAddress(_))));
+        assert!(matches!(
+            c.page_text("file:///etc/passwd"),
+            Err(WebError::InvalidAddress(_))
+        ));
+        assert!(matches!(
+            c.page_text("javascript:alert(1)"),
+            Err(WebError::InvalidAddress(_))
+        ));
     }
 
     #[test]
     fn the_fetchable_filter_screens_out_binary_files() {
         assert!(is_fetchable("https://a.test/timetable"));
         assert!(is_fetchable("https://a.test/timetable.html?day=1"));
-        assert!(!is_fetchable("https://appassets.mvtdev.com/map/169/l/1563/575909.pdf"));
+        assert!(!is_fetchable(
+            "https://appassets.mvtdev.com/map/169/l/1563/575909.pdf"
+        ));
         // The query string must not hide the extension.
         assert!(!is_fetchable("https://a.test/report.PDF?v=2"));
         assert!(!is_fetchable("https://a.test/image.jpg"));
@@ -417,7 +466,9 @@ mod tests {
     #[ignore = "requires the real network"]
     fn smoke_connects_to_the_real_server() {
         let c = WebSearchClient::new();
-        let r = c.search("rust programming language", Some("en")).expect("the search must succeed");
+        let r = c
+            .search("rust programming language", Some("en"))
+            .expect("the search must succeed");
         assert!(!r.is_empty());
         assert!(r.iter().all(|x| !x.url.is_empty() && !x.source.is_empty()));
     }

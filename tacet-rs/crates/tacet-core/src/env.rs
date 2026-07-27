@@ -81,7 +81,9 @@ fn platform_dir() -> Option<PathBuf> {
             return Some(x.join("tacet"));
         }
     }
-    std::env::var_os("HOME").filter(|h| !h.is_empty()).map(|h| PathBuf::from(h).join(".tacet"))
+    std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(|h| PathBuf::from(h).join(".tacet"))
 }
 
 /// The full path of a file in the configuration directory (`mcp.json`,
@@ -105,7 +107,10 @@ mod tests {
         let target = std::env::temp_dir().join("tacet-env-test");
         unsafe { std::env::set_var(HOME_VAR, &target) };
         assert_eq!(config_dir().unwrap(), target);
-        assert_eq!(config_path("memory.json").unwrap(), target.join("memory.json"));
+        assert_eq!(
+            config_path("memory.json").unwrap(),
+            target.join("memory.json")
+        );
 
         // 2) An empty value counts as "undefined" — the user who cleared it falls back.
         unsafe { std::env::set_var(HOME_VAR, "") };
@@ -122,7 +127,11 @@ mod tests {
         let Some(d) = platform_dir() else {
             return; // run without an environment (container): nothing to prove
         };
-        let leaf = d.file_name().expect("the path cannot be empty").to_string_lossy().to_lowercase();
+        let leaf = d
+            .file_name()
+            .expect("the path cannot be empty")
+            .to_string_lossy()
+            .to_lowercase();
         assert!(
             leaf == "tacet" || leaf == ".tacet",
             "unexpected leaf for the configuration directory: {leaf}"

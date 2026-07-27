@@ -38,10 +38,10 @@ use std::sync::Arc;
 use tacet_core::{
     ArgSchema, Tool, ToolCatalog, ToolContext, ToolFuture, ToolOutcome, TraceCollector, boxed,
 };
-use tacet_grammar::CallConstraint;
 use tacet_engine::{
-    MAX_TURNS, Prompt, EngineProvider, SYSTEM_INSTRUCTIONS, SamplingSetting, Turn, wait,
+    EngineProvider, MAX_TURNS, Prompt, SYSTEM_INSTRUCTIONS, SamplingSetting, Turn, wait,
 };
+use tacet_grammar::CallConstraint;
 use tacet_tools::executor::ToolExecutor;
 use tacet_tools::memory::SharedMemory;
 use tacet_tools::router::Router;
@@ -90,9 +90,12 @@ impl Tool for DryTool {
     fn run<'a>(&'a self, _args: Value, _ctx: &'a mut ToolContext) -> ToolFuture<'a> {
         // Fixed but NOT EMPTY: a tool returning "no results" pushes the model to
         // try another tool and would break the call sequence.
-        boxed(
-            async move { ToolOutcome::read_ok("dry tool", "1. Sample result — the network is off in this case.") },
-        )
+        boxed(async move {
+            ToolOutcome::read_ok(
+                "dry tool",
+                "1. Sample result — the network is off in this case.",
+            )
+        })
     }
 }
 
@@ -200,9 +203,17 @@ pub fn selection_cases() -> Vec<SelectionCase> {
         // --- time --- (four separate phrasings: this tool was missed twice in
         // manual measurement)
         SelectionCase::tool("time-clock", "What time is it?", "time"),
-        SelectionCase::tool("time-day-of-month", "What day of the month is it today?", "time"),
+        SelectionCase::tool(
+            "time-day-of-month",
+            "What day of the month is it today?",
+            "time",
+        ),
         SelectionCase::tool("time-todays-date", "What is today's date?", "time"),
-        SelectionCase::tool("time-diff", "How many days are left until new year?", "time"),
+        SelectionCase::tool(
+            "time-diff",
+            "How many days are left until new year?",
+            "time",
+        ),
         // --- read_document ---
         SelectionCase::tool(
             "read_document-content",
@@ -239,15 +250,27 @@ pub fn selection_cases() -> Vec<SelectionCase> {
             "edit_document",
         ),
         // --- find_file ---
-        SelectionCase::tool("find_file-name", "Find the file about the budget.", "find_file"),
+        SelectionCase::tool(
+            "find_file-name",
+            "Find the file about the budget.",
+            "find_file",
+        ),
         SelectionCase::tool(
             "find_file-content",
             "Which of my files mentions 'Lentils'?",
             "find_file",
         ),
         // --- web_search ---
-        SelectionCase::tool("web_search-weather", "What is the weather like in Istanbul?", "web_search"),
-        SelectionCase::tool("web_search-current", "How much is the dollar today?", "web_search"),
+        SelectionCase::tool(
+            "web_search-weather",
+            "What is the weather like in Istanbul?",
+            "web_search",
+        ),
+        SelectionCase::tool(
+            "web_search-current",
+            "How much is the dollar today?",
+            "web_search",
+        ),
         // --- web_fetch ---
         SelectionCase::tool(
             "web_fetch-page",
@@ -310,10 +333,7 @@ pub fn selection_cases() -> Vec<SelectionCase> {
                     "create_document",
                 ),
                 ("Show it as a table.", "read_document"),
-                (
-                    "Change Tuesday from Rice to Beans.",
-                    "edit_document",
-                ),
+                ("Change Tuesday from Rice to Beans.", "edit_document"),
             ],
         ),
         SelectionCase::chain(
@@ -419,7 +439,10 @@ impl SelectionReport {
             .unwrap_or(4)
             .max(4);
         let mut s = String::new();
-        s.push_str(&format!("engine: {}  (tool selection set)\n\n", self.engine));
+        s.push_str(&format!(
+            "engine: {}  (tool selection set)\n\n",
+            self.engine
+        ));
         s.push_str(&format!(
             "{:<width$}  {:<6}  {}\n",
             "CASE", "STATE", "EXPECTED -> CALLED"
@@ -468,8 +491,9 @@ impl SelectionReport {
     }
 
     pub fn json(&self) -> String {
-        serde_json::to_string_pretty(self)
-            .unwrap_or_else(|e| format!("{{\"error\":\"the report could not be serialized: {e}\"}}"))
+        serde_json::to_string_pretty(self).unwrap_or_else(|e| {
+            format!("{{\"error\":\"the report could not be serialized: {e}\"}}")
+        })
     }
 }
 
@@ -511,8 +535,11 @@ fn selection_catalog(env: &Env, memory: &SharedMemory) -> ToolCatalog {
 fn announce_missing_tools(catalog: &ToolCatalog) {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        let missing: Vec<&str> =
-            DISCOVERY_BOUND.iter().copied().filter(|n| catalog.find(n).is_none()).collect();
+        let missing: Vec<&str> = DISCOVERY_BOUND
+            .iter()
+            .copied()
+            .filter(|n| catalog.find(n).is_none())
+            .collect();
         if !missing.is_empty() {
             eprintln!(
                 "WARNING: {} is not in the catalog on this machine; the cases expecting these \
@@ -528,7 +555,10 @@ fn announce_missing_tools(catalog: &ToolCatalog) {
 /// Runs all the cases. The engine must be REAL; it is not meaningful with the
 /// fake engine.
 pub fn run_selection(cases: &[SelectionCase], engine: &Arc<dyn EngineProvider>) -> SelectionReport {
-    let outcomes = cases.iter().map(|c| run_selection_case(c, engine)).collect();
+    let outcomes = cases
+        .iter()
+        .map(|c| run_selection_case(c, engine))
+        .collect();
     SelectionReport::new(engine.name(), outcomes)
 }
 
@@ -576,10 +606,7 @@ pub fn run_selection_case(
     for step in &case.steps {
         let ticket = executor.new_turn();
         traces.reset();
-        let selected: ToolCatalog = router
-            .select(&step.message, &catalog)
-            .into_iter()
-            .collect();
+        let selected: ToolCatalog = router.select(&step.message, &catalog).into_iter().collect();
 
         let mut turn_tools: Vec<Turn> = Vec::new();
         let mut called: Vec<String> = Vec::new();
@@ -606,11 +633,15 @@ pub fn run_selection_case(
                 .with_tools(&selected)
                 .with_history(previous);
 
-            let generation = match wait(engine.generate(
-                &prompt,
-                constraint.as_ref().map(|c| c as &dyn tacet_engine::Constrainer),
-                SamplingSetting::default(),
-            )) {
+            let generation = match wait(
+                engine.generate(
+                    &prompt,
+                    constraint
+                        .as_ref()
+                        .map(|c| c as &dyn tacet_engine::Constrainer),
+                    SamplingSetting::default(),
+                ),
+            ) {
                 Ok(g) => g,
                 Err(e) => {
                     answer = format!("engine error: {e}");
@@ -621,7 +652,8 @@ pub fn run_selection_case(
                 answer = "generation was cut off halfway".into();
                 break;
             }
-            let Some(outcome) = wait(executor.execute_raw(&generation.text, ticket, &mut ctx)) else {
+            let Some(outcome) = wait(executor.execute_raw(&generation.text, ticket, &mut ctx))
+            else {
                 answer = generation.text.clone();
                 break;
             };
@@ -699,7 +731,10 @@ mod tests {
             .iter()
             .filter(|c| c.category == Category::Irrelevance)
             .count();
-        assert!(n >= 5, "the irrelevance case count is {n}, it must be at least 5");
+        assert!(
+            n >= 5,
+            "the irrelevance case count is {n}, it must be at least 5"
+        );
     }
 
     #[test]
@@ -708,7 +743,11 @@ mod tests {
             .into_iter()
             .filter(|c| c.category == Category::MultiTurn)
             .collect();
-        assert!(multi.len() >= 3, "the multi-turn case count is {}", multi.len());
+        assert!(
+            multi.len() >= 3,
+            "the multi-turn case count is {}",
+            multi.len()
+        );
         assert!(
             multi.iter().all(|c| c.steps.len() >= 2),
             "a multi-turn case cannot have a single step"
@@ -849,11 +888,20 @@ mod tests {
                 "{name}'s absence must count as a fact of the platform"
             );
         }
-        assert_eq!(expectation_state("calculate", &synthetic), Expectation::Measurable);
+        assert_eq!(
+            expectation_state("calculate", &synthetic),
+            Expectation::Measurable
+        );
         // The loss of a tool NOT BOUND to the discovery gate must not be
         // silenced.
-        assert_eq!(expectation_state("create_document", &full), Expectation::Measurable);
-        assert_eq!(expectation_state("no_such_tool", &full), Expectation::Regression);
+        assert_eq!(
+            expectation_state("create_document", &full),
+            Expectation::Measurable
+        );
+        assert_eq!(
+            expectation_state("no_such_tool", &full),
+            Expectation::Regression
+        );
     }
 
     /// THE ROUTER GATE — the layer BEFORE the model.

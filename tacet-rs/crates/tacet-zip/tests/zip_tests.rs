@@ -5,9 +5,7 @@
 //! (read16/read32 without bounds checks), which is why truncation/corruption/fuzz
 //! tests dominate here.
 
-use tacet_zip::{
-    ARCHIVE_CAP, ENTRY_CAP, ZipEntry, ZipError, crc32, inflate, open, open_map, pack,
-};
+use tacet_zip::{ARCHIVE_CAP, ENTRY_CAP, ZipEntry, ZipError, crc32, inflate, open, open_map, pack};
 
 /// Real vectors produced by other tools; reading back what we wrote ourselves
 /// does not prove the decoder is CORRECT, only that it is consistent.
@@ -155,7 +153,10 @@ fn the_cap_constants_are_sane() {
 fn input_that_is_too_short_errors() {
     for length in 0..22 {
         let input = vec![0u8; length];
-        assert!(open(&input).is_err(), "Err was expected for length {length}");
+        assert!(
+            open(&input).is_err(),
+            "Err was expected for length {length}"
+        );
     }
 }
 
@@ -199,10 +200,12 @@ fn an_overflowing_local_header_offset_errors() {
     let mut broken = zip.clone();
     // The central directory record comes right after the body; the local offset
     // field is at record+42.
-    let central_start =
-        u32::from_le_bytes(broken[broken.len() - 6..broken.len() - 2].try_into().unwrap()) as usize;
-    broken[central_start + 42..central_start + 46]
-        .copy_from_slice(&0x7FFF_FFFFu32.to_le_bytes());
+    let central_start = u32::from_le_bytes(
+        broken[broken.len() - 6..broken.len() - 2]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    broken[central_start + 42..central_start + 46].copy_from_slice(&0x7FFF_FFFFu32.to_le_bytes());
     assert!(open(&broken).is_err());
 }
 
@@ -213,15 +216,21 @@ fn an_inflated_record_count_errors() {
     let n = broken.len();
     // EOCD + 10: the record count on this disk. Let us say 5000 instead of 1.
     broken[n - 12..n - 10].copy_from_slice(&5000u16.to_le_bytes());
-    assert!(open(&broken).is_err(), "records that do not exist must give Err");
+    assert!(
+        open(&broken).is_err(),
+        "records that do not exist must give Err"
+    );
 }
 
 #[test]
 fn an_unsupported_method_errors() {
     let zip = pack(&[ZipEntry::new("a.txt", b"data".to_vec())]).unwrap();
     let mut broken = zip.clone();
-    let central_start =
-        u32::from_le_bytes(broken[broken.len() - 6..broken.len() - 2].try_into().unwrap()) as usize;
+    let central_start = u32::from_le_bytes(
+        broken[broken.len() - 6..broken.len() - 2]
+            .try_into()
+            .unwrap(),
+    ) as usize;
     // Central directory + 10: the method. 99 = AES, which we do not support.
     broken[central_start + 10..central_start + 12].copy_from_slice(&99u16.to_le_bytes());
     assert!(matches!(

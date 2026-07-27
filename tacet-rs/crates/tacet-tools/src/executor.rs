@@ -34,12 +34,10 @@
 //! drop it, only a real new turn resets it.
 
 use serde_json::Value;
-use tacet_core::{
-    ToolState, ToolError, ToolCatalog, ToolOutcome, ERROR_MODEL_TEXT, ToolContext,
-};
 use std::collections::HashSet;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use tacet_core::{ERROR_MODEL_TEXT, ToolCatalog, ToolContext, ToolError, ToolOutcome, ToolState};
 
 /// The FIXED text returned to the model when approval is denied.
 ///
@@ -66,8 +64,7 @@ pub const CANCEL_MODEL_TEXT: &str = "cancelled: the user stopped this turn";
 /// for emphasis were MEASURED to be taken as CONTENT by the model (see
 /// `SYSTEM_INSTRUCTION` item 3); if the text enters the model's context the
 /// same risk applies.
-pub const REPEAT_MODEL_TEXT: &str =
-    "duplicate_call: you already made this exact call in this turn and its result is above. \
+pub const REPEAT_MODEL_TEXT: &str = "duplicate_call: you already made this exact call in this turn and its result is above. \
      Do not repeat it. Either answer the user with what you have, or call a different tool.";
 
 // ---------------------------------------------------------------------------
@@ -83,7 +80,10 @@ pub struct ToolCall {
 
 impl ToolCall {
     pub fn new(name: impl Into<String>, args: Value) -> Self {
-        Self { name: name.into(), args }
+        Self {
+            name: name.into(),
+            args,
+        }
     }
 
     /// Parses the call out of the model output; `None` if there is no call.
@@ -136,7 +136,11 @@ impl ToolCall {
         // ends at the call's closing parenthesis, the real call is at the END of
         // the text. Parentheses appearing in plain text ("... (mathematics) ...")
         // therefore do not shadow the call.
-        for (opening, _) in body[..closing].char_indices().rev().filter(|(_, c)| *c == '(') {
+        for (opening, _) in body[..closing]
+            .char_indices()
+            .rev()
+            .filter(|(_, c)| *c == '(')
+        {
             let name = last_identifier(&body[..opening]);
             if name.is_empty() {
                 continue;
@@ -511,7 +515,8 @@ impl ToolExecutor {
 
     /// Cancels the active turn.
     pub fn cancel(&self) {
-        self.cancelled.store(self.turn.load(Ordering::SeqCst), Ordering::SeqCst);
+        self.cancelled
+            .store(self.turn.load(Ordering::SeqCst), Ordering::SeqCst);
     }
 
     pub fn is_cancelled(&self, ticket: TurnTicket) -> bool {
@@ -542,8 +547,7 @@ impl ToolExecutor {
         ticket: TurnTicket,
         ctx: &mut ToolContext,
     ) -> Option<ExecutionOutcome> {
-        let call = ToolCall::parse(raw)
-            .or_else(|| recover_nameless_json(raw, &self.catalog))?;
+        let call = ToolCall::parse(raw).or_else(|| recover_nameless_json(raw, &self.catalog))?;
         Some(self.execute(&call, ticket, ctx).await)
     }
 
@@ -614,7 +618,12 @@ impl ToolExecutor {
         //    right answer is "permission_denied": the model must know it was
         //    denied, not that it repeated itself.
         let key = call_key(call);
-        if self.turn_calls.lock().expect("turn calls lock").contains(&key) {
+        if self
+            .turn_calls
+            .lock()
+            .expect("turn calls lock")
+            .contains(&key)
+        {
             return self.outcome(
                 &call.name,
                 ExecutionReason::RepeatedCall,
@@ -746,10 +755,10 @@ impl ToolExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tacet_core::{
-        Field, Tool, ToolFuture, ArgSchema, InMemoryDataStore, SilentReporter, boxed,
-    };
     use std::sync::Arc;
+    use tacet_core::{
+        ArgSchema, Field, InMemoryDataStore, SilentReporter, Tool, ToolFuture, boxed,
+    };
 
     // --- Helpers ---
 
@@ -909,7 +918,8 @@ mod tests {
     /// Parentheses in the prefix must not shadow the call: candidates are tried FROM THE RIGHT.
     #[test]
     fn a_parenthesis_in_the_prefix_does_not_shadow_the_call() {
-        let raw = "First I need a calculation (simple arithmetic): calculate({\"expression\":\"2+2\"})";
+        let raw =
+            "First I need a calculation (simple arithmetic): calculate({\"expression\":\"2+2\"})";
         let c = ToolCall::parse(raw).expect("the call was not found");
         assert_eq!(c.name, "calculate");
         assert_eq!(c.args["expression"], "2+2");
@@ -930,7 +940,8 @@ mod tests {
     #[test]
     fn nameless_json_is_recovered_when_it_fits_exactly_one_schema() {
         let y = executor();
-        let c = recover_nameless_json(r#"{"what":"calendar"}"#, y.catalog()).expect("must be recovered");
+        let c = recover_nameless_json(r#"{"what":"calendar"}"#, y.catalog())
+            .expect("must be recovered");
         assert_eq!(c.name, "personal_read");
         assert_eq!(c.args["what"], "calendar");
     }
@@ -970,7 +981,13 @@ mod tests {
         assert!(recover_nameless_json("Hello, how are you?", y.catalog()).is_none());
         assert!(recover_nameless_json("Thanks!", y.catalog()).is_none());
         // The whole text is NOT a single JSON object -> unparseable -> rejected.
-        assert!(recover_nameless_json("Example: {\"what\":\"x\"} is written like this.", y.catalog()).is_none());
+        assert!(
+            recover_nameless_json(
+                "Example: {\"what\":\"x\"} is written like this.",
+                y.catalog()
+            )
+            .is_none()
+        );
     }
 
     /// If two tools share the same single required field the match is AMBIGUOUS -> rejected.
@@ -1028,7 +1045,11 @@ mod tests {
     fn an_unknown_tool_does_not_run_and_returns_the_fixed_text() {
         let y = executor();
         let mut ctx = context();
-        let s = run(y.execute(&ToolCall::new("yok_boyle", serde_json::json!({})), y.active_turn(), &mut ctx));
+        let s = run(y.execute(
+            &ToolCall::new("yok_boyle", serde_json::json!({})),
+            y.active_turn(),
+            &mut ctx,
+        ));
         assert_eq!(s.reason, ExecutionReason::UnknownTool);
         assert!(s.is_error());
         assert_eq!(s.to_model, ERROR_MODEL_TEXT);
@@ -1039,7 +1060,11 @@ mod tests {
         let y = executor();
         let mut ctx = context();
         // "what" is required; it is not given.
-        let s = run(y.execute(&ToolCall::new("personal_read", serde_json::json!({})), y.active_turn(), &mut ctx));
+        let s = run(y.execute(
+            &ToolCall::new("personal_read", serde_json::json!({})),
+            y.active_turn(),
+            &mut ctx,
+        ));
         assert_eq!(s.reason, ExecutionReason::InvalidArguments);
         // Since the tool did not run the session was not tainted either.
         assert!(!y.session_tainted());
@@ -1065,7 +1090,11 @@ mod tests {
         // was read, so there is no reason to tighten the gate.
         let y = executor();
         let mut ctx = context();
-        let s = run(y.execute(&ToolCall::new("crashing", serde_json::json!({})), y.active_turn(), &mut ctx));
+        let s = run(y.execute(
+            &ToolCall::new("crashing", serde_json::json!({})),
+            y.active_turn(),
+            &mut ctx,
+        ));
         assert_eq!(s.reason, ExecutionReason::ToolFailed);
         assert!(!y.session_tainted());
     }
@@ -1106,7 +1135,9 @@ mod tests {
     fn if_approval_is_given_it_passes_even_in_a_tainted_session() {
         let mut k = ToolCatalog::new();
         k.add(Arc::new(PersonalTool)).add(Arc::new(ExternalTool));
-        let y = ToolExecutor::new(k).external_tool("send_out").with_gate(AlwaysApprove);
+        let y = ToolExecutor::new(k)
+            .external_tool("send_out")
+            .with_gate(AlwaysApprove);
         let mut ctx = context();
         run(y.execute(
             &ToolCall::new("personal_read", serde_json::json!({"what": "x"})),
@@ -1162,7 +1193,11 @@ mod tests {
         let y = executor();
         let mut ctx = context();
         assert!(y.retry_safe());
-        let s = run(y.execute(&ToolCall::new("write_file", serde_json::json!({})), y.active_turn(), &mut ctx));
+        let s = run(y.execute(
+            &ToolCall::new("write_file", serde_json::json!({})),
+            y.active_turn(),
+            &mut ctx,
+        ));
         assert!(s.world_changed);
         assert!(!s.retryable);
         assert!(!y.retry_safe());
@@ -1172,7 +1207,11 @@ mod tests {
     fn even_an_innocent_call_after_a_side_effect_cannot_be_retried() {
         let y = executor();
         let mut ctx = context();
-        run(y.execute(&ToolCall::new("write_file", serde_json::json!({})), y.active_turn(), &mut ctx));
+        run(y.execute(
+            &ToolCall::new("write_file", serde_json::json!({})),
+            y.active_turn(),
+            &mut ctx,
+        ));
         let s = run(y.execute(
             &ToolCall::new("personal_read", serde_json::json!({"what": "x"})),
             y.active_turn(),
@@ -1187,7 +1226,11 @@ mod tests {
     fn a_recovery_attempt_does_not_drop_the_side_effect_flag() {
         let y = executor();
         let mut ctx = context();
-        run(y.execute(&ToolCall::new("write_file", serde_json::json!({})), y.active_turn(), &mut ctx));
+        run(y.execute(
+            &ToolCall::new("write_file", serde_json::json!({})),
+            y.active_turn(),
+            &mut ctx,
+        ));
         let ticket = y.recovery_attempt();
         assert_eq!(ticket, y.active_turn());
         assert!(!y.retry_safe());
@@ -1206,7 +1249,10 @@ mod tests {
             &mut ctx,
         ));
         y.new_turn();
-        assert!(y.session_tainted(), "the context summary may carry personal data");
+        assert!(
+            y.session_tainted(),
+            "the context summary may carry personal data"
+        );
         y.reset_chat();
         assert!(!y.session_tainted());
     }
@@ -1219,7 +1265,11 @@ mod tests {
         let mut ctx = context();
         let ticket = y.active_turn();
         y.cancel();
-        let s = run(y.execute(&ToolCall::new("write_file", serde_json::json!({})), ticket, &mut ctx));
+        let s = run(y.execute(
+            &ToolCall::new("write_file", serde_json::json!({})),
+            ticket,
+            &mut ctx,
+        ));
         assert_eq!(s.reason, ExecutionReason::Cancelled);
         assert!(!s.world_changed);
         assert!(!y.world_changed(), "the cancelled tool never ran");
@@ -1234,8 +1284,15 @@ mod tests {
         assert!(y.is_cancelled(old));
 
         let new = y.new_turn();
-        assert!(!y.is_cancelled(new), "cancelling an old turn must not drop the new one");
-        let s = run(y.execute(&ToolCall::new("write_file", serde_json::json!({})), new, &mut ctx));
+        assert!(
+            !y.is_cancelled(new),
+            "cancelling an old turn must not drop the new one"
+        );
+        let s = run(y.execute(
+            &ToolCall::new("write_file", serde_json::json!({})),
+            new,
+            &mut ctx,
+        ));
         assert_eq!(s.reason, ExecutionReason::Ok);
     }
 
@@ -1272,8 +1329,9 @@ mod tests {
 
     fn counting() -> (ToolExecutor, Arc<std::sync::atomic::AtomicUsize>) {
         let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let catalog: ToolCatalog =
-            [Arc::new(CountingTool(Arc::clone(&counter))) as Arc<dyn Tool>].into_iter().collect();
+        let catalog: ToolCatalog = [Arc::new(CountingTool(Arc::clone(&counter))) as Arc<dyn Tool>]
+            .into_iter()
+            .collect();
         (ToolExecutor::new(catalog), counter)
     }
 
@@ -1297,7 +1355,11 @@ mod tests {
             // trying to prevent would be built.
             assert!(s.to_model.contains("duplicate_call"));
         }
-        assert_eq!(counter.load(Ordering::SeqCst), 1, "the tool should have run only once");
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            1,
+            "the tool should have run only once"
+        );
     }
 
     /// The gate is ARGUMENT sensitive: calling the same tool with different
@@ -1308,7 +1370,11 @@ mod tests {
         let mut ctx = context();
         let ticket = y.new_turn();
         for x in ["a", "b", "c"] {
-            let s = run(y.execute(&ToolCall::new("say", serde_json::json!({"x": x})), ticket, &mut ctx));
+            let s = run(y.execute(
+                &ToolCall::new("say", serde_json::json!({"x": x})),
+                ticket,
+                &mut ctx,
+            ));
             assert_eq!(s.reason, ExecutionReason::Ok);
         }
         assert_eq!(counter.load(Ordering::SeqCst), 3);
@@ -1325,7 +1391,11 @@ mod tests {
 
         run(y.execute(&call, y.new_turn(), &mut ctx));
         run(y.execute(&call, y.new_turn(), &mut ctx));
-        assert_eq!(counter.load(Ordering::SeqCst), 2, "it must run twice in separate turns");
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            2,
+            "it must run twice in separate turns"
+        );
 
         // A recovery attempt is NOT a real new turn: it must not be an excuse to
         // repeat a failed call verbatim.

@@ -42,13 +42,13 @@
 //! keeps that thread busy for that long.
 
 use serde_json::Value;
+use std::sync::Arc;
 use tacet_core::{
     ArgSchema, Tool, ToolCatalog, ToolContext, ToolError, ToolOutcome, TraceUpdate, boxed,
 };
 use tacet_mcp::{
-    ConnectionSetting, Config, MCPClient, MCPError, convert_schema, truncate_description,
+    Config, ConnectionSetting, MCPClient, MCPError, convert_schema, truncate_description,
 };
-use std::sync::Arc;
 
 /// The cap on raw output returned to the model (characters).
 ///
@@ -138,8 +138,10 @@ impl Tool for MCPTool {
 
     fn run<'a>(&'a self, args: Value, ctx: &'a mut ToolContext) -> ToolFuture<'a> {
         boxed(async move {
-            let trace =
-                ctx.start_chip("connection", &format!("{} · running…", self.connection_name));
+            let trace = ctx.start_chip(
+                "connection",
+                &format!("{} · running…", self.connection_name),
+            );
             ctx.update_chip(
                 trace,
                 TraceUpdate::default()
@@ -185,12 +187,7 @@ impl Tool for MCPTool {
 
 impl MCPTool {
     /// §5.5 — MCP output NEVER enters the context in its raw form.
-    fn process_output(
-        &self,
-        ctx: &ToolContext,
-        text: String,
-        server_error: bool,
-    ) -> ToolOutcome {
+    fn process_output(&self, ctx: &ToolContext, text: String, server_error: bool) -> ToolOutcome {
         let label = if server_error { "failed" } else { "ok" };
         let chip = format!("{} · {} {}", self.connection_name, self.remote_name, label);
 
@@ -268,7 +265,11 @@ fn convert_error(error: &MCPError) -> ToolError {
 /// and `ToolCall::parse` accepts only `[A-Za-z0-9_]`. A connection name with spaces
 /// such as "home server" would produce an uncallable tool.
 pub fn build_tool_name(connection_name: &str, remote_name: &str) -> String {
-    format!("{}_{}", simplify_name(connection_name), simplify_name(remote_name))
+    format!(
+        "{}_{}",
+        simplify_name(connection_name),
+        simplify_name(remote_name)
+    )
 }
 
 fn simplify_name(raw: &str) -> String {
@@ -338,7 +339,9 @@ pub fn load_connection(setting: &ConnectionSetting) -> LoadOutcome {
     let client = match MCPClient::new(setting.url.clone(), setting.resolved_key()) {
         Ok(c) => Arc::new(c),
         Err(e) => {
-            outcome.connection_errors.push((setting.name.clone(), e.short_error()));
+            outcome
+                .connection_errors
+                .push((setting.name.clone(), e.short_error()));
             return outcome;
         }
     };
@@ -346,7 +349,9 @@ pub fn load_connection(setting: &ConnectionSetting) -> LoadOutcome {
     let specs = match client.tools() {
         Ok(s) => s,
         Err(e) => {
-            outcome.connection_errors.push((setting.name.clone(), e.short_error()));
+            outcome
+                .connection_errors
+                .push((setting.name.clone(), e.short_error()));
             return outcome;
         }
     };
@@ -517,12 +522,18 @@ mod tests {
         let name = build_tool_name("home server", "run-command");
         assert_eq!(name, "home_server_run_command");
         // The grammar and `ToolCall::parse` accept only this set.
-        assert!(name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'), "{name}");
+        assert!(
+            name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+            "{name}"
+        );
     }
 
     #[test]
     fn turkish_and_consecutive_separators_collapse_into_one_underscore() {
-        assert_eq!(build_tool_name("Work  Net", "get::info"), "work_net_get_info");
+        assert_eq!(
+            build_tool_name("Work  Net", "get::info"),
+            "work_net_get_info"
+        );
     }
 
     #[test]
@@ -565,13 +576,13 @@ mod tests {
         let ticket = executor.active_turn();
 
         // First personal data is read -> the session gets tainted.
-        let first = wait(executor.execute(
-            &ToolCall::new("calendar_read", json!({})),
-            ticket,
-            &mut ctx,
-        ));
+        let first =
+            wait(executor.execute(&ToolCall::new("calendar_read", json!({})), ticket, &mut ctx));
         assert_eq!(first.reason, ExecutionReason::Ok);
-        assert!(executor.session_tainted(), "the personal tool should have tainted the session");
+        assert!(
+            executor.session_tainted(),
+            "the personal tool should have tainted the session"
+        );
 
         // Now the MCP call must hit the gate.
         let outcome = wait(executor.execute(
@@ -584,7 +595,10 @@ mod tests {
         // A denial returns to the model as a NORMAL result, not as a malfunction
         // (§3.3).
         assert_eq!(outcome.to_model, DENIAL_MODEL_TEXT);
-        assert!(!outcome.is_error(), "a denial is not a malfunction but the user's decision");
+        assert!(
+            !outcome.is_error(),
+            "a denial is not a malfunction but the user's decision"
+        );
     }
 
     #[test]
@@ -631,7 +645,10 @@ mod tests {
 
     impl crate::executor::ApprovalGate for Arc<RegistryGate> {
         fn request(&self, request: &crate::executor::ApprovalRequest) -> bool {
-            self.0.lock().expect("registry lock").push(request.content.clone());
+            self.0
+                .lock()
+                .expect("registry lock")
+                .push(request.content.clone());
             false
         }
     }
@@ -697,7 +714,10 @@ mod tests {
         let names = feed_catalog(&mut catalog, &outcome);
 
         assert_eq!(names, vec!["ev_run".to_string()]);
-        assert!(catalog.find("ev_run").is_some(), "it MUST BE VISIBLE in the catalog");
+        assert!(
+            catalog.find("ev_run").is_some(),
+            "it MUST BE VISIBLE in the catalog"
+        );
         // An MCP tool is not a SOURCE of personal data: it must not enter the
         // tainting list.
         assert!(catalog.tainting_tools().is_empty());
@@ -753,20 +773,29 @@ mod tests {
     fn long_output_is_not_dumped_on_the_model_and_goes_to_the_store() {
         let ctx = context();
         // Put a marker that occurs only at the end: let the tail rule be proven.
-        let mut lines: Vec<String> =
-            (0..500).map(|i| format!("line {i} filler filler")).collect();
+        let mut lines: Vec<String> = (0..500)
+            .map(|i| format!("line {i} filler filler"))
+            .collect();
         lines.push("ERROR: the build failed".into());
         let raw = lines.join("\n");
 
         let outcome = sample_tool().process_output(&ctx, raw.clone(), false);
 
         // Bulk data MUST NOT PASS to the model.
-        assert!(!outcome.to_model.contains("line 10 filler"), "{}", outcome.to_model);
+        assert!(
+            !outcome.to_model.contains("line 10 filler"),
+            "{}",
+            outcome.to_model
+        );
         assert!(outcome.to_model.len() < raw.len() / 4);
         // But the error lives in the tail (§5.5).
         assert!(outcome.to_model.contains("ERROR: the build failed"));
         // A single wire format: `source_ref_suffix`.
-        assert!(outcome.to_model.contains("source_ref=mcp#1"), "{}", outcome.to_model);
+        assert!(
+            outcome.to_model.contains("source_ref=mcp#1"),
+            "{}",
+            outcome.to_model
+        );
         // All of it is in the store; the raw form also stands in the chip detail
         // (transparency).
         let record = ctx
@@ -803,6 +832,9 @@ mod tests {
         assert_eq!(outcome.to_model, ERROR_MODEL_TEXT);
         assert!(!outcome.to_model.contains("secret"));
 
-        assert!(matches!(convert_error(&MCPError::Timeout), ToolError::Timeout));
+        assert!(matches!(
+            convert_error(&MCPError::Timeout),
+            ToolError::Timeout
+        ));
     }
 }

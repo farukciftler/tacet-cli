@@ -32,9 +32,7 @@
 pub mod note;
 pub mod store;
 
-pub use note::{
-    KEY_LIMIT, MIN_TEXT, MemoryKind, MemoryNote, TEXT_LIMIT, TOTAL_CAP, fix_keys,
-};
+pub use note::{KEY_LIMIT, MIN_TEXT, MemoryKind, MemoryNote, TEXT_LIMIT, TOTAL_CAP, fix_keys};
 pub use store::{INJECTION_LIMIT, MAX_NOTES, MemoryError, MemoryStore, NoteWatcher};
 
 #[cfg(test)]

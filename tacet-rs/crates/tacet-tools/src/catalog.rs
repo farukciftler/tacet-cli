@@ -14,18 +14,18 @@
 //! the tool is lost inside an `Arc` in the catalog there is no other way to reach
 //! it.
 
-use crate::edit_document::EditDocumentTool;
-use crate::read_document::ReadDocumentTool;
+use crate::calc::CalcTool;
 use crate::create_document::CreateDocumentTool;
+use crate::data_store::SharedStore;
+use crate::edit_document::EditDocumentTool;
 use crate::find_file::FindFileTool;
 use crate::memory::{MemoryTool, SharedMemory};
-use crate::calc::CalcTool;
+use crate::read_document::ReadDocumentTool;
 use crate::run_code::{CodeState, RunCodeTool};
-use crate::data_store::SharedStore;
-use crate::web_search::{WebFetchTool, WebSearchTool};
 use crate::time::TimeTool;
-use tacet_core::ToolCatalog;
+use crate::web_search::{WebFetchTool, WebSearchTool};
 use std::sync::Arc;
+use tacet_core::ToolCatalog;
 
 /// The diagnostic text returned when code execution could not be discovered —
 /// given as a second value rather than a `Result` so the call site can inform the
@@ -236,8 +236,14 @@ mod tests {
         );
 
         let (open, _) = catalog(true);
-        assert!(open.find("web_search").is_some(), "web_search missing with the addon on");
-        assert!(open.find("web_fetch").is_some(), "web_fetch missing with the addon on");
+        assert!(
+            open.find("web_search").is_some(),
+            "web_search missing with the addon on"
+        );
+        assert!(
+            open.find("web_fetch").is_some(),
+            "web_fetch missing with the addon on"
+        );
 
         // The difference is EXACTLY two tools.
         assert_eq!(open.names().len(), closed.names().len() + 2);
@@ -317,7 +323,10 @@ mod tests {
             n, expected,
             "the catalog size changed; the number in the comment and the dropped tool count must be updated"
         );
-        assert!(n > BUDGET, "the budget is no longer binding — the reasoning in the comment has collapsed");
+        assert!(
+            n > BUDGET,
+            "the budget is no longer binding — the reasoning in the comment has collapsed"
+        );
         // The number of tools dropped on a hintless message. The comment states
         // this; the test catches the comment going stale.
         assert_eq!(n - BUDGET, if state.is_some() { 3 } else { 1 });
@@ -330,7 +339,10 @@ mod tests {
         let (closed, closed_state) = catalog(false);
         let m = closed.names().len();
         assert_eq!(m, if closed_state.is_some() { 9 } else { 7 });
-        assert_eq!(m.saturating_sub(BUDGET), if closed_state.is_some() { 1 } else { 0 });
+        assert_eq!(
+            m.saturating_sub(BUDGET),
+            if closed_state.is_some() { 1 } else { 0 }
+        );
     }
 
     /// Names must be unique CASE-INSENSITIVELY too.
@@ -348,6 +360,10 @@ mod tests {
         names.sort();
         let before = names.len();
         names.dedup();
-        assert_eq!(before, names.len(), "names are not unique case-insensitively");
+        assert_eq!(
+            before,
+            names.len(),
+            "names are not unique case-insensitively"
+        );
     }
 }

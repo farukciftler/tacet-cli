@@ -26,7 +26,9 @@ pub fn request_body(id: u64, method: &str, params: Value) -> Vec<u8> {
 /// `notifications/initialized` is its only user: it is the second half of the
 /// MCP handshake, and skipping it makes strict servers reject `tools/list`.
 pub fn notification_body(method: &str) -> Vec<u8> {
-    json!({ "jsonrpc": "2.0", "method": method }).to_string().into_bytes()
+    json!({ "jsonrpc": "2.0", "method": method })
+        .to_string()
+        .into_bytes()
 }
 
 /// Picks OUR id's response out of the incoming body.
@@ -56,7 +58,10 @@ fn id_equals(object: &Value, id: u64) -> bool {
 /// Extracts the `result`; if there is an `error` it becomes a server error.
 pub fn extract_result(response: &Value) -> MCPResult<Value> {
     if let Some(error) = response.get("error") {
-        let message = error.get("message").and_then(Value::as_str).unwrap_or_default();
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         return Err(MCPError::Server(message.to_string()));
     }
     response.get("result").cloned().ok_or(MCPError::Malformed)
@@ -78,8 +83,8 @@ mod tests {
 
     #[test]
     fn a_notification_has_no_id() {
-        let v: Value = serde_json::from_slice(&notification_body("notifications/initialized"))
-            .expect("json");
+        let v: Value =
+            serde_json::from_slice(&notification_body("notifications/initialized")).expect("json");
         assert!(v.get("id").is_none(), "a notification must have no id: {v}");
         assert_eq!(v["method"], json!("notifications/initialized"));
     }
@@ -90,7 +95,10 @@ mod tests {
             {"jsonrpc":"2.0","id":1,"result":"a"},
             {"jsonrpc":"2.0","id":2,"result":"b"},
         ]);
-        assert_eq!(select_response(&body, 2).expect("response")["result"], json!("b"));
+        assert_eq!(
+            select_response(&body, 2).expect("response")["result"],
+            json!("b")
+        );
         assert!(select_response(&body, 3).is_none());
     }
 
@@ -103,7 +111,10 @@ mod tests {
     #[test]
     fn an_error_body_becomes_a_server_error() {
         let response = json!({"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"missing"}});
-        assert_eq!(extract_result(&response).unwrap_err(), MCPError::Server("missing".into()));
+        assert_eq!(
+            extract_result(&response).unwrap_err(),
+            MCPError::Server("missing".into())
+        );
     }
 
     #[test]

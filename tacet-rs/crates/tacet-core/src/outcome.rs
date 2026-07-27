@@ -101,7 +101,11 @@ impl ToolOutcome {
     ) -> Self {
         Self::read_ok(
             chip_text,
-            format!("{}{}", summary.as_ref(), source_ref_suffix(source_ref.as_ref())),
+            format!(
+                "{}{}",
+                summary.as_ref(),
+                source_ref_suffix(source_ref.as_ref())
+            ),
         )
     }
 

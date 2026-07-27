@@ -10,9 +10,9 @@
 //! `hf-hub` extension was deliberately left off — this crate never downloads
 //! under any condition.
 
+use crate::constraint::Constrainer;
 use crate::error::{EngineError, EngineResult};
 use crate::prompt::{Prompt, Template};
-use crate::constraint::Constrainer;
 use crate::provider::{
     EngineProvider, Generation, GenerationFuture, SamplingSetting, StopReason, boxed_generation,
 };
@@ -306,7 +306,10 @@ impl CandleEngine {
             }
         }
         .map_err(|e| {
-            EngineError::Inference(format!("could not decode gguf ({}): {e}", architecture.name()))
+            EngineError::Inference(format!(
+                "could not decode gguf ({}): {e}",
+                architecture.name()
+            ))
         })?;
 
         let tokenizer = Tokenizer::from_file(&setting.tokenizer_path)
@@ -393,7 +396,9 @@ impl CandleEngine {
         // (generation runs to the cap).
         let input = self.tokenize(&prompt.text_with_template(self.template()))?;
         if input.is_empty() {
-            return Err(EngineError::Tokenization("the prompt tokenized to nothing".into()));
+            return Err(EngineError::Tokenization(
+                "the prompt tokenized to nothing".into(),
+            ));
         }
 
         // Temperature 0 -> ArgMax (greedy). That is the default: eval being
@@ -401,9 +406,14 @@ impl CandleEngine {
         let sampling = if setting.temperature <= f32::EPSILON {
             Sampling::ArgMax
         } else if setting.top_p >= 1.0 {
-            Sampling::All { temperature: setting.temperature as f64 }
+            Sampling::All {
+                temperature: setting.temperature as f64,
+            }
         } else {
-            Sampling::TopP { p: setting.top_p as f64, temperature: setting.temperature as f64 }
+            Sampling::TopP {
+                p: setting.top_p as f64,
+                temperature: setting.temperature as f64,
+            }
         };
         let mut sampler = LogitsProcessor::from_sampling(setting.seed, sampling);
 
@@ -555,7 +565,10 @@ impl CandleEngine {
                         "(mask intervention @{}: model wanted {:?}, got {:?})",
                         produced.len(),
                         self.vocab.get(wanted).map(String::as_str).unwrap_or("?"),
-                        self.vocab.get(chosen as usize).map(String::as_str).unwrap_or("?"),
+                        self.vocab
+                            .get(chosen as usize)
+                            .map(String::as_str)
+                            .unwrap_or("?"),
                     );
                 }
                 chosen
@@ -690,12 +703,15 @@ impl EngineProvider for CandleEngine {
 /// GGUF. Guessing the architecture for such a file would be manufacturing risk
 /// where there is no problem to solve.
 fn read_architecture(content: &gguf_file::Content) -> EngineResult<Architecture> {
-    let value = content.metadata.get("general.architecture").ok_or_else(|| {
-        EngineError::Inference(
-            "no 'general.architecture' in the GGUF metadata — the file is corrupt or not GGUF"
-                .into(),
-        )
-    })?;
+    let value = content
+        .metadata
+        .get("general.architecture")
+        .ok_or_else(|| {
+            EngineError::Inference(
+                "no 'general.architecture' in the GGUF metadata — the file is corrupt or not GGUF"
+                    .into(),
+            )
+        })?;
     let name = value
         .to_string()
         .map_err(|e| EngineError::Inference(format!("'general.architecture' is not text: {e}")))?;
@@ -719,11 +735,18 @@ fn read_architecture(content: &gguf_file::Content) -> EngineResult<Architecture>
 /// to the vocabulary afterwards and marked special (`<|im_end|>`, id 151645).
 fn find_stop_tokens(tokenizer: &Tokenizer) -> Vec<u32> {
     let added = tokenizer.get_added_vocabulary();
-    ["</s>", "<|im_end|>", "<|eot_id|>", "<|end_of_text|>", "<end_of_turn>", "<|endoftext|>"]
-        .iter()
-        .filter(|name| added.is_special_token(name))
-        .filter_map(|name| tokenizer.token_to_id(name))
-        .collect()
+    [
+        "</s>",
+        "<|im_end|>",
+        "<|eot_id|>",
+        "<|end_of_text|>",
+        "<end_of_turn>",
+        "<|endoftext|>",
+    ]
+    .iter()
+    .filter(|name| added.is_special_token(name))
+    .filter_map(|name| tokenizer.token_to_id(name))
+    .collect()
 }
 
 /// Turns token ids into SURFACE text (the input of the constraint mask).

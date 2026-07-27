@@ -146,14 +146,20 @@ fn calc() -> Vec<EvalCase> {
             // 1000 must be said by the TOOL; the number in the model's sentence
             // is not evidence.
             .evidence(&["1000"]),
-        EvalCase::new("calc-percent", "How much is 250 lira with a 20 percent discount?")
-            .tool("calculate")
-            .script(&[r#"calculate({"expression":"250-250*20%"})"#, "200 lira."])
-            .evidence(&["200"]),
+        EvalCase::new(
+            "calc-percent",
+            "How much is 250 lira with a 20 percent discount?",
+        )
+        .tool("calculate")
+        .script(&[r#"calculate({"expression":"250-250*20%"})"#, "200 lira."])
+        .evidence(&["200"]),
         // An unsupported expression: the tool must NOT SILENTLY invent a number.
         EvalCase::new("calc-invalid", "What is sin(45)?")
             .tool("calculate")
-            .script(&[r#"calculate({"expression":"sin(45)"})"#, "I could not compute that."])
+            .script(&[
+                r#"calculate({"expression":"sin(45)"})"#,
+                "I could not compute that.",
+            ])
             .evidence(&["tool_failed"]),
     ]
 }

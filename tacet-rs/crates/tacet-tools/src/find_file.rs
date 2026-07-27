@@ -171,8 +171,10 @@ pub fn search(
             }
             outcome.visited += 1;
 
-            let name =
-                path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
             // Hidden entries are skipped: trees like `.git` eat the entire search
             // budget and are not what the user calls "my files".
             if name.starts_with('.') {
@@ -292,7 +294,9 @@ fn relative_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| {
-            path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+            path.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
         })
 }
 
@@ -331,8 +335,9 @@ impl Tool for FindFileTool {
         ArgSchema::object(vec![
             Field::new(
                 "pattern",
-                ArgSchema::text()
-                    .description("Text to look for in file names and file contents, e.g. 'meeting'."),
+                ArgSchema::text().description(
+                    "Text to look for in file names and file contents, e.g. 'meeting'.",
+                ),
             )
             .required(),
             Field::new(
@@ -344,8 +349,9 @@ impl Tool for FindFileTool {
             ),
             Field::new(
                 "search_content",
-                ArgSchema::bool()
-                    .description("Also search inside text files (default true). false = names only."),
+                ArgSchema::bool().description(
+                    "Also search inside text files (default true). false = names only.",
+                ),
             ),
             Field::new(
                 "max_results",
@@ -396,11 +402,7 @@ impl Tool for FindFileTool {
 impl FindFileTool {
     /// The synchronous body — `run` only holds the chip/tainting shell, and the
     /// error path is collected in a single point (`ToolOutcome::failed`).
-    fn execute(
-        &self,
-        args: &serde_json::Value,
-        ctx: &ToolContext,
-    ) -> ToolResult<ToolOutcome> {
+    fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> ToolResult<ToolOutcome> {
         let pattern = args
             .get("pattern")
             .and_then(|v| v.as_str())
@@ -421,8 +423,10 @@ impl FindFileTool {
             return Err(ToolError::FileNotFound(root));
         }
 
-        let search_content =
-            args.get("search_content").and_then(|v| v.as_bool()).unwrap_or(true);
+        let search_content = args
+            .get("search_content")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
         let max_results = args
             .get("max_results")
             .and_then(|v| v.as_u64())
@@ -436,7 +440,11 @@ impl FindFileTool {
         // `tool_failed` text and the model could not tell "the search did not work"
         // from "there are no results".
         if found.matches.is_empty() {
-            let partial = if found.partial { " (partial scan: limit reached)" } else { "" };
+            let partial = if found.partial {
+                " (partial scan: limit reached)"
+            } else {
+                ""
+            };
             return Ok(ToolOutcome::read_ok(
                 "No matching file",
                 format!("no_results_found in the working directory{partial}"),
@@ -453,8 +461,7 @@ impl FindFileTool {
         // is thereby not DATA LOSS but a window decision — the next tool reaches the
         // remaining results in full by reference.
         if count > MODEL_LINES {
-            let source =
-                ctx.store("file", &format!("{count} file matches"), full_list.clone());
+            let source = ctx.store("file", &format!("{count} file matches"), full_list.clone());
             let preview = found.lines(MODEL_LINES);
             return Ok(ToolOutcome::summarize(
                 chip,
@@ -464,7 +471,11 @@ impl FindFileTool {
             .raw_output(full_list));
         }
 
-        let partial = if found.partial { "\n(partial scan: limit reached)" } else { "" };
+        let partial = if found.partial {
+            "\n(partial scan: limit reached)"
+        } else {
+            ""
+        };
         Ok(
             ToolOutcome::read_ok(chip, format!("found {count} files:\n{full_list}{partial}"))
                 .raw_output(full_list),
@@ -480,8 +491,8 @@ impl FindFileTool {
 mod tests {
     use super::*;
     use serde_json::json;
-    use tacet_core::{InMemoryDataStore, SilentReporter, SourceRef, ToolState};
     use std::sync::Arc;
+    use tacet_core::{InMemoryDataStore, SilentReporter, SourceRef, ToolState};
 
     /// Core has no tokio; this crate must not pick a runtime either (the same
     /// pattern as `block_on` in the create_document tests).
@@ -539,13 +550,22 @@ mod tests {
 
         let o = search(&root, "meeting", true, 20).expect("search");
         assert_eq!(o.matches.len(), 2, "{:?}", o.matches);
-        let by_name =
-            o.matches.iter().find(|m| m.search_in == SearchIn::Name).expect("name match");
+        let by_name = o
+            .matches
+            .iter()
+            .find(|m| m.search_in == SearchIn::Name)
+            .expect("name match");
         assert_eq!(by_name.path, "meeting-notes.md");
         assert!(by_name.line.is_none(), "a name match must carry no line");
-        let by_content =
-            o.matches.iter().find(|m| m.search_in == SearchIn::Content).expect("content");
-        assert_eq!(by_content.line.as_deref(), Some("there is a meeting this evening"));
+        let by_content = o
+            .matches
+            .iter()
+            .find(|m| m.search_in == SearchIn::Content)
+            .expect("content");
+        assert_eq!(
+            by_content.line.as_deref(),
+            Some("there is a meeting this evening")
+        );
         fs::remove_dir_all(&root).ok();
     }
 
@@ -562,7 +582,10 @@ mod tests {
         // two must still match. This fixture stays non-ASCII on purpose — the
         // accent folding it exercises is the point of the test.
         assert_eq!(search(&root, "gorusme", true, 20).unwrap().matches.len(), 1);
-        assert_eq!(search(&root, "february", true, 20).unwrap().matches.len(), 1);
+        assert_eq!(
+            search(&root, "february", true, 20).unwrap().matches.len(),
+            1
+        );
         fs::remove_dir_all(&root).ok();
     }
 
@@ -611,7 +634,12 @@ mod tests {
             write(&outside, "secret-outside.md", "secret");
             std::os::unix::fs::symlink(&outside, root.join("gate")).expect("symlink");
             let o2 = search(&root, "secret", true, 20).expect("search");
-            assert_eq!(o2.matches.len(), 1, "the link was followed: {:?}", o2.matches);
+            assert_eq!(
+                o2.matches.len(),
+                1,
+                "the link was followed: {:?}",
+                o2.matches
+            );
             fs::remove_dir_all(&outside).ok();
         }
         fs::remove_dir_all(&root).ok();
@@ -632,12 +660,22 @@ mod tests {
         );
 
         assert_eq!(outcome.state, ToolState::Read);
-        assert!(outcome.to_model.contains("source_ref"), "{}", outcome.to_model);
+        assert!(
+            outcome.to_model.contains("source_ref"),
+            "{}",
+            outcome.to_model
+        );
         // The 40-line list WAS NOT DUMPED on the model: the last file name must not
         // appear in the model text.
-        assert!(!outcome.to_model.contains("report-039"), "{}", outcome.to_model);
+        assert!(
+            !outcome.to_model.contains("report-039"),
+            "{}",
+            outcome.to_model
+        );
         // But no data was lost: the body in the store carries the full list.
-        let record = ctx.from_store(&SourceRef("file#1".into())).expect("store record");
+        let record = ctx
+            .from_store(&SourceRef("file#1".into()))
+            .expect("store record");
         assert!(record.body.contains("report-039.md"));
         assert!(ctx.session_tainted(), "the user's files were read");
         fs::remove_dir_all(&root).ok();
@@ -653,7 +691,11 @@ mod tests {
         let mut ctx = context(&root, store);
         let outcome = block_on(FindFileTool::new().run(json!({"pattern": "zeta"}), &mut ctx));
 
-        assert_eq!(outcome.state, ToolState::Read, "an empty result must not fail");
+        assert_eq!(
+            outcome.state,
+            ToolState::Read,
+            "an empty result must not fail"
+        );
         assert!(outcome.to_model.starts_with("no_results_found"));
         assert_ne!(outcome.to_model, tacet_core::ERROR_MODEL_TEXT);
         fs::remove_dir_all(&root).ok();
@@ -674,11 +716,15 @@ mod tests {
         assert!(schema.validate(&json!({})).is_err(), "required field");
         assert!(schema.validate(&json!({"pattern": 5})).is_err(), "type");
         assert!(
-            schema.validate(&json!({"pattern": "a", "max_results": 9999})).is_err(),
+            schema
+                .validate(&json!({"pattern": "a", "max_results": 9999}))
+                .is_err(),
             "range"
         );
         assert!(
-            schema.validate(&json!({"pattern": "a", "search_content": "yes"})).is_err(),
+            schema
+                .validate(&json!({"pattern": "a", "search_content": "yes"}))
+                .is_err(),
             "bool"
         );
     }
@@ -711,7 +757,11 @@ mod tests {
         let mut ctx = context(&root, store);
         let outcome = block_on(FindFileTool::new().run(json!({"pattern": "target"}), &mut ctx));
 
-        assert!(outcome.to_model.contains("sub/folder/target.md"), "{}", outcome.to_model);
+        assert!(
+            outcome.to_model.contains("sub/folder/target.md"),
+            "{}",
+            outcome.to_model
+        );
         assert!(
             !outcome.to_model.contains(&root.display().to_string()),
             "an absolute path leaked: {}",
@@ -738,6 +788,10 @@ mod tests {
         catalog.add(Arc::new(crate::calc::CalcTool));
         catalog.add(Arc::new(FindFileTool::new()));
         let chosen = Router::new().max(1).select("find that file", &catalog);
-        assert_eq!(chosen[0].name(), "find_file", "the router picked the wrong tool");
+        assert_eq!(
+            chosen[0].name(),
+            "find_file",
+            "the router picked the wrong tool"
+        );
     }
 }

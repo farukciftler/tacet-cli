@@ -161,7 +161,10 @@ fn range_fits(
     // Exponent notation can shift the value either way; no meaningful upper
     // bound follows from the prefix. We do not prune here, the exact check at
     // close time is enough.
-    if matches!(stage, NumberStage::Exp | NumberStage::ExpSign | NumberStage::ExpDigit) {
+    if matches!(
+        stage,
+        NumberStage::Exp | NumberStage::ExpSign | NumberStage::ExpDigit
+    ) {
         return true;
     }
     let negative = buffer.starts_with('-');
@@ -228,11 +231,30 @@ enum Frame {
         /// The field whose key has closed and whose value is expected.
         active: usize,
     },
-    Array { node: usize, count: usize, stage: ArrayStage },
-    Text { node: usize, length: usize, stage: StringStage },
-    Choice { node: usize, candidates: Vec<usize>, progress: usize },
-    Number { node: usize, stage: NumberStage, buffer: String },
-    Literal { candidates: Vec<usize>, progress: usize },
+    Array {
+        node: usize,
+        count: usize,
+        stage: ArrayStage,
+    },
+    Text {
+        node: usize,
+        length: usize,
+        stage: StringStage,
+    },
+    Choice {
+        node: usize,
+        candidates: Vec<usize>,
+        progress: usize,
+    },
+    Number {
+        node: usize,
+        stage: NumberStage,
+        buffer: String,
+    },
+    Literal {
+        candidates: Vec<usize>,
+        progress: usize,
+    },
 }
 
 /// The effect of one character on a frame.
@@ -260,7 +282,11 @@ pub struct GrammarState {
 impl GrammarState {
     pub fn new(grammar: Arc<Grammar>) -> Self {
         let root = grammar.root;
-        Self { grammar, stack: vec![Frame::Value { node: root }], position: 0 }
+        Self {
+            grammar,
+            stack: vec![Frame::Value { node: root }],
+            position: 0,
+        }
     }
 
     /// Advances the automaton over a produced chunk.
@@ -318,7 +344,11 @@ impl GrammarState {
 
     /// Closes generation; errors if a structure is still open.
     pub fn finish(&self) -> Result<(), GrammarError> {
-        if self.is_done() { Ok(()) } else { Err(GrammarError::Incomplete) }
+        if self.is_done() {
+            Ok(())
+        } else {
+            Err(GrammarError::Incomplete)
+        }
     }
 
     /// An uncached mask — for small vocabularies and tests.
@@ -337,7 +367,11 @@ impl GrammarState {
     /// branches. MEASURED effect: 6.1ms -> 0.2ms per step.
     pub(crate) fn is_neutral(&self, c: char) -> bool {
         match self.stack.last() {
-            Some(Frame::Text { node, stage: StringStage::Body, .. }) => {
+            Some(Frame::Text {
+                node,
+                stage: StringStage::Body,
+                ..
+            }) => {
                 matches!(self.grammar.nodes[*node], Node::Text { max_length: None })
                     && c != '"'
                     && c != '\\'
@@ -356,7 +390,9 @@ impl GrammarState {
                 return if SPACES.contains(&c) {
                     Ok(())
                 } else {
-                    Err(GrammarError::TrailingInput { position: self.position })
+                    Err(GrammarError::TrailingInput {
+                        position: self.position,
+                    })
                 };
             }
             match self.feed_frame(c)? {
@@ -390,7 +426,10 @@ impl GrammarState {
     fn feed_frame(&mut self, c: char) -> Result<Step, GrammarError> {
         let n = self.stack.len() - 1;
         let position = self.position;
-        let err = || GrammarError::UnexpectedCharacter { character: c, position };
+        let err = || GrammarError::UnexpectedCharacter {
+            character: c,
+            position,
+        };
         let space = SPACES.contains(&c);
 
         // Disjoint field borrows: `grammar` is read-only, `stack` is mutable.
@@ -464,7 +503,14 @@ impl GrammarState {
             }
 
             // --- object ---
-            Frame::Object { node, seen, stage, candidates, progress, active } => {
+            Frame::Object {
+                node,
+                seen,
+                stage,
+                candidates,
+                progress,
+                active,
+            } => {
                 let Node::Object { fields } = &grammar.nodes[*node] else {
                     unreachable!("an object frame cannot be opened on a non-object node")
                 };
@@ -476,8 +522,7 @@ impl GrammarState {
 
                 match *stage {
                     ObjectStage::KeyOrClose | ObjectStage::AfterComma => {
-                        let can_close =
-                            *stage == ObjectStage::KeyOrClose && required_done;
+                        let can_close = *stage == ObjectStage::KeyOrClose && required_done;
                         if space {
                             Step::Consumed
                         } else if c == '}' && can_close {
@@ -515,9 +560,7 @@ impl GrammarState {
                             let remaining: Vec<usize> = candidates
                                 .iter()
                                 .copied()
-                                .filter(|i| {
-                                    fields[*i].name_chars.get(*progress) == Some(&c)
-                                })
+                                .filter(|i| fields[*i].name_chars.get(*progress) == Some(&c))
                                 .collect();
                             if remaining.is_empty() {
                                 return Err(err());
@@ -541,7 +584,9 @@ impl GrammarState {
                         if space {
                             Step::Consumed
                         } else {
-                            to_push = Some(Frame::Value { node: fields[*active].node });
+                            to_push = Some(Frame::Value {
+                                node: fields[*active].node,
+                            });
                             *stage = ObjectStage::InValue;
                             Step::Retry
                         }
@@ -611,7 +656,11 @@ impl GrammarState {
             }
 
             // --- free text ---
-            Frame::Text { node, length, stage } => {
+            Frame::Text {
+                node,
+                length,
+                stage,
+            } => {
                 let Node::Text { max_length } = &grammar.nodes[*node] else {
                     unreachable!("a text frame cannot be opened on a non-text node")
                 };
@@ -665,7 +714,11 @@ impl GrammarState {
             }
 
             // --- closed value set ---
-            Frame::Choice { node, candidates, progress } => {
+            Frame::Choice {
+                node,
+                candidates,
+                progress,
+            } => {
                 let Node::Choice { choices } = &grammar.nodes[*node] else {
                     unreachable!("a choice frame cannot be opened on a non-choice node")
                 };
@@ -691,8 +744,17 @@ impl GrammarState {
             }
 
             // --- number ---
-            Frame::Number { node, stage, buffer } => {
-                let Node::Number { is_integer, min, max } = &grammar.nodes[*node] else {
+            Frame::Number {
+                node,
+                stage,
+                buffer,
+            } => {
+                let Node::Number {
+                    is_integer,
+                    min,
+                    max,
+                } = &grammar.nodes[*node]
+                else {
                     unreachable!("a number frame cannot be opened on a non-number node")
                 };
                 let fractional = !*is_integer;
@@ -711,9 +773,9 @@ impl GrammarState {
                         Step::Consumed
                     }
                     None if stage.can_finish() => {
-                        let value: f64 = buffer.parse().map_err(|_| {
-                            GrammarError::OutOfRange(buffer.clone())
-                        })?;
+                        let value: f64 = buffer
+                            .parse()
+                            .map_err(|_| GrammarError::OutOfRange(buffer.clone()))?;
                         if min.is_some_and(|v| value < v) || max.is_some_and(|v| value > v) {
                             return Err(GrammarError::OutOfRange(buffer.clone()));
                         }
@@ -724,7 +786,10 @@ impl GrammarState {
             }
 
             // --- true / false ---
-            Frame::Literal { candidates, progress } => {
+            Frame::Literal {
+                candidates,
+                progress,
+            } => {
                 let remaining: Vec<usize> = candidates
                     .iter()
                     .copied()
@@ -766,7 +831,14 @@ impl GrammarState {
                 false
             }
 
-            Frame::Object { node, seen, stage, candidates, progress, active } => {
+            Frame::Object {
+                node,
+                seen,
+                stage,
+                candidates,
+                progress,
+                active,
+            } => {
                 let Node::Object { fields } = &grammar.nodes[*node] else {
                     return false;
                 };
@@ -855,7 +927,11 @@ impl GrammarState {
                 false
             }
 
-            Frame::Text { node, length, stage } => {
+            Frame::Text {
+                node,
+                length,
+                stage,
+            } => {
                 let Node::Text { max_length } = &grammar.nodes[*node] else {
                     return false;
                 };
@@ -878,7 +954,11 @@ impl GrammarState {
                 false
             }
 
-            Frame::Choice { node, candidates, progress } => {
+            Frame::Choice {
+                node,
+                candidates,
+                progress,
+            } => {
                 let Node::Choice { choices } = &grammar.nodes[*node] else {
                     return false;
                 };
@@ -891,8 +971,17 @@ impl GrammarState {
                 false
             }
 
-            Frame::Number { node, stage, buffer } => {
-                let Node::Number { is_integer, min, max } = &grammar.nodes[*node] else {
+            Frame::Number {
+                node,
+                stage,
+                buffer,
+            } => {
+                let Node::Number {
+                    is_integer,
+                    min,
+                    max,
+                } = &grammar.nodes[*node]
+                else {
                     return false;
                 };
                 let fractional = !*is_integer;
@@ -912,12 +1001,15 @@ impl GrammarState {
                 // say too. But first make sure the value really is inside the
                 // range — if not, this is not an ending point.
                 stage.can_finish()
-                    && buffer.parse::<f64>().is_ok_and(|v| {
-                        min.is_none_or(|x| v >= x) && max.is_none_or(|x| v <= x)
-                    })
+                    && buffer
+                        .parse::<f64>()
+                        .is_ok_and(|v| min.is_none_or(|x| v >= x) && max.is_none_or(|x| v <= x))
             }
 
-            Frame::Literal { candidates, progress } => {
+            Frame::Literal {
+                candidates,
+                progress,
+            } => {
                 for i in candidates {
                     if let Some(c) = LITERALS[*i].chars().nth(*progress) {
                         set.add(c);
@@ -937,7 +1029,11 @@ impl GrammarState {
             // The FIRST character of a number goes through range pruning too:
             // in the range `[1,50]` starting with `0` is a dead path and must
             // never open.
-            Node::Number { is_integer, min, max } => {
+            Node::Number {
+                is_integer,
+                min,
+                max,
+            } => {
                 for c in NUMBER_CANDIDATES {
                     if let Some(s) = number_transition(NumberStage::Start, c, !*is_integer, *min)
                         && range_fits(&c.to_string(), s, *is_integer, *min, *max)

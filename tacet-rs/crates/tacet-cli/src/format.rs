@@ -434,7 +434,11 @@ fn prefix_decision(prefix: &str) -> Option<Decision> {
                 // Still stacking `#`: it can be a heading up to 6.
                 return if n <= 6 { None } else { Some(Decision::Plain) };
             };
-            if next == ' ' && n <= 6 { Some(Decision::Heading) } else { Some(Decision::Plain) }
+            if next == ' ' && n <= 6 {
+                Some(Decision::Heading)
+            } else {
+                Some(Decision::Plain)
+            }
         }
         '-' | '*' | '+' => match body.chars().nth(1) {
             None => None,
@@ -479,11 +483,19 @@ fn prefix_decision(prefix: &str) -> Option<Decision> {
 }
 
 fn paint(colored: bool, code: &str, text: &str) -> String {
-    if colored { format!("{code}{text}{}", reset_code()) } else { text.to_string() }
+    if colored {
+        format!("{code}{text}{}", reset_code())
+    } else {
+        text.to_string()
+    }
 }
 
 fn paint_open(colored: bool, code: &str) -> String {
-    if colored { code.to_string() } else { String::new() }
+    if colored {
+        code.to_string()
+    } else {
+        String::new()
+    }
 }
 
 /// Turns raw `| a | b |` rows into text with aligned columns.
@@ -531,7 +543,11 @@ pub fn draw_table(raw: &[String], colored: bool) -> String {
             output.push_str(&paint(colored, BOLD, &line));
             output.push('\n');
             let divider: Vec<String> = width.iter().map(|w| "─".repeat(*w)).collect();
-            output.push_str(&paint(colored, dim_code(), &format!("  {}", divider.join("  "))));
+            output.push_str(&paint(
+                colored,
+                dim_code(),
+                &format!("  {}", divider.join("  ")),
+            ));
         } else {
             output.push_str(&line);
         }
@@ -580,7 +596,10 @@ mod tests {
         let c = chunked("This is **bold** and `code`.\n", 1);
         assert!(c.contains(&format!("{BOLD}bold{RESET}")), "{c:?}");
         assert!(c.contains(&format!("{REVERSE}code{RESET}")), "{c:?}");
-        assert!(!c.contains("**"), "the stars must not stay on screen: {c:?}");
+        assert!(
+            !c.contains("**"),
+            "the stars must not stay on screen: {c:?}"
+        );
     }
 
     /// An UNCLOSED marker DOES NOT BREAK the screen: it is printed raw, no style
@@ -589,7 +608,10 @@ mod tests {
     fn an_unclosed_marker_is_printed_raw() {
         let c = chunked("2 **3 = 6 and it goes on\n", 1);
         assert!(c.contains("**3 = 6 and it goes on"), "{c:?}");
-        assert!(!c.contains(BOLD), "an unopened bold style must not be written: {c:?}");
+        assert!(
+            !c.contains(BOLD),
+            "an unopened bold style must not be written: {c:?}"
+        );
         // Even when the line ends, an unclosed buffer is released.
         let d = chunked("half `code", 1);
         assert!(d.contains("half `code"), "{d:?}");
@@ -609,8 +631,14 @@ mod tests {
     /// computed from BYTES instead of CHARACTERS would still pass.
     #[test]
     fn the_table_is_aligned() {
-        let c = chunked("| name | ölçü |\n|---|---|\n| a | 1 |\n| longname | 22 |\n\n", 1);
-        assert!(!c.contains('|'), "the pipe characters must not remain: {c:?}");
+        let c = chunked(
+            "| name | ölçü |\n|---|---|\n| a | 1 |\n| longname | 22 |\n\n",
+            1,
+        );
+        assert!(
+            !c.contains('|'),
+            "the pipe characters must not remain: {c:?}"
+        );
         assert!(c.contains("longname  22"), "{c:?}");
         // The header's 'name' column must line up with the width of 'longname'.
         assert!(c.contains("name      ölçü"), "{c:?}");

@@ -14,7 +14,11 @@ const fn generate_table() -> [u32; 256] {
         let mut c = i as u32;
         let mut bit = 0;
         while bit < 8 {
-            c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+            c = if c & 1 != 0 {
+                0xEDB8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
             bit += 1;
         }
         table[i] = c;

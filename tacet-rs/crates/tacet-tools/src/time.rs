@@ -32,11 +32,11 @@
 
 use crate::router::simplify;
 use serde_json::Value;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tacet_core::{
-    Field, Tool, ToolContext, ToolState, ToolFuture, ToolError, ToolOutcome, ArgSchema,
+    ArgSchema, Field, Tool, ToolContext, ToolError, ToolFuture, ToolOutcome, ToolState,
     TraceUpdate, boxed,
 };
-use std::time::{SystemTime, UNIX_EPOCH};
 
 // ---------------------------------------------------------------------------
 // Calendar arithmetic
@@ -86,8 +86,15 @@ fn days_in_month(year: i64, month: u32) -> u32 {
 /// English weekday names. LANGUAGE-NEUTRAL OUTPUT: the model translates this
 /// into the user's language. Localizing the output here made the model parrot
 /// the text back in a multilingual flow.
-const WEEKDAY_NAMES: [&str; 7] =
-    ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const WEEKDAY_NAMES: [&str; 7] = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+];
 
 /// A calendar instant (a wall clock read in a particular time zone).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,14 +111,28 @@ impl DateTime {
     /// An invalid component (month 13, 31 February, hour 25) returns `None`.
     /// NO CLAMPING: rounding 31 February to 28 February silently turns the
     /// user's typo into a different date — exactly the silent drift we avoid.
-    pub fn new(year: i64, month: u32, day: u32, clock: u32, minute: u32, second: u32) -> Option<Self> {
+    pub fn new(
+        year: i64,
+        month: u32,
+        day: u32,
+        clock: u32,
+        minute: u32,
+        second: u32,
+    ) -> Option<Self> {
         if !(1..=12).contains(&month) || day == 0 || day > days_in_month(year, month) {
             return None;
         }
         if clock > 23 || minute > 59 || second > 59 {
             return None;
         }
-        Some(Self { year, month, day, clock, minute, second })
+        Some(Self {
+            year,
+            month,
+            day,
+            clock,
+            minute,
+            second,
+        })
     }
 
     pub fn epoch(&self) -> i64 {
@@ -138,7 +159,12 @@ impl DateTime {
     /// The start of the day. REQUIRED in the diff computation: if the two ends
     /// are not reduced to the start of the day the time-of-day difference shifts
     pub fn start_of_day(&self) -> Self {
-        Self { clock: 0, minute: 0, second: 0, ..*self }
+        Self {
+            clock: 0,
+            minute: 0,
+            second: 0,
+            ..*self
+        }
     }
 
     pub fn day_number(&self) -> i64 {
@@ -164,7 +190,12 @@ impl DateTime {
 
     fn add_days(&self, day: i64) -> Self {
         let (year, month, g) = weekday_to_date(self.day_number() + day);
-        Self { year, month, day: g, ..*self }
+        Self {
+            year,
+            month,
+            day: g,
+            ..*self
+        }
     }
 }
 
@@ -204,7 +235,11 @@ impl TimeResolver {
     /// the input carries its own time zone ("...T18:00+03:00"); it is needed to
     /// convert that instant into the caller's wall clock. Text with no offset is
     /// already taken to be written in the caller's zone — the least surprising assumption.
-    pub fn resolve_with_offset(raw: &str, now: DateTime, local_offset_min: i64) -> Option<Resolution> {
+    pub fn resolve_with_offset(
+        raw: &str,
+        now: DateTime,
+        local_offset_min: i64,
+    ) -> Option<Resolution> {
         let text = raw.trim();
         if text.is_empty() {
             return None;
@@ -238,7 +273,8 @@ impl TimeResolver {
             return true;
         }
         ["am", "pm", "oo", "os"].iter().any(|suffix| {
-            plain.split(|c: char| !c.is_ascii_alphanumeric())
+            plain
+                .split(|c: char| !c.is_ascii_alphanumeric())
                 .any(|p| p == *suffix || (p.len() > suffix.len() && p.ends_with(suffix)))
         })
     }
@@ -281,7 +317,9 @@ fn resolve_absolute(text: &str, local_offset_min: i64) -> Option<Resolution> {
     // If the input carries its own time zone, first convert to the absolute
     // instant, then read it back in the caller's zone.
     let an = match external_offset_min {
-        Some(external) if has_clock => DateTime::from_epoch(an.epoch() - external * 60 + local_offset_min * 60),
+        Some(external) if has_clock => {
+            DateTime::from_epoch(an.epoch() - external * 60 + local_offset_min * 60)
+        }
         _ => an,
     };
     Some(Resolution { an, has_clock })
@@ -321,7 +359,10 @@ fn last_offset(s: &str) -> Option<(&str, i64)> {
 fn date_piece(s: &str) -> Option<(i64, u32, u32)> {
     let ayr = s.chars().find(|c| *c == '-' || *c == '/' || *c == '.')?;
     let p: Vec<&str> = s.split(ayr).collect();
-    if p.len() != 3 || p.iter().any(|x| x.is_empty() || !x.bytes().all(|b| b.is_ascii_digit())) {
+    if p.len() != 3
+        || p.iter()
+            .any(|x| x.is_empty() || !x.bytes().all(|b| b.is_ascii_digit()))
+    {
         return None;
     }
     let (year, month, day) = if p[0].len() == 4 {
@@ -338,7 +379,8 @@ fn date_piece(s: &str) -> Option<(i64, u32, u32)> {
 fn time_piece(s: &str) -> Option<(u32, u32, u32)> {
     let p: Vec<&str> = s.split(':').collect();
     if !(2..=3).contains(&p.len())
-        || p.iter().any(|x| x.is_empty() || !x.bytes().all(|b| b.is_ascii_digit()))
+        || p.iter()
+            .any(|x| x.is_empty() || !x.bytes().all(|b| b.is_ascii_digit()))
     {
         return None;
     }
@@ -368,14 +410,25 @@ fn relative_day_shorthand(raw: &str, now: DateTime) -> Option<Resolution> {
     // The clock time: first "18:00"/"18.30"; otherwise, because the day is
     // EXPLICIT, a standalone number can safely be read as an hour ("tomorrow 9").
     if let Some((h, m)) = look_up_clock(&text) {
-        return DateTime::new(target.year, target.month, target.day, h, m, 0)
-            .map(|an| Resolution { an, has_clock: true });
+        return DateTime::new(target.year, target.month, target.day, h, m, 0).map(|an| {
+            Resolution {
+                an,
+                has_clock: true,
+            }
+        });
     }
     if let Some(h) = bare_clock(&text) {
-        return DateTime::new(target.year, target.month, target.day, h, 0, 0)
-            .map(|an| Resolution { an, has_clock: true });
+        return DateTime::new(target.year, target.month, target.day, h, 0, 0).map(|an| {
+            Resolution {
+                an,
+                has_clock: true,
+            }
+        });
     }
-    Some(Resolution { an: target, has_clock: false })
+    Some(Resolution {
+        an: target,
+        has_clock: false,
+    })
 }
 
 /// The day offset from a weekday name.
@@ -397,7 +450,10 @@ fn weekday_offset(plain: &str, now: DateTime) -> Option<i64> {
         ("sunday", 0),
         ("tuesday", 2),
     ];
-    let target = WEEKDAYS.iter().find(|(name, _)| plain.contains(name)).map(|(_, n)| *n)?;
+    let target = WEEKDAYS
+        .iter()
+        .find(|(name, _)| plain.contains(name))
+        .map(|(_, n)| *n)?;
     let today = now.weekday() as i64;
     let mut offset = (target as i64 - today).rem_euclid(7);
     if offset == 0 {
@@ -430,8 +486,15 @@ fn named_weekday(raw: &str, now: DateTime) -> Option<Resolution> {
     if !(plain.contains("new year")) {
         return None;
     }
-    let year = if now.month == 1 && now.day == 1 { now.year } else { now.year + 1 };
-    DateTime::new(year, 1, 1, 0, 0, 0).map(|an| Resolution { an, has_clock: false })
+    let year = if now.month == 1 && now.day == 1 {
+        now.year
+    } else {
+        now.year + 1
+    };
+    DateTime::new(year, 1, 1, 0, 0, 0).map(|an| Resolution {
+        an,
+        has_clock: false,
+    })
 }
 
 /// A date with a month name: "2 december 2026", "20 july", "december 2".
@@ -441,22 +504,40 @@ fn named_weekday(raw: &str, now: DateTime) -> Option<Resolution> {
 /// questions ("how many days left"); a user saying "3 january" in December does not mean last January.
 fn named_month_date(raw: &str, now: DateTime) -> Option<Resolution> {
     const MONTHS: [&str; 12] = [
-        "january", "february", "march", "april", "may", "june", "july", "august", "september",
-        "october", "november", "december",
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
     ];
     let plain = simplify(raw);
-    let month = MONTHS.iter().position(|a| plain.contains(a)).map(|i| i as u32 + 1)?;
+    let month = MONTHS
+        .iter()
+        .position(|a| plain.contains(a))
+        .map(|i| i as u32 + 1)?;
 
     let clock = look_up_clock(&plain);
     // If a clock time was found its digits are removed from the text so they are not taken for a day/year.
     let clean = match clock {
-        Some((h, m)) => plain.replace(&format!("{h}:{m:02}"), " ").replace(&format!("{h}.{m:02}"), " "),
+        Some((h, m)) => plain
+            .replace(&format!("{h}:{m:02}"), " ")
+            .replace(&format!("{h}.{m:02}"), " "),
         None => plain.clone(),
     };
 
     let mut day = None;
     let mut year = None;
-    for part in clean.split(|c: char| !c.is_ascii_digit()).filter(|p| !p.is_empty()) {
+    for part in clean
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|p| !p.is_empty())
+    {
         match part.len() {
             1 | 2 if day.is_none() => day = part.parse::<u32>().ok(),
             4 if year.is_none() => year = part.parse::<i64>().ok(),
@@ -466,12 +547,21 @@ fn named_month_date(raw: &str, now: DateTime) -> Option<Resolution> {
     let day = day?;
 
     let (an, has_clock) = match clock {
-        Some((h, m)) => (DateTime::new(year.unwrap_or(now.year), month, day, h, m, 0)?, true),
-        None => (DateTime::new(year.unwrap_or(now.year), month, day, 0, 0, 0)?, false),
+        Some((h, m)) => (
+            DateTime::new(year.unwrap_or(now.year), month, day, h, m, 0)?,
+            true,
+        ),
+        None => (
+            DateTime::new(year.unwrap_or(now.year), month, day, 0, 0, 0)?,
+            false,
+        ),
     };
     if year.is_none() && an.day_number() < now.day_number() {
         let forward = DateTime::new(an.year + 1, month, day, an.clock, an.minute, 0)?;
-        return Some(Resolution { an: forward, has_clock });
+        return Some(Resolution {
+            an: forward,
+            has_clock,
+        });
     }
     Some(Resolution { an, has_clock })
 }
@@ -709,7 +799,10 @@ impl Default for TimeTool {
 impl TimeTool {
     /// The default zone is UTC. See the file header: the zone is NEVER guessed.
     pub fn new() -> Self {
-        Self { offset_minutes: 0, fixed_epoch: None }
+        Self {
+            offset_minutes: 0,
+            fixed_epoch: None,
+        }
     }
 
     /// The offset in minutes relative to UTC (e.g. 180 for Turkey).
@@ -757,8 +850,12 @@ impl TimeTool {
     /// there is no failure on the inflated side.
     pub fn now_text(&self, kind: Kind) -> String {
         let an = self.now();
-        let (clock, date, day, tz) =
-            (an.iso_time(), an.iso_date(), an.weekday_name(), self.tz_text());
+        let (clock, date, day, tz) = (
+            an.iso_time(),
+            an.iso_date(),
+            an.weekday_name(),
+            self.tz_text(),
+        );
         match kind {
             Kind::Clock => format!("time={clock} tz={tz}"),
             Kind::Date => format!("date={date}"),
@@ -778,7 +875,9 @@ impl TimeTool {
         let now = self.now();
         // The tool's offset is told to the resolver so it can convert ISO input
         // with an external offset into the local wall clock.
-        let Some(resolution) = TimeResolver::resolve_with_offset(target_raw, now, self.offset_minutes) else {
+        let Some(resolution) =
+            TimeResolver::resolve_with_offset(target_raw, now, self.offset_minutes)
+        else {
             // NO SILENT FALLBACK TO TODAY: the model sees "0 days" and takes it for the answer.
             return Err(format!(
                 "error: unparsable_date \"{target_raw}\". Nothing was computed. \
@@ -933,7 +1032,11 @@ impl Tool for TimeTool {
             // detail shows "from=... to=... days=..."; the user catches a wrong
             // parse. Hiding a number that needs verifying would break the
             // "Tacet does not hide what it does" principle.
-            let target = args.get("target").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let target = args
+                .get("target")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
             let trace = ctx.start_chip("calendar", "Counting days");
 
             if target.is_empty() {
@@ -961,7 +1064,8 @@ impl Tool for TimeTool {
                             .raw_input(target)
                             .raw_output(output.clone()),
                     );
-                    ToolOutcome::read_ok("Day difference computed", output.clone()).raw_output(output)
+                    ToolOutcome::read_ok("Day difference computed", output.clone())
+                        .raw_output(output)
                 }
                 // DELIBERATELY NOT `failed()`: core's fixed ERROR_MODEL_TEXT is
                 // intentionally silent for internal malfunctions. Here the
@@ -988,9 +1092,9 @@ impl Tool for TimeTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tacet_core::{InMemoryDataStore, SilentReporter};
     use std::sync::Arc;
     use std::task::{Context, Poll};
+    use tacet_core::{InMemoryDataStore, SilentReporter};
 
     /// 2026-07-20 12:00:00 UTC — a Monday.
     const NOW: i64 = 1_784_548_800;
@@ -1017,7 +1121,11 @@ mod tests {
     }
 
     fn context() -> ToolContext {
-        ToolContext::new(Arc::new(InMemoryDataStore::new()), ".", Arc::new(SilentReporter))
+        ToolContext::new(
+            Arc::new(InMemoryDataStore::new()),
+            ".",
+            Arc::new(SilentReporter),
+        )
     }
 
     #[test]
@@ -1049,9 +1157,18 @@ mod tests {
         assert!(!g.has_clock);
 
         // Z and an explicit offset: since the tool is on UTC, +03:00 is read three hours back.
-        assert_eq!(TimeResolver::resolve("2026-12-02T18:30:00Z", now()).unwrap().an.iso_time(), "18:30");
         assert_eq!(
-            TimeResolver::resolve("2026-12-02T18:30:00+03:00", now()).unwrap().an.iso_time(),
+            TimeResolver::resolve("2026-12-02T18:30:00Z", now())
+                .unwrap()
+                .an
+                .iso_time(),
+            "18:30"
+        );
+        assert_eq!(
+            TimeResolver::resolve("2026-12-02T18:30:00+03:00", now())
+                .unwrap()
+                .an
+                .iso_time(),
             "15:30"
         );
     }
@@ -1086,48 +1203,92 @@ mod tests {
         assert!(c.has_clock);
 
         // Mixed case must give the same result.
-        assert_eq!(TimeResolver::resolve("Tomorrow 14:00", now()).unwrap().an, c.an);
+        assert_eq!(
+            TimeResolver::resolve("Tomorrow 14:00", now()).unwrap().an,
+            c.an
+        );
 
         // Because the day is given explicitly a bare number counts as an hour.
-        assert_eq!(TimeResolver::resolve("day after tomorrow 9", now()).unwrap().an, an(2026, 7, 22, 9, 0));
+        assert_eq!(
+            TimeResolver::resolve("day after tomorrow 9", now())
+                .unwrap()
+                .an,
+            an(2026, 7, 22, 9, 0)
+        );
 
         // A shorthand with no clock time: start of day + has_clock=false.
         let b = TimeResolver::resolve("today", now()).expect("today");
         assert_eq!(b.an, an(2026, 7, 20, 0, 0));
         assert!(!b.has_clock);
 
-        assert_eq!(TimeResolver::resolve("yesterday", now()).unwrap().an, an(2026, 7, 19, 0, 0));
+        assert_eq!(
+            TimeResolver::resolve("yesterday", now()).unwrap().an,
+            an(2026, 7, 19, 0, 0)
+        );
     }
 
     #[test]
     fn a_weekday_moves_forward() {
         // Today is Monday. "tuesday" -> the next day.
-        assert_eq!(TimeResolver::resolve("tuesday 14:00", now()).unwrap().an, an(2026, 7, 21, 14, 0));
+        assert_eq!(
+            TimeResolver::resolve("tuesday 14:00", now()).unwrap().an,
+            an(2026, 7, 21, 14, 0)
+        );
         // "monday" does not go to today, it goes to NEXT week (today is not included).
-        assert_eq!(TimeResolver::resolve("monday", now()).unwrap().an, an(2026, 7, 27, 0, 0));
+        assert_eq!(
+            TimeResolver::resolve("monday", now()).unwrap().an,
+            an(2026, 7, 27, 0, 0)
+        );
         // A long name must not swallow a short one.
-        assert_eq!(TimeResolver::resolve("sunday", now()).unwrap().an, an(2026, 7, 26, 0, 0));
-        assert_eq!(TimeResolver::resolve("friday", now()).unwrap().an, an(2026, 7, 24, 0, 0));
-        assert_eq!(TimeResolver::resolve("saturday", now()).unwrap().an, an(2026, 7, 25, 0, 0));
+        assert_eq!(
+            TimeResolver::resolve("sunday", now()).unwrap().an,
+            an(2026, 7, 26, 0, 0)
+        );
+        assert_eq!(
+            TimeResolver::resolve("friday", now()).unwrap().an,
+            an(2026, 7, 24, 0, 0)
+        );
+        assert_eq!(
+            TimeResolver::resolve("saturday", now()).unwrap().an,
+            an(2026, 7, 25, 0, 0)
+        );
         // "next week" adds a week.
-        assert_eq!(TimeResolver::resolve("next week tuesday", now()).unwrap().an, an(2026, 7, 28, 0, 0));
+        assert_eq!(
+            TimeResolver::resolve("next week tuesday", now())
+                .unwrap()
+                .an,
+            an(2026, 7, 28, 0, 0)
+        );
     }
 
     #[test]
     fn turkish_month_names_are_resolved() {
-        assert_eq!(TimeResolver::resolve("2 december 2026", now()).unwrap().an, an(2026, 12, 2, 0, 0));
-        let has_clock_time = TimeResolver::resolve("2 december 2026 18:30", now()).expect("with a clock time");
+        assert_eq!(
+            TimeResolver::resolve("2 december 2026", now()).unwrap().an,
+            an(2026, 12, 2, 0, 0)
+        );
+        let has_clock_time =
+            TimeResolver::resolve("2 december 2026 18:30", now()).expect("with a clock time");
         assert_eq!(has_clock_time.an, an(2026, 12, 2, 18, 30));
         assert!(has_clock_time.has_clock);
         // With no year the current year; if that is in the past, the next year.
-        assert_eq!(TimeResolver::resolve("20 december", now()).unwrap().an, an(2026, 12, 20, 0, 0));
-        assert_eq!(TimeResolver::resolve("3 january", now()).unwrap().an, an(2027, 1, 3, 0, 0));
+        assert_eq!(
+            TimeResolver::resolve("20 december", now()).unwrap().an,
+            an(2026, 12, 20, 0, 0)
+        );
+        assert_eq!(
+            TimeResolver::resolve("3 january", now()).unwrap().an,
+            an(2027, 1, 3, 0, 0)
+        );
     }
 
     #[test]
     fn an_unresolvable_time_does_not_silently_fall_back_to_now() {
         for raw in ["", "   ", "lorem ipsum", "zzz", "red car", "99/99/9999"] {
-            assert!(TimeResolver::resolve(raw, now()).is_none(), "should not have resolved: {raw:?}");
+            assert!(
+                TimeResolver::resolve(raw, now()).is_none(),
+                "should not have resolved: {raw:?}"
+            );
         }
     }
 
@@ -1135,33 +1296,54 @@ mod tests {
     fn diff_counts_the_leap_year_and_the_month_length_correctly() {
         // The points the model could not invent: 29 February and a month boundary.
         let tool = TimeTool::new().fixed_epoch(to_day_count(2024, 2, 28) * 86_400);
-        assert_eq!(tool.diff_text("2024-03-01").unwrap(), "from=2024-02-28 to=2024-03-01 days=2");
+        assert_eq!(
+            tool.diff_text("2024-03-01").unwrap(),
+            "from=2024-02-28 to=2024-03-01 days=2"
+        );
 
         let tool2 = TimeTool::new().fixed_epoch(to_day_count(2023, 2, 28) * 86_400);
-        assert_eq!(tool2.diff_text("2023-03-01").unwrap(), "from=2023-02-28 to=2023-03-01 days=1");
+        assert_eq!(
+            tool2.diff_text("2023-03-01").unwrap(),
+            "from=2023-02-28 to=2023-03-01 days=1"
+        );
 
         // The case the model answered wrongly in Swift: 19 July -> 2 December.
         let tool3 = TimeTool::new().fixed_epoch(to_day_count(2026, 7, 19) * 86_400);
-        assert_eq!(tool3.diff_text("2 december 2026").unwrap(), "from=2026-07-19 to=2026-12-02 days=136");
+        assert_eq!(
+            tool3.diff_text("2 december 2026").unwrap(),
+            "from=2026-07-19 to=2026-12-02 days=136"
+        );
     }
 
     #[test]
     fn diff_returns_negative_in_the_past() {
         let tool = TimeTool::new().fixed_epoch(NOW);
         // The sign is kept: so the model can answer "has it passed" without inventing.
-        assert_eq!(tool.diff_text("2026-07-10").unwrap(), "from=2026-07-20 to=2026-07-10 days=-10");
+        assert_eq!(
+            tool.diff_text("2026-07-10").unwrap(),
+            "from=2026-07-20 to=2026-07-10 days=-10"
+        );
         // A time-of-day difference must NOT SHIFT the day: even asked at 12:00, tomorrow is 1 day.
-        assert!(tool.diff_text("2026-07-21T01:00").unwrap().ends_with("days=1"));
+        assert!(
+            tool.diff_text("2026-07-21T01:00")
+                .unwrap()
+                .ends_with("days=1")
+        );
     }
 
     #[test]
     fn if_diff_cannot_be_resolved_the_router_returns_an_error() {
         let tool = TimeTool::new().fixed_epoch(NOW);
-        let error = tool.diff_text("blue cat").expect_err("an error is expected");
+        let error = tool
+            .diff_text("blue cat")
+            .expect_err("an error is expected");
         assert!(error.starts_with("error: unparsable_date"), "{error}");
         // The model must know what to do, otherwise it keeps coming back with the same input.
         assert!(error.contains("ISO 8601"), "{error}");
-        assert!(!error.contains("days="), "the day count must not be invented: {error}");
+        assert!(
+            !error.contains("days="),
+            "the day count must not be invented: {error}"
+        );
     }
 
     #[test]
@@ -1182,13 +1364,18 @@ mod tests {
         let args = serde_json::json!({ "kind": "diff", "target": "blue cat" });
         let outcome = run_and_wait(tool.run(args, &mut ctx));
         assert!(matches!(outcome.state, ToolState::Failed(_)));
-        assert!(outcome.to_model.contains("unparsable_date"), "{}", outcome.to_model);
+        assert!(
+            outcome.to_model.contains("unparsable_date"),
+            "{}",
+            outcome.to_model
+        );
         assert!(!outcome.to_model.contains("days="));
 
         // An empty target does not silently fall back to today either.
-        let empty = run_and_wait(
-            tool.run(serde_json::json!({ "kind": "diff", "target": "" }), &mut ctx),
-        );
+        let empty = run_and_wait(tool.run(
+            serde_json::json!({ "kind": "diff", "target": "" }),
+            &mut ctx,
+        ));
         assert!(matches!(empty.state, ToolState::Failed(_)));
     }
 
@@ -1196,7 +1383,10 @@ mod tests {
     fn the_tool_gives_the_instant_information_language_neutrally() {
         let tool = TimeTool::new().fixed_epoch(NOW).offset_minutes(180);
         assert_eq!(tool.now_text(Kind::Date), "date=2026-07-20");
-        assert_eq!(tool.now_text(Kind::Weekday), "weekday=Monday date=2026-07-20");
+        assert_eq!(
+            tool.now_text(Kind::Weekday),
+            "weekday=Monday date=2026-07-20"
+        );
         assert_eq!(tool.now_text(Kind::Clock), "time=15:00 tz=UTC+03:00");
         assert_eq!(
             tool.now_text(Kind::All),
@@ -1211,8 +1401,7 @@ mod tests {
         let tool = TimeTool::new().fixed_epoch(NOW);
         let mut ctx = context();
         // An invented value like "difference" must NOT silently fall through to "all".
-        let outcome =
-            run_and_wait(tool.run(serde_json::json!({ "kind": "difference" }), &mut ctx));
+        let outcome = run_and_wait(tool.run(serde_json::json!({ "kind": "difference" }), &mut ctx));
         assert!(matches!(outcome.state, ToolState::Failed(_)));
         let missing = run_and_wait(tool.run(serde_json::json!({}), &mut ctx));
         assert!(matches!(missing.state, ToolState::Failed(_)));
@@ -1224,10 +1413,25 @@ mod tests {
         let js = schema.json_schema();
         assert_eq!(js["additionalProperties"], serde_json::json!(false));
         assert_eq!(js["required"], serde_json::json!(["kind"]));
-        assert_eq!(js["properties"]["kind"]["enum"], serde_json::json!(Kind::ALL));
-        assert!(schema.validate(&serde_json::json!({ "kind": "diff", "target": "x" })).is_ok());
-        assert!(schema.validate(&serde_json::json!({ "kind": "difference" })).is_err());
-        assert!(schema.validate(&serde_json::json!({ "target": "x" })).is_err());
+        assert_eq!(
+            js["properties"]["kind"]["enum"],
+            serde_json::json!(Kind::ALL)
+        );
+        assert!(
+            schema
+                .validate(&serde_json::json!({ "kind": "diff", "target": "x" }))
+                .is_ok()
+        );
+        assert!(
+            schema
+                .validate(&serde_json::json!({ "kind": "difference" }))
+                .is_err()
+        );
+        assert!(
+            schema
+                .validate(&serde_json::json!({ "target": "x" }))
+                .is_err()
+        );
     }
 
     #[test]
@@ -1254,7 +1458,11 @@ mod tests {
     #[test]
     fn offset_parsing_rejects_a_malformed_format() {
         for bad in ["", "0300", "+03:00", "+03", "+9900", "+0399", "abcde"] {
-            assert_eq!(parse_offset(bad), None, "should not have been accepted: {bad}");
+            assert_eq!(
+                parse_offset(bad),
+                None,
+                "should not have been accepted: {bad}"
+            );
         }
     }
 
@@ -1292,7 +1500,11 @@ mod tests {
         assert!(!candidates.is_empty(), "the candidate list is empty");
         for (path, args) in &candidates {
             assert!(path.is_absolute(), "relative path: {}", path.display());
-            assert!(!args.is_empty(), "a candidate with no arguments: {}", path.display());
+            assert!(
+                !args.is_empty(),
+                "a candidate with no arguments: {}",
+                path.display()
+            );
         }
     }
 
@@ -1306,7 +1518,10 @@ mod tests {
         assert!(!c.has_clock);
         // "new year's day" gives the same day.
         assert_eq!(
-            TimeResolver::resolve("new year's day", now).unwrap().an.iso_date(),
+            TimeResolver::resolve("new year's day", now)
+                .unwrap()
+                .an
+                .iso_date(),
             "2027-01-01"
         );
     }
@@ -1315,13 +1530,19 @@ mod tests {
     #[test]
     fn on_new_years_day_it_gives_today() {
         let now = DateTime::new(2027, 1, 1, 9, 0, 0).unwrap();
-        assert_eq!(TimeResolver::resolve("new year", now).unwrap().an.iso_date(), "2027-01-01");
+        assert_eq!(
+            TimeResolver::resolve("new year", now)
+                .unwrap()
+                .an
+                .iso_date(),
+            "2027-01-01"
+        );
     }
 
     #[test]
     fn the_new_years_day_diff_returns_positive() {
-        let tool = TimeTool::new()
-            .fixed_epoch(DateTime::new(2026, 7, 21, 10, 0, 0).unwrap().epoch());
+        let tool =
+            TimeTool::new().fixed_epoch(DateTime::new(2026, 7, 21, 10, 0, 0).unwrap().epoch());
         let output = tool.diff_text("new year").expect("must be computable");
         assert!(output.contains("to=2027-01-01"), "{output}");
         assert!(output.contains("days=164"), "{output}");
@@ -1331,8 +1552,8 @@ mod tests {
     /// the model insistently picks this kind (see `now_text`). If it is lost the failure comes back.
     #[test]
     fn the_weekday_kind_carries_the_date_too() {
-        let tool = TimeTool::new()
-            .fixed_epoch(DateTime::new(2026, 7, 21, 10, 0, 0).unwrap().epoch());
+        let tool =
+            TimeTool::new().fixed_epoch(DateTime::new(2026, 7, 21, 10, 0, 0).unwrap().epoch());
         let output = tool.now_text(Kind::Weekday);
         assert!(output.contains("weekday=Tuesday"), "{output}");
         assert!(output.contains("date=2026-07-21"), "{output}");

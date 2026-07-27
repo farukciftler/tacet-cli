@@ -34,7 +34,7 @@
 use crate::{Grammar, GrammarState, TokenMask};
 use std::sync::Arc;
 use tacet_core::ToolCatalog;
-use tacet_engine::{ConstraintSession, Constrainer, EngineError};
+use tacet_engine::{Constrainer, ConstraintSession, EngineError};
 
 /// The immutable body of the constraint. Shared via `Arc` because
 /// `Constrainer::session` returns `Box<dyn ConstraintSession>` (that is,
@@ -83,7 +83,11 @@ impl CallConstraint {
             .iter()
             .map(|t| (t.name().to_string(), Grammar::compile(&t.schema())))
             .collect();
-        let longest_name = tools.iter().map(|(n, _)| n.chars().count()).max().unwrap_or(0);
+        let longest_name = tools
+            .iter()
+            .map(|(n, _)| n.chars().count())
+            .max()
+            .unwrap_or(0);
         let paren_tokens = vocab
             .iter()
             .enumerate()
@@ -108,7 +112,9 @@ impl Constrainer for CallConstraint {
     fn session(&self) -> Box<dyn ConstraintSession> {
         Box::new(CallSession {
             inner: Arc::clone(&self.inner),
-            stage: Stage::Prefix { queue: String::new() },
+            stage: Stage::Prefix {
+                queue: String::new(),
+            },
         })
     }
     fn name(&self) -> &str {
@@ -207,7 +213,9 @@ impl CallSession {
                 if c == '(' {
                     let name = align_prefix(&inner, queue);
                     if let Some((_, grammar)) = inner.tools.iter().find(|(n, _)| *n == name) {
-                        self.stage = Stage::Args { state: grammar.state() };
+                        self.stage = Stage::Args {
+                            state: grammar.state(),
+                        };
                         return Ok(());
                     }
                 }
@@ -363,9 +371,7 @@ impl ConstraintSession for CallSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tacet_core::{
-        ArgSchema, Field, Tool, ToolContext, ToolFuture, ToolOutcome, boxed,
-    };
+    use tacet_core::{ArgSchema, Field, Tool, ToolContext, ToolFuture, ToolOutcome, boxed};
 
     /// A tool with one required field and one enum field — the two most
     /// important claims of the constraint (missing required field, value outside
@@ -416,7 +422,9 @@ mod tests {
 
     fn feed(session: &mut Box<dyn ConstraintSession>, text: &str) {
         for c in text.chars() {
-            session.advance(c as u32).expect("valid text must be accepted");
+            session
+                .advance(c as u32)
+                .expect("valid text must be accepted");
         }
     }
 
@@ -424,8 +432,14 @@ mod tests {
     fn a_valid_call_is_accepted_from_start_to_end() {
         let k = constraint();
         let mut s = k.session();
-        feed(&mut s, r#"create_document({"format":"excel","file_name":"report"})"#);
-        assert!(s.is_done(), "a complete call should have finished in an accepting state");
+        feed(
+            &mut s,
+            r#"create_document({"format":"excel","file_name":"report"})"#,
+        );
+        assert!(
+            s.is_done(),
+            "a complete call should have finished in an accepting state"
+        );
     }
 
     /// THE CONSTRAINT'S REAL JOB: the object CANNOT BE CLOSED before the required
@@ -438,10 +452,16 @@ mod tests {
         let k = constraint();
         let mut s = k.session();
         feed(&mut s, r#"create_document({"format":"excel""#);
-        assert!(!allowed(s.as_ref(), '}'), "`}}` can be produced with `file_name` missing");
+        assert!(
+            !allowed(s.as_ref(), '}'),
+            "`}}` can be produced with `file_name` missing"
+        );
         // Once we go on and fill the field, it must be closable.
         feed(&mut s, r#","file_name":"x""#);
-        assert!(allowed(s.as_ref(), '}'), "cannot close after the field was filled");
+        assert!(
+            allowed(s.as_ref(), '}'),
+            "cannot close after the field was filled"
+        );
     }
 
     /// Enum values are embedded in the grammar literally: a letter outside the
@@ -451,9 +471,18 @@ mod tests {
         let k = constraint();
         let mut s = k.session();
         feed(&mut s, r#"create_document({"format":""#);
-        assert!(allowed(s.as_ref(), 'e'), "the first letter of excel must be open");
-        assert!(allowed(s.as_ref(), 'm'), "the first letter of markdown must be open");
-        assert!(!allowed(s.as_ref(), 'z'), "a letter outside the set can be produced");
+        assert!(
+            allowed(s.as_ref(), 'e'),
+            "the first letter of excel must be open"
+        );
+        assert!(
+            allowed(s.as_ref(), 'm'),
+            "the first letter of markdown must be open"
+        );
+        assert!(
+            !allowed(s.as_ref(), 'z'),
+            "a letter outside the set can be produced"
+        );
     }
 
     /// A plain answer is a legitimate output: nothing is masked at the start,
@@ -464,8 +493,14 @@ mod tests {
         let mut s = k.session();
         assert!(allowed(s.as_ref(), 'M'));
         feed(&mut s, "Hello, how can I help you?");
-        assert!(allowed(s.as_ref(), 'X'), "there must be no mask in free text");
-        assert!(!s.is_done(), "free text must note count as finished by the constraint");
+        assert!(
+            allowed(s.as_ref(), 'X'),
+            "there must be no mask in free text"
+        );
+        assert!(
+            !s.is_done(),
+            "free text must note count as finished by the constraint"
+        );
     }
 
     /// A name that is not in the catalog DOES NOT TURN INTO a call: the output
@@ -476,7 +511,10 @@ mod tests {
         let k = constraint();
         let mut s = k.session();
         feed(&mut s, r#"imaginary_tool({"x":"#);
-        assert!(allowed(s.as_ref(), 'q'), "an unknown name must be plain text");
+        assert!(
+            allowed(s.as_ref(), 'q'),
+            "an unknown name must be plain text"
+        );
         assert!(!s.is_done());
     }
 
@@ -492,7 +530,10 @@ mod tests {
         feed(&mut s, "<think>The user wants a document.</think>\n\n");
         feed(&mut s, "create_document(");
         assert!(allowed(s.as_ref(), '{'), "did note enter the call grammar");
-        assert!(!allowed(s.as_ref(), 'f'), "kwargs syntax (`format:`) can still be produced");
+        assert!(
+            !allowed(s.as_ref(), 'f'),
+            "kwargs syntax (`format:`) can still be produced"
+        );
     }
 
     /// Leading whitespace/newlines MUST NOT KILL the constraint: the model may
@@ -503,7 +544,10 @@ mod tests {
         let mut s = k.session();
         feed(&mut s, "\n\n  ");
         feed(&mut s, "create_document(");
-        assert!(!allowed(s.as_ref(), 'f'), "the constraint died after leading whitespace");
+        assert!(
+            !allowed(s.as_ref(), 'f'),
+            "the constraint died after leading whitespace"
+        );
         feed(&mut s, r#"{"format":"excel","file_name":"x"})"#);
         assert!(s.is_done());
     }
@@ -516,7 +560,10 @@ mod tests {
         let k = constraint();
         let mut s = k.session();
         feed(&mut s, "Sure, creating it right away: create_document(");
-        assert!(!allowed(s.as_ref(), 'f'), "a call in mid-text was left unconstrained");
+        assert!(
+            !allowed(s.as_ref(), 'f'),
+            "a call in mid-text was left unconstrained"
+        );
         assert!(allowed(s.as_ref(), '{'));
     }
 
@@ -527,7 +574,10 @@ mod tests {
         let k = constraint();
         let mut s = k.session();
         feed(&mut s, "xcreate_document(");
-        assert!(allowed(s.as_ref(), 'q'), "a match inside an identifier counted as a call");
+        assert!(
+            allowed(s.as_ref(), 'q'),
+            "a match inside an identifier counted as a call"
+        );
     }
 
     /// When the tool name's prefix stops matching, the constraint falls back to
@@ -538,7 +588,10 @@ mod tests {
         let mut s = k.session();
         feed(&mut s, "create_docu");
         feed(&mut s, "X");
-        assert!(allowed(s.as_ref(), '('), "in free text a parenthesis job free too");
+        assert!(
+            allowed(s.as_ref(), '('),
+            "in free text a parenthesis job free too"
+        );
         feed(&mut s, r#"({"format":"zzz"})"#);
         assert!(!s.is_done(), "free text must note close like a call");
     }

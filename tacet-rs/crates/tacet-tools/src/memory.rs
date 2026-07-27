@@ -10,12 +10,12 @@
 //! IT TAINTS: notes are personal data outright. Once read, the session counts as
 //! tainted and every call that would send data out hits the approval gate.
 
+use std::sync::{Arc, Mutex};
 use tacet_core::{
     ArgSchema, Field, Tool, ToolContext, ToolError, ToolFuture, ToolOutcome, ToolState,
     TraceUpdate, boxed,
 };
 use tacet_memory::{MemoryError, MemoryKind, MemoryStore};
-use std::sync::{Arc, Mutex};
 
 /// The limit on the note text shown in the chip; a chip is one line.
 const CHIP_TEXT_LIMIT: usize = 40;
@@ -120,7 +120,11 @@ impl Tool for MemoryTool {
                 return ToolOutcome::failed(&error);
             }
             let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
-            let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let text = args
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
 
             let trace = ctx.start_chip("~", "Memory");
 
@@ -180,7 +184,9 @@ impl MemoryTool {
             }
             Ok(())
         }) else {
-            return ToolOutcome::failed(&ToolError::Other("Memory cannot be reached right now.".into()));
+            return ToolOutcome::failed(&ToolError::Other(
+                "Memory cannot be reached right now.".into(),
+            ));
         };
 
         match result {
@@ -204,7 +210,9 @@ impl MemoryTool {
             }
             n
         }) else {
-            return ToolOutcome::failed(&ToolError::Other("Memory cannot be reached right now.".into()));
+            return ToolOutcome::failed(&ToolError::Other(
+                "Memory cannot be reached right now.".into(),
+            ));
         };
 
         if deleted == 0 {
@@ -237,7 +245,9 @@ impl MemoryTool {
                 .join("\n");
             (s.count(), body)
         }) else {
-            return ToolOutcome::failed(&ToolError::Other("Memory cannot be reached right now.".into()));
+            return ToolOutcome::failed(&ToolError::Other(
+                "Memory cannot be reached right now.".into(),
+            ));
         };
 
         if count == 0 {
@@ -305,7 +315,10 @@ mod tests {
         assert!(matches!(o.state, ToolState::Failed(_)));
         assert_eq!(o.to_model, tacet_core::ERROR_MODEL_TEXT);
         assert_eq!(memory.with(|s| s.count()), Some(0));
-        assert!(!ctx.session_tainted(), "a failed call does not taint the session");
+        assert!(
+            !ctx.session_tainted(),
+            "a failed call does not taint the session"
+        );
     }
 
     #[test]
@@ -328,8 +341,15 @@ mod tests {
     #[test]
     fn forget_says_so_honestly_when_nothing_matches() {
         let (tool, _, _, mut ctx) = setup();
-        let o = execute(tool.run(json!({"action":"forget","text":"a thing that does not exist"}), &mut ctx));
-        assert_eq!(o.state, ToolState::Read, "nothing deleted means the world did not change");
+        let o = execute(tool.run(
+            json!({"action":"forget","text":"a thing that does not exist"}),
+            &mut ctx,
+        ));
+        assert_eq!(
+            o.state,
+            ToolState::Read,
+            "nothing deleted means the world did not change"
+        );
         assert_eq!(o.to_model, "no matching note");
     }
 
@@ -391,14 +411,18 @@ mod tests {
     #[test]
     fn the_tool_declares_its_tainting_flag() {
         let (tool, _, _, _) = setup();
-        assert!(tool.taints_session(), "personal data must hit the approval gate");
+        assert!(
+            tool.taints_session(),
+            "personal data must hit the approval gate"
+        );
         assert_eq!(tool.name(), "remember");
     }
 
     #[test]
     fn a_long_note_is_truncated_in_the_chip() {
         let (tool, _, _, mut ctx) = setup();
-        let long = "The user described a very long fact in a single sentence and the sentence went on.";
+        let long =
+            "The user described a very long fact in a single sentence and the sentence went on.";
         let o = execute(tool.run(
             json!({"action":"save","text":long,"keywords":"fact"}),
             &mut ctx,
@@ -410,8 +434,7 @@ mod tests {
     #[test]
     fn the_same_fact_is_not_stored_twice() {
         let (tool, memory, _, mut ctx) = setup();
-        let call =
-            json!({"action":"save","text":"The user is a vegetarian.","keywords":"food"});
+        let call = json!({"action":"save","text":"The user is a vegetarian.","keywords":"food"});
         execute(tool.run(call.clone(), &mut ctx));
         let second = execute(tool.run(call, &mut ctx));
         assert!(matches!(second.state, ToolState::Failed(_)));

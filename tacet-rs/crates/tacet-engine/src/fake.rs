@@ -10,9 +10,9 @@
 //! inside the prompt", "was the old turn dropped". Verifying the output is not
 //! enough — HOW the prompt is BUILT is also this crate's promise.
 
+use crate::constraint::Constrainer;
 use crate::error::EngineError;
 use crate::prompt::Prompt;
-use crate::constraint::Constrainer;
 use crate::provider::{
     EngineProvider, Generation, GenerationFuture, SamplingSetting, StopReason, boxed_generation,
 };
@@ -73,26 +73,46 @@ impl FakeEngine {
 
     /// The FULL texts of the prompts sent to the engine, in order.
     pub fn seen_prompts(&self) -> Vec<String> {
-        self.inner.lock().expect("fake engine lock").seen_prompts.clone()
+        self.inner
+            .lock()
+            .expect("fake engine lock")
+            .seen_prompts
+            .clone()
     }
 
     /// The last prompt seen — what tests ask for most often.
     pub fn last_prompt(&self) -> Option<String> {
-        self.inner.lock().expect("fake engine lock").seen_prompts.last().cloned()
+        self.inner
+            .lock()
+            .expect("fake engine lock")
+            .seen_prompts
+            .last()
+            .cloned()
     }
 
     pub fn call_count(&self) -> usize {
-        self.inner.lock().expect("fake engine lock").seen_prompts.len()
+        self.inner
+            .lock()
+            .expect("fake engine lock")
+            .seen_prompts
+            .len()
     }
 
     /// How many tokens the constraint session was advanced by.
     pub fn constraint_steps(&self) -> usize {
-        self.inner.lock().expect("fake engine lock").constraint_steps
+        self.inner
+            .lock()
+            .expect("fake engine lock")
+            .constraint_steps
     }
 
     /// The names of the constraints used, in call order.
     pub fn constraint_names(&self) -> Vec<String> {
-        self.inner.lock().expect("fake engine lock").constraint_names.clone()
+        self.inner
+            .lock()
+            .expect("fake engine lock")
+            .constraint_names
+            .clone()
     }
 }
 
@@ -115,7 +135,11 @@ impl EngineProvider for FakeEngine {
     fn vocab(&self) -> Option<Vec<String>> {
         Some(
             (0..FAKE_VOCAB)
-                .map(|i| char::from_u32(i as u32).map(String::from).unwrap_or_default())
+                .map(|i| {
+                    char::from_u32(i as u32)
+                        .map(String::from)
+                        .unwrap_or_default()
+                })
                 .collect(),
         )
     }
@@ -177,7 +201,10 @@ impl EngineProvider for FakeEngine {
                         return Err(EngineError::ConstraintViolation(token));
                     }
                     session.advance(token)?;
-                    self.inner.lock().expect("fake engine lock").constraint_steps += 1;
+                    self.inner
+                        .lock()
+                        .expect("fake engine lock")
+                        .constraint_steps += 1;
                     output.push(ch);
                     produced += 1;
                     if session.is_done() {

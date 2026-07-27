@@ -104,7 +104,8 @@ pub struct ConversionNotes(pub Vec<String>);
 
 impl ConversionNotes {
     fn dropped(&mut self, path: &str, constraint: &str) {
-        self.0.push(format!("{path}: `{constraint}` is not enforced"));
+        self.0
+            .push(format!("{path}: `{constraint}` is not enforced"));
     }
 
     pub fn is_empty(&self) -> bool {
@@ -127,7 +128,10 @@ pub fn convert_schema(input: &Value) -> Result<Conversion, UntranslatableReason>
     // `inputSchema` at all, or may have sent `{}`. Both mean "takes no
     // arguments", not an error.
     if input.is_null() || input.as_object().is_some_and(|o| o.is_empty()) {
-        return Ok(Conversion { schema: ArgSchema::empty(), notes });
+        return Ok(Conversion {
+            schema: ArgSchema::empty(),
+            notes,
+        });
     }
     if !input.is_object() {
         return Err(UntranslatableReason::RootNotObject);
@@ -157,7 +161,9 @@ fn convert_node(
         return Err(UntranslatableReason::NoType(path.to_string()));
     };
 
-    if object.contains_key("$ref") || object.contains_key("$defs") || object.contains_key("definitions")
+    if object.contains_key("$ref")
+        || object.contains_key("$defs")
+        || object.contains_key("definitions")
     {
         return Err(UntranslatableReason::Reference);
     }
@@ -220,8 +226,13 @@ fn convert_node(
             // If `additionalProperties` is a SCHEMA (not a bool) it is typing
             // extra fields we do not know about; `ArgSchema` has no equivalent
             // and ignoring it would let the model invent fields.
-            if object.get("additionalProperties").is_some_and(|v| v.is_object()) {
-                return Err(UntranslatableReason::CompositeSchema("additionalProperties".into()));
+            if object
+                .get("additionalProperties")
+                .is_some_and(|v| v.is_object())
+            {
+                return Err(UntranslatableReason::CompositeSchema(
+                    "additionalProperties".into(),
+                ));
             }
             ArgSchema::object(fields)
         }
@@ -238,8 +249,10 @@ fn convert_node(
             if object.contains_key("uniqueItems") {
                 notes.dropped(path, "uniqueItems");
             }
-            ArgSchema::array(element)
-                .length(number_usize(object.get("minItems")), number_usize(object.get("maxItems")))
+            ArgSchema::array(element).length(
+                number_usize(object.get("minItems")),
+                number_usize(object.get("maxItems")),
+            )
         }
         "string" => {
             for constraint in ["pattern", "format", "minLength"] {
@@ -249,7 +262,9 @@ fn convert_node(
             }
             let mut s = ArgSchema::text();
             if let Some(n) = number_usize(object.get("maxLength")) {
-                s.kind = SchemaKind::Text { max_length: Some(n) };
+                s.kind = SchemaKind::Text {
+                    max_length: Some(n),
+                };
             }
             s
         }
@@ -259,7 +274,11 @@ fn convert_node(
                     notes.dropped(path, constraint);
                 }
             }
-            let base = if kind == "integer" { ArgSchema::integer() } else { ArgSchema::number() };
+            let base = if kind == "integer" {
+                ArgSchema::integer()
+            } else {
+                ArgSchema::number()
+            };
             base.range(
                 object.get("minimum").and_then(Value::as_f64),
                 object.get("maximum").and_then(Value::as_f64),
@@ -274,10 +293,7 @@ fn convert_node(
 
 /// Why no type was found: is it uninformed, or is it a type we cannot carry
 /// like `null`? The distinction is useful in the note shown to the user.
-fn typeless_reason(
-    object: &serde_json::Map<String, Value>,
-    path: &str,
-) -> UntranslatableReason {
+fn typeless_reason(object: &serde_json::Map<String, Value>, path: &str) -> UntranslatableReason {
     match object.get("type") {
         Some(Value::String(s)) => UntranslatableReason::UnsupportedType(s.clone()),
         Some(Value::Array(_)) => UntranslatableReason::UnsupportedType("composite type".into()),
@@ -394,14 +410,24 @@ mod tests {
 
         let fields = schema.fields();
         assert_eq!(fields.len(), 2);
-        let command = fields.iter().find(|f| f.name == "command").expect("command");
+        let command = fields
+            .iter()
+            .find(|f| f.name == "command")
+            .expect("command");
         assert!(command.required);
         assert_eq!(command.schema.description.as_deref(), Some("shell command"));
-        let t = fields.iter().find(|f| f.name == "timeout").expect("timeout");
+        let t = fields
+            .iter()
+            .find(|f| f.name == "timeout")
+            .expect("timeout");
         assert!(!t.required);
         assert_eq!(
             t.schema.kind,
-            SchemaKind::Number { is_integer: true, min: Some(1.0), max: Some(600.0) }
+            SchemaKind::Number {
+                is_integer: true,
+                min: Some(1.0),
+                max: Some(600.0)
+            }
         );
     }
 
@@ -414,7 +440,9 @@ mod tests {
         .expect("must convert");
         assert_eq!(
             schema.fields()[0].schema.kind,
-            SchemaKind::Choice { choices: vec!["read".into(), "write".into()] }
+            SchemaKind::Choice {
+                choices: vec!["read".into(), "write".into()]
+            }
         );
     }
 
@@ -466,7 +494,10 @@ mod tests {
             "properties": { "note": {"type": ["string", "null"]} },
         }))
         .expect("must convert");
-        assert!(matches!(schema.fields()[0].schema.kind, SchemaKind::Text { .. }));
+        assert!(matches!(
+            schema.fields()[0].schema.kind,
+            SchemaKind::Text { .. }
+        ));
     }
 
     #[test]
@@ -476,7 +507,13 @@ mod tests {
             "properties": { "x": {"anyOf": [{"type": "integer"}, {"type": "null"}]} },
         }))
         .expect("must convert");
-        assert!(matches!(schema.fields()[0].schema.kind, SchemaKind::Number { is_integer: true, .. }));
+        assert!(matches!(
+            schema.fields()[0].schema.kind,
+            SchemaKind::Number {
+                is_integer: true,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -489,7 +526,11 @@ mod tests {
         // The tool IS ACCEPTED (widening is safe: the server validates for
         // itself), but the dropped constraint stays visible.
         assert!(!conversion.notes.is_empty());
-        assert!(conversion.notes.0[0].contains("pattern"), "{:?}", conversion.notes);
+        assert!(
+            conversion.notes.0[0].contains("pattern"),
+            "{:?}",
+            conversion.notes
+        );
     }
 
     // --- UNTRANSLATABLE: NOT accepted silently ---
@@ -554,7 +595,10 @@ mod tests {
             "additionalProperties": {"type": "string"},
         }))
         .unwrap_err();
-        assert_eq!(error, UntranslatableReason::CompositeSchema("additionalProperties".into()));
+        assert_eq!(
+            error,
+            UntranslatableReason::CompositeSchema("additionalProperties".into())
+        );
     }
 
     #[test]
@@ -601,10 +645,25 @@ mod tests {
         .expect("must convert");
 
         assert!(schema.validate(&json!({"command": "ls"})).is_ok());
-        assert!(schema.validate(&json!({"command": "ls", "mode": "fast"})).is_ok());
-        assert!(schema.validate(&json!({"mode": "fast"})).is_err(), "required field missing");
-        assert!(schema.validate(&json!({"command": "ls", "mode": "medium"})).is_err(), "outside the set");
-        assert!(schema.validate(&json!({"command": 5})).is_err(), "wrong type");
+        assert!(
+            schema
+                .validate(&json!({"command": "ls", "mode": "fast"}))
+                .is_ok()
+        );
+        assert!(
+            schema.validate(&json!({"mode": "fast"})).is_err(),
+            "required field missing"
+        );
+        assert!(
+            schema
+                .validate(&json!({"command": "ls", "mode": "medium"}))
+                .is_err(),
+            "outside the set"
+        );
+        assert!(
+            schema.validate(&json!({"command": 5})).is_err(),
+            "wrong type"
+        );
     }
 
     // --- Description truncation ---
@@ -621,7 +680,10 @@ mod tests {
 
     #[test]
     fn in_a_long_description_the_first_sentence_is_chosen() {
-        let raw = format!("A short summary sentence. {}", "A very long detail. ".repeat(40));
+        let raw = format!(
+            "A short summary sentence. {}",
+            "A very long detail. ".repeat(40)
+        );
         let truncated = truncate_description(&raw);
         assert_eq!(truncated, "A short summary sentence.");
     }
@@ -630,9 +692,15 @@ mod tests {
     fn if_the_first_sentence_is_long_too_it_is_cut_at_a_word_boundary() {
         let raw = "word ".repeat(80);
         let truncated = truncate_description(&raw);
-        assert!(truncated.chars().count() <= DESCRIPTION_LIMIT + 1, "{truncated}");
+        assert!(
+            truncated.chars().count() <= DESCRIPTION_LIMIT + 1,
+            "{truncated}"
+        );
         assert!(truncated.ends_with('…'));
-        assert!(!truncated.contains("wor…"), "it must not cut mid-word: {truncated}");
+        assert!(
+            !truncated.contains("wor…"),
+            "it must not cut mid-word: {truncated}"
+        );
     }
 
     #[test]

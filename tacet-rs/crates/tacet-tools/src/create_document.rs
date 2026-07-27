@@ -23,8 +23,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use tacet_core::{
-    Field, Tool, ToolContext, ToolFuture, ToolError, ToolResult, ToolOutcome, ArgSchema, ToolState,
-    TraceUpdate, SourceRef, boxed,
+    ArgSchema, Field, SourceRef, Tool, ToolContext, ToolError, ToolFuture, ToolOutcome, ToolResult,
+    ToolState, TraceUpdate, boxed,
 };
 
 use crate::data_store::Table;
@@ -71,8 +71,11 @@ pub enum DocumentFormat {
 impl DocumentFormat {
     /// Exactly the same order as the `Choice` values in the schema — so the
     /// grammar and the prompt come out bit-for-bit identical on every run.
-    pub const ALL: [DocumentFormat; 3] =
-        [DocumentFormat::Excel, DocumentFormat::Markdown, DocumentFormat::Text];
+    pub const ALL: [DocumentFormat; 3] = [
+        DocumentFormat::Excel,
+        DocumentFormat::Markdown,
+        DocumentFormat::Text,
+    ];
 
     pub fn key(&self) -> &'static str {
         match self {
@@ -219,7 +222,11 @@ fn target_path(file_name: &str, format: DocumentFormat, folder: &Path) -> PathBu
     // THE STEM OF AN UNNAMED DOCUMENT IS VISIBLE ON THE USER'S DISK — it is the brand name,
     // not the crate name. This spot was missed during a brand change and files
     // carrying the old name were being created in users' folders.
-    let mut base = if clean.is_empty() { "tacet-document".to_string() } else { clean };
+    let mut base = if clean.is_empty() {
+        "tacet-document".to_string()
+    } else {
+        clean
+    };
 
     // Strip the extension the model BAKED INTO THE NAME — otherwise it doubles.
     // The schema asks for `file_name` "without extension", but the small model
@@ -384,8 +391,7 @@ fn to_table(
     let text = body.unwrap_or("").trim();
     if text.is_empty() {
         return Err(ToolError::InvalidArgument(
-            "no content for the spreadsheet: give a table with column headers and rows"
-                .into(),
+            "no content for the spreadsheet: give a table with column headers and rows".into(),
         ));
     }
 
@@ -413,11 +419,13 @@ fn to_table(
         .collect();
     if slices.is_empty() {
         return Err(ToolError::InvalidArgument(
-            "no content for the spreadsheet: give a table with column headers and rows"
-                .into(),
+            "no content for the spreadsheet: give a table with column headers and rows".into(),
         ));
     }
-    let emit = title.map(str::trim).filter(|b| !b.is_empty()).unwrap_or("Text");
+    let emit = title
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+        .unwrap_or("Text");
     Ok((vec![emit.to_string()], slices))
 }
 
@@ -435,7 +443,9 @@ fn sheet_xml(headers: &[String], lines: &[Vec<String>]) -> String {
         let mut at_least_one = false;
         let mut all_numeric = true;
         for s in lines {
-            let Some(h) = s.get(k).map(|h| h.trim()) else { continue };
+            let Some(h) = s.get(k).map(|h| h.trim()) else {
+                continue;
+            };
             if h.is_empty() {
                 continue;
             }
@@ -763,11 +773,7 @@ impl Tool for CreateDocumentTool {
         true
     }
 
-    fn run<'a>(
-        &'a self,
-        args: serde_json::Value,
-        ctx: &'a mut ToolContext,
-    ) -> ToolFuture<'a> {
+    fn run<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolContext) -> ToolFuture<'a> {
         boxed(async move {
             let schema = self.schema();
             if let Err(e) = schema.validate(&args) {
@@ -782,7 +788,10 @@ impl Tool for CreateDocumentTool {
                     .map(str::to_string)
             };
 
-            let Some(format) = text_field("format").as_deref().and_then(DocumentFormat::resolve) else {
+            let Some(format) = text_field("format")
+                .as_deref()
+                .and_then(DocumentFormat::resolve)
+            else {
                 return ToolOutcome::failed(&ToolError::MissingField("format".into()));
             };
             let Some(file_name) = text_field("file_name") else {
@@ -810,8 +819,7 @@ impl Tool for CreateDocumentTool {
                     );
                     let mut outcome = ToolOutcome::failed(&error);
                     outcome.chip_text = "Source data not found".to_string();
-                    outcome.to_model =
-                        format!("unknown_data_ref: \"{r}\"; no file was created");
+                    outcome.to_model = format!("unknown_data_ref: \"{r}\"; no file was created");
                     return outcome;
                 };
                 // The body in the store is valid markdown for a `Table`; if Excel
@@ -825,7 +833,10 @@ impl Tool for CreateDocumentTool {
                     body = Some(record.body);
                 }
             } else if format.table_shape()
-                && let Some(t) = body.as_deref().and_then(from_markdown).filter(|t| !t.rows.is_empty())
+                && let Some(t) = body
+                    .as_deref()
+                    .and_then(from_markdown)
+                    .filter(|t| !t.rows.is_empty())
             {
                 table = Some(t);
                 body = None;
@@ -890,9 +901,12 @@ impl Tool for CreateDocumentTool {
             // Only the fact goes to the model; do not write UI directives such as
             // "preview/share" — the model parrots them and describes a button to
             // the user that does not exist.
-            ToolOutcome::written(chip_text, format!("file_created ({}): {relative}", format.key()))
-                .raw_output(path.display().to_string())
-                .file_path(path)
+            ToolOutcome::written(
+                chip_text,
+                format!("file_created ({}): {relative}", format.key()),
+            )
+            .raw_output(path.display().to_string())
+            .file_path(path)
         })
     }
 }
@@ -902,7 +916,11 @@ impl Tool for CreateDocumentTool {
 pub fn store_table(ctx: &ToolContext, kind: &str, table: &Table) -> SourceRef {
     ctx.store(
         kind,
-        &format!("{} rows x {} columns table", table.row_count(), table.column_count()),
+        &format!(
+            "{} rows x {} columns table",
+            table.row_count(),
+            table.column_count()
+        ),
         table.markdown_truncated(usize::MAX),
     )
 }
@@ -920,10 +938,10 @@ pub const fn summary_line_limit() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_store::{Value, SharedStore};
-    use tacet_core::{SilentReporter, DataStore as CoreDataStore};
+    use crate::data_store::{SharedStore, Value};
     use std::future::Future;
     use std::sync::Arc;
+    use tacet_core::{DataStore as CoreDataStore, SilentReporter};
 
     /// There is no tokio in core; this crate must not pick an executor either.
     /// a minimal ~15 line poll loop that only ever returns `Ready` is enough (core made the same call 3 times).
@@ -976,7 +994,10 @@ mod tests {
         let root = temp_dir("unnamed");
         let path = target_path("   ", DocumentFormat::Excel, &root);
         let name = path.file_name().unwrap().to_string_lossy();
-        assert_eq!(name, "tacet-document.xlsx", "the unnamed document stem changed");
+        assert_eq!(
+            name, "tacet-document.xlsx",
+            "the unnamed document stem changed"
+        );
         fs::remove_dir_all(&root).ok();
     }
 
@@ -1004,7 +1025,11 @@ mod tests {
         let md = table.markdown_truncated(usize::MAX);
         let back = from_markdown(&md).expect("the table must resolve");
         assert_eq!(back.headers, vec!["Name", "Amount"]);
-        assert_eq!(back.rows.len(), 2, "the separator row must not count as data");
+        assert_eq!(
+            back.rows.len(),
+            2,
+            "the separator row must not count as data"
+        );
         assert_eq!(back.rows[0][0], "Alice | Bob");
         assert_eq!(back.rows[1][1], "80");
     }
@@ -1019,7 +1044,10 @@ mod tests {
         ];
         let xml = sheet_xml(&headers, &lines);
         assert!(xml.contains("<f>SUM(B2:B3)</f>"), "no formula: {xml}");
-        assert!(!xml.contains("<v>200</v>"), "a constant total was written: {xml}");
+        assert!(
+            !xml.contains("<v>200</v>"),
+            "a constant total was written: {xml}"
+        );
         // A text column is not summed.
         assert!(!xml.contains("SUM(A2"), "the text column was summed: {xml}");
         // A numeric cell must be a raw value, not inlineStr (so Excel sees a number).
@@ -1031,8 +1059,15 @@ mod tests {
     fn the_xlsx_contains_a_real_zip_and_real_ooxml_parts() {
         let root = temp_dir("xlsx");
         let table = Table::new(["Name", "Amount"], vec![vec!["Ali".into(), "12".into()]]);
-        let path = write_document(&ExcelEngine::new(), "report", None, None, Some(&table), &root)
-            .expect("must be written");
+        let path = write_document(
+            &ExcelEngine::new(),
+            "report",
+            None,
+            None,
+            Some(&table),
+            &root,
+        )
+        .expect("must be written");
         assert_eq!(path.extension().unwrap(), "xlsx");
 
         let byte = fs::read(&path).unwrap();
@@ -1129,7 +1164,9 @@ mod tests {
         let store = Arc::new(SharedStore::new());
         let table = Table::new(
             ["Name", "Amount"],
-            (0..500).map(|i| vec![format!("person{i}"), format!("{i}")]).collect::<Vec<_>>(),
+            (0..500)
+                .map(|i| vec![format!("person{i}"), format!("{i}")])
+                .collect::<Vec<_>>(),
         );
         let source_ref = store.put_value("calendar", Value::Table(table));
         let mut ctx = context(&root, store.clone());
@@ -1147,13 +1184,19 @@ mod tests {
         // The text returned to the model is SHORT: 500 rows of data did not pass through here.
         assert!(outcome.to_model.len() < 80, "{}", outcome.to_model);
         assert!(!outcome.to_model.contains("person499"));
-        assert!(ctx.session_tainted(), "device data was written, the session must be tainted");
+        assert!(
+            ctx.session_tainted(),
+            "device data was written, the session must be tainted"
+        );
 
         let path = outcome.file_path.expect("file path");
         let byte = fs::read(&path).unwrap();
         let entries = tacet_zip::open_map(&byte).unwrap();
         let sheet = String::from_utf8(entries["xl/worksheets/sheet1.xml"].clone()).unwrap();
-        assert!(sheet.contains("person499"), "the data did not reach the file");
+        assert!(
+            sheet.contains("person499"),
+            "the data did not reach the file"
+        );
         assert!(sheet.contains("<f>SUM(B2:B501)</f>"), "no formula");
         fs::remove_dir_all(&root).ok();
     }

@@ -117,13 +117,22 @@ pub struct Turn {
 
 impl Turn {
     pub fn user(text: impl Into<String>) -> Self {
-        Self { role: Role::User, text: text.into() }
+        Self {
+            role: Role::User,
+            text: text.into(),
+        }
     }
     pub fn assistant(text: impl Into<String>) -> Self {
-        Self { role: Role::Assistant, text: text.into() }
+        Self {
+            role: Role::Assistant,
+            text: text.into(),
+        }
     }
     pub fn tool(text: impl Into<String>) -> Self {
-        Self { role: Role::Tool, text: text.into() }
+        Self {
+            role: Role::Tool,
+            text: text.into(),
+        }
     }
 
     fn write(&self, target: &mut String) {
@@ -168,7 +177,11 @@ pub struct Prompt {
 
 impl Prompt {
     pub fn new(system: impl Into<String>, question: impl Into<String>) -> Self {
-        Self { system: system.into(), question: question.into(), ..Default::default() }
+        Self {
+            system: system.into(),
+            question: question.into(),
+            ..Default::default()
+        }
     }
 
     /// Derives the tool description FROM THE CATALOG — there is no second,
@@ -495,7 +508,11 @@ impl Prompt {
             + self.question.len()
             + self.memory.as_ref().map_or(0, String::len)
             + self.guide.as_ref().map_or(0, String::len)
-            + self.history.iter().map(|t| t.text.len() + 12).sum::<usize>()
+            + self
+                .history
+                .iter()
+                .map(|t| t.text.len() + 12)
+                .sum::<usize>()
             + 64
     }
 }

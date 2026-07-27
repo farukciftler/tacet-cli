@@ -22,8 +22,14 @@ const FILE: &str = "config.json";
 /// silently do nothing.
 const KNOWN: &[(&str, &str)] = &[
     ("model", "default model folder for chat (e.g. qwen3-4b)"),
-    ("engine", "default engine when --engine is not given: auto | candle | fake"),
-    ("theme", "colour theme — see /themes inside the shell (mono, night, sage, graphite, violet)"),
+    (
+        "engine",
+        "default engine when --engine is not given: auto | candle | fake",
+    ),
+    (
+        "theme",
+        "colour theme — see /themes inside the shell (mono, night, sage, graphite, violet)",
+    ),
 ];
 
 fn file_path() -> Option<PathBuf> {
@@ -31,8 +37,12 @@ fn file_path() -> Option<PathBuf> {
 }
 
 fn load_map() -> Map<String, Value> {
-    let Some(p) = file_path() else { return Map::new() };
-    let Ok(text) = fs::read_to_string(&p) else { return Map::new() };
+    let Some(p) = file_path() else {
+        return Map::new();
+    };
+    let Ok(text) = fs::read_to_string(&p) else {
+        return Map::new();
+    };
     // A corrupt file reads as empty instead of crashing every command: the
     // worst outcome of a broken config must be "defaults apply", not "the
     // shell is dead until someone edits JSON by hand".
@@ -44,7 +54,10 @@ fn load_map() -> Map<String, Value> {
 
 /// A string setting from the file — `None` when unset or unreadable.
 pub fn get_str(key: &str) -> Option<String> {
-    load_map().get(key).and_then(|v| v.as_str()).map(str::to_string)
+    load_map()
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
 }
 
 fn save(map: &Map<String, Value>) -> Result<(), String> {
@@ -60,14 +73,22 @@ fn save(map: &Map<String, Value>) -> Result<(), String> {
 fn validate(key: &str, value: &str) -> Result<(), String> {
     if !KNOWN.iter().any(|(k, _)| *k == key) {
         let names: Vec<&str> = KNOWN.iter().map(|(k, _)| *k).collect();
-        return Err(format!("unknown key '{key}' — known keys: {}", names.join(", ")));
+        return Err(format!(
+            "unknown key '{key}' — known keys: {}",
+            names.join(", ")
+        ));
     }
     if key == "engine" && !matches!(value, "auto" | "candle" | "fake") {
-        return Err(format!("'{value}' is not an engine — expected: auto | candle | fake"));
+        return Err(format!(
+            "'{value}' is not an engine — expected: auto | candle | fake"
+        ));
     }
     if key == "theme" && !crate::ui::THEMES.iter().any(|t| t.name == value) {
         let names: Vec<&str> = crate::ui::THEMES.iter().map(|t| t.name).collect();
-        return Err(format!("'{value}' is not a theme — themes: {}", names.join(", ")));
+        return Err(format!(
+            "'{value}' is not a theme — themes: {}",
+            names.join(", ")
+        ));
     }
     Ok(())
 }
@@ -88,7 +109,10 @@ pub fn list(json: bool) -> ExitCode {
     }
     match file_path() {
         Some(p) => println!("{}", color.paint(DIM, &format!("  file: {}", p.display()))),
-        None => println!("{}", color.paint(DIM, "  file: (config directory unresolved)")),
+        None => println!(
+            "{}",
+            color.paint(DIM, "  file: (config directory unresolved)")
+        ),
     }
     ExitCode::SUCCESS
 }

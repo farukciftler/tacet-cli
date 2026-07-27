@@ -4,7 +4,7 @@
 //! grammar, tool execution, the bypass channel, skill/memory injection) is
 //! hidden inside an iOS app it can only be observed by opening the simulator.
 //! This binary drives the same layer from the terminal: `chat` opens a flowing,
-//! Claude Code style turn loop against a real model, `eval` runs in CI,
+//! an interactive turn loop against a real model, `eval` runs in CI,
 //! `grammar`/`tools` print the prompt's source verbatim.
 //!
 //! ENGINE SELECTION IS AUTOMATIC. `--engine auto` (the default) uses the REAL
@@ -65,6 +65,7 @@ mod filter;
 mod format;
 mod input;
 mod ui;
+mod update;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use tacet_core::{
@@ -137,7 +138,10 @@ const DEFAULT_MODEL: &str = "qwen3-4b";
 static CANCEL: AtomicBool = AtomicBool::new(false);
 
 #[derive(Parser)]
-#[command(name = "tacet", about = "Tacet — the terminal shell of the on-device assistant")]
+#[command(
+    name = "tacet",
+    about = "Tacet — the terminal shell of the on-device assistant"
+)]
 struct Shell {
     /// THE SUBCOMMAND IS OPTIONAL. If not given, the interactive shell opens;
     /// the slash commands inside it (`/eval`, `/tools`, `/grammar`, ...) reach
@@ -268,6 +272,23 @@ enum Command {
     /// where each common terminal keeps the setting. It prints and exits; it
     /// changes nothing.
     Font,
+
+    /// Asks GitHub whether a newer release exists.
+    ///
+    /// NOTHING CHECKS BY ITSELF. There is no start-up check and no timer: a
+    /// program whose promise is that it stays off the network cannot quietly
+    /// go online to ask about itself. This runs when it is typed, and only
+    /// `--install` writes anything.
+    Update {
+        /// Downloads the release build for this platform and replaces this
+        /// binary with it. The download passes the same approval gate as a
+        /// model package.
+        #[arg(long)]
+        install: bool,
+        /// Skips the question. What is being downloaded is still printed.
+        #[arg(long = "no-approval")]
+        no_approval: bool,
+    },
 }
 
 /// The jobs of the `config` subcommand. The shape mirrors every other list
@@ -320,17 +341,11 @@ enum AddonJob {
         no_approval: bool,
     },
     /// Deletes the record; the tools drop out of the catalog.
-    Remove {
-        name: String,
-    },
+    Remove { name: String },
     /// Closes it without deleting the record (address and settings are kept).
-    Close {
-        name: String,
-    },
+    Close { name: String },
     /// Reopens a closed addon.
-    Open {
-        name: String,
-    },
+    Open { name: String },
     /// Tries an installed addon with a REAL query. IT GOES ON THE NETWORK.
     Try {
         name: String,
@@ -416,6 +431,10 @@ enum EngineChoice {
 }
 
 fn main() -> ExitCode {
+    // Clears the `.old` left behind by a previous Windows self-update. It could
+    // not be removed at the time, because it was the file then executing. A
+    // no-op on Unix, and it touches nothing but that one path.
+    update::sweep_previous();
     // With NO subcommand the default is `chat`: a user typing `tacet` walks
     // straight in.
     let command = Shell::parse().command.unwrap_or(Command::Chat {
@@ -427,7 +446,14 @@ fn main() -> ExitCode {
         model: None,
     });
     match command {
-        Command::Chat { engine, script, show_prompt, dir, message, model } => {
+        Command::Chat {
+            engine,
+            script,
+            show_prompt,
+            dir,
+            message,
+            model,
+        } => {
             // flag > env (applied deeper) > config file > built-in default —
             // the config file only speaks when the flag stays silent.
             let model = model
@@ -444,7 +470,13 @@ fn main() -> ExitCode {
             };
             chat(engine, script, show_prompt, &dir, message, &model)
         }
-        Command::Eval { json, threshold, tool_selection, model, only } => {
+        Command::Eval {
+            json,
+            threshold,
+            tool_selection,
+            model,
+            only,
+        } => {
             if tool_selection {
                 eval_tool_selection(json, threshold, &model, only.as_deref())
             } else {
@@ -462,9 +494,12 @@ fn main() -> ExitCode {
         },
         Command::Addon { job } => match job {
             AddonJob::List { json } => addon::list(json),
-            AddonJob::Install { name, address, local, no_approval } => {
-                addon::install(&name, address, local, no_approval)
-            }
+            AddonJob::Install {
+                name,
+                address,
+                local,
+                no_approval,
+            } => addon::install(&name, address, local, no_approval),
             AddonJob::Remove { name } => addon::remove(&name),
             AddonJob::Close { name } => addon::set_state(&name, false),
             AddonJob::Open { name } => addon::set_state(&name, true),
@@ -478,6 +513,24 @@ fn main() -> ExitCode {
             ConfigJob::Path => config::path(),
         },
         Command::Font => font(),
+        Command::Update {
+            install,
+            no_approval,
+        } => {
+            let color = Color::setup();
+            let outcome = if install {
+                update::install(&color, no_approval).map(|()| true)
+            } else {
+                update::check(&color, false)
+            };
+            match outcome {
+                Ok(_) => ExitCode::SUCCESS,
+                Err(message) => {
+                    eprintln!("  {}", color.paint(YELLOW, &message));
+                    ExitCode::FAILURE
+                }
+            }
+        }
     }
 }
 
@@ -492,14 +545,23 @@ fn font() -> ExitCode {
     println!();
     println!("Tacet inherits its font from your terminal — a program cannot change");
     println!("it by itself. It is designed for JetBrains Mono (free, OFL licence):");
-    println!("{}", color.paint(DIM, "  https://www.jetbrains.com/lp/mono/"));
+    println!(
+        "{}",
+        color.paint(DIM, "  https://www.jetbrains.com/lp/mono/")
+    );
     println!();
     println!("Where your terminal keeps the setting:");
     println!("  Terminal.app      Settings… > Profiles > Font");
     println!("  iTerm2            Settings… > Profiles > Text > Font");
     println!("  VS Code           \"terminal.integrated.fontFamily\": \"JetBrains Mono\"");
-    println!("  kitty             font_family JetBrains Mono   {}", color.paint(DIM, "(~/.config/kitty/kitty.conf)"));
-    println!("  Ghostty           font-family = JetBrains Mono {}", color.paint(DIM, "(~/.config/ghostty/config)"));
+    println!(
+        "  kitty             font_family JetBrains Mono   {}",
+        color.paint(DIM, "(~/.config/kitty/kitty.conf)")
+    );
+    println!(
+        "  Ghostty           font-family = JetBrains Mono {}",
+        color.paint(DIM, "(~/.config/ghostty/config)")
+    );
     println!("  Windows Terminal  Settings > Defaults > Appearance > Font face");
     println!();
     println!("Any monospaced font works — the setting is yours, this is only the one");
@@ -507,8 +569,10 @@ fn font() -> ExitCode {
     println!();
     println!("Colours: Tacet maps its palette onto YOUR terminal theme. The night");
     println!("ground and the paper ink come from the terminal itself; only the brass");
-    println!("accent ({}) is Tacet's own, and only for brand moments — the",
-             color.paint(BRASS, "this colour"));
+    println!(
+        "accent ({}) is Tacet's own, and only for brand moments — the",
+        color.paint(BRASS, "this colour")
+    );
     println!("banner's full stop and the spinning ensō. A dark theme sits closest");
     println!("to the brand, but nothing breaks on a light one.");
     ExitCode::SUCCESS
@@ -531,7 +595,10 @@ struct TerminalApproval;
 impl ApprovalGate for TerminalApproval {
     fn request(&self, request: &ApprovalRequest) -> bool {
         eprintln!();
-        eprintln!("  ⚠ the '{}' tool will send data to the outside world:", request.tool_name);
+        eprintln!(
+            "  ⚠ the '{}' tool will send data to the outside world:",
+            request.tool_name
+        );
         eprintln!("    {}", request.content);
         eprint!("  Do you allow it? [y/N] ");
         let _ = std::io::stderr().flush();
@@ -685,11 +752,16 @@ mod model_package {
             let Ok(entries) = std::fs::read_dir(root) else {
                 continue; // root missing or unreadable: not an error, "empty"
             };
-            let mut candidates: Vec<PathBuf> =
-                entries.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.is_dir()).collect();
+            let mut candidates: Vec<PathBuf> = entries
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .collect();
             candidates.sort();
             for dir in candidates {
-                let Some(package) = package_from_dir(root, &dir) else { continue };
+                let Some(package) = package_from_dir(root, &dir) else {
+                    continue;
+                };
                 // THE FIRST ROOT WINS: `~/models` is where the user put things by
                 // hand, it comes before what was downloaded into the XDG root.
                 if packages.iter().any(|p| p.name == package.name) {
@@ -713,7 +785,10 @@ mod model_package {
             // The extension comparison is CASE INSENSITIVE: downloaded files
             // sometimes arrive as `.GGUF` and the user cannot be expected to know
             // that.
-            .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("gguf")))
+            .filter(|p| {
+                p.extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("gguf"))
+            })
             .collect();
         ggufs.sort();
         let gguf = ggufs.into_iter().next()?;
@@ -743,7 +818,10 @@ mod model_package {
     pub fn pair_from_env() -> Option<(String, String)> {
         let m = tacet_core::env_var(MODEL_VARIABLE)?;
         let t = tacet_core::env_var(TOKENIZER_VARIABLE)?;
-        Some((m.to_string_lossy().into_owned(), t.to_string_lossy().into_owned()))
+        Some((
+            m.to_string_lossy().into_owned(),
+            t.to_string_lossy().into_owned(),
+        ))
     }
 
     /// The (gguf, tokenizer) pair for `name` from the given package list.
@@ -754,7 +832,10 @@ mod model_package {
     pub fn to_pair(packages: &[ModelPackage], name: &str) -> Option<(String, String)> {
         let p = packages.iter().find(|p| p.name == name)?;
         let t = p.tokenizer.as_ref()?;
-        Some((p.gguf.to_string_lossy().into_owned(), t.to_string_lossy().into_owned()))
+        Some((
+            p.gguf.to_string_lossy().into_owned(),
+            t.to_string_lossy().into_owned(),
+        ))
     }
 
     /// PRODUCTION DISCOVERY: environment first, then the catalog.
@@ -883,7 +964,10 @@ mod model_package {
                         .filter(|s| !s.is_empty()),
                 });
             }
-            output.push(RemotePackage { name: name.to_string(), files });
+            output.push(RemotePackage {
+                name: name.to_string(),
+                files,
+            });
         }
         Ok(output)
     }
@@ -899,7 +983,11 @@ fn byte_text(b: u64) -> String {
         d /= 1024.0;
         i += 1;
     }
-    if i == 0 { format!("{b} B") } else { format!("{d:.1} {}", UNIT[i]) }
+    if i == 0 {
+        format!("{b} B")
+    } else {
+        format!("{d:.1} {}", UNIT[i])
+    }
 }
 
 /// Sets up the engine according to the choice. `Auto`: candle if a model exists,
@@ -938,14 +1026,23 @@ fn setup_engine(
                 // If the candle feature is off or loading fails: falling back to
                 // fake SILENTLY would be wrong — the user expects a real model.
                 Err(e) => {
-                    eprintln!("{}", color.paint(YELLOW, &format!("(the real model could note be used: {e})")));
-                    eprintln!("{}", color.paint(DIM, "(fell back to FakeEngine — answers are fixed)"));
+                    eprintln!(
+                        "{}",
+                        color.paint(YELLOW, &format!("(the real model could note be used: {e})"))
+                    );
+                    eprintln!(
+                        "{}",
+                        color.paint(DIM, "(fell back to FakeEngine — answers are fixed)")
+                    );
                     Ok(fake(script))
                 }
             },
             None => {
                 model_not_found_report(model_name, color);
-                eprintln!("{}", color.paint(DIM, "(FakeEngine for now — answers are fixed)"));
+                eprintln!(
+                    "{}",
+                    color.paint(DIM, "(FakeEngine for now — answers are fixed)")
+                );
                 Ok(fake(script))
             }
         },
@@ -978,7 +1075,13 @@ fn model_not_found_report(requested: &str, color: &Color) {
     }
 
     let roots = model_package::model_roots();
-    eprintln!("{}", color.paint(YELLOW, &format!("(model package note found: '{requested}')")));
+    eprintln!(
+        "{}",
+        color.paint(
+            YELLOW,
+            &format!("(model package note found: '{requested}')")
+        )
+    );
     if roots.is_empty() {
         // Neither HOME/USERPROFILE nor XDG_DATA_HOME/LOCALAPPDATA resolved.
         eprintln!(
@@ -994,7 +1097,10 @@ fn model_not_found_report(requested: &str, color: &Color) {
         return;
     }
     for r in &roots {
-        eprintln!("{}", color.paint(DIM, &format!("  searched: {}", r.display())));
+        eprintln!(
+            "{}",
+            color.paint(DIM, &format!("  searched: {}", r.display()))
+        );
     }
 
     let packages = model_package::scan(&roots);
@@ -1038,22 +1144,41 @@ fn model_not_found_report(requested: &str, color: &Color) {
         }
         eprintln!(
             "{}",
-            color.paint(DIM, &format!("  or put <name>/*.gguf + tokenizer.json in a folder: {}", roots[0].display()))
+            color.paint(
+                DIM,
+                &format!(
+                    "  or put <name>/*.gguf + tokenizer.json in a folder: {}",
+                    roots[0].display()
+                )
+            )
         );
         return;
     }
 
-    eprintln!("{}", color.paint(DIM, "  what was found (tacet model list):"));
+    eprintln!(
+        "{}",
+        color.paint(DIM, "  what was found (tacet model list):")
+    );
     for p in &packages {
-        let note = if p.is_complete() { "" } else { "  [NO tokenizer.json — cannot be selected]" };
+        let note = if p.is_complete() {
+            ""
+        } else {
+            "  [NO tokenizer.json — cannot be selected]"
+        };
         eprintln!("{}", color.paint(DIM, &format!("    {}{note}", p.name)));
     }
-    let selectable: Vec<&str> =
-        packages.iter().filter(|p| p.is_complete()).map(|p| p.name.as_str()).collect();
+    let selectable: Vec<&str> = packages
+        .iter()
+        .filter(|p| p.is_complete())
+        .map(|p| p.name.as_str())
+        .collect();
     if !selectable.is_empty() {
         eprintln!(
             "{}",
-            color.paint(DIM, &format!("  to select: tacet --model {}", selectable[0]))
+            color.paint(
+                DIM,
+                &format!("  to select: tacet --model {}", selectable[0])
+            )
         );
     }
 }
@@ -1111,7 +1236,11 @@ fn refresh_session(
     let (mut c, cs) = session_catalog(store, memory, color);
     let names = mcp::feed_catalog(&mut c, mcp_load);
     let mut ex = ToolExecutor::new(c.clone());
-    ex = if interactive { ex.with_gate(TerminalApproval) } else { ex.with_gate(SilentDeny) };
+    ex = if interactive {
+        ex.with_gate(TerminalApproval)
+    } else {
+        ex.with_gate(SilentDeny)
+    };
     for n in EXTERNAL_TOOLS {
         ex = ex.external_tool(*n);
     }
@@ -1265,11 +1394,19 @@ fn chat(
             "{}",
             color.paint(
                 DIM,
-                &format!("{} · {} tools · /help", engine.name(), catalog.tools().len())
+                &format!(
+                    "{} · {} tools · /help",
+                    engine.name(),
+                    catalog.tools().len()
+                )
             )
         );
     } else {
-        println!("Tacet — engine: {} · tools: {}", engine.name(), catalog.tools().len());
+        println!(
+            "Tacet — engine: {} · tools: {}",
+            engine.name(),
+            catalog.tools().len()
+        );
     }
     println!();
 
@@ -1340,11 +1477,26 @@ fn chat(
                     }
                     if addon_touched {
                         refresh_session(
-                            &store, &memory, &color, interactive, &mcp_load, &engine,
-                            &mut catalog, &mut executor, &mut constraint,
-                            &mut catalog_names, &mut web_addon_open, &mut code_state,
+                            &store,
+                            &memory,
+                            &color,
+                            interactive,
+                            &mcp_load,
+                            &engine,
+                            &mut catalog,
+                            &mut executor,
+                            &mut constraint,
+                            &mut catalog_names,
+                            &mut web_addon_open,
+                            &mut code_state,
                         );
-                        println!("{}", color.paint(DIM, &format!("(catalog refreshed — {} tools)", catalog.tools().len())));
+                        println!(
+                            "{}",
+                            color.paint(
+                                DIM,
+                                &format!("(catalog refreshed — {} tools)", catalog.tools().len())
+                            )
+                        );
                     }
                     if single_message.is_some() {
                         break;
@@ -1382,17 +1534,38 @@ fn chat(
             if interactive
                 && screen.tty()
                 && addon::web_installed()
-                && ui::ask_yes_no(&color, "this looks like a web question and web search is off — turn it on?")
+                && ui::ask_yes_no(
+                    &color,
+                    "this looks like a web question and web search is off — turn it on?",
+                )
             {
                 let _ = addon::set_state(tacet_web::addon::WEB_SEARCH, true);
                 refresh_session(
-                    &store, &memory, &color, interactive, &mcp_load, &engine,
-                    &mut catalog, &mut executor, &mut constraint,
-                    &mut catalog_names, &mut web_addon_open, &mut code_state,
+                    &store,
+                    &memory,
+                    &color,
+                    interactive,
+                    &mcp_load,
+                    &engine,
+                    &mut catalog,
+                    &mut executor,
+                    &mut constraint,
+                    &mut catalog_names,
+                    &mut web_addon_open,
+                    &mut code_state,
                 );
-                println!("{}", color.paint(DIM, &format!("(catalog refreshed — {} tools)", catalog.tools().len())));
+                println!(
+                    "{}",
+                    color.paint(
+                        DIM,
+                        &format!("(catalog refreshed — {} tools)", catalog.tools().len())
+                    )
+                );
             } else {
-                println!("{}", color.paint(YELLOW, &format!("({})", addon::closed_gate_message())));
+                println!(
+                    "{}",
+                    color.paint(YELLOW, &format!("({})", addon::closed_gate_message()))
+                );
             }
         }
 
@@ -1431,14 +1604,16 @@ fn chat(
         // the SINGLE skill matching the message, into that turn's prompt behind a
         // `<guidance>` fence. Turn-distance repeat suppression via
         // `injection_state`: the same skill is not added again on every turn.
-        let guide = skill_store.matching(&message, Some(&selected_names)).and_then(|s| {
-            if injection_state.is_needed(&s.name) {
-                injection_state.mark(&s.name);
-                Some(injection_text(s))
-            } else {
-                None
-            }
-        });
+        let guide = skill_store
+            .matching(&message, Some(&selected_names))
+            .and_then(|s| {
+                if injection_state.is_needed(&s.name) {
+                    injection_state.mark(&s.name);
+                    Some(injection_text(s))
+                } else {
+                    None
+                }
+            });
 
         // MEMORY INJECTION (600 limit): the notes matching the message, in the
         // system block.
@@ -1479,8 +1654,9 @@ fn chat(
                     .chain(turn_tools.iter().cloned())
                     .collect()
             };
-            let mut prompt =
-                Prompt::new(SYSTEM_INSTRUCTIONS, question).with_tools(&selected).with_history(previous);
+            let mut prompt = Prompt::new(SYSTEM_INSTRUCTIONS, question)
+                .with_tools(&selected)
+                .with_history(previous);
             if let Some(g) = &guide {
                 prompt = prompt.with_guide(g);
             }
@@ -1493,7 +1669,16 @@ fn chat(
             // is the room left in the window, not a cumulative total.
             last_context = report.final_estimate;
             if report.changed() {
-                eprintln!("{}", color.paint(DIM, &format!("(context truncated: {} turns dropped)", report.dropped_turns)));
+                eprintln!(
+                    "{}",
+                    color.paint(
+                        DIM,
+                        &format!(
+                            "(context truncated: {} turns dropped)",
+                            report.dropped_turns
+                        )
+                    )
+                );
             }
             if show_prompt {
                 // THE TEMPLATE IS TAKEN FROM THE ENGINE. It used to print
@@ -1504,7 +1689,10 @@ fn chat(
                 let wire = prompt.text_with_template(engine.template());
                 println!("--- PROMPT ({:?}) ---", engine.template());
                 println!("{wire}");
-                println!("--- ~{} tokens (estimate) ---", TokenCounter::estimate(&wire));
+                println!(
+                    "--- ~{} tokens (estimate) ---",
+                    TokenCounter::estimate(&wire)
+                );
             }
 
             // THE INDICATOR + THE INPUT LOCK OPEN BEFORE GENERATION AND CLOSE WHEN
@@ -1567,25 +1755,29 @@ fn chat(
                     screen.write(&formatted);
                 }
             };
-            let generation = match wait(engine.generate_streaming(
-                &prompt,
-                constraint.as_ref().map(|c| c as &dyn tacet_engine::Constrainer),
-                // THE CANCEL FLAG PASSES TO THE ENGINE: Ctrl-C stops generation at
-                // the next token. Without the flag a cancel would only be noticed
-                // after the cap filled.
-                //
-                // THE CAP DERIVES FROM THE PROMPT, it is not fixed (see
-                // `TokenCounter::generation_cap`): with a short prompt the unused
-                // part of the window is given to generation. On thinking models
-                // the difference is decisive — with a fixed cap the 8B was cut off
-                // before finishing its thinking block and never called a tool.
-                SamplingSetting {
-                    cancel: Some(&CANCEL),
-                    max_tokens: counter.generation_cap(&prompt),
-                    ..Default::default()
-                },
-                &listener,
-            )) {
+            let generation = match wait(
+                engine.generate_streaming(
+                    &prompt,
+                    constraint
+                        .as_ref()
+                        .map(|c| c as &dyn tacet_engine::Constrainer),
+                    // THE CANCEL FLAG PASSES TO THE ENGINE: Ctrl-C stops generation at
+                    // the next token. Without the flag a cancel would only be noticed
+                    // after the cap filled.
+                    //
+                    // THE CAP DERIVES FROM THE PROMPT, it is not fixed (see
+                    // `TokenCounter::generation_cap`): with a short prompt the unused
+                    // part of the window is given to generation. On thinking models
+                    // the difference is decisive — with a fixed cap the 8B was cut off
+                    // before finishing its thinking block and never called a tool.
+                    SamplingSetting {
+                        cancel: Some(&CANCEL),
+                        max_tokens: counter.generation_cap(&prompt),
+                        ..Default::default()
+                    },
+                    &listener,
+                ),
+            ) {
                 Ok(g) => g,
                 Err(e) => {
                     indicator.finish();
@@ -1600,9 +1792,15 @@ fn chat(
             // the thinking block can only be seen from here.
             if tacet_core::env_var("TACET_TRACE_DUMP").is_some() {
                 if let Some(t) = &generation.thinking {
-                    eprintln!("\n--- thinking ({} tokens total) ---\n{t}", generation.token_count);
+                    eprintln!(
+                        "\n--- thinking ({} tokens total) ---\n{t}",
+                        generation.token_count
+                    );
                 }
-                eprintln!("\n--- raw generation (stop: {:?}) ---\n{}\n---", generation.stop, generation.text);
+                eprintln!(
+                    "\n--- raw generation (stop: {:?}) ---\n{}\n---",
+                    generation.stop, generation.text
+                );
             }
             // DRAIN THE STREAM BUFFERS. Both filters may have a queue awaiting a
             // decision (a last word that is the prefix of a tool name, or an
@@ -1663,11 +1861,15 @@ fn chat(
                     tacet_engine::StopReason::Length => "the token cap filled",
                     _ => "cancelled",
                 };
-                eprintln!("{}", color.paint(YELLOW, &format!("(generation was cut short: {reason})")));
+                eprintln!(
+                    "{}",
+                    color.paint(YELLOW, &format!("(generation was cut short: {reason})"))
+                );
                 break;
             }
 
-            let Some(outcome) = wait(executor.execute_raw(&generation.text, ticket, &mut ctx)) else {
+            let Some(outcome) = wait(executor.execute_raw(&generation.text, ticket, &mut ctx))
+            else {
                 indicator.finish();
                 answer = generation.text;
                 // THE SAFETY VALVE: if nothing was printed in the stream, the
@@ -1701,7 +1903,13 @@ fn chat(
             // NO RECOVERY TURN AFTER A SIDE EFFECT (only at the intersection of an
             // error and an irreversible side effect).
             if is_error && !retryable {
-                eprintln!("{}", color.paint(YELLOW, "(a side effect happened — no recovery turn was opened)"));
+                eprintln!(
+                    "{}",
+                    color.paint(
+                        YELLOW,
+                        "(a side effect happened — no recovery turn was opened)"
+                    )
+                );
                 answer = "The operation partly went through; I did not retry.".to_string();
                 break;
             }
@@ -1720,7 +1928,10 @@ fn chat(
                 if !trace.text.trim().is_empty() {
                     println!(
                         "  {}",
-                        color.paint(DIM, &format!("[{}] {} · {:?}", trace.icon, trace.text, trace.state))
+                        color.paint(
+                            DIM,
+                            &format!("[{}] {} · {:?}", trace.icon, trace.text, trace.state)
+                        )
                     );
                 }
             }
@@ -1772,7 +1983,11 @@ fn status_line(
         return "/ command list · ctrl-c stops · ctrl-d exits".to_string();
     }
     let cap = counter.prompt_cap();
-    let fullness = if context >= cap { " · window full, old turns dropping" } else { "" };
+    let fullness = if context >= cap {
+        " · window full, old turns dropping"
+    } else {
+        ""
+    };
     format!(
         "this turn {}+{} · session {session} · context {context}/{CONTEXT_BUDGET} tokens{fullness}",
         turn_prompt, turn_generation
@@ -1810,7 +2025,13 @@ fn slash(
             for c in input::COMMANDS {
                 println!("  {:12} {}", c.name, color.paint(DIM, c.description));
             }
-            println!("  {}", color.paint(DIM, "typing / opens the command list · while generating, ctrl-c stops the answer"));
+            println!(
+                "  {}",
+                color.paint(
+                    DIM,
+                    "typing / opens the command list · while generating, ctrl-c stops the answer"
+                )
+            );
             SlashResult::Handled
         }
         // EVAL AND GRAMMAR WORK FROM INSIDE TOO. Both remain as subcommands
@@ -1857,7 +2078,10 @@ fn slash(
                         .join("\n")
                 }
             });
-            println!("{}", output.unwrap_or_else(|| "(memory could not be read)".into()));
+            println!(
+                "{}",
+                output.unwrap_or_else(|| "(memory could not be read)".into())
+            );
             SlashResult::Handled
         }
         "/history" => {
@@ -1865,14 +2089,25 @@ fn slash(
                 println!("{}", color.paint(DIM, "(history is empty)"));
             }
             for t in history.iter() {
-                println!("  {:?}: {}", t.role, t.text.chars().take(80).collect::<String>());
+                println!(
+                    "  {:?}: {}",
+                    t.role,
+                    t.text.chars().take(80).collect::<String>()
+                );
             }
             SlashResult::Handled
         }
         "/model" => {
             println!("  engine: {}", engine.name());
             println!("  template: {:?}", engine.template());
-            println!("  constraint: {}", if engine.vocab().is_some() { "on" } else { "off" });
+            println!(
+                "  constraint: {}",
+                if engine.vocab().is_some() {
+                    "on"
+                } else {
+                    "off"
+                }
+            );
             SlashResult::Handled
         }
         "/clear" => {
@@ -1941,12 +2176,21 @@ fn slash(
                 Some(name) => {
                     if ui::set_theme(name) {
                         if let Err(e) = config::set_value("theme", name) {
-                            println!("{}", color.paint(YELLOW, &format!("  (applied, but not saved: {e})")));
+                            println!(
+                                "{}",
+                                color.paint(YELLOW, &format!("  (applied, but not saved: {e})"))
+                            );
                         }
                         println!("  theme: {}{name}{}", ui::brass_code(), ui::reset_code());
                     } else {
                         let names: Vec<&str> = ui::THEMES.iter().map(|t| t.name).collect();
-                        println!("{}", color.paint(DIM, &format!("(unknown theme — themes: {})", names.join(", "))));
+                        println!(
+                            "{}",
+                            color.paint(
+                                DIM,
+                                &format!("(unknown theme — themes: {})", names.join(", "))
+                            )
+                        );
                     }
                 }
             }
@@ -1962,12 +2206,10 @@ fn slash(
                 (None, _, _) => {
                     let _ = config::list(false);
                 }
-                (Some("get"), Some(key), _) => {
-                    match config::get_str(key) {
-                        Some(v) => println!("  {key} = {v}"),
-                        None => println!("{}", color.paint(DIM, &format!("  ({key} is unset)"))),
-                    }
-                }
+                (Some("get"), Some(key), _) => match config::get_str(key) {
+                    Some(v) => println!("  {key} = {v}"),
+                    None => println!("{}", color.paint(DIM, &format!("  ({key} is unset)"))),
+                },
                 (Some("set"), Some(key), Some(value)) => match config::set_value(key, value) {
                     Ok(()) => {
                         println!("  {key} = {value}");
@@ -1975,7 +2217,10 @@ fn slash(
                         if key == "theme" {
                             let _ = ui::set_theme(value);
                         } else {
-                            println!("{}", color.paint(DIM, "  (takes effect the next time tacet starts)"));
+                            println!(
+                                "{}",
+                                color.paint(DIM, "  (takes effect the next time tacet starts)")
+                            );
                         }
                     }
                     Err(e) => println!("{}", color.paint(YELLOW, &format!("  {e}"))),
@@ -1996,19 +2241,42 @@ fn slash(
 /// Reports the MCP load to the user — none of it is silently swallowed.
 fn report_mcp(load: &mcp::LoadOutcome, color: &Color) {
     for (connection, reason) in &load.connection_errors {
-        eprintln!("{}", color.paint(YELLOW, &format!("(mcp: the '{connection}' connection could not be established — {reason})")));
+        eprintln!(
+            "{}",
+            color.paint(
+                YELLOW,
+                &format!(
+                    "(mcp: the '{connection}' connection could not be established — {reason})"
+                )
+            )
+        );
     }
     for skipped in &load.skipped {
         eprintln!(
             "{}",
-            color.paint(DIM, &format!("(mcp: the '{}' tool was skipped [{}] — {})", skipped.remote_name, skipped.connection, skipped.reason))
+            color.paint(
+                DIM,
+                &format!(
+                    "(mcp: the '{}' tool was skipped [{}] — {})",
+                    skipped.remote_name, skipped.connection, skipped.reason
+                )
+            )
         );
     }
     for note in &load.notes {
         eprintln!("{}", color.paint(DIM, &format!("(mcp: {note})")));
     }
     if !load.tools.is_empty() {
-        eprintln!("{}", color.paint(DIM, &format!("(mcp: {} remote tools added to the catalog)", load.tools.len())));
+        eprintln!(
+            "{}",
+            color.paint(
+                DIM,
+                &format!(
+                    "(mcp: {} remote tools added to the catalog)",
+                    load.tools.len()
+                )
+            )
+        );
     }
 }
 
@@ -2017,7 +2285,10 @@ fn report_mcp(load: &mcp::LoadOutcome, color: &Color) {
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "candle")]
-fn candle_engine_from_path(model: &str, tokenizer: &str) -> Result<Arc<dyn EngineProvider>, String> {
+fn candle_engine_from_path(
+    model: &str,
+    tokenizer: &str,
+) -> Result<Arc<dyn EngineProvider>, String> {
     let setting = tacet_engine::ModelSetting::new(model, tokenizer);
     // File existence is checked BEFORE a 2.5 GB load; learning about a missing
     // file at the end of that wait is a pointless delay.
@@ -2026,12 +2297,19 @@ fn candle_engine_from_path(model: &str, tokenizer: &str) -> Result<Arc<dyn Engin
     // WHICH ARCHITECTURE was loaded is printed. Had it stayed silent, a model
     // running with the wrong template would look like "it gives odd answers" and
     // be hard to diagnose.
-    eprintln!("(architecture: {}, template: {:?})", engine.architecture().name(), engine.architecture().template());
+    eprintln!(
+        "(architecture: {}, template: {:?})",
+        engine.architecture().name(),
+        engine.architecture().template()
+    );
     Ok(Arc::new(engine) as Arc<dyn EngineProvider>)
 }
 
 #[cfg(not(feature = "candle"))]
-fn candle_engine_from_path(_model: &str, _tokenizer: &str) -> Result<Arc<dyn EngineProvider>, String> {
+fn candle_engine_from_path(
+    _model: &str,
+    _tokenizer: &str,
+) -> Result<Arc<dyn EngineProvider>, String> {
     Err("this binary was built without the `candle` feature".into())
 }
 
@@ -2049,7 +2327,10 @@ fn eval(json: bool, threshold: f64) -> ExitCode {
     if report.success_rate + f64::EPSILON >= threshold {
         ExitCode::SUCCESS
     } else {
-        eprintln!("threshold not met: {:.3} < {threshold:.3}", report.success_rate);
+        eprintln!(
+            "threshold not met: {:.3} < {threshold:.3}",
+            report.success_rate
+        );
         ExitCode::FAILURE
     }
 }
@@ -2066,7 +2347,12 @@ fn eval(json: bool, threshold: f64) -> ExitCode {
 /// capacity and rises over time; irrelevance is a limit that CANNOT BE BROKEN —
 /// an assistant that calls a tool on a greeting is unusable whatever its
 /// accuracy. That is why the exit code is tied to irrelevance.
-fn eval_tool_selection(json: bool, threshold: f64, model_name: &str, only: Option<&str>) -> ExitCode {
+fn eval_tool_selection(
+    json: bool,
+    threshold: f64,
+    model_name: &str,
+    only: Option<&str>,
+) -> ExitCode {
     let color = Color::setup();
     let engine = match model_package::resolve_pair(model_name) {
         Some((m, t)) => match candle_engine_from_path(&m, &t) {
@@ -2096,7 +2382,13 @@ fn eval_tool_selection(json: bool, threshold: f64, model_name: &str, only: Optio
             return ExitCode::FAILURE;
         }
     }
-    eprintln!("{}", color.paint(DIM, &format!("({} cases running — takes minutes)", cases.len())));
+    eprintln!(
+        "{}",
+        color.paint(
+            DIM,
+            &format!("({} cases running — takes minutes)", cases.len())
+        )
+    );
 
     let report = tacet_eval::run_selection(&cases, &engine);
     if json {
@@ -2107,7 +2399,10 @@ fn eval_tool_selection(json: bool, threshold: f64, model_name: &str, only: Optio
     if report.irrelevance_rate() + f64::EPSILON >= threshold {
         ExitCode::SUCCESS
     } else {
-        eprintln!("irrelevance threshold not met: {:.3} < {threshold:.3}", report.irrelevance_rate());
+        eprintln!(
+            "irrelevance threshold not met: {:.3} < {threshold:.3}",
+            report.irrelevance_rate()
+        );
         ExitCode::FAILURE
     }
 }
@@ -2128,7 +2423,15 @@ fn tools(print_schema: bool) -> ExitCode {
     let _ = mcp::feed_catalog(&mut catalog, &mcp_load);
     report_mcp(&mcp_load, &color);
     for tool in catalog.tools() {
-        println!("{}{}", tool.name(), if tool.taints_session() { "  [taints]" } else { "" });
+        println!(
+            "{}{}",
+            tool.name(),
+            if tool.taints_session() {
+                "  [taints]"
+            } else {
+                ""
+            }
+        );
         println!("  {}", tool.description());
         if print_schema {
             println!("  args: {}", tool.schema().json_schema());
@@ -2149,7 +2452,10 @@ fn tools(print_schema: bool) -> ExitCode {
     // the list asking "where is web_search"; a closed gate must not be as silent
     // as an empty list.
     if !tacet_web::addon::web_search_is_open() {
-        println!("{}", color.paint(DIM, &format!("({})", addon::closed_gate_message())));
+        println!(
+            "{}",
+            color.paint(DIM, &format!("({})", addon::closed_gate_message()))
+        );
     }
     ExitCode::SUCCESS
 }
@@ -2225,33 +2531,57 @@ fn package_list(json: bool) -> ExitCode {
     match &dir {
         Some(d) => {
             let note = if d.is_dir() { "" } else { " (missing)" };
-            println!("{}", color.paint(DIM, &format!("user directory: {}{note}", d.display())));
+            println!(
+                "{}",
+                color.paint(DIM, &format!("user directory: {}{note}", d.display()))
+            );
         }
         // Neither `TACET_HOME` nor `HOME`/`APPDATA` could be resolved: this is not
         // an error but a "user skills cannot be loaded" state, and it has to be
         // said.
         None => println!(
             "{}",
-            color.paint(DIM, "user directory: could not be resolved (TACET_HOME can be set)")
+            color.paint(
+                DIM,
+                "user directory: could not be resolved (TACET_HOME can be set)"
+            )
         ),
     }
     println!();
 
     for s in store.all() {
         let source = if s.is_users { "user" } else { "embedded" };
-        println!("{}  {}", color.paint(BOLD, &s.name), color.paint(DIM, source));
-        println!("  {} {}", color.paint(DIM, "triggers:"), s.triggers.join(", "));
+        println!(
+            "{}  {}",
+            color.paint(BOLD, &s.name),
+            color.paint(DIM, source)
+        );
+        println!(
+            "  {} {}",
+            color.paint(DIM, "triggers:"),
+            s.triggers.join(", ")
+        );
         if !s.tools.is_empty() {
             // A skill is never selected if the tools it MANDATES are not in the
             // catalog; a missing tool is the most common answer to "why does this
             // skill never match".
-            println!("  {} {}", color.paint(DIM, "required tool:"), s.tools.join(", "));
+            println!(
+                "  {} {}",
+                color.paint(DIM, "required tool:"),
+                s.tools.join(", ")
+            );
         }
-        println!("  {}", color.paint(DIM, &format!("{} characters", s.text.chars().count())));
+        println!(
+            "  {}",
+            color.paint(DIM, &format!("{} characters", s.text.chars().count()))
+        );
         println!();
     }
 
-    println!("{embedded} embedded · {loaded} user · {} total", store.count());
+    println!(
+        "{embedded} embedded · {loaded} user · {} total",
+        store.count()
+    );
     ExitCode::SUCCESS
 }
 
@@ -2316,7 +2646,10 @@ fn model_list(json: bool, selected_name: &str) -> ExitCode {
     } else {
         for r in &roots {
             let note = if r.is_dir() { "" } else { " (missing)" };
-            println!("{}", color.paint(DIM, &format!("model root: {}{note}", r.display())));
+            println!(
+                "{}",
+                color.paint(DIM, &format!("model root: {}{note}", r.display()))
+            );
         }
     }
     if let Some((m, t)) = &env {
@@ -2340,25 +2673,49 @@ fn model_list(json: bool, selected_name: &str) -> ExitCode {
     }
     for p in &packages {
         let selected = env.is_none() && p.name == selected_name && p.is_complete();
-        let mark = if selected { color.paint(BOLD, " ← selected") } else { String::new() };
-        println!("{}  {}{}", color.paint(BOLD, &p.name), color.paint(DIM, &byte_text(p.gguf_bytes)), mark);
+        let mark = if selected {
+            color.paint(BOLD, " ← selected")
+        } else {
+            String::new()
+        };
+        println!(
+            "{}  {}{}",
+            color.paint(BOLD, &p.name),
+            color.paint(DIM, &byte_text(p.gguf_bytes)),
+            mark
+        );
         println!("  {}", color.paint(DIM, &p.gguf.display().to_string()));
         match &p.tokenizer {
             Some(_) => println!("  {}", color.paint(DIM, "tokenizer: tokenizer.json")),
             // A HALF PACKAGE IS SAID PLAINLY: the `.gguf` is there but no engine
             // can be set up, and the user would only learn that by trying
             // `--engine candle` and getting an error.
-            None => println!("  {}", color.paint(YELLOW, "tokenizer: MISSING — this package cannot be selected")),
+            None => println!(
+                "  {}",
+                color.paint(
+                    YELLOW,
+                    "tokenizer: MISSING — this package cannot be selected"
+                )
+            ),
         }
         println!();
     }
 
     let complete = packages.iter().filter(|p| p.is_complete()).count();
     println!("{} packages · {complete} usable", packages.len());
-    if env.is_none() && !packages.iter().any(|p| p.name == selected_name && p.is_complete()) {
+    if env.is_none()
+        && !packages
+            .iter()
+            .any(|p| p.name == selected_name && p.is_complete())
+    {
         println!(
             "{}",
-            color.paint(YELLOW, &format!("the requested '{selected_name}' is not usable — chat falls back to FakeEngine"))
+            color.paint(
+                YELLOW,
+                &format!(
+                    "the requested '{selected_name}' is not usable — chat falls back to FakeEngine"
+                )
+            )
         );
     }
 
@@ -2366,26 +2723,44 @@ fn model_list(json: bool, selected_name: &str) -> ExitCode {
     // broken it DOES NOT STAY SILENT, if it is missing it shows where to write it.
     println!();
     match &remote {
-        Err(e) => println!("{}", color.paint(YELLOW, &format!("packages.json could not be read: {e}"))),
+        Err(e) => println!(
+            "{}",
+            color.paint(YELLOW, &format!("packages.json could not be read: {e}"))
+        ),
         Ok(r) if r.is_empty() => match model_package::remote_catalog_path() {
             Some(p) => {
-                println!("{}", color.paint(DIM, &format!("no download catalog: {}", p.display())));
+                println!(
+                    "{}",
+                    color.paint(DIM, &format!("no download catalog: {}", p.display()))
+                );
                 println!("{}", color.paint(DIM, "shape:"));
                 for line in model_package::EXAMPLE_CATALOG.lines() {
                     println!("{}", color.paint(DIM, &format!("  {line}")));
                 }
             }
-            None => println!("{}", color.paint(DIM, "the config directory could not be resolved")),
+            None => println!(
+                "{}",
+                color.paint(DIM, "the config directory could not be resolved")
+            ),
         },
         Ok(r) => {
             let names: Vec<&str> = r.iter().map(|p| p.name.as_str()).collect();
-            println!("{}", color.paint(DIM, &format!("in the download catalog: {}", names.join(", "))));
+            println!(
+                "{}",
+                color.paint(
+                    DIM,
+                    &format!("in the download catalog: {}", names.join(", "))
+                )
+            );
             // THE COMMAND NOW EXISTS, which is why it is SUGGESTED. In the
             // previous round this only said "here is what I recognise", because
             // `model download` did not exist and suggesting a nonexistent command
             // would send the user to something that does nothing.
             if let Some(first) = names.first() {
-                println!("{}", color.paint(DIM, &format!("to download: tacet model download {first}")));
+                println!(
+                    "{}",
+                    color.paint(DIM, &format!("to download: tacet model download {first}"))
+                );
             }
         }
     }
@@ -2419,7 +2794,11 @@ impl tacet_web::DownloadApproval for TerminalDownloadApproval {
             None => "size unknown".to_string(),
         };
         eprintln!();
-        eprintln!("  {} {}  ({size})", self.color.paint(BOLD, "to download:"), plan.name);
+        eprintln!(
+            "  {} {}  ({size})",
+            self.color.paint(BOLD, "to download:"),
+            plan.name
+        );
         eprintln!("    source: {}", plan.url);
         eprintln!("    target: {}", plan.target.display());
         if existing_bytes > 0 {
@@ -2427,7 +2806,10 @@ impl tacet_web::DownloadApproval for TerminalDownloadApproval {
                 "    {}",
                 self.color.paint(
                     DIM,
-                    &format!("a half file exists: {} — it will be resumed", byte_text(existing_bytes))
+                    &format!(
+                        "a half file exists: {} — it will be resumed",
+                        byte_text(existing_bytes)
+                    )
                 )
             );
         }
@@ -2440,7 +2822,11 @@ impl tacet_web::DownloadApproval for TerminalDownloadApproval {
             );
         }
         if self.no_approval {
-            eprintln!("    {}", self.color.paint(DIM, "--no-approval: downloading without asking"));
+            eprintln!(
+                "    {}",
+                self.color
+                    .paint(DIM, "--no-approval: downloading without asking")
+            );
             return true;
         }
         eprint!("  Download it? [y/N] ");
@@ -2471,7 +2857,12 @@ fn progress_text(downloaded: u64, total: Option<u64>) -> String {
         // The `t > 0` condition is not decoration, it is the answer to dividing by
         // zero: on a server declaring length 0 it would print `%NaN`.
         Some(t) if t > 0 => {
-            format!("{} / {}  ({:.0}%)", byte_text(downloaded), byte_text(t), (downloaded as f64 / t as f64) * 100.0)
+            format!(
+                "{} / {}  ({:.0}%)",
+                byte_text(downloaded),
+                byte_text(t),
+                (downloaded as f64 / t as f64) * 100.0
+            )
         }
         // If the server gave no `Content-Length`, a percentage IS NOT INVENTED.
         _ => byte_text(downloaded),
@@ -2480,7 +2871,11 @@ fn progress_text(downloaded: u64, total: Option<u64>) -> String {
 
 impl TerminalDownloadProgress {
     fn line(&self, name: &str, downloaded: u64, total: Option<u64>) {
-        eprint!("\r  {} {}   ", self.color.paint(DIM, name), progress_text(downloaded, total));
+        eprint!(
+            "\r  {} {}   ",
+            self.color.paint(DIM, name),
+            progress_text(downloaded, total)
+        );
         let _ = std::io::stderr().flush();
     }
 }
@@ -2495,7 +2890,11 @@ impl tacet_web::Progress for TerminalDownloadProgress {
     fn digesting(&self, bytes: u64) {
         // IT HAS TO BE REPORTED: the SHA-256 of a GB-sized file takes seconds and
         // if the line stayed at "download finished" the program would look hung.
-        eprint!("\r  {}   ", self.color.paint(DIM, &format!("computing digest ({})…", byte_text(bytes))));
+        eprint!(
+            "\r  {}   ",
+            self.color
+                .paint(DIM, &format!("computing digest ({})…", byte_text(bytes)))
+        );
         let _ = std::io::stderr().flush();
     }
     fn finished(&self, _outcome: &tacet_web::DownloadOutcome) {
@@ -2528,38 +2927,65 @@ fn model_download(name: &str, no_approval: bool) -> ExitCode {
         // cannot be read, saying "package not found" would send the user looking
         // in the wrong place.
         Err(e) => {
-            eprintln!("{}", color.paint(YELLOW, &format!("packages.json could not be read: {e}")));
+            eprintln!(
+                "{}",
+                color.paint(YELLOW, &format!("packages.json could not be read: {e}"))
+            );
             return ExitCode::FAILURE;
         }
     };
 
     let Some(package) = catalog.iter().find(|p| p.name == name) else {
-        eprintln!("{}", color.paint(YELLOW, &format!("'{name}' is not in the download catalog")));
+        eprintln!(
+            "{}",
+            color.paint(YELLOW, &format!("'{name}' is not in the download catalog"))
+        );
         if catalog.is_empty() {
             match model_package::remote_catalog_path() {
                 Some(p) => {
-                    eprintln!("{}", color.paint(DIM, &format!("  the catalog is empty or missing: {}", p.display())));
+                    eprintln!(
+                        "{}",
+                        color.paint(
+                            DIM,
+                            &format!("  the catalog is empty or missing: {}", p.display())
+                        )
+                    );
                     eprintln!("{}", color.paint(DIM, "  shape:"));
                     for line in model_package::EXAMPLE_CATALOG.lines() {
                         eprintln!("{}", color.paint(DIM, &format!("    {line}")));
                     }
                 }
-                None => eprintln!("{}", color.paint(DIM, "  the config directory could not be resolved")),
+                None => eprintln!(
+                    "{}",
+                    color.paint(DIM, "  the config directory could not be resolved")
+                ),
             }
         } else {
             let names: Vec<&str> = catalog.iter().map(|p| p.name.as_str()).collect();
-            eprintln!("{}", color.paint(DIM, &format!("  in the catalog: {}", names.join(", "))));
+            eprintln!(
+                "{}",
+                color.paint(DIM, &format!("  in the catalog: {}", names.join(", ")))
+            );
         }
         return ExitCode::FAILURE;
     };
 
     if package.files.is_empty() {
-        eprintln!("{}", color.paint(YELLOW, &format!("the `files` list of package '{name}' is empty")));
+        eprintln!(
+            "{}",
+            color.paint(
+                YELLOW,
+                &format!("the `files` list of package '{name}' is empty")
+            )
+        );
         return ExitCode::FAILURE;
     }
 
     let Some(root) = download_root() else {
-        eprintln!("{}", color.paint(YELLOW, "the download root could not be resolved"));
+        eprintln!(
+            "{}",
+            color.paint(YELLOW, "the download root could not be resolved")
+        );
         eprintln!(
             "{}",
             color.paint(
@@ -2574,11 +3000,22 @@ fn model_download(name: &str, no_approval: bool) -> ExitCode {
     };
     let dir = root.join(name);
 
-    println!("{}", color.paint(BOLD, &format!("{name} → {}", dir.display())));
-    println!("{}", color.paint(DIM, &format!("{} files", package.files.len())));
+    println!(
+        "{}",
+        color.paint(BOLD, &format!("{name} → {}", dir.display()))
+    );
+    println!(
+        "{}",
+        color.paint(DIM, &format!("{} files", package.files.len()))
+    );
 
-    let approval = TerminalDownloadApproval { color: Color::setup(), no_approval };
-    let progress = TerminalDownloadProgress { color: Color::setup() };
+    let approval = TerminalDownloadApproval {
+        color: Color::setup(),
+        no_approval,
+    };
+    let progress = TerminalDownloadProgress {
+        color: Color::setup(),
+    };
     // TOFU RECORDS: the computed digest of the files that have NO expected digest.
     // Printed together at the end so the user can paste them into
     // `packages.json` — on the second download the verification becomes real.
@@ -2604,8 +3041,11 @@ fn model_download(name: &str, no_approval: bool) -> ExitCode {
                 } else {
                     "downloaded"
                 };
-                let digest_note =
-                    if o.digest_verified { "sha256 verified" } else { "sha256 not in the catalog" };
+                let digest_note = if o.digest_verified {
+                    "sha256 verified"
+                } else {
+                    "sha256 not in the catalog"
+                };
                 println!(
                     "  {} {}  ({}, {note}, {digest_note})",
                     color.paint(BOLD, "✓"),
@@ -2633,9 +3073,18 @@ fn model_download(name: &str, no_approval: bool) -> ExitCode {
             "{}",
             color.paint(YELLOW, "these files had no digest in the catalog — the first download WAS NOT VERIFIED (TOFU).")
         );
-        println!("{}", color.paint(DIM, "if you write them into packages.json, later downloads are verified:"));
+        println!(
+            "{}",
+            color.paint(
+                DIM,
+                "if you write them into packages.json, later downloads are verified:"
+            )
+        );
         for (file, digest) in &tofu {
-            println!("{}", color.paint(DIM, &format!("  \"{file}\": \"sha256\": \"{digest}\"")));
+            println!(
+                "{}",
+                color.paint(DIM, &format!("  \"{file}\": \"sha256\": \"{digest}\""))
+            );
         }
     }
 
@@ -2648,20 +3097,29 @@ fn model_download(name: &str, no_approval: bool) -> ExitCode {
     let rescan = model_package::scan(&[root]);
     match rescan.iter().find(|p| p.name == name) {
         Some(p) if p.is_complete() => {
-            println!("{}", color.paint(BOLD, &format!("ready: tacet --model {name}")));
+            println!(
+                "{}",
+                color.paint(BOLD, &format!("ready: tacet --model {name}"))
+            );
             ExitCode::SUCCESS
         }
         Some(_) => {
             println!(
                 "{}",
-                color.paint(YELLOW, "the package is HALF: no tokenizer.json — it cannot be selected")
+                color.paint(
+                    YELLOW,
+                    "the package is HALF: no tokenizer.json — it cannot be selected"
+                )
             );
             ExitCode::FAILURE
         }
         None => {
             println!(
                 "{}",
-                color.paint(YELLOW, "the package does not show up in the scan: no `.gguf` file in the folder")
+                color.paint(
+                    YELLOW,
+                    "the package does not show up in the scan: no `.gguf` file in the folder"
+                )
             );
             ExitCode::FAILURE
         }
@@ -2692,9 +3150,17 @@ fn print_grammar(name: &str, catalog: &ToolCatalog, color: &Color) {
 /// The SINGLE source of the grammar output. The subcommand and the slash command
 /// have to print the same text: if the two diverge, "the diagnostic output" tells
 /// two different truths and which one is right becomes unclear.
-fn write_grammar(name: &str, catalog: &ToolCatalog, try_input: Option<&str>, color: &Color) -> bool {
+fn write_grammar(
+    name: &str,
+    catalog: &ToolCatalog,
+    try_input: Option<&str>,
+    color: &Color,
+) -> bool {
     let Some(tool) = catalog.find(name) else {
-        eprintln!("unknown tool: {name}\ncatalog: {}", catalog.names().join(", "));
+        eprintln!(
+            "unknown tool: {name}\ncatalog: {}",
+            catalog.names().join(", ")
+        );
         return false;
     };
     let _ = color;
@@ -2717,7 +3183,14 @@ fn write_grammar(name: &str, catalog: &ToolCatalog, try_input: Option<&str>, col
         println!("\ntrial  : {example}");
         match s.advance(example) {
             Ok(()) => {
-                println!("accept : {}", if s.is_done() { "yes (complete)" } else { "partial" });
+                println!(
+                    "accept : {}",
+                    if s.is_done() {
+                        "yes (complete)"
+                    } else {
+                        "partial"
+                    }
+                );
                 let rest: String = s.allowed_prefixes().chars().collect();
                 println!("next   : {rest:?}");
             }
@@ -2786,9 +3259,15 @@ mod tests {
             std::env::remove_var(tacet_mcp::config::PATH_VARIABLE);
         }
 
-        assert_eq!(MemoryStore::default_path().unwrap(), home.join("memory.json"));
+        assert_eq!(
+            MemoryStore::default_path().unwrap(),
+            home.join("memory.json")
+        );
         assert_eq!(tacet_skills::user_dir().unwrap(), home.join("skills"));
-        assert_eq!(tacet_mcp::config::default_path().unwrap(), home.join("mcp.json"));
+        assert_eq!(
+            tacet_mcp::config::default_path().unwrap(),
+            home.join("mcp.json")
+        );
 
         unsafe { std::env::remove_var(tacet_core::env::HOME_VAR) };
     }
@@ -2797,7 +3276,9 @@ mod tests {
     /// values). Only the root object is walked — no tool nests a choice deeper,
     /// and walking blind would invite false positives.
     fn choice_fields(schema: &ArgSchema) -> Vec<(String, Vec<String>)> {
-        let tacet_core::SchemaKind::Object { fields } = &schema.kind else { return Vec::new() };
+        let tacet_core::SchemaKind::Object { fields } = &schema.kind else {
+            return Vec::new();
+        };
         fields
             .iter()
             .filter_map(|f| match &f.schema.kind {
@@ -2817,9 +3298,7 @@ mod tests {
             .split('"')
             .skip(1)
             .step_by(2)
-            .filter(|t| {
-                !t.is_empty() && t.chars().all(|c| c.is_ascii_lowercase() || c == '_')
-            })
+            .filter(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
             .map(|t| t.to_string())
             .collect()
     }
@@ -2867,7 +3346,10 @@ mod tests {
                     )
                 });
                 for (field, allowed) in choice_fields(&tool.schema()) {
-                    for block in paragraphs(&skill.text).iter().filter(|b| b.contains(&field)) {
+                    for block in paragraphs(&skill.text)
+                        .iter()
+                        .filter(|b| b.contains(&field))
+                    {
                         for value in quoted_words(block) {
                             assert!(
                                 allowed.contains(&value),
@@ -2959,7 +3441,16 @@ mod tests {
     #[test]
     fn with_several_ggufs_the_first_by_name_is_picked() {
         let root = temp_root("determinism");
-        install_package(&root, "many", &["z-last.gguf", "a-first.gguf", "m-mid.gguf", "tokenizer.json"]);
+        install_package(
+            &root,
+            "many",
+            &[
+                "z-last.gguf",
+                "a-first.gguf",
+                "m-mid.gguf",
+                "tokenizer.json",
+            ],
+        );
 
         let p = model_package::scan(std::slice::from_ref(&root));
         assert_eq!(p.len(), 1);
@@ -2987,7 +3478,10 @@ mod tests {
 
         let beta = p.iter().find(|x| x.name == "beta").unwrap();
         assert!(!beta.is_complete());
-        assert!(model_package::to_pair(&p, "beta").is_none(), "a half package cannot be selected");
+        assert!(
+            model_package::to_pair(&p, "beta").is_none(),
+            "a half package cannot be selected"
+        );
         assert!(model_package::to_pair(&p, "alfa").is_some());
         assert!(model_package::to_pair(&p, "missing").is_none());
         let _ = std::fs::remove_dir_all(&root);
@@ -3012,7 +3506,10 @@ mod tests {
         // Given in reverse order the winner must reverse too (priority comes FROM
         // THE ORDER).
         let reversed = model_package::scan(&[two.clone(), one.clone()]);
-        assert_eq!(reversed.iter().find(|x| x.name == "same").unwrap().root, two);
+        assert_eq!(
+            reversed.iter().find(|x| x.name == "same").unwrap().root,
+            two
+        );
         let _ = std::fs::remove_dir_all(&one);
         let _ = std::fs::remove_dir_all(&two);
     }
@@ -3074,7 +3571,10 @@ mod tests {
         unsafe { std::env::set_var(TOKENIZER_VARIABLE, "/path/tokenizer.json") };
         assert_eq!(
             model_package::pair_from_env(),
-            Some(("/path/m.gguf".to_string(), "/path/tokenizer.json".to_string()))
+            Some((
+                "/path/m.gguf".to_string(),
+                "/path/tokenizer.json".to_string()
+            ))
         );
         // The env override is AHEAD OF DISCOVERY: even a name not in the catalog
         // resolves.
@@ -3124,17 +3624,23 @@ mod tests {
     #[test]
     fn a_broken_remote_catalog_errors() {
         for raw in [
-            "{}",                                       // no `packages`
-            r#"{"packages":{}}"#,                       // not an array
-            r#"{"packages":[{"files":[]}]}"#,           // no package name
-            r#"{"packages":[{"name":"a"}]}"#,           // no `files`
+            "{}",                                                    // no `packages`
+            r#"{"packages":{}}"#,                                    // not an array
+            r#"{"packages":[{"files":[]}]}"#,                        // no package name
+            r#"{"packages":[{"name":"a"}]}"#,                        // no `files`
             r#"{"packages":[{"name":"a","files":[{"name":"m"}]}]}"#, // no url
             "this is not json",
         ] {
-            assert!(model_package::parse_remote_catalog(raw).is_err(), "should not have been accepted: {raw}");
+            assert!(
+                model_package::parse_remote_catalog(raw).is_err(),
+                "should not have been accepted: {raw}"
+            );
         }
         // An empty catalog IS VALID: "I defined no source" is not an error.
-        assert_eq!(model_package::parse_remote_catalog(r#"{"packages":[]}"#).unwrap(), vec![]);
+        assert_eq!(
+            model_package::parse_remote_catalog(r#"{"packages":[]}"#).unwrap(),
+            vec![]
+        );
     }
 
     /// THE EMBEDDED CATALOG MUST STAY EMPTY. If a URL/SHA is embedded here both
@@ -3186,7 +3692,10 @@ mod tests {
     #[test]
     fn the_shell_really_applies_the_download_gate() {
         fn is_gate<G: tacet_web::DownloadApproval>(_: &G) {}
-        let unattended = TerminalDownloadApproval { color: Color::setup(), no_approval: true };
+        let unattended = TerminalDownloadApproval {
+            color: Color::setup(),
+            no_approval: true,
+        };
         is_gate(&unattended);
 
         let plan = tacet_web::DownloadPlan {
@@ -3205,7 +3714,10 @@ mod tests {
         // only thing read here is that the default is NOT "silently yes" —
         // `tacet_web::download` does not set up the agent before the gate returns
         // `true` either.
-        let silent = TerminalDownloadApproval { color: Color::setup(), no_approval: false };
+        let silent = TerminalDownloadApproval {
+            color: Color::setup(),
+            no_approval: false,
+        };
         assert!(!silent.no_approval);
     }
 

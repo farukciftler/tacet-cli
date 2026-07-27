@@ -60,7 +60,9 @@ fn start_server(sse: bool) -> (String, Server, Arc<Mutex<Identity>>) {
     // Non-blocking accept: required in order to see the `stop` flag, otherwise
     // we would sleep inside `accept()` and never learn about the shutdown
     // request.
-    listener.set_nonblocking(true).expect("non-blocking listener");
+    listener
+        .set_nonblocking(true)
+        .expect("non-blocking listener");
     let (notifier, waiter) = mpsc::channel();
     let stop = Arc::new(AtomicBool::new(false));
     let stop_job = Arc::clone(&stop);
@@ -88,7 +90,11 @@ fn start_server(sse: bool) -> (String, Server, Arc<Mutex<Identity>>) {
     });
 
     waiter.recv().expect("the server started");
-    (format!("http://127.0.0.1:{port}/mcp"), Server { stop, job }, identity)
+    (
+        format!("http://127.0.0.1:{port}/mcp"),
+        Server { stop, job },
+        identity,
+    )
 }
 
 /// Serves request by request over ONE connection until the far side closes it.
@@ -200,8 +206,7 @@ fn handle_request(
         _ => serde_json::json!({}),
     };
 
-    let response =
-        serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string();
+    let response = serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string();
 
     if sse {
         // A heartbeat and an event that is not ours are sprinkled in between:
@@ -243,17 +248,36 @@ fn full_flow(sse: bool) {
     // 1) The translatable tool: the schema must REALLY become usable.
     let run = tools.iter().find(|t| t.name == "run").expect("run");
     let conversion = convert_schema(&run.schema).expect("must convert");
-    assert!(conversion.schema.validate(&serde_json::json!({"command": "ls"})).is_ok());
     assert!(
-        conversion.schema.validate(&serde_json::json!({"command": "ls", "mode": "none"})).is_err(),
+        conversion
+            .schema
+            .validate(&serde_json::json!({"command": "ls"}))
+            .is_ok()
+    );
+    assert!(
+        conversion
+            .schema
+            .validate(&serde_json::json!({"command": "ls", "mode": "none"}))
+            .is_err(),
         "a value outside the enum set must not pass"
     );
-    assert!(conversion.schema.validate(&serde_json::json!({})).is_err(), "required field");
+    assert!(
+        conversion.schema.validate(&serde_json::json!({})).is_err(),
+        "required field"
+    );
 
     // 2) The untranslatable tool IS NOT ACCEPTED SILENTLY.
-    let flexible = tools.iter().find(|t| t.name == "flexible").expect("flexible");
-    let reason = convert_schema(&flexible.schema).err().expect("should have been rejected");
-    assert_eq!(reason, tacet_mcp::UntranslatableReason::CompositeSchema("oneOf".into()));
+    let flexible = tools
+        .iter()
+        .find(|t| t.name == "flexible")
+        .expect("flexible");
+    let reason = convert_schema(&flexible.schema)
+        .err()
+        .expect("should have been rejected");
+    assert_eq!(
+        reason,
+        tacet_mcp::UntranslatableReason::CompositeSchema("oneOf".into())
+    );
 
     // 3) A long description does not enter the context RAW.
     let truncated = tacet_mcp::truncate_description(&run.description);

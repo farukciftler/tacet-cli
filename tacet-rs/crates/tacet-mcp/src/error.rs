@@ -60,7 +60,10 @@ mod tests {
 
     #[test]
     fn a_server_error_with_an_empty_message_does_not_add_a_colon() {
-        assert_eq!(MCPError::Server(String::new()).short_error(), "the server returned an error");
+        assert_eq!(
+            MCPError::Server(String::new()).short_error(),
+            "the server returned an error"
+        );
         assert_eq!(
             MCPError::Server("HTTP 500".into()).short_error(),
             "the server returned an error: HTTP 500"

@@ -22,11 +22,11 @@
 
 use crate::data_store::{SharedStore, Table, Value as StoredValue};
 use serde_json::Value;
-use tacet_core::{
-    Field, Tool, ToolContext, ToolFuture, ToolError, ToolResult, ToolOutcome, ArgSchema, TraceUpdate,
-    SourceRef, boxed,
-};
 use std::sync::Arc;
+use tacet_core::{
+    ArgSchema, Field, SourceRef, Tool, ToolContext, ToolError, ToolFuture, ToolOutcome, ToolResult,
+    TraceUpdate, boxed,
+};
 
 /// The number of table rows shown to the model when it is not put into the store.
 ///
@@ -79,7 +79,11 @@ impl ReadDocumentTool {
     fn store_table(&self, ctx: &ToolContext, table: &Table) -> SourceRef {
         match &self.store {
             Some(d) => d.put_value("document", StoredValue::Table(table.clone())),
-            None => ctx.store("document", &table_summary(table), table.markdown_truncated(usize::MAX)),
+            None => ctx.store(
+                "document",
+                &table_summary(table),
+                table.markdown_truncated(usize::MAX),
+            ),
         }
     }
 
@@ -174,7 +178,9 @@ impl ReadDocumentTool {
             .ok_or_else(|| ToolError::MissingField("path".into()))?;
 
         let path = ctx.resolve_path(raw_path)?;
-        let upper = path.metadata().map_err(|_| ToolError::FileNotFound(path.clone()))?;
+        let upper = path
+            .metadata()
+            .map_err(|_| ToolError::FileNotFound(path.clone()))?;
         if !upper.is_file() {
             return Err(ToolError::FileNotFound(path.clone()));
         }
@@ -330,8 +336,7 @@ pub fn parse_xlsx(byte: &[u8]) -> ToolResult<Table> {
     let sheet = map
         .get("xl/worksheets/sheet1.xml")
         .or_else(|| {
-            map
-                .iter()
+            map.iter()
                 .find(|(name, _)| name.starts_with("xl/worksheets/") && name.ends_with(".xml"))
                 .map(|(_, v)| v)
         })
@@ -373,7 +378,9 @@ fn chunk(xml: &str) -> Vec<Chunk<'_>> {
     let mut i = 0usize;
     while i < xml.len() {
         if xml.as_bytes()[i] == b'<' {
-            let Some(length) = xml[i..].find('>') else { break };
+            let Some(length) = xml[i..].find('>') else {
+                break;
+            };
             let inner = &xml[i + 1..i + length];
             i += length + 1;
             // A declaration (<?xml?>), a comment and a DOCTYPE do not concern us.
@@ -385,9 +392,7 @@ fn chunk(xml: &str) -> Vec<Chunk<'_>> {
             } else {
                 let self_closing = inner.ends_with('/');
                 let body = inner.trim_end_matches('/').trim();
-                let (name, attributes) = body
-                    .split_once(char::is_whitespace)
-                    .unwrap_or((body, ""));
+                let (name, attributes) = body.split_once(char::is_whitespace).unwrap_or((body, ""));
                 parts.push(Chunk::Open {
                     name: local_name(name),
                     attributes,
@@ -506,15 +511,16 @@ fn parse_sheet(xml: &str, shared: &[String]) -> Vec<Vec<String>> {
                     place_cell(&mut active, column, String::new());
                 }
             }
-            Chunk::Open { name: "t" | "v", .. } => collecting = true,
+            Chunk::Open {
+                name: "t" | "v", ..
+            } => collecting = true,
             Chunk::Text(m) if collecting => body.push_str(&resolve_entity(m)),
             Chunk::Close("t" | "v") => collecting = false,
             Chunk::Close("c") => {
                 let value = if is_shared {
                     // A malformed index leaves the cell empty rather than
                     // panicking: the input may be a file somebody else produced.
-                    body
-                        .trim()
+                    body.trim()
                         .parse::<usize>()
                         .ok()
                         .and_then(|i| shared.get(i).cloned())
@@ -560,9 +566,9 @@ fn column_index(cell_ref: &str) -> Option<usize> {
     for c in cell_ref.chars() {
         if c.is_ascii_alphabetic() {
             has_letter = true;
-            n = n.checked_mul(26)?.checked_add(
-                (c.to_ascii_uppercase() as usize) - ('A' as usize) + 1,
-            )?;
+            n = n
+                .checked_mul(26)?
+                .checked_add((c.to_ascii_uppercase() as usize) - ('A' as usize) + 1)?;
         } else {
             break;
         }
@@ -621,7 +627,7 @@ fn resolve_entity(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tacet_core::{ToolState, InMemoryDataStore, SilentReporter, ERROR_MODEL_TEXT};
+    use tacet_core::{ERROR_MODEL_TEXT, InMemoryDataStore, SilentReporter, ToolState};
     use tacet_zip::{ZipEntry, pack};
 
     /// no tokio dependency; the minimum executor that suffices for a test.
@@ -663,9 +669,7 @@ mod tests {
 
     /// Headers as inlineStr, data rows as <v>: the mixture real Excel output has.
     fn xlsx_uret(headers: &[&str], lines: &[Vec<&str>]) -> Vec<u8> {
-        let mut sheet = String::from(
-            "<?xml version=\"1.0\"?><worksheet><sheetData>",
-        );
+        let mut sheet = String::from("<?xml version=\"1.0\"?><worksheet><sheetData>");
         sheet.push_str("<row r=\"1\">");
         for (k, b) in headers.iter().enumerate() {
             sheet.push_str(&format!(
@@ -686,7 +690,11 @@ mod tests {
             sheet.push_str("</row>");
         }
         sheet.push_str("</sheetData></worksheet>");
-        pack(&[ZipEntry::new("xl/worksheets/sheet1.xml", sheet.into_bytes())]).unwrap()
+        pack(&[ZipEntry::new(
+            "xl/worksheets/sheet1.xml",
+            sheet.into_bytes(),
+        )])
+        .unwrap()
     }
 
     fn column_letter(i: usize) -> char {
@@ -744,21 +752,28 @@ mod tests {
 
         let tool = ReadDocumentTool::new();
         let mut ctx = context(&dir);
-        let outcome = no_futures(tool.run(
-            serde_json::json!({ "path": "report.xlsx" }),
-            &mut ctx,
-        ));
+        let outcome = no_futures(tool.run(serde_json::json!({ "path": "report.xlsx" }), &mut ctx));
 
         assert_eq!(outcome.state, ToolState::Read);
         let m = &outcome.to_model;
-        assert!(m.starts_with("| Month | Revenue |"), "no markdown header: {m}");
+        assert!(
+            m.starts_with("| Month | Revenue |"),
+            "no markdown header: {m}"
+        );
         assert!(m.contains("| --- | --- |"), "no alignment row: {m}");
         assert!(m.contains("| January | 100 |"), "no data row: {m}");
         // Every row must carry the full column count — invalid markdown breaks the model.
         for line in m.lines().filter(|s| s.starts_with('|')) {
-            assert_eq!(line.matches('|').count(), 3, "the column count is broken: {line}");
+            assert_eq!(
+                line.matches('|').count(),
+                3,
+                "the column count is broken: {line}"
+            );
         }
-        assert!(ctx.session_tainted(), "a document was read, the session must be tainted");
+        assert!(
+            ctx.session_tainted(),
+            "a document was read, the session must be tainted"
+        );
     }
 
     #[test]
@@ -771,19 +786,12 @@ mod tests {
             .iter()
             .map(|s| s.iter().map(String::as_str).collect())
             .collect();
-        std::fs::write(
-            dir.join("large.xlsx"),
-            xlsx_uret(&["Name", "Value"], &view),
-        )
-        .unwrap();
+        std::fs::write(dir.join("large.xlsx"), xlsx_uret(&["Name", "Value"], &view)).unwrap();
 
         let store = Arc::new(SharedStore::new());
         let tool = ReadDocumentTool::with_store(store.clone());
         let mut ctx = context(&dir);
-        let outcome = no_futures(tool.run(
-            serde_json::json!({ "path": "large.xlsx" }),
-            &mut ctx,
-        ));
+        let outcome = no_futures(tool.run(serde_json::json!({ "path": "large.xlsx" }), &mut ctx));
 
         let m = &outcome.to_model;
         assert!(m.contains("source_ref="), "no reference returned: {m}");
@@ -813,13 +821,15 @@ mod tests {
 
         let tool = ReadDocumentTool::new();
         let mut ctx = context(&dir);
-        let outcome =
-            no_futures(tool.run(serde_json::json!({ "path": "note.md" }), &mut ctx));
+        let outcome = no_futures(tool.run(serde_json::json!({ "path": "note.md" }), &mut ctx));
 
         assert_eq!(outcome.state, ToolState::Read);
         assert!(outcome.to_model.contains("# Heading"));
         assert!(outcome.to_model.contains("Content goes here."));
-        assert!(!outcome.to_model.contains("source_ref"), "small text must not go into the store");
+        assert!(
+            !outcome.to_model.contains("source_ref"),
+            "small text must not go into the store"
+        );
         assert_eq!(outcome.file_path.unwrap().file_name().unwrap(), "note.md");
     }
 
@@ -832,8 +842,7 @@ mod tests {
         let store = Arc::new(SharedStore::new());
         let tool = ReadDocumentTool::with_store(store.clone());
         let mut ctx = context(&dir);
-        let outcome =
-            no_futures(tool.run(serde_json::json!({ "path": "journal.txt" }), &mut ctx));
+        let outcome = no_futures(tool.run(serde_json::json!({ "path": "journal.txt" }), &mut ctx));
 
         assert!(outcome.to_model.contains("source_ref="));
         assert!(outcome.to_model.len() < MODEL_CAP + 120);
@@ -880,8 +889,16 @@ mod tests {
         assert!(fields[0].required, "path must be required");
         assert_eq!(fields[1].name, "focus");
         assert!(!fields[1].required);
-        assert!(schema.validate(&serde_json::json!({ "path": "a.md" })).is_ok());
-        assert!(schema.validate(&serde_json::json!({ "focus": "revenue" })).is_err());
+        assert!(
+            schema
+                .validate(&serde_json::json!({ "path": "a.md" }))
+                .is_ok()
+        );
+        assert!(
+            schema
+                .validate(&serde_json::json!({ "focus": "revenue" }))
+                .is_err()
+        );
         assert!(ReadDocumentTool::new().taints_session());
     }
 }

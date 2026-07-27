@@ -1,5 +1,5 @@
-//! `write_code` — code PRODUCTION in the spirit of Claude Code: write ->
-//! verify -> run -> deliver.
+//! `write_code` — code PRODUCTION as a pipeline: write -> verify -> run ->
+//! deliver.
 //!
 //! `run_code` is a calculator: it runs the script, returns THE OUTPUT and
 //! deletes the file. When the user says "write me that script" what they want
@@ -34,13 +34,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tacet_core::{
-    Field, Tool, ToolContext, ToolState, ToolFuture, ToolError, ToolResult, ToolOutcome, ArgSchema,
+    ArgSchema, Field, Tool, ToolContext, ToolError, ToolFuture, ToolOutcome, ToolResult, ToolState,
     TraceUpdate, boxed,
 };
 
 use crate::run_code::{
-    NetworkShield, MAX_ATTEMPTS, CODE_CAP, CodeState, CodeOutcome, MODEL_OUTPUT_CAP, Interpreter,
-    error_text, language_from_source, truncate, run_program, looks_like_python,
+    CODE_CAP, CodeOutcome, CodeState, Interpreter, MAX_ATTEMPTS, MODEL_OUTPUT_CAP, NetworkShield,
+    error_text, language_from_source, looks_like_python, run_program, truncate,
 };
 
 /// The timeout of the execution verification. The same base as `run_code`'s
@@ -75,7 +75,12 @@ impl WriteCodeTool {
         interpreters: Vec<Interpreter>,
         state: Arc<CodeState>,
     ) -> WriteCodeTool {
-        WriteCodeTool { shield, interpreters, state, schema_cache: Mutex::new(None) }
+        WriteCodeTool {
+            shield,
+            interpreters,
+            state,
+            schema_cache: Mutex::new(None),
+        }
     }
 
     /// The target language. The priority is the same as the measurement in
@@ -83,7 +88,12 @@ impl WriteCodeTool {
     /// source is silent the file EXTENSION speaks (the model writing ".py" is a
     /// declaration too, but it comes after the source); failing that the `language`
     /// field; failing everything, the first interpreter in preference order.
-    fn resolve_interpreter(&self, file_name: &str, requested: Option<&str>, code: &str) -> &Interpreter {
+    fn resolve_interpreter(
+        &self,
+        file_name: &str,
+        requested: Option<&str>,
+        code: &str,
+    ) -> &Interpreter {
         let find = |key: &str| self.interpreters.iter().find(|y| y.key == key);
         if let Some(y) = language_from_source(code).and_then(find) {
             return y;
@@ -134,20 +144,23 @@ fn language_from_extension(file_name: &str) -> Option<&'static str> {
 /// `daily_menu.xlsx.xlsx` in `create_document` would be `script.py.py` here).
 fn safe_stem(file_name: &str) -> String {
     // The last path component: "..", "/" and "\" never make it into the name.
-    let last = file_name
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or("")
-        .trim();
+    let last = file_name.rsplit(['/', '\\']).next().unwrap_or("").trim();
     let mut body: String = last
         .chars()
         .map(|c| {
-            if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' }
+            if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
         })
         .collect();
     // Leading dots make it a hidden file; a "delivery" that does not show up in
     // the user's `ls` is not a delivery.
-    body = body.trim_start_matches('.').trim_end_matches('.').to_string();
+    body = body
+        .trim_start_matches('.')
+        .trim_end_matches('.')
+        .to_string();
     // Known code extensions are stripped from the stem (case insensitive) — the
     // extension is the tool's choice, not the model's.
     let small = body.to_ascii_lowercase();
@@ -157,7 +170,11 @@ fn safe_stem(file_name: &str) -> String {
             break;
         }
     }
-    if body.is_empty() { "script".to_string() } else { body }
+    if body.is_empty() {
+        "script".to_string()
+    } else {
+        body
+    }
 }
 
 /// Produces a NON-COLLIDING target path in the working directory: `name.py`, `name-2.py`, ...
@@ -176,7 +193,9 @@ fn empty_target(folder: &Path, body: &str, extension: &str) -> ToolResult<PathBu
             return Ok(candidate);
         }
     }
-    Err(ToolError::InvalidArgument(format!("no free name found for {body}.{extension}")))
+    Err(ToolError::InvalidArgument(format!(
+        "no free name found for {body}.{extension}"
+    )))
 }
 
 /// The command line of the syntax check. It DOES NOT RUN the script, it only parses it.
@@ -270,8 +289,7 @@ impl Tool for WriteCodeTool {
                     .description(format!("Script language (default '{default}').")),
             ));
         }
-        let schema =
-            ArgSchema::object(fields).description("Write, verify and save a code file");
+        let schema = ArgSchema::object(fields).description("Write, verify and save a code file");
         *self.schema_cache.lock().expect("schema lock") = Some(schema.clone());
         schema
     }
@@ -282,11 +300,7 @@ impl Tool for WriteCodeTool {
         true
     }
 
-    fn run<'a>(
-        &'a self,
-        args: serde_json::Value,
-        ctx: &'a mut ToolContext,
-    ) -> ToolFuture<'a> {
+    fn run<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolContext) -> ToolFuture<'a> {
         boxed(async move {
             if let Err(h) = self.schema().validate(&args) {
                 return ToolOutcome::failed(&h);
@@ -329,7 +343,12 @@ impl Tool for WriteCodeTool {
 }
 
 impl WriteCodeTool {
-    fn execute(&self, args: &serde_json::Value, ctx: &mut ToolContext, attempt: usize) -> ToolOutcome {
+    fn execute(
+        &self,
+        args: &serde_json::Value,
+        ctx: &mut ToolContext,
+        attempt: usize,
+    ) -> ToolOutcome {
         let last_attempt = attempt >= MAX_ATTEMPTS;
 
         // JOIN THE LINES. The model does not write `\n`; joining is the tool's
@@ -345,17 +364,24 @@ impl WriteCodeTool {
             return ToolOutcome::failed(&ToolError::InvalidArgument("the code is too long".into()));
         }
         let code = code_body.as_str();
-        let Some(file_name) =
-            args.get("file_name").and_then(|v| v.as_str()).filter(|a| !a.trim().is_empty())
+        let Some(file_name) = args
+            .get("file_name")
+            .and_then(|v| v.as_str())
+            .filter(|a| !a.trim().is_empty())
         else {
             return ToolOutcome::failed(&ToolError::MissingField("file_name".into()));
         };
 
-        let interpreter =
-            self.resolve_interpreter(file_name, args.get("language").and_then(|v| v.as_str()), code);
+        let interpreter = self.resolve_interpreter(
+            file_name,
+            args.get("language").and_then(|v| v.as_str()),
+            code,
+        );
 
         // The sandbox root — the resolved-path requirement is the same as in run_code.
-        let sandbox = match ctx.resolve_path(".").and_then(|k| k.canonicalize().map_err(ToolError::Io))
+        let sandbox = match ctx
+            .resolve_path(".")
+            .and_then(|k| k.canonicalize().map_err(ToolError::Io))
         {
             Ok(k) => k,
             Err(h) => return ToolOutcome::failed(&h),
@@ -375,7 +401,14 @@ impl WriteCodeTool {
         if let Err(h) = std::fs::write(&script, code.as_bytes()) {
             return ToolOutcome::failed(&ToolError::Io(h));
         }
-        let outcome = self.validate_and_deliver(code, file_name, interpreter, &sandbox, &script, last_attempt);
+        let outcome = self.validate_and_deliver(
+            code,
+            file_name,
+            interpreter,
+            &sandbox,
+            &script,
+            last_attempt,
+        );
         // The verification script is deleted ON EVERY PATH (the same rationale as run_code).
         std::fs::remove_file(&script).ok();
         outcome
@@ -396,7 +429,13 @@ impl WriteCodeTool {
 
         // STAGE 1 — syntax.
         let args = syntax_check_args(interpreter, script);
-        match run_program(&self.shield, verification, &interpreter.path, &args, SYNTAX_CHECK_TIMEOUT) {
+        match run_program(
+            &self.shield,
+            verification,
+            &interpreter.path,
+            &args,
+            SYNTAX_CHECK_TIMEOUT,
+        ) {
             Ok(CodeOutcome::Succeeded { .. }) => {}
             Ok(CodeOutcome::Error(message)) => {
                 // The language diagnosis comes FIRST (the measurement in
@@ -408,11 +447,17 @@ impl WriteCodeTool {
                          available pass language:\"python\".\n{message}"
                     )
                 } else {
-                    format!("error (syntax): the code does not parse — fix it, do not change \
-                             the logic.\n{message}")
+                    format!(
+                        "error (syntax): the code does not parse — fix it, do not change \
+                             the logic.\n{message}"
+                    )
                 };
                 return ToolOutcome::new(
-                    if last_attempt { "Code could not be verified" } else { "Syntax error · retrying" },
+                    if last_attempt {
+                        "Code could not be verified"
+                    } else {
+                        "Syntax error · retrying"
+                    },
                     ToolState::Failed("syntax".into()),
                     error_text(&cause, last_attempt),
                 )
@@ -420,7 +465,11 @@ impl WriteCodeTool {
             }
             Ok(CodeOutcome::Timeout) => {
                 return ToolOutcome::new(
-                    if last_attempt { "Code could not be verified" } else { "Error · retrying" },
+                    if last_attempt {
+                        "Code could not be verified"
+                    } else {
+                        "Error · retrying"
+                    },
                     ToolState::Failed("syntax check timeout".into()),
                     error_text("error (syntax): the syntax check timed out", last_attempt),
                 )
@@ -442,7 +491,11 @@ impl WriteCodeTool {
             Ok(CodeOutcome::Succeeded { output, ms, .. }) => (output, ms),
             Ok(CodeOutcome::Error(message)) => {
                 return ToolOutcome::new(
-                    if last_attempt { "Code could not be verified" } else { "Runtime error · retrying" },
+                    if last_attempt {
+                        "Code could not be verified"
+                    } else {
+                        "Runtime error · retrying"
+                    },
                     ToolState::Failed("runtime error".into()),
                     error_text(
                         &format!(
@@ -456,7 +509,11 @@ impl WriteCodeTool {
             }
             Ok(CodeOutcome::Timeout) => {
                 return ToolOutcome::new(
-                    if last_attempt { "Code could not be verified" } else { "Error · retrying" },
+                    if last_attempt {
+                        "Code could not be verified"
+                    } else {
+                        "Error · retrying"
+                    },
                     ToolState::Failed("timed out".into()),
                     error_text(
                         "error (runtime): the script did not finish in time — it probably has \
@@ -493,7 +550,10 @@ impl WriteCodeTool {
             std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).ok();
         }
 
-        let name = target.file_name().map(|a| a.to_string_lossy().into_owned()).unwrap_or(body);
+        let name = target
+            .file_name()
+            .map(|a| a.to_string_lossy().into_owned())
+            .unwrap_or(body);
         let short = truncate(&output, MODEL_OUTPUT_CAP);
         let output_note = if output.trim().is_empty() {
             "(the run printed nothing — mention the file, do not invent output)".to_string()
@@ -528,8 +588,12 @@ mod tests {
     fn hold<F: std::future::Future>(gelecek: F) -> F::Output {
         use std::pin::pin;
         use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-        static VTABLE: RawWakerVTable =
-            RawWakerVTable::new(|_| RawWaker::new(std::ptr::null(), &VTABLE), |_| {}, |_| {}, |_| {});
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(
+            |_| RawWaker::new(std::ptr::null(), &VTABLE),
+            |_| {},
+            |_| {},
+            |_| {},
+        );
         let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) };
         let mut cx = Context::from_waker(&waker);
         let mut gelecek = pin!(gelecek);
@@ -585,7 +649,12 @@ mod tests {
     fn example_code(tool: &WriteCodeTool) -> (serde_json::Value, &'static str, &'static str) {
         match tool.interpreters[0].key {
             "python" => (
-                json!(["def total(n):", "    return sum(range(1, n + 1))", "", "print(total(10))"]),
+                json!([
+                    "def total(n):",
+                    "    return sum(range(1, n + 1))",
+                    "",
+                    "print(total(10))"
+                ]),
                 "py",
                 "def total(n):\n    return sum(range(1, n + 1))\n\nprint(total(10))",
             ),
@@ -667,18 +736,38 @@ mod tests {
         let mut ctx = context(&root);
         let (lines, extension, joined) = example_code(&tool);
 
-        let outcome =
-            hold(tool.run(json!({"file_name": "total", "lines": lines}), &mut ctx));
+        let outcome = hold(tool.run(json!({"file_name": "total", "lines": lines}), &mut ctx));
         assert_eq!(outcome.state, ToolState::Written, "{}", outcome.to_model);
-        assert!(outcome.to_model.contains("55"), "no evidence: {}", outcome.to_model);
-        assert!(outcome.chip_text.contains("Code verified"), "{}", outcome.chip_text);
+        assert!(
+            outcome.to_model.contains("55"),
+            "no evidence: {}",
+            outcome.to_model
+        );
+        assert!(
+            outcome.chip_text.contains("Code verified"),
+            "{}",
+            outcome.chip_text
+        );
 
         let target = root.join(format!("total.{extension}"));
-        assert!(target.is_file(), "the file was not delivered: {}", target.display());
+        assert!(
+            target.is_file(),
+            "the file was not delivered: {}",
+            target.display()
+        );
         let content = std::fs::read_to_string(&target).expect("must be readable");
-        assert_eq!(content, joined, "the lines must be joined with \\n and delivered");
-        assert!(!content.contains("\\n"), "an escape sequence leaked into the raw text");
-        assert!(ctx.session_tainted(), "an external tool ran, the session must be tainted");
+        assert_eq!(
+            content, joined,
+            "the lines must be joined with \\n and delivered"
+        );
+        assert!(
+            !content.contains("\\n"),
+            "an escape sequence leaked into the raw text"
+        );
+        assert!(
+            ctx.session_tainted(),
+            "an external tool ran, the session must be tainted"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -694,16 +783,26 @@ mod tests {
             _ => json!(["function f( {", "console.log(1)"]),
         };
 
-        let outcome =
-            hold(tool.run(json!({"file_name": "broken", "lines": lines}), &mut ctx));
-        assert!(matches!(outcome.state, ToolState::Failed(_)), "{}", outcome.chip_text);
-        assert!(outcome.to_model.contains("error (syntax)"), "{}", outcome.to_model);
+        let outcome = hold(tool.run(json!({"file_name": "broken", "lines": lines}), &mut ctx));
+        assert!(
+            matches!(outcome.state, ToolState::Failed(_)),
+            "{}",
+            outcome.chip_text
+        );
+        assert!(
+            outcome.to_model.contains("error (syntax)"),
+            "{}",
+            outcome.to_model
+        );
         let remainder: Vec<_> = std::fs::read_dir(&root)
             .unwrap()
             .filter_map(|g| g.ok())
             .filter(|g| g.file_name().to_string_lossy().starts_with("broken"))
             .collect();
-        assert!(remainder.is_empty(), "broken code was delivered: {remainder:?}");
+        assert!(
+            remainder.is_empty(),
+            "broken code was delivered: {remainder:?}"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -719,10 +818,17 @@ mod tests {
             _ => json!(["throw new Error('on purpose')"]),
         };
 
-        let outcome =
-            hold(tool.run(json!({"file_name": "crashing", "lines": lines}), &mut ctx));
-        assert!(matches!(outcome.state, ToolState::Failed(_)), "{}", outcome.chip_text);
-        assert!(outcome.to_model.contains("error (runtime)"), "{}", outcome.to_model);
+        let outcome = hold(tool.run(json!({"file_name": "crashing", "lines": lines}), &mut ctx));
+        assert!(
+            matches!(outcome.state, ToolState::Failed(_)),
+            "{}",
+            outcome.chip_text
+        );
+        assert!(
+            outcome.to_model.contains("error (runtime)"),
+            "{}",
+            outcome.to_model
+        );
         assert!(!root.join("crashing.py").exists() && !root.join("crashing.js").exists());
         std::fs::remove_dir_all(&root).ok();
     }
@@ -738,8 +844,7 @@ mod tests {
 
         tool.state.new_turn();
         let mut ctx = context(&root);
-        let outcome =
-            hold(tool.run(json!({"file_name": "total", "lines": lines}), &mut ctx));
+        let outcome = hold(tool.run(json!({"file_name": "total", "lines": lines}), &mut ctx));
         assert_eq!(outcome.state, ToolState::Written, "{}", outcome.to_model);
 
         assert_eq!(
@@ -747,8 +852,15 @@ mod tests {
             "THE USER'S FILE",
             "the user's file was overwritten"
         );
-        assert!(root.join(format!("total-2.{extension}")).is_file(), "the suffixed name was not produced");
-        assert!(outcome.chip_text.contains(&format!("total-2.{extension}")), "{}", outcome.chip_text);
+        assert!(
+            root.join(format!("total-2.{extension}")).is_file(),
+            "the suffixed name was not produced"
+        );
+        assert!(
+            outcome.chip_text.contains(&format!("total-2.{extension}")),
+            "{}",
+            outcome.chip_text
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -770,19 +882,26 @@ mod tests {
         let mut ctx = context(&root);
         let (lines, _, _) = example_code(&tool);
 
-        let first =
-            hold(tool.run(json!({"file_name": "a", "lines": lines.clone()}), &mut ctx));
+        let first = hold(tool.run(json!({"file_name": "a", "lines": lines.clone()}), &mut ctx));
         assert_eq!(first.state, ToolState::Written);
         let exit_code = match run_tool.interpreters()[0].key {
             "python" => "print(2)",
             _ => "console.log(2)",
         };
         let second_pass = hold(run_tool.run(json!({"code": exit_code}), &mut ctx));
-        assert_eq!(second_pass.state, ToolState::Read, "{}", second_pass.to_model);
+        assert_eq!(
+            second_pass.state,
+            ToolState::Read,
+            "{}",
+            second_pass.to_model
+        );
 
-        let third =
-            hold(tool.run(json!({"file_name": "b", "lines": lines}), &mut ctx));
-        assert!(third.to_model.starts_with("error_final"), "{}", third.to_model);
+        let third = hold(tool.run(json!({"file_name": "b", "lines": lines}), &mut ctx));
+        assert!(
+            third.to_model.starts_with("error_final"),
+            "{}",
+            third.to_model
+        );
         assert!(!root.join("b.py").exists() && !root.join("b.js").exists());
         std::fs::remove_dir_all(&root).ok();
     }
@@ -803,8 +922,7 @@ mod tests {
                 "console.log('ok')"
             ]),
         };
-        let outcome =
-            hold(tool.run(json!({"file_name": "writing", "lines": lines}), &mut ctx));
+        let outcome = hold(tool.run(json!({"file_name": "writing", "lines": lines}), &mut ctx));
         assert_eq!(outcome.state, ToolState::Written, "{}", outcome.to_model);
         assert!(
             !root.join("by_product.txt").exists(),
@@ -824,12 +942,24 @@ mod tests {
         assert_eq!(js["properties"]["lines"]["items"]["type"], json!("string"));
         let has_language = js["properties"].get("language").is_some();
         assert_eq!(has_language, tool.interpreters.len() > 1);
-        assert!(schema.validate(&json!({"file_name": "a", "lines": ["x"]})).is_ok());
+        assert!(
+            schema
+                .validate(&json!({"file_name": "a", "lines": ["x"]}))
+                .is_ok()
+        );
         assert!(schema.validate(&json!({"lines": ["x"]})).is_err());
         assert!(schema.validate(&json!({"file_name": "a"})).is_err());
         // An empty array and text-instead-of-array: both FAIL in the schema.
-        assert!(schema.validate(&json!({"file_name": "a", "lines": []})).is_err());
-        assert!(schema.validate(&json!({"file_name": "a", "lines": "def f():"})).is_err());
+        assert!(
+            schema
+                .validate(&json!({"file_name": "a", "lines": []}))
+                .is_err()
+        );
+        assert!(
+            schema
+                .validate(&json!({"file_name": "a", "lines": "def f():"}))
+                .is_err()
+        );
     }
 
     /// 10) THE EXTENSION PICKS THE LANGUAGE: while the source is silent, a ".py" name routes to python.
@@ -840,9 +970,19 @@ mod tests {
             return;
         }
         // The source is valid in both languages — the guess stays silent, the extension speaks.
-        assert_eq!(tool.resolve_interpreter("script.py", None, "1 + 2").key, "python");
-        assert_eq!(tool.resolve_interpreter("script.js", None, "1 + 2").key, "js");
+        assert_eq!(
+            tool.resolve_interpreter("script.py", None, "1 + 2").key,
+            "python"
+        );
+        assert_eq!(
+            tool.resolve_interpreter("script.js", None, "1 + 2").key,
+            "js"
+        );
         // If the source SPEAKS it overrides the extension (evidence > declaration).
-        assert_eq!(tool.resolve_interpreter("script.js", None, "print(len([1]))").key, "python");
+        assert_eq!(
+            tool.resolve_interpreter("script.js", None, "print(len([1]))")
+                .key,
+            "python"
+        );
     }
 }

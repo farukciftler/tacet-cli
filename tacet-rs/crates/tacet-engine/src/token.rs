@@ -70,7 +70,10 @@ pub struct TokenCounter {
 
 impl Default for TokenCounter {
     fn default() -> Self {
-        Self { budget: CONTEXT_BUDGET, generation_share: GENERATION_SHARE }
+        Self {
+            budget: CONTEXT_BUDGET,
+            generation_share: GENERATION_SHARE,
+        }
     }
 }
 
@@ -95,7 +98,10 @@ impl TruncationReport {
 
 impl TokenCounter {
     pub fn new(budget: usize, generation_share: usize) -> Self {
-        Self { budget, generation_share }
+        Self {
+            budget,
+            generation_share,
+        }
     }
 
     /// The cap the prompt has to fit into.
@@ -123,7 +129,9 @@ impl TokenCounter {
     /// cap comes out slightly SMALLER than the room actually left; losing a few
     /// tokens is the right trade against overflowing the window.
     pub fn generation_cap(&self, prompt: &Prompt) -> usize {
-        self.budget.saturating_sub(self.prompt_estimate(prompt)).max(self.generation_share)
+        self.budget
+            .saturating_sub(self.prompt_estimate(prompt))
+            .max(self.generation_share)
     }
 
     /// Rough token estimate.

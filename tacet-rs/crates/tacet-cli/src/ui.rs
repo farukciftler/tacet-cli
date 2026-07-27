@@ -209,7 +209,9 @@ pub struct Color {
 
 impl Color {
     pub fn setup() -> Self {
-        Self { tty: std::io::stdout().is_terminal() }
+        Self {
+            tty: std::io::stdout().is_terminal(),
+        }
     }
     pub fn paint(&self, code: &str, text: &str) -> String {
         if self.tty {
@@ -245,13 +247,14 @@ pub fn ask_yes_no(color: &Color, question: &str) -> bool {
     loop {
         match event::read() {
             Ok(Event::Key(k)) if k.kind != KeyEventKind::Release => match k.code {
-                KeyCode::Char('y') | KeyCode::Char('Y')
-                | KeyCode::Char('e') | KeyCode::Char('E') => {
+                KeyCode::Char('y')
+                | KeyCode::Char('Y')
+                | KeyCode::Char('e')
+                | KeyCode::Char('E') => {
                     answer = true;
                     break;
                 }
-                KeyCode::Char('n') | KeyCode::Char('N')
-                | KeyCode::Enter | KeyCode::Esc => break,
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Enter | KeyCode::Esc => break,
                 _ => {}
             },
             Ok(_) => {}
@@ -291,7 +294,11 @@ impl Screen {
     pub fn setup() -> Arc<Self> {
         Arc::new(Self {
             tty: std::io::stdout().is_terminal(),
-            inner: Mutex::new(ScreenInner { raw: false, has_indicator: false, last_chip: None }),
+            inner: Mutex::new(ScreenInner {
+                raw: false,
+                has_indicator: false,
+                last_chip: None,
+            }),
         })
     }
 
@@ -471,7 +478,13 @@ impl TurnIndicator {
                 }
             })
         };
-        TurnIndicator { stop, state, handle: Some(handle), screen, raw_on }
+        TurnIndicator {
+            stop,
+            state,
+            handle: Some(handle),
+            screen,
+            raw_on,
+        }
     }
 
     /// The first token arrived: the indicator GOES QUIET but the input lock
@@ -511,7 +524,13 @@ impl Drop for TurnIndicator {
 /// That is what the user wanted: to cut off an answer that is dragging on, not
 /// to close the shell.
 fn swallow_key(home: &Event, cancel: &AtomicBool, screen: &Screen) {
-    let Event::Key(KeyEvent { code, modifiers, kind, .. }) = home else {
+    let Event::Key(KeyEvent {
+        code,
+        modifiers,
+        kind,
+        ..
+    }) = home
+    else {
         return;
     };
     // Pressing a key can produce Press + Release; marking the cancellation twice
@@ -545,7 +564,11 @@ pub struct LiveReporter {
 
 impl LiveReporter {
     pub fn new(inner: Arc<TraceCollector>, screen: Arc<Screen>, live: bool) -> Self {
-        Self { inner, screen, live }
+        Self {
+            inner,
+            screen,
+            live,
+        }
     }
 
     pub fn traces(&self) -> Vec<ToolTrace> {
@@ -578,22 +601,32 @@ pub fn chip_line(trace: &ToolTrace, colored: bool) -> String {
         _ => text.to_string(),
     };
     let body = format!("  ⏺ {} · {body}", trace.icon);
-    if colored { format!("{}{body}{}", dim_code(), reset_code()) } else { body }
+    if colored {
+        format!("{}{body}{}", dim_code(), reset_code())
+    } else {
+        body
+    }
 }
 
 impl Reporter for LiveReporter {
     fn start(&self, icon: &str, text: &str) -> TraceId {
         let id = self.inner.start(icon, text);
-        if self.live && let Some(trace) = self.inner.traces().into_iter().find(|t| t.id == id) {
-            self.screen.print_chip(id.0, &chip_line(&trace, self.screen.tty()));
+        if self.live
+            && let Some(trace) = self.inner.traces().into_iter().find(|t| t.id == id)
+        {
+            self.screen
+                .print_chip(id.0, &chip_line(&trace, self.screen.tty()));
         }
         id
     }
 
     fn update(&self, id: TraceId, update: TraceUpdate) {
         self.inner.update(id, update);
-        if self.live && let Some(trace) = self.inner.traces().into_iter().find(|t| t.id == id) {
-            self.screen.update_chip(id.0, &chip_line(&trace, self.screen.tty()));
+        if self.live
+            && let Some(trace) = self.inner.traces().into_iter().find(|t| t.id == id)
+        {
+            self.screen
+                .update_chip(id.0, &chip_line(&trace, self.screen.tty()));
         }
         // DIAGNOSTIC DUMP (gated by an env var): what the model produced and
         // what the tool saw — from the REAL trace store, not through a separate
@@ -655,11 +688,21 @@ mod tests {
             file_path: None,
         };
         assert!(chip_line(&running, false).contains("searching…"));
-        assert!(!chip_line(&running, false).contains('\x1b'), "an uncoloured chip must carry no ANSI");
+        assert!(
+            !chip_line(&running, false).contains('\x1b'),
+            "an uncoloured chip must carry no ANSI"
+        );
         assert!(chip_line(&running, true).contains('\x1b'));
         // A tool whose text already ends in "…" must not get TWO ellipses.
-        let already = ToolTrace { text: "searching…".into(), ..running.clone() };
-        assert!(chip_line(&already, false).ends_with("searching…"), "{}", chip_line(&already, false));
+        let already = ToolTrace {
+            text: "searching…".into(),
+            ..running.clone()
+        };
+        assert!(
+            chip_line(&already, false).ends_with("searching…"),
+            "{}",
+            chip_line(&already, false)
+        );
         // If the error reason is already in the chip text it must not be added
         // again.
         let repeated = ToolTrace {
@@ -668,7 +711,11 @@ mod tests {
             ..running.clone()
         };
         assert_eq!(chip_line(&repeated, false).matches("not found").count(), 1);
-        let finished = ToolTrace { state: ToolState::Read, text: "27 results".into(), ..running };
+        let finished = ToolTrace {
+            state: ToolState::Read,
+            text: "27 results".into(),
+            ..running
+        };
         let s = chip_line(&finished, false);
         assert!(s.contains("27 results"), "{s}");
         assert!(!s.contains('…'), "{s}");
@@ -681,7 +728,10 @@ mod tests {
         let screen = Screen::setup();
         let letter = Event::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
         swallow_key(&letter, &CANCEL, &screen);
-        assert!(!CANCEL.load(Ordering::Relaxed), "an ordinary key must not cancel");
+        assert!(
+            !CANCEL.load(Ordering::Relaxed),
+            "an ordinary key must not cancel"
+        );
         let ctrl_c = Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
         swallow_key(&ctrl_c, &CANCEL, &screen);
         assert!(CANCEL.load(Ordering::Relaxed), "ctrl-c must cancel");

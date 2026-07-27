@@ -58,7 +58,10 @@ impl TokenMask {
             }
             let mut current = 0usize;
             for c in text.chars() {
-                current = match nodes[current].children.binary_search_by_key(&c, |(k, _)| *k) {
+                current = match nodes[current]
+                    .children
+                    .binary_search_by_key(&c, |(k, _)| *k)
+                {
                     Ok(i) => nodes[current].children[i].1,
                     Err(i) => {
                         nodes.push(TrieNode::default());
@@ -70,7 +73,11 @@ impl TokenMask {
             }
             nodes[current].ends.push(id);
         }
-        Self { nodes, vocab_size: vocab.len(), empty_tokens }
+        Self {
+            nodes,
+            vocab_size: vocab.len(),
+            empty_tokens,
+        }
     }
 
     /// The ids of tokens with empty (special) text; the caller decides on EOS
@@ -135,7 +142,10 @@ impl TokenMask {
         if !state.is_done() {
             return;
         }
-        let Ok(i) = self.nodes[node].children.binary_search_by_key(&term, |(k, _)| *k) else {
+        let Ok(i) = self.nodes[node]
+            .children
+            .binary_search_by_key(&term, |(k, _)| *k)
+        else {
             return;
         };
         let child = self.nodes[node].children[i].1;

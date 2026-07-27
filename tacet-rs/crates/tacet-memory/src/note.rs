@@ -177,16 +177,32 @@ mod tests {
     #[test]
     fn validity_limits_are_enforced() {
         assert!(note("The user is a vegetarian.", &["food"]).is_valid());
-        assert!(!note("short", &["food"]).is_valid(), "shorter than 10 characters");
+        assert!(
+            !note("short", &["food"]).is_valid(),
+            "shorter than 10 characters"
+        );
         assert!(!note(&"a".repeat(TEXT_LIMIT + 1), &["food"]).is_valid());
-        assert!(!note("The user is a vegetarian.", &[]).is_valid(), "no keys");
+        assert!(
+            !note("The user is a vegetarian.", &[]).is_valid(),
+            "no keys"
+        );
     }
 
     #[test]
     fn kind_resolution_rejects_a_made_up_value() {
-        assert_eq!(MemoryKind::resolve(" Identity "), Some(MemoryKind::Identity));
-        assert_eq!(MemoryKind::resolve("PREFERENCE"), Some(MemoryKind::Preference));
-        assert_eq!(MemoryKind::resolve("profession"), None, "must NOT fall back to the default");
+        assert_eq!(
+            MemoryKind::resolve(" Identity "),
+            Some(MemoryKind::Identity)
+        );
+        assert_eq!(
+            MemoryKind::resolve("PREFERENCE"),
+            Some(MemoryKind::Preference)
+        );
+        assert_eq!(
+            MemoryKind::resolve("profession"),
+            None,
+            "must NOT fall back to the default"
+        );
         assert_eq!(MemoryKind::default(), MemoryKind::Fact);
     }
 
@@ -207,7 +223,10 @@ mod tests {
             serde_json::from_str::<MemoryKind>("\"iliski\"").unwrap(),
             MemoryKind::Relation
         );
-        assert_eq!(serde_json::from_str::<MemoryKind>("\"olgu\"").unwrap(), MemoryKind::Fact);
+        assert_eq!(
+            serde_json::from_str::<MemoryKind>("\"olgu\"").unwrap(),
+            MemoryKind::Fact
+        );
     }
 
     #[test]
@@ -224,7 +243,11 @@ mod tests {
     #[test]
     fn keys_are_comma_split_and_capped() {
         assert_eq!(fix_keys(&["Food, Restaurant"]), vec!["food", "restaurant"]);
-        assert_eq!(fix_keys(&["a", "A", " a "]), vec!["a"], "duplicates drop out");
+        assert_eq!(
+            fix_keys(&["a", "A", " a "]),
+            vec!["a"],
+            "duplicates drop out"
+        );
         let many: Vec<String> = (0..20).map(|i| format!("k{i}")).collect();
         assert_eq!(fix_keys(&many).len(), KEY_LIMIT);
     }

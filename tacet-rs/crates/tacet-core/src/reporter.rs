@@ -32,7 +32,10 @@ pub struct TraceUpdate {
 
 impl TraceUpdate {
     pub fn state(state: ToolState) -> Self {
-        Self { state: Some(state), ..Default::default() }
+        Self {
+            state: Some(state),
+            ..Default::default()
+        }
     }
 
     pub fn text(mut self, text: impl Into<String>) -> Self {

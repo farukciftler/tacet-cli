@@ -43,7 +43,10 @@ fn accepts_and_is_json(schema: &ArgSchema, text: &str) -> bool {
 fn a_valid_object_is_accepted() {
     let s = sample_schema();
     assert!(accepts_and_is_json(&s, r#"{"query":"report"}"#));
-    assert!(accepts_and_is_json(&s, r#"{"query":"report","scope":"near"}"#));
+    assert!(accepts_and_is_json(
+        &s,
+        r#"{"query":"report","scope":"near"}"#
+    ));
     assert!(accepts_and_is_json(
         &s,
         r#"{"query":"a","scope":"all","count":12,"deep":true}"#
@@ -53,7 +56,10 @@ fn a_valid_object_is_accepted() {
 #[test]
 fn whitespace_is_free_at_structural_positions() {
     let s = sample_schema();
-    assert!(accepts_and_is_json(&s, "{ \"query\" : \"a\" , \"count\" : 3 }"));
+    assert!(accepts_and_is_json(
+        &s,
+        "{ \"query\" : \"a\" , \"count\" : 3 }"
+    ));
     assert!(accepts_and_is_json(&s, "{\n  \"query\": \"a\"\n}"));
 }
 
@@ -132,7 +138,10 @@ fn while_writing_an_enum_only_the_next_letters_are_allowed() {
 #[test]
 fn an_escaped_string_is_handled_correctly() {
     let s = ArgSchema::object(vec![Field::new("m", ArgSchema::text()).required()]);
-    assert!(accepts_and_is_json(&s, r#"{"m":"quote: \" and backslash: \\"}"#));
+    assert!(accepts_and_is_json(
+        &s,
+        r#"{"m":"quote: \" and backslash: \\"}"#
+    ));
     assert!(accepts_and_is_json(&s, r#"{"m":"line\nbreak\ttab"}"#));
     // An invalid escape letter.
     assert!(!accepts(&s, r#"{"m":"\q"}"#));
@@ -158,19 +167,22 @@ fn a_unicode_escape_requires_four_hex_digits() {
 #[test]
 fn multi_byte_unicode_is_free_in_the_body() {
     let s = ArgSchema::object(vec![Field::new("m", ArgSchema::text()).required()]);
-    assert!(accepts_and_is_json(&s, r#"{"m":"very secret — tacet ✓ 世界"}"#));
+    assert!(accepts_and_is_json(
+        &s,
+        r#"{"m":"very secret — tacet ✓ 世界"}"#
+    ));
 }
 
 #[test]
 fn the_text_length_limit_forces_closing() {
-    let s = ArgSchema::object(vec![
-        Field::new("m", ArgSchema::text()).required(),
-    ]);
+    let s = ArgSchema::object(vec![Field::new("m", ArgSchema::text()).required()]);
     let bounded = ArgSchema::object(vec![
         Field::new(
             "m",
             ArgSchema {
-                kind: tacet_core::SchemaKind::Text { max_length: Some(3) },
+                kind: tacet_core::SchemaKind::Text {
+                    max_length: Some(3),
+                },
                 description: None,
             },
         )
@@ -249,7 +261,10 @@ fn bool_produces_only_true_and_false() {
     let g = grammar(&s);
     let mut d = g.state();
     d.advance(r#"{"b":"#).unwrap();
-    assert_eq!(d.allowed_prefixes().chars().collect::<Vec<_>>(), vec!['f', 't']);
+    assert_eq!(
+        d.allowed_prefixes().chars().collect::<Vec<_>>(),
+        vec!['f', 't']
+    );
 }
 
 // ------------------------------------------------------------ nested structures
@@ -272,7 +287,10 @@ fn nested_object_and_array() {
         &s,
         r#"{"target":{"path":"a.txt","line":3},"tags":["x","y"]}"#
     ));
-    assert!(accepts_and_is_json(&s, r#"{"target":{"path":"a"},"tags":[]}"#));
+    assert!(accepts_and_is_json(
+        &s,
+        r#"{"target":{"path":"a"},"tags":[]}"#
+    ));
     // The required field of the inner object cannot be skipped either.
     assert!(!accepts(&s, r#"{"target":{}}"#));
     // The type of array items is fixed.
@@ -282,8 +300,11 @@ fn nested_object_and_array() {
 #[test]
 fn array_length_bounds_are_enforced() {
     let s = ArgSchema::object(vec![
-        Field::new("d", ArgSchema::array(ArgSchema::integer()).length(Some(2), Some(3)))
-            .required(),
+        Field::new(
+            "d",
+            ArgSchema::array(ArgSchema::integer()).length(Some(2), Some(3)),
+        )
+        .required(),
     ]);
     assert!(accepts_and_is_json(&s, r#"{"d":[1,2]}"#));
     assert!(accepts_and_is_json(&s, r#"{"d":[1,2,3]}"#));
@@ -296,7 +317,10 @@ fn array_length_bounds_are_enforced() {
     d.advance(r#"{"d":[1,2,3"#).unwrap();
     let allowed = d.allowed_prefixes();
     assert!(allowed.contains(']'));
-    assert!(!allowed.contains(','), "no comma must open at the upper bound");
+    assert!(
+        !allowed.contains(','),
+        "no comma must open at the upper bound"
+    );
 }
 
 #[test]
@@ -380,8 +404,14 @@ fn the_allowed_set_is_never_left_dead() {
     let mut d = g.state();
     for c in r#"{"query":"ac","count":7,"deep":false}"#.chars() {
         let allowed = d.allowed_prefixes();
-        assert!(!allowed.is_empty() || allowed.can_finish(), "dead node: {allowed:?}");
-        assert!(allowed.contains(c), "'{c}' should have been allowed: {allowed:?}");
+        assert!(
+            !allowed.is_empty() || allowed.can_finish(),
+            "dead node: {allowed:?}"
+        );
+        assert!(
+            allowed.contains(c),
+            "'{c}' should have been allowed: {allowed:?}"
+        );
         d = d.branch(c).unwrap();
     }
     assert!(d.is_done());
@@ -398,12 +428,18 @@ fn in_a_number_range_a_dead_prefix_never_opens() {
     let mut d = g.state();
     d.advance(r#"{"n":"#).unwrap();
     // No single-digit number can fall in the range, but 1 and 2 survive as prefixes.
-    assert_eq!(d.allowed_prefixes().chars().collect::<Vec<_>>(), vec!['1', '2']);
+    assert_eq!(
+        d.allowed_prefixes().chars().collect::<Vec<_>>(),
+        vec!['1', '2']
+    );
 
     let mut two = d.branch('2').unwrap();
     let allowed = two.allowed_prefixes();
     assert_eq!(allowed.chars().collect::<Vec<_>>(), vec!['0']);
-    assert!(!allowed.can_finish(), "2 on its own job out of range, it cannot close");
+    assert!(
+        !allowed.can_finish(),
+        "2 on its own job out of range, it cannot close"
+    );
 
     let one = d.branch('1').unwrap();
     // 1 on its own is out of range too: '}' must not open, but the digits for
@@ -460,9 +496,34 @@ fn no_reachable_state_locks_up() {
 
 fn vocab() -> Vec<String> {
     [
-        "", "{", "}", "\"", ":", ",", "[", "]", "query", "scope", "count", "deep", "all",
-        "near", "true", "false", "report", "0", "1", "12", "99", "Now", "far", "\"query\"",
-        "\":", "{\"", "other", "-",
+        "",
+        "{",
+        "}",
+        "\"",
+        ":",
+        ",",
+        "[",
+        "]",
+        "query",
+        "scope",
+        "count",
+        "deep",
+        "all",
+        "near",
+        "true",
+        "false",
+        "report",
+        "0",
+        "1",
+        "12",
+        "99",
+        "Now",
+        "far",
+        "\"query\"",
+        "\":",
+        "{\"",
+        "other",
+        "-",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -506,7 +567,10 @@ fn at_a_key_position_the_mask_opens_only_schema_fields() {
     let v = vocab();
     let open = allowed_tokens(&d.mask(&v), &v);
     for expected in ["query", "scope", "count", "deep"] {
-        assert!(open.contains(&expected.to_string()), "{expected} must be open");
+        assert!(
+            open.contains(&expected.to_string()),
+            "{expected} must be open"
+        );
     }
     assert!(!open.contains(&"other".to_string()));
     assert!(!open.contains(&"all".to_string()));
@@ -586,16 +650,27 @@ fn the_mask_opens_a_combined_token_that_ends_with_the_terminator() {
     d.advance(r#"{"query":"a"#).unwrap();
 
     // The vocabulary has both split and combined closings.
-    let v: Vec<String> =
-        ["\"", "}", ")", "\"}", "\"})", "\"}) extra", "a"].iter().map(|s| s.to_string()).collect();
+    let v: Vec<String> = ["\"", "}", ")", "\"}", "\"})", "\"}) extra", "a"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     let m = TokenMask::new(&v);
     let open = allowed_tokens(&m.mask_with_terminator(&d, Some(')')), &v);
 
     // Once the value closes with a quote and the object ends, the call may close too.
-    assert!(open.contains(&"\"}".to_string()), "the split closing must be open");
-    assert!(open.contains(&"\"})".to_string()), "the combined closing must be open");
+    assert!(
+        open.contains(&"\"}".to_string()),
+        "the split closing must be open"
+    );
+    assert!(
+        open.contains(&"\"})".to_string()),
+        "the combined closing must be open"
+    );
     // We do not descend PAST the terminator: no chatter may be appended after the call.
-    assert!(!open.contains(&"\"}) extra".to_string()), "text after the call is forbidden");
+    assert!(
+        !open.contains(&"\"}) extra".to_string()),
+        "text after the call is forbidden"
+    );
 }
 
 /// Without a terminator the behaviour does not change — `mask` is not a call
@@ -646,7 +721,9 @@ fn generation_driven_by_the_mask_always_yields_valid_json() {
     let mut output = String::new();
     for _ in 0..64 {
         let mask = m.mask(&d);
-        let Some(i) = mask.iter().position(|b| *b) else { break };
+        let Some(i) = mask.iter().position(|b| *b) else {
+            break;
+        };
         output.push_str(&v[i]);
         d.advance(&v[i]).unwrap();
     }
@@ -654,5 +731,8 @@ fn generation_driven_by_the_mask_always_yields_valid_json() {
     let value: serde_json::Value = serde_json::from_str(&output).unwrap();
     // What was produced must also pass the schema: grammar and validation share
     // the same contract.
-    assert!(s.validate(&value).is_ok(), "the schema rejected it: {output}");
+    assert!(
+        s.validate(&value).is_ok(),
+        "the schema rejected it: {output}"
+    );
 }

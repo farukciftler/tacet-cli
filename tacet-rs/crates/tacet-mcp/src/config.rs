@@ -55,7 +55,11 @@ pub struct ConnectionSetting {
     pub key: Option<String>,
     /// For those who do not want the token in the file: read the key from this
     /// ENVIRONMENT VARIABLE. If both this and `key` are present, this wins.
-    #[serde(default, alias = "anahtar_ortam", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        alias = "anahtar_ortam",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub key_env: Option<String>,
     #[serde(default = "yes", alias = "etkin")]
     pub enabled: bool,
@@ -168,7 +172,12 @@ mod tests {
     #[test]
     fn a_missing_file_is_not_an_error() {
         let missing = Path::new("/tmp/definitely-missing-tacet-mcp-file.json");
-        assert!(read(missing).expect("must not error").connections.is_empty());
+        assert!(
+            read(missing)
+                .expect("must not error")
+                .connections
+                .is_empty()
+        );
     }
 
     #[test]
@@ -195,13 +204,19 @@ mod tests {
         .expect("must parse");
         assert_eq!(c.connections.len(), 1);
         assert_eq!(c.connections[0].name, "home");
-        assert!(!c.connections[0].enabled, "the old `enabled` must carry across");
+        assert!(
+            !c.connections[0].enabled,
+            "the old `enabled` must carry across"
+        );
         assert_eq!(c.connections[0].resolved_key().as_deref(), Some("abc"));
     }
 
     #[test]
     fn broken_json_is_malformed() {
-        assert_eq!(parse("{this job note json").unwrap_err(), MCPError::Malformed);
+        assert_eq!(
+            parse("{this job note json").unwrap_err(),
+            MCPError::Malformed
+        );
     }
 
     #[test]

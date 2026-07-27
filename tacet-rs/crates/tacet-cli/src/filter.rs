@@ -69,7 +69,13 @@ pub struct CallFilter {
 
 impl CallFilter {
     pub fn new(names: Vec<String>) -> Self {
-        Self { names, candidate: None, line_start: true, call: None, eat_whitespace: false }
+        Self {
+            names,
+            candidate: None,
+            line_start: true,
+            call: None,
+            eat_whitespace: false,
+        }
     }
 
     /// Filters the chunk; returns the part TO BE PRINTED TO THE SCREEN.
@@ -170,8 +176,12 @@ impl CallFilter {
             // AN EXACT MATCH + an opening parenthesis: this is a tool call. DROP
             // the candidate (and the whitespace in front of it) and start
             // swallowing the body.
-            self.call =
-                Some(CallState { raw: String::new(), depth: 1, in_string: false, escape: false });
+            self.call = Some(CallState {
+                raw: String::new(),
+                depth: 1,
+                in_string: false,
+                escape: false,
+            });
             return;
         }
         if c.is_ascii_alphanumeric() || c == '_' {
@@ -194,7 +204,10 @@ mod tests {
     use super::*;
 
     fn names() -> Vec<String> {
-        ["web_search", "web_fetch", "calculate", "time"].iter().map(|s| s.to_string()).collect()
+        ["web_search", "web_fetch", "calculate", "time"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
     }
 
     /// Feeds the stream chunk by chunk and joins it — the real failure lives at
@@ -229,7 +242,8 @@ mod tests {
     /// still be swallowed.
     #[test]
     fn a_call_after_some_text_is_swallowed() {
-        let out = at_every_size("Let me look up the ferry times.\nweb_search({\"query\": \"ferry\"})\n");
+        let out =
+            at_every_size("Let me look up the ferry times.\nweb_search({\"query\": \"ferry\"})\n");
         assert_eq!(out, "Let me look up the ferry times.\n");
     }
 
@@ -245,7 +259,10 @@ mod tests {
     #[test]
     fn a_parenthesis_inside_a_string_does_not_fool_it() {
         assert_eq!(at_every_size("web_search({\"query\": \"a) b(\"})"), "");
-        assert_eq!(at_every_size("web_search({\"query\": \"escape \\\" )\"})xyz"), "xyz");
+        assert_eq!(
+            at_every_size("web_search({\"query\": \"escape \\\" )\"})xyz"),
+            "xyz"
+        );
     }
 
     /// A LEGITIMATE ONE-WORD ANSWER IS NOT SWALLOWED — the explicit requirement.
@@ -265,7 +282,10 @@ mod tests {
     /// swallowed.
     #[test]
     fn a_non_tool_parenthesis_is_not_swallowed() {
-        assert_eq!(at_every_size("Ortaköy (Üsküdar) line"), "Ortaköy (Üsküdar) line");
+        assert_eq!(
+            at_every_size("Ortaköy (Üsküdar) line"),
+            "Ortaköy (Üsküdar) line"
+        );
         assert_eq!(at_every_size("note(1) here"), "note(1) here");
     }
 
@@ -283,6 +303,9 @@ mod tests {
     /// No blank line is left behind once a call is swallowed.
     #[test]
     fn no_blank_line_is_left_after_a_call() {
-        assert_eq!(at_every_size("web_search({\"q\":\"a\"})\n\nResult: 3"), "Result: 3");
+        assert_eq!(
+            at_every_size("web_search({\"q\":\"a\"})\n\nResult: 3"),
+            "Result: 3"
+        );
     }
 }

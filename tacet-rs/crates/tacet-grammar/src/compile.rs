@@ -93,7 +93,9 @@ fn add(arena: &mut Vec<Node>, schema: &ArgSchema) -> usize {
             min: *min,
             max: *max,
         },
-        SchemaKind::Text { max_length } => Node::Text { max_length: *max_length },
+        SchemaKind::Text { max_length } => Node::Text {
+            max_length: *max_length,
+        },
         // Choice values are embedded in the grammar LITERALLY: the model cannot
         // step outside the set. A choice containing a character that needs
         // escaping (quote, backslash) becomes impossible to produce; that is a
@@ -102,7 +104,11 @@ fn add(arena: &mut Vec<Node>, schema: &ArgSchema) -> usize {
         SchemaKind::Choice { choices } => Node::Choice {
             choices: choices.iter().map(|c| c.chars().collect()).collect(),
         },
-        SchemaKind::Number { is_integer, min, max } => Node::Number {
+        SchemaKind::Number {
+            is_integer,
+            min,
+            max,
+        } => Node::Number {
             is_integer: *is_integer,
             min: *min,
             max: *max,

@@ -28,7 +28,9 @@ pub struct ArgSchema {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SchemaKind {
     /// An object with ordered fields. The root schema of a tool is always this.
-    Object { fields: Vec<Field> },
+    Object {
+        fields: Vec<Field>,
+    },
     /// A homogeneous array.
     Array {
         item: Box<ArgSchema>,
@@ -43,7 +45,9 @@ pub enum SchemaKind {
     },
     /// A closed value set. A separate variant from Text: the grammar turns this
     /// into a literal alternation, so the model cannot step outside the set.
-    Choice { choices: Vec<String> },
+    Choice {
+        choices: Vec<String>,
+    },
     Number {
         /// If true, an integer. The grammar decides on the decimal point from this.
         #[serde(default)]
@@ -69,7 +73,11 @@ pub struct Field {
 
 impl Field {
     pub fn new(name: impl Into<String>, schema: ArgSchema) -> Self {
-        Self { name: name.into(), schema, required: false }
+        Self {
+            name: name.into(),
+            schema,
+            required: false,
+        }
     }
 
     pub fn required(mut self) -> Self {
@@ -80,7 +88,10 @@ impl Field {
 
 impl ArgSchema {
     fn from_kind(kind: SchemaKind) -> Self {
-        Self { kind, description: None }
+        Self {
+            kind,
+            description: None,
+        }
     }
 
     /// An empty object for tools that take no arguments.
@@ -111,11 +122,19 @@ impl ArgSchema {
     }
 
     pub fn number() -> Self {
-        Self::from_kind(SchemaKind::Number { is_integer: false, min: None, max: None })
+        Self::from_kind(SchemaKind::Number {
+            is_integer: false,
+            min: None,
+            max: None,
+        })
     }
 
     pub fn integer() -> Self {
-        Self::from_kind(SchemaKind::Number { is_integer: true, min: None, max: None })
+        Self::from_kind(SchemaKind::Number {
+            is_integer: true,
+            min: None,
+            max: None,
+        })
     }
 
     pub fn bool() -> Self {
@@ -188,9 +207,11 @@ impl ArgSchema {
             SchemaKind::Array { item, .. } => format!("array of {}", item.kind_name()),
             SchemaKind::Text { .. } => "text".into(),
             // A closed set is written out; see `short_signature`.
-            SchemaKind::Choice { choices } => {
-                choices.iter().map(|c| format!("'{c}'")).collect::<Vec<_>>().join("|")
-            }
+            SchemaKind::Choice { choices } => choices
+                .iter()
+                .map(|c| format!("'{c}'"))
+                .collect::<Vec<_>>()
+                .join("|"),
             SchemaKind::Number { is_integer, .. } => {
                 if *is_integer {
                     "integer".into()
@@ -252,9 +273,16 @@ impl ArgSchema {
                 m.insert("enum".into(), json!(choices));
                 m
             }
-            SchemaKind::Number { is_integer, min, max } => {
+            SchemaKind::Number {
+                is_integer,
+                min,
+                max,
+            } => {
                 let mut m = Map::new();
-                m.insert("type".into(), json!(if *is_integer { "integer" } else { "number" }));
+                m.insert(
+                    "type".into(),
+                    json!(if *is_integer { "integer" } else { "number" }),
+                );
                 if let Some(v) = min {
                     m.insert("minimum".into(), json!(v));
                 }
@@ -285,11 +313,7 @@ impl ArgSchema {
         self.validate_path(value, "arg")
     }
 
-    fn validate_path(
-        &self,
-        value: &serde_json::Value,
-        path: &str,
-    ) -> crate::error::ToolResult<()> {
+    fn validate_path(&self, value: &serde_json::Value, path: &str) -> crate::error::ToolResult<()> {
         use crate::error::ToolError::{InvalidArgument, MissingField};
         use serde_json::Value;
         match &self.kind {
@@ -341,7 +365,11 @@ impl ArgSchema {
                     Err(InvalidArgument(format!("{path}: invalid choice '{s}'")))
                 }
             }
-            SchemaKind::Number { is_integer, min, max } => {
+            SchemaKind::Number {
+                is_integer,
+                min,
+                max,
+            } => {
                 let n = value
                     .as_f64()
                     .ok_or_else(|| InvalidArgument(format!("{path}: expected a number")))?;

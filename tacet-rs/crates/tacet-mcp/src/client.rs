@@ -213,7 +213,9 @@ impl MCPClient {
     /// A notification that expects no response.
     fn notify(&self, method: &str) -> MCPResult<()> {
         let body = jsonrpc::notification_body(method);
-        self.build_request().send(&body[..]).map_err(convert_error)?;
+        self.build_request()
+            .send(&body[..])
+            .map_err(convert_error)?;
         Ok(())
     }
 
@@ -221,7 +223,10 @@ impl MCPClient {
     fn call(&self, method: &str, params: Value) -> MCPResult<Value> {
         let id = self.next_id();
         let body = jsonrpc::request_body(id, method, params);
-        let mut response = self.build_request().send(&body[..]).map_err(convert_error)?;
+        let mut response = self
+            .build_request()
+            .send(&body[..])
+            .map_err(convert_error)?;
 
         // The session id arrives during the handshake and is carried on every
         // later request.
@@ -318,7 +323,10 @@ pub fn flatten_content(result: &Value) -> (String, bool) {
                 .collect()
         })
         .unwrap_or_default();
-    let is_error = result.get("isError").and_then(Value::as_bool).unwrap_or(false);
+    let is_error = result
+        .get("isError")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     (parts.join("\n"), is_error)
 }
 
@@ -331,7 +339,11 @@ pub fn flatten_content(result: &Value) -> (String, bool) {
 pub fn validate_url(url: &str) -> MCPResult<()> {
     let error = || MCPError::InvalidAddress(url.to_string());
     if let Some(rest) = url.strip_prefix("https://") {
-        return if rest.is_empty() { Err(error()) } else { Ok(()) };
+        return if rest.is_empty() {
+            Err(error())
+        } else {
+            Ok(())
+        };
     }
     let Some(rest) = url.strip_prefix("http://") else {
         return Err(error());
@@ -346,7 +358,11 @@ pub fn validate_url(url: &str) -> MCPResult<()> {
         .trim_matches(['[', ']'])
         .to_ascii_lowercase();
 
-    if is_local(&host) { Ok(()) } else { Err(error()) }
+    if is_local(&host) {
+        Ok(())
+    } else {
+        Err(error())
+    }
 }
 
 /// Is it a local network address. The list is kept narrow: every address we
@@ -355,7 +371,10 @@ fn is_local(host: &str) -> bool {
     if matches!(host, "localhost" | "127.0.0.1" | "::1") || host.ends_with(".local") {
         return true;
     }
-    let octets: Vec<u8> = host.split('.').filter_map(|p| p.parse::<u8>().ok()).collect();
+    let octets: Vec<u8> = host
+        .split('.')
+        .filter_map(|p| p.parse::<u8>().ok())
+        .collect();
     if octets.len() != 4 || host.split('.').count() != 4 {
         return false;
     }
@@ -402,14 +421,25 @@ mod tests {
         assert!(validate_url("http://server.local/mcp").is_ok());
 
         assert!(validate_url("http://example.com/mcp").is_err());
-        assert!(validate_url("http://172.32.0.1/mcp").is_err(), "172.32 is outside the private range");
+        assert!(
+            validate_url("http://172.32.0.1/mcp").is_err(),
+            "172.32 is outside the private range"
+        );
         assert!(validate_url("http://8.8.8.8/mcp").is_err());
     }
 
     #[test]
     fn non_http_schemes_are_rejected() {
-        for u in ["ws://localhost/mcp", "file:///etc/passwd", "example.com", ""] {
-            assert!(validate_url(u).is_err(), "{u} should not have been accepted");
+        for u in [
+            "ws://localhost/mcp",
+            "file:///etc/passwd",
+            "example.com",
+            "",
+        ] {
+            assert!(
+                validate_url(u).is_err(),
+                "{u} should not have been accepted"
+            );
         }
     }
 
@@ -433,7 +463,11 @@ mod tests {
         assert_eq!(specs.len(), 2);
         assert_eq!(specs[0].name, "run");
         assert_eq!(specs[1].name, "plain");
-        assert_eq!(specs[1].schema, Value::Null, "a schema-less tool arrives with a null schema");
+        assert_eq!(
+            specs[1].schema,
+            Value::Null,
+            "a schema-less tool arrives with a null schema"
+        );
     }
 
     #[test]
@@ -470,14 +504,18 @@ mod tests {
             panic!("TACET_MCP_TEST_URL is not defined");
         };
         let url = url.to_string_lossy().into_owned();
-        let key = tacet_core::env_var("TACET_MCP_TEST_KEY")
-            .map(|k| k.to_string_lossy().into_owned());
+        let key =
+            tacet_core::env_var("TACET_MCP_TEST_KEY").map(|k| k.to_string_lossy().into_owned());
         let client = MCPClient::new(url, key).expect("client");
         client.handshake().expect("handshake");
         let tools = client.tools().expect("tools/list");
         println!("{} tools found", tools.len());
         for t in &tools {
-            println!("  {} — {}", t.name, crate::bridge::truncate_description(&t.description));
+            println!(
+                "  {} — {}",
+                t.name,
+                crate::bridge::truncate_description(&t.description)
+            );
         }
     }
 }

@@ -210,7 +210,10 @@ impl fmt::Display for DownloadError {
                 "SHA-256 did not match (expected {expected}, found {found}) — the file is corrupt or has been altered."
             ),
             DownloadError::SizeMismatch { expected, found } => {
-                write!(f, "The size did not match (expected {expected} bytes, downloaded {found} bytes).")
+                write!(
+                    f,
+                    "The size did not match (expected {expected} bytes, downloaded {found} bytes)."
+                )
             }
         }
     }
@@ -330,7 +333,9 @@ pub fn download(
         // RESUME: ask to continue from the byte where the half file ended.
         request = request.header("Range", format!("bytes={existing}-"));
     }
-    let mut response = request.call().map_err(|e| DownloadError::Network(network_error(&e)))?;
+    let mut response = request
+        .call()
+        .map_err(|e| DownloadError::Network(network_error(&e)))?;
 
     // 206 = the server accepted the Range, the body is the REMAINING part.
     // 200 = the server ignored the Range (or does not know it at all), the body
@@ -355,7 +360,11 @@ pub fn download(
     // `read_to_vec` pushes the machine into swap. `limit` is not unlimited but
     // set to a realistic cap (32 GiB) — a malicious server cannot fill the disk
     // forever.
-    let mut reader = response.body_mut().with_config().limit(32 * 1024 * 1024 * 1024).reader();
+    let mut reader = response
+        .body_mut()
+        .with_config()
+        .limit(32 * 1024 * 1024 * 1024)
+        .reader();
     let mut buffer = vec![0u8; CHUNK];
     let mut downloaded = start;
     let mut last_notice = Instant::now();
@@ -386,7 +395,10 @@ pub fn download(
     if let Some(b) = plan.expected_bytes
         && b != downloaded
     {
-        return Err(DownloadError::SizeMismatch { expected: b, found: downloaded });
+        return Err(DownloadError::SizeMismatch {
+            expected: b,
+            found: downloaded,
+        });
     }
 
     // THE DIGEST IS OVER THE WHOLE FILE, not over the stream. In a resumed
@@ -457,7 +469,14 @@ fn file_size(path: &Path) -> DownloadResult<u64> {
 /// `Content-Length` — the length of the body (of the REMAINING part if it is a
 /// Range response).
 fn body_length(response: &ureq::http::Response<ureq::Body>) -> Option<u64> {
-    response.headers().get("content-length")?.to_str().ok()?.trim().parse().ok()
+    response
+        .headers()
+        .get("content-length")?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
 }
 
 /// The scheme gate. There is NO local network exception (see the top of the
@@ -493,8 +512,8 @@ fn network_error(error: &ureq::Error) -> WebError {
 ///
 /// NO NETWORK, fully local: `model verify` runs this offline.
 pub fn digest_from_file(path: &Path) -> DownloadResult<String> {
-    let mut f =
-        fs::File::open(path).map_err(|e| DownloadError::File(format!("{}: {e}", path.display())))?;
+    let mut f = fs::File::open(path)
+        .map_err(|e| DownloadError::File(format!("{}: {e}", path.display())))?;
     let mut h = Sha256::new();
     let mut buffer = vec![0u8; CHUNK];
     loop {
@@ -558,7 +577,12 @@ const K: [u32; 64] = [
 
 impl Sha256 {
     fn new() -> Self {
-        Self { state: H0, buffer: [0u8; 64], filled: 0, total_bytes: 0 }
+        Self {
+            state: H0,
+            buffer: [0u8; 64],
+            filled: 0,
+            total_bytes: 0,
+        }
     }
 
     fn feed(&mut self, mut data: &[u8]) {
@@ -614,12 +638,20 @@ impl Sha256 {
 fn process_block(state: &mut [u32; 8], block: &[u8; 64]) {
     let mut w = [0u32; 64];
     for i in 0..16 {
-        w[i] = u32::from_be_bytes([block[4 * i], block[4 * i + 1], block[4 * i + 2], block[4 * i + 3]]);
+        w[i] = u32::from_be_bytes([
+            block[4 * i],
+            block[4 * i + 1],
+            block[4 * i + 2],
+            block[4 * i + 3],
+        ]);
     }
     for i in 16..64 {
         let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
         let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-        w[i] = w[i - 16].wrapping_add(s0).wrapping_add(w[i - 7]).wrapping_add(s1);
+        w[i] = w[i - 16]
+            .wrapping_add(s0)
+            .wrapping_add(w[i - 7])
+            .wrapping_add(s1);
     }
     let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = *state;
     for i in 0..64 {
@@ -660,8 +692,14 @@ mod tests {
     /// or a shifted loop blows up here.
     #[test]
     fn the_official_sha256_vectors_hold() {
-        assert_eq!(digest(b""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-        assert_eq!(digest(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(
+            digest(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            digest(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
         assert_eq!(
             digest(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
             "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
@@ -669,7 +707,10 @@ mod tests {
         // Multi-block (1 000 000 x 'a') — the padding and the length field are
         // measured here.
         let long = vec![b'a'; 1_000_000];
-        assert_eq!(digest(&long), "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
+        assert_eq!(
+            digest(&long),
+            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
+        );
     }
 
     /// Chunked feeding and one-shot feeding must give the SAME digest — a
@@ -702,7 +743,8 @@ mod tests {
             expected_bytes: Some(10),
             expected_sha256: None,
         };
-        let e = download(&plan, &AlwaysDeny, &SilentProgress).expect_err("the download should have been refused");
+        let e = download(&plan, &AlwaysDeny, &SilentProgress)
+            .expect_err("the download should have been refused");
         assert_eq!(e, DownloadError::NotApproved);
         assert!(!target.exists());
         let _ = fs::remove_dir_all(&dir);
@@ -718,7 +760,12 @@ mod tests {
                 panic!("the scheme gate should have run before the approval");
             }
         }
-        for address in ["http://remote.test/m.gguf", "http://localhost:8080/m.gguf", "m.gguf", "https://"] {
+        for address in [
+            "http://remote.test/m.gguf",
+            "http://localhost:8080/m.gguf",
+            "m.gguf",
+            "https://",
+        ] {
             let plan = DownloadPlan {
                 name: "m".into(),
                 url: address.into(),
@@ -727,7 +774,10 @@ mod tests {
                 expected_sha256: None,
             };
             let e = download(&plan, &AlwaysYes, &SilentProgress).unwrap_err();
-            assert!(matches!(e, DownloadError::InvalidAddress(_)), "{address}: {e:?}");
+            assert!(
+                matches!(e, DownloadError::InvalidAddress(_)),
+                "{address}: {e:?}"
+            );
         }
     }
 
@@ -755,11 +805,17 @@ mod tests {
         let o = download(&plan, &AlwaysDeny, &SilentProgress)
             .expect("an existing file must pass without going online");
         assert!(o.already_present);
-        assert!(o.digest_verified, "an uppercase expected digest must match too");
+        assert!(
+            o.digest_verified,
+            "an uppercase expected digest must match too"
+        );
         assert_eq!(o.bytes, 3);
 
         // A wrong expected digest: the same path must ERROR.
-        let broken = DownloadPlan { expected_sha256: Some("00".repeat(32)), ..plan };
+        let broken = DownloadPlan {
+            expected_sha256: Some("00".repeat(32)),
+            ..plan
+        };
         assert!(matches!(
             download(&broken, &AlwaysDeny, &SilentProgress),
             Err(DownloadError::DigestMismatch { .. })
@@ -779,11 +835,18 @@ mod tests {
     /// right, the sentence was wrong.
     #[test]
     fn a_network_error_is_told_in_the_language_of_downloading() {
-        let text = DownloadError::Network(WebError::Unreachable("dns did not resolve".into())).to_string();
-        assert!(!text.to_lowercase().contains("search"), "search wording leaked: {text}");
+        let text =
+            DownloadError::Network(WebError::Unreachable("dns did not resolve".into())).to_string();
+        assert!(
+            !text.to_lowercase().contains("search"),
+            "search wording leaked: {text}"
+        );
         // The transport layer's own explanation COMES BACK: in a download it is
         // the first thing the user will look at.
-        assert!(text.contains("dns did not resolve"), "the detail was swallowed: {text}");
+        assert!(
+            text.contains("dns did not resolve"),
+            "the detail was swallowed: {text}"
+        );
 
         for e in [
             DownloadError::Network(WebError::Timeout),

@@ -14,8 +14,8 @@
 //! lengths of the matched triggers makes a specific phrase naturally beat a
 //! generic word and makes the result deterministic — so eval stays comparable.
 
-use tacet_core::{Tool, ToolCatalog};
 use std::sync::Arc;
+use tacet_core::{Tool, ToolCatalog};
 
 /// The most tools shown to the model in one session.
 pub const MAX_TOOLS: usize = 8;
@@ -276,19 +276,31 @@ impl IntentProfile {
     /// if it did not exist. The name and the description are scanned together.
     fn tool_hints(&self) -> &'static [&'static str] {
         match self {
-            IntentProfile::Document => {
-                &["document", "docx", "xlsx", "pptx", "pdf", "table", "report", "sheet", "edit"]
-            }
-            IntentProfile::Time => {
-                &["calendar", "event", "meeting", "appointment", "date", "clock", "reminder"]
-            }
-            IntentProfile::Calc => {
-                &["calculate", "code", "python", "run", "formula", "numeric", "arithmetic"]
-            }
+            IntentProfile::Document => &[
+                "document", "docx", "xlsx", "pptx", "pdf", "table", "report", "sheet", "edit",
+            ],
+            IntentProfile::Time => &[
+                "calendar",
+                "event",
+                "meeting",
+                "appointment",
+                "date",
+                "clock",
+                "reminder",
+            ],
+            IntentProfile::Calc => &[
+                "calculate",
+                "code",
+                "python",
+                "run",
+                "formula",
+                "numeric",
+                "arithmetic",
+            ],
             IntentProfile::Web => &["web", "internet", "page", "address", "url", "search"],
-            IntentProfile::General => {
-                &["file", "folder", "find", "read", "write", "list", "memory", "remember"]
-            }
+            IntentProfile::General => &[
+                "file", "folder", "find", "read", "write", "list", "memory", "remember",
+            ],
         }
     }
 }
@@ -302,7 +314,11 @@ pub struct IntentScores {
 
 impl IntentScores {
     pub fn score(&self, profile: IntentProfile) -> usize {
-        self.scores.iter().find(|(p, _)| *p == profile).map(|(_, s)| *s).unwrap_or(0)
+        self.scores
+            .iter()
+            .find(|(p, _)| *p == profile)
+            .map(|(_, s)| *s)
+            .unwrap_or(0)
     }
 
     /// The dominant profile. If no trigger matched, `General` — forcing an unknown
@@ -411,7 +427,11 @@ impl Router {
 
         // The key is (-score, catalog order): fully deterministic.
         ordered.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-        ordered.into_iter().take(self.budget()).map(|(_, _, t)| t).collect()
+        ordered
+            .into_iter()
+            .take(self.budget())
+            .map(|(_, _, t)| t)
+            .collect()
     }
 
     /// A tool's score: for every profile the tool belongs to, the product of the
@@ -590,7 +610,8 @@ mod tests {
 
     #[test]
     fn a_time_intent_brings_the_calendar_tools_forward() {
-        let selection = Router::new().select("is there a meeting and an appointment tomorrow", &catalog());
+        let selection =
+            Router::new().select("is there a meeting and an appointment tomorrow", &catalog());
         let names: Vec<&str> = selection.iter().map(|t| t.name()).collect();
         assert!(names[..2].contains(&"calendar_read"), "{names:?}");
         assert!(names[..2].contains(&"reminder_create"), "{names:?}");
@@ -598,7 +619,8 @@ mod tests {
 
     #[test]
     fn a_calc_intent_brings_the_code_tool_forward() {
-        let selection = Router::new().select("calculate that percent, run it with python", &catalog());
+        let selection =
+            Router::new().select("calculate that percent, run it with python", &catalog());
         assert_eq!(selection[0].name(), "code_run");
     }
 
@@ -635,7 +657,10 @@ mod tests {
         let c = catalog();
         assert_eq!(Router::new().max(3).select("document", &c).len(), 3);
         // Even if 50 is asked for, the cap is 8.
-        assert_eq!(Router::new().max(50).select("document", &c).len(), MAX_TOOLS);
+        assert_eq!(
+            Router::new().max(50).select("document", &c).len(),
+            MAX_TOOLS
+        );
     }
 
     #[test]
@@ -651,12 +676,21 @@ mod tests {
     #[test]
     fn a_timetable_question_goes_to_web_and_a_clock_question_to_time() {
         let timetable = score_intent("what are the ortakoy uskudar ferry times");
-        assert_eq!(timetable.dominant(), IntentProfile::Web, "{:?}", timetable.all());
+        assert_eq!(
+            timetable.dominant(),
+            IntentProfile::Web,
+            "{:?}",
+            timetable.all()
+        );
 
         // "What time is it" and "what day of the month is it" MUST NOT DRIFT to Web: those are the
         // device's clock, and the `time` cluster in this project once dropped from
         // 4/4 to 1/4.
-        for m in ["What time is it?", "What day of the month is it?", "What is today's date?"] {
+        for m in [
+            "What time is it?",
+            "What day of the month is it?",
+            "What is today's date?",
+        ] {
             let s = score_intent(m);
             assert!(s.score(IntentProfile::Web) == 0, "{m}: {:?}", s.all());
         }
@@ -667,7 +701,12 @@ mod tests {
     /// (like "sort" inside "assortment").
     #[test]
     fn a_greeting_scores_on_no_profile() {
-        for m in ["Hello", "Thank you very much.", "How are you?", "Who are you?"] {
+        for m in [
+            "Hello",
+            "Thank you very much.",
+            "How are you?",
+            "Who are you?",
+        ] {
             let s = score_intent(m);
             assert_eq!(s.score(IntentProfile::Web), 0, "{m}: {:?}", s.all());
         }
@@ -675,9 +714,18 @@ mod tests {
 
     #[test]
     fn the_dominant_profile_is_picked_correctly() {
-        assert_eq!(score_intent("create a docx document").dominant(), IntentProfile::Document);
-        assert_eq!(score_intent("tomorrow's meeting").dominant(), IntentProfile::Time);
-        assert_eq!(score_intent("calculate the percent").dominant(), IntentProfile::Calc);
+        assert_eq!(
+            score_intent("create a docx document").dominant(),
+            IntentProfile::Document
+        );
+        assert_eq!(
+            score_intent("tomorrow's meeting").dominant(),
+            IntentProfile::Time
+        );
+        assert_eq!(
+            score_intent("calculate the percent").dominant(),
+            IntentProfile::Calc
+        );
         // With no trigger at all it falls back to General.
         assert_eq!(score_intent("zzz qqq").dominant(), IntentProfile::General);
     }

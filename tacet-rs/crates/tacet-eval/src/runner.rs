@@ -19,10 +19,10 @@ use crate::case::EvalCase;
 use crate::env::{EXTERNAL_TOOL, Env};
 use std::sync::Arc;
 use tacet_core::{ToolCatalog, ToolContext, TraceCollector};
-use tacet_grammar::CallConstraint;
 use tacet_engine::{
-    FakeEngine, MAX_TURNS, Prompt, EngineProvider, SYSTEM_INSTRUCTIONS, SamplingSetting, Turn, wait,
+    EngineProvider, FakeEngine, MAX_TURNS, Prompt, SYSTEM_INSTRUCTIONS, SamplingSetting, Turn, wait,
 };
+use tacet_grammar::CallConstraint;
 use tacet_tools::executor::{ExecutionReason, ToolExecutor};
 use tacet_tools::router::Router;
 
@@ -124,17 +124,20 @@ pub fn run_case(case: &EvalCase, selector: &dyn EngineSelector) -> CaseOutcome {
         // The tool budget is applied AGAIN on every turn: as the history grows
         // the selection must not change, the selection must derive only from the
         // user's message.
-        let selected: ToolCatalog =
-            router.select(&case.input, &catalog).into_iter().collect();
+        let selected: ToolCatalog = router.select(&case.input, &catalog).into_iter().collect();
         let prompt = Prompt::new(SYSTEM_INSTRUCTIONS, &case.input)
             .with_tools(&selected)
             .with_history(history.clone());
 
-        let generation = match wait(engine.generate(
-            &prompt,
-            constraint.as_ref().map(|c| c as &dyn tacet_engine::Constrainer),
-            SamplingSetting::default(),
-        )) {
+        let generation = match wait(
+            engine.generate(
+                &prompt,
+                constraint
+                    .as_ref()
+                    .map(|c| c as &dyn tacet_engine::Constrainer),
+                SamplingSetting::default(),
+            ),
+        ) {
             Ok(g) => g,
             Err(e) => {
                 faults.push(format!("engine error: {e}"));
@@ -174,7 +177,10 @@ pub fn run_case(case: &EvalCase, selector: &dyn EngineSelector) -> CaseOutcome {
 
         // An approval denial and a cancellation END the turn: the model must not
         // enter an insistence loop.
-        if matches!(outcome.reason, ExecutionReason::ApprovalDenied | ExecutionReason::Cancelled) {
+        if matches!(
+            outcome.reason,
+            ExecutionReason::ApprovalDenied | ExecutionReason::Cancelled
+        ) {
             history.push(Turn::tool(outcome.to_model.clone()));
             continue;
         }
@@ -187,7 +193,10 @@ pub fn run_case(case: &EvalCase, selector: &dyn EngineSelector) -> CaseOutcome {
     // it), the difference shows up only here.
     for trace in traces.traces() {
         evidence.push('\n');
-        evidence.push_str(&format!("chip[{}] {} {:?}", trace.icon, trace.text, trace.state));
+        evidence.push_str(&format!(
+            "chip[{}] {} {:?}",
+            trace.icon, trace.text, trace.state
+        ));
     }
     // The collector's independent view of the side effects — if it contradicts
     // the executor's, one of the two is lying.
@@ -197,11 +206,15 @@ pub fn run_case(case: &EvalCase, selector: &dyn EngineSelector) -> CaseOutcome {
 
     match &case.expected_tool {
         Some(name) if !called.iter().any(|c| c == name) => {
-            faults.push(format!("the expected tool was not called: {name} (called: {called:?})"));
+            faults.push(format!(
+                "the expected tool was not called: {name} (called: {called:?})"
+            ));
         }
         None if !called.is_empty() => {
             // Tool appetite: the most frequent regression.
-            faults.push(format!("no tool should have been called, these were: {called:?}"));
+            faults.push(format!(
+                "no tool should have been called, these were: {called:?}"
+            ));
         }
         _ => {}
     }

@@ -20,8 +20,8 @@
 //! which expects `Arc<dyn ...>`. Merged into a single type, either `take` would
 //! have to return a clone or contract compatibility would be lost.
 
-use tacet_core::{DataStore as CoreDataStore, Record, SourceRef};
 use std::sync::Mutex;
+use tacet_core::{DataStore as CoreDataStore, Record, SourceRef};
 
 /// The body formats that may be put into the store.
 ///
@@ -51,7 +51,11 @@ impl Value {
         match self {
             Value::Text(t) => format!("{} lines of text", t.lines().count()),
             Value::Table(t) => {
-                format!("table of {} rows x {} columns", t.row_count(), t.column_count())
+                format!(
+                    "table of {} rows x {} columns",
+                    t.row_count(),
+                    t.column_count()
+                )
             }
             Value::Bytes(b) => format!("{} bytes of binary data", b.len()),
         }
@@ -174,14 +178,18 @@ impl DataStore {
     pub fn put_labelled(&mut self, kind: &str, data: Value) -> SourceRef {
         self.counter += 1;
         let source_ref = SourceRef(format!("{kind}#{}", self.counter));
-        self.records.push((source_ref.clone(), kind.to_string(), data));
+        self.records
+            .push((source_ref.clone(), kind.to_string(), data));
         source_ref
     }
 
     /// Access to the raw body by reference — NO clone, because the body may be
     /// megabytes and this is the hot path.
     pub fn take(&self, source_ref: &SourceRef) -> Option<&Value> {
-        self.records.iter().find(|(r, _, _)| r == source_ref).map(|(_, _, v)| v)
+        self.records
+            .iter()
+            .find(|(r, _, _)| r == source_ref)
+            .map(|(_, _, v)| v)
     }
 
     pub fn kind(&self, source_ref: &SourceRef) -> Option<&str> {
@@ -256,17 +264,27 @@ impl SharedStore {
     /// Locked access to the typed API — so tools wanting to put a `Value::Table`
     /// do not have to fall back to the core contract's `String` body.
     pub fn put_value(&self, kind: &str, data: Value) -> SourceRef {
-        self.inner.lock().expect("data store lock").put_labelled(kind, data)
+        self.inner
+            .lock()
+            .expect("data store lock")
+            .put_labelled(kind, data)
     }
 
     pub fn summary(&self, source_ref: &SourceRef, max_rows: usize) -> String {
-        self.inner.lock().expect("data store lock").summary(source_ref, max_rows)
+        self.inner
+            .lock()
+            .expect("data store lock")
+            .summary(source_ref, max_rows)
     }
 
     /// Cloning access: we cannot hand a reference out past the lock, so on this
     /// path a clone is unavoidable.
     pub fn value(&self, source_ref: &SourceRef) -> Option<Value> {
-        self.inner.lock().expect("data store lock").take(source_ref).cloned()
+        self.inner
+            .lock()
+            .expect("data store lock")
+            .take(source_ref)
+            .cloned()
     }
 }
 
@@ -298,7 +316,9 @@ impl CoreDataStore for SharedStore {
             let inner = self.inner.lock().expect("data store lock");
             inner.of_kind(kind).into_iter().cloned().collect()
         };
-        refs.iter().filter_map(|r| CoreDataStore::take(self, r)).collect()
+        refs.iter()
+            .filter_map(|r| CoreDataStore::take(self, r))
+            .collect()
     }
 
     fn clear(&self) {
@@ -327,7 +347,11 @@ mod tests {
         let r = store.put(Value::Text(large));
 
         let summary = store.summary(&r, 3);
-        assert!(summary.len() < 200, "the summary must fit the model: {}", summary.len());
+        assert!(
+            summary.len() < 200,
+            "the summary must fit the model: {}",
+            summary.len()
+        );
         assert!(summary.contains("(+4997 more lines not shown)"));
 
         // The raw body sits in the store, complete.
@@ -363,7 +387,10 @@ mod tests {
     fn uneven_rows_are_aligned() {
         let t = Table::new(
             ["A", "B", "C"],
-            vec![vec!["alone".into()], vec!["1".into(), "2".into(), "3".into(), "4".into()]],
+            vec![
+                vec!["alone".into()],
+                vec!["1".into(), "2".into(), "3".into(), "4".into()],
+            ],
         );
         let md = t.markdown_truncated(10);
         for s in md.lines().filter(|s| s.starts_with('|')) {

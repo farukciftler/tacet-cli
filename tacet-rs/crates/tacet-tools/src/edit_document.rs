@@ -37,15 +37,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use tacet_core::{
-    Field, Tool, ToolContext, ToolState, ToolFuture, ToolError, ToolResult, ToolOutcome, ArgSchema,
-    TraceUpdate, SourceRef, boxed,
+    ArgSchema, Field, SourceRef, Tool, ToolContext, ToolError, ToolFuture, ToolOutcome, ToolResult,
+    ToolState, TraceUpdate, boxed,
 };
 
-use crate::read_document::parse_xlsx;
 use crate::create_document::{
-    DocumentFormat, DocumentEngine, ExcelEngine, TextEngine, write_document, output_folder, from_markdown,
+    DocumentEngine, DocumentFormat, ExcelEngine, TextEngine, from_markdown, output_folder,
+    write_document,
 };
 use crate::data_store::Table;
+use crate::read_document::parse_xlsx;
 
 /// The name suffix of the edited file. The original is NEVER OVERWRITTEN:
 /// changing the data in the user's hands irreversibly means permanent loss on a
@@ -172,7 +173,9 @@ fn last_modified_document(folder: &Path) -> Option<PathBuf> {
     let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
     for entry in fs::read_dir(folder).ok()?.flatten() {
         let path = entry.path();
-        let Ok(upper) = path.symlink_metadata() else { continue };
+        let Ok(upper) = path.symlink_metadata() else {
+            continue;
+        };
         if !upper.is_file() || upper.file_type().is_symlink() {
             continue;
         }
@@ -195,7 +198,12 @@ fn last_modified_document(folder: &Path) -> Option<PathBuf> {
 /// The format from the file extension. An unknown extension cannot be edited:
 /// saying "I edited it" while pouring the content into another format is silent data loss.
 fn from_format(path: &Path) -> Option<DocumentFormat> {
-    match path.extension()?.to_string_lossy().to_ascii_lowercase().as_str() {
+    match path
+        .extension()?
+        .to_string_lossy()
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "xlsx" => Some(DocumentFormat::Excel),
         "md" | "markdown" => Some(DocumentFormat::Markdown),
         "txt" | "text" => Some(DocumentFormat::Text),
@@ -243,7 +251,9 @@ impl EditDocumentTool {
     /// Builds it with the session watcher — the shell should prefer this;
     /// building without a watcher falls back to the guess tier.
     pub fn with_watcher(watcher: std::sync::Arc<DocumentWatcher>) -> Self {
-        Self { watcher: Some(watcher) }
+        Self {
+            watcher: Some(watcher),
+        }
     }
 }
 
@@ -278,7 +288,10 @@ impl Tool for EditDocumentTool {
             // and the `source_ref` path — the bypass channel itself — would
             // become unusable. The same decision was made for the
             // `content`/`source_ref` pair in `create_document`; the two tools
-            Field::new("title", ArgSchema::text().description("Optional new title.")),
+            Field::new(
+                "title",
+                ArgSchema::text().description("Optional new title."),
+            ),
             Field::new(
                 "path",
                 ArgSchema::text().description(
@@ -302,11 +315,7 @@ impl Tool for EditDocumentTool {
         true
     }
 
-    fn run<'a>(
-        &'a self,
-        args: serde_json::Value,
-        ctx: &'a mut ToolContext,
-    ) -> ToolFuture<'a> {
+    fn run<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolContext) -> ToolFuture<'a> {
         boxed(async move {
             if let Err(h) = self.schema().validate(&args) {
                 return ToolOutcome::failed(&h);
@@ -344,11 +353,7 @@ impl Tool for EditDocumentTool {
 
 impl EditDocumentTool {
     /// The synchronous body — the error path is collected in a single place.
-    fn edit(
-        &self,
-        args: &serde_json::Value,
-        ctx: &ToolContext,
-    ) -> ToolResult<ToolOutcome> {
+    fn edit(&self, args: &serde_json::Value, ctx: &ToolContext) -> ToolResult<ToolOutcome> {
         let text_field = |name: &str| -> Option<String> {
             args.get(name)
                 .and_then(|v| v.as_str())
@@ -377,11 +382,15 @@ impl EditDocumentTool {
         let Some(format) = from_format(&path) else {
             return Err(ToolError::InvalidArgument(format!(
                 "format that cannot be edited: {}",
-                path.extension().map(|u| u.to_string_lossy().into_owned()).unwrap_or_default()
+                path.extension()
+                    .map(|u| u.to_string_lossy().into_owned())
+                    .unwrap_or_default()
             )));
         };
 
-        let upper = path.metadata().map_err(|_| ToolError::FileNotFound(path.clone()))?;
+        let upper = path
+            .metadata()
+            .map_err(|_| ToolError::FileNotFound(path.clone()))?;
         if upper.len() > FILE_CAP {
             return Err(ToolError::Other(format!(
                 "document too large ({} bytes), cap {FILE_CAP}",
@@ -443,7 +452,11 @@ impl EditDocumentTool {
         // If Excel is requested but no table came out, the `to_table` gate
         // inside `write_document` takes over: a body with pipes that cannot be
         // parsed is NOT SILENTLY poured into one column, an explicit error is returned.
-        let body = if table.is_some() { None } else { Some(new_content.as_str()) };
+        let body = if table.is_some() {
+            None
+        } else {
+            Some(new_content.as_str())
+        };
 
         let folder = output_folder(ctx)?;
         let name = edited_name(&path);
@@ -491,8 +504,8 @@ mod tests {
     use super::*;
     use crate::data_store::SharedStore;
     use serde_json::json;
-    use tacet_core::{SilentReporter, DataStore as CoreDataStore};
     use std::sync::Arc;
+    use tacet_core::{DataStore as CoreDataStore, SilentReporter};
 
     fn hold<F: std::future::Future>(gelecek: F) -> F::Output {
         use std::pin::pin;
@@ -536,8 +549,15 @@ mod tests {
     }
 
     fn md_uret(root: &Path, name: &str, body: &str) -> PathBuf {
-        write_document(&TextEngine::new(DocumentFormat::Markdown), name, None, Some(body), None, root)
-            .expect("md")
+        write_document(
+            &TextEngine::new(DocumentFormat::Markdown),
+            name,
+            None,
+            Some(body),
+            None,
+            root,
+        )
+        .expect("md")
     }
 
     /// 1) THE SWIFT LESSON ITSELF: the user gives no path and there is no
@@ -548,7 +568,10 @@ mod tests {
         let previous = xlsx_uret(
             &root,
             "monthly-report",
-            Table::new(["Month", "Amount"], vec![vec!["January".into(), "100".into()]]),
+            Table::new(
+                ["Month", "Amount"],
+                vec![vec!["January".into(), "100".into()]],
+            ),
         );
         assert!(previous.exists());
 
@@ -559,17 +582,29 @@ mod tests {
         ));
 
         assert_eq!(outcome.state, ToolState::Written, "{}", outcome.chip_text);
-        assert!(outcome.to_model.contains("file_edited"), "{}", outcome.to_model);
+        assert!(
+            outcome.to_model.contains("file_edited"),
+            "{}",
+            outcome.to_model
+        );
         let new = outcome.file_path.expect("file path");
         assert_eq!(new.extension().unwrap(), "xlsx", "the format must be kept");
-        assert!(new.file_name().unwrap().to_string_lossy().contains("(edited)"));
+        assert!(
+            new.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("(edited)")
+        );
         // The original IS STILL THERE: an edit must not be irreversible loss.
         assert!(previous.exists(), "the original was deleted");
 
         let byte = fs::read(&new).unwrap();
         let entries = tacet_zip::open_map(&byte).expect("zip");
         let sheet = String::from_utf8(entries["xl/worksheets/sheet1.xml"].clone()).unwrap();
-        assert!(sheet.contains("February"), "the new row did not reach the file");
+        assert!(
+            sheet.contains("February"),
+            "the new row did not reach the file"
+        );
         fs::remove_dir_all(&root).ok();
     }
 
@@ -591,7 +626,10 @@ mod tests {
         assert_eq!(outcome.state, ToolState::Written);
         let new = outcome.file_path.clone().expect("path");
         assert!(
-            new.file_name().unwrap().to_string_lossy().starts_with("target"),
+            new.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("target"),
             "the guess won instead of the watcher: {}",
             new.display()
         );
@@ -616,7 +654,10 @@ mod tests {
             json!({"new_content": "| A |\n| --- |\n| 1 |\n| 2 |"}),
             &mut ctx,
         ));
-        assert_eq!(outcome.file_path.as_ref().unwrap().extension().unwrap(), "xlsx");
+        assert_eq!(
+            outcome.file_path.as_ref().unwrap().extension().unwrap(),
+            "xlsx"
+        );
         assert!(
             outcome.to_model.contains("format unchanged: xlsx"),
             "{}",
@@ -632,8 +673,7 @@ mod tests {
     fn when_there_is_no_document_a_fact_is_returned_not_an_error() {
         let root = temp_dir("empty");
         let mut ctx = context(&root, Arc::new(SharedStore::new()));
-        let outcome =
-            hold(EditDocumentTool::new().run(json!({"new_content": "x"}), &mut ctx));
+        let outcome = hold(EditDocumentTool::new().run(json!({"new_content": "x"}), &mut ctx));
 
         assert_eq!(outcome.state, ToolState::Read);
         assert!(outcome.to_model.starts_with("no_document_in_play"));
@@ -655,7 +695,10 @@ mod tests {
 
         for escape in ["../outside.md", "/etc/hosts", "sub/../../escape.md"] {
             let s = hold(tool.run(json!({"new_content": "x", "path": escape}), &mut ctx));
-            assert!(matches!(s.state, ToolState::Failed(_)), "the escape passed: {escape}");
+            assert!(
+                matches!(s.state, ToolState::Failed(_)),
+                "the escape passed: {escape}"
+            );
             assert_eq!(s.to_model, tacet_core::ERROR_MODEL_TEXT);
         }
 
@@ -676,7 +719,11 @@ mod tests {
     #[test]
     fn editing_with_a_source_ref_goes_through_the_bypass_channel() {
         let root = temp_dir("bypass");
-        let target = xlsx_uret(&root, "large", Table::new(["Name", "Amount"], vec![vec!["x".into(), "1".into()]]));
+        let target = xlsx_uret(
+            &root,
+            "large",
+            Table::new(["Name", "Amount"], vec![vec!["x".into(), "1".into()]]),
+        );
         let watcher = Arc::new(DocumentWatcher::new());
         watcher.assign(&target);
         let tool = EditDocumentTool::with_watcher(watcher);
@@ -684,9 +731,16 @@ mod tests {
         let store = Arc::new(SharedStore::new());
         let large = Table::new(
             ["Name", "Amount"],
-            (0..400).map(|i| vec![format!("person{i}"), format!("{i}")]).collect::<Vec<_>>(),
+            (0..400)
+                .map(|i| vec![format!("person{i}"), format!("{i}")])
+                .collect::<Vec<_>>(),
         );
-        let r = CoreDataStore::put(&*store, "document", "400 rows", large.markdown_truncated(usize::MAX));
+        let r = CoreDataStore::put(
+            &*store,
+            "document",
+            "400 rows",
+            large.markdown_truncated(usize::MAX),
+        );
         let mut ctx = context(&root, store);
 
         let outcome = hold(tool.run(json!({"source_ref": r.as_str()}), &mut ctx));
@@ -700,7 +754,10 @@ mod tests {
             tacet_zip::open_map(&byte).unwrap()["xl/worksheets/sheet1.xml"].clone(),
         )
         .unwrap();
-        assert!(sheet.contains("person399"), "the data did not reach the file");
+        assert!(
+            sheet.contains("person399"),
+            "the data did not reach the file"
+        );
         fs::remove_dir_all(&root).ok();
     }
 
@@ -712,7 +769,10 @@ mod tests {
         let target = xlsx_uret(
             &root,
             "wide",
-            Table::new(["Name", "Amount", "Note"], vec![vec!["a".into(), "1".into(), "n".into()]]),
+            Table::new(
+                ["Name", "Amount", "Note"],
+                vec![vec!["a".into(), "1".into(), "n".into()]],
+            ),
         );
         let watcher = Arc::new(DocumentWatcher::new());
         watcher.assign(&target);
@@ -720,7 +780,10 @@ mod tests {
         let mut ctx = context(&root, Arc::new(SharedStore::new()));
 
         let empty = hold(tool.run(json!({"new_content": "   "}), &mut ctx));
-        assert!(matches!(empty.state, ToolState::Failed(_)), "empty content passed");
+        assert!(
+            matches!(empty.state, ToolState::Failed(_)),
+            "empty content passed"
+        );
 
         let narrow = hold(tool.run(json!({"new_content": "| Ad |\n| --- |\n| a |"}), &mut ctx));
         assert_eq!(narrow.state, ToolState::Written);
@@ -791,7 +854,11 @@ mod tests {
 
         let schema = EditDocumentTool::new().schema();
         assert!(schema.validate(&json!({"new_content": "x"})).is_ok());
-        assert!(schema.validate(&json!({"source_ref": "document#1"})).is_ok());
+        assert!(
+            schema
+                .validate(&json!({"source_ref": "document#1"}))
+                .is_ok()
+        );
         assert!(schema.validate(&json!({"new_content": 1})).is_err());
 
         // If neither is there the TOOL rejects it (not the schema): where the
@@ -812,7 +879,9 @@ mod tests {
         let mut catalog = tacet_core::ToolCatalog::new();
         catalog.add(Arc::new(crate::calc::CalcTool));
         catalog.add(Arc::new(EditDocumentTool::new()));
-        let chosen = Router::new().max(1).select("add a row to the table", &catalog);
+        let chosen = Router::new()
+            .max(1)
+            .select("add a row to the table", &catalog);
         assert_eq!(chosen[0].name(), "edit_document");
     }
 }

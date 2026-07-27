@@ -9,11 +9,11 @@
 //!   TACET_MODEL=... TACET_TOKENIZER=... \
 //!     cargo run -p tacet-engine --features candle --release --example measure
 
+use std::time::Instant;
 use tacet_engine::prompt::Template;
 use tacet_engine::{
     EngineProvider, Generation, Prompt, SamplingSetting, StopReason, TokenCounter, Turn, wait,
 };
-use std::time::Instant;
 
 fn main() {
     // The variable names are THE SAME as on the production path (`MODEL_VAR` /
@@ -62,14 +62,22 @@ fn main() {
     let build_time = t.elapsed();
 
     let t = Instant::now();
-    let vocab = engine.vocab().expect("the candle engine declares a vocabulary");
+    let vocab = engine
+        .vocab()
+        .expect("the candle engine declares a vocabulary");
     let vocab_time = t.elapsed();
     println!("\n== build_vocab COST ==");
-    println!("build         : {:.1} ms", build_time.as_secs_f64() * 1000.0);
+    println!(
+        "build         : {:.1} ms",
+        build_time.as_secs_f64() * 1000.0
+    );
     let empty = vocab.iter().filter(|s| s.is_empty()).count();
     println!("\n== VOCABULARY (build_vocab) ==");
     println!("size          : {}", vocab.len());
-    println!("cloning       : {:.1} ms", vocab_time.as_secs_f64() * 1000.0);
+    println!(
+        "cloning       : {:.1} ms",
+        vocab_time.as_secs_f64() * 1000.0
+    );
     println!("empty texts   : {empty}  (special/control tokens)");
     // These samples are the critical part: the grammar works character by
     // character, so if `Ġ` or `▁` shows up here the mask was set up wrongly from
@@ -79,12 +87,17 @@ fn main() {
             println!("  id {id:<6} -> {s:?}");
         }
     }
-    let marked = vocab.iter().filter(|s| s.contains('Ġ') || s.contains('▁')).count();
+    let marked = vocab
+        .iter()
+        .filter(|s| s.contains('Ġ') || s.contains('▁'))
+        .count();
     println!("BPE marked    : {marked}  (must be 0 — decode should resolve the markers)");
 
     // Do the merged tokens really exist (the risk noted in STATUS.md)?
     println!("\n== MERGED TOKENS (candidates that cross the grammar boundary) ==");
-    for candidate in ["\"})", "\"}", "})", "\":", "\": \"", "\",", "\":\"", "({", "()"] {
+    for candidate in [
+        "\"})", "\"}", "})", "\":", "\": \"", "\",", "\":\"", "({", "()",
+    ] {
         let found: Vec<usize> = vocab
             .iter()
             .enumerate()
@@ -128,7 +141,10 @@ fn main() {
         let g = wait(engine.generate(
             &prompt,
             None,
-            SamplingSetting { max_tokens: n, ..Default::default() },
+            SamplingSetting {
+                max_tokens: n,
+                ..Default::default()
+            },
         ))
         .expect("generation");
         (t.elapsed().as_secs_f64(), g)
@@ -163,7 +179,10 @@ fn main() {
 
     println!("\n== PERFORMANCE ==");
     println!("prompt tokens     : {}", prompt_size);
-    println!("prefill           : {prefill:.2} s  ({:.1} tokens/s)", prompt_size as f64 / prefill);
+    println!(
+        "prefill           : {prefill:.2} s  ({:.1} tokens/s)",
+        prompt_size as f64 / prefill
+    );
     println!("decode            : {decode:.2} tokens/s");
     println!("32 tokens total   : {t1:.2} s");
     println!("64 tokens total   : {t2:.2} s");
@@ -181,21 +200,30 @@ fn main() {
     // filling this history with English would make the run measure a sparser
     // text than the constant was derived from, and the check would pass for the
     // wrong reason.
-    let mut long = Prompt::new(tacet_engine::SYSTEM_INSTRUCTIONS, "Summarise: what is the state?")
-        .with_history((0..200).map(|i| {
-            Turn::user(format!(
-                "turn {i}: a fairly long sentence written to fill the context window of an \
+    let mut long = Prompt::new(
+        tacet_engine::SYSTEM_INSTRUCTIONS,
+        "Summarise: what is the state?",
+    )
+    .with_history((0..200).map(|i| {
+        Turn::user(format!(
+            "turn {i}: a fairly long sentence written to fill the context window of an \
                  assistant running on the device."
-            ))
-        }));
-    println!("estimate before truncation : {}", counter.prompt_estimate(&long));
+        ))
+    }));
+    println!(
+        "estimate before truncation : {}",
+        counter.prompt_estimate(&long)
+    );
     let report = counter.truncate(&mut long);
     println!("dropped turns              : {}", report.dropped_turns);
     println!("guide dropped              : {}", report.guide_dropped);
     println!("question truncated         : {}", report.question_truncated);
     println!("estimate after truncation  : {}", report.final_estimate);
     println!("prompt cap                 : {}", counter.prompt_cap());
-    println!("validate()                 : {:?}", counter.validate(&long).is_ok());
+    println!(
+        "validate()                 : {:?}",
+        counter.validate(&long).is_ok()
+    );
 
     // The REAL token count of the two templates — the estimate is made over the
     // plain format while generation sends ChatML. The difference shows up here.
@@ -219,7 +247,10 @@ fn main() {
     println!("\n== GENERATION ==");
     println!("tokens        : {}", generation.token_count);
     println!("duration      : {duration:.2} s");
-    println!("end-to-end    : {:.2} tokens/s", generation.token_count as f64 / duration);
+    println!(
+        "end-to-end    : {:.2} tokens/s",
+        generation.token_count as f64 / duration
+    );
     println!("stop          : {:?}", generation.stop);
     println!("--- TEXT ---\n{}", generation.text);
 }

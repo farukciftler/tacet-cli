@@ -42,7 +42,11 @@ mod tests {
     #[test]
     fn the_case_set_is_wide_enough_and_the_names_are_unique() {
         let cases = all();
-        assert!(cases.len() >= 15, "at least 15 cases expected, there are {}", cases.len());
+        assert!(
+            cases.len() >= 15,
+            "at least 15 cases expected, there are {}",
+            cases.len()
+        );
         let mut names: Vec<&str> = cases.iter().map(|c| c.name.as_str()).collect();
         names.sort_unstable();
         let before = names.len();
@@ -80,7 +84,11 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&report.json()).unwrap();
         assert_eq!(json["total"].as_u64().unwrap() as usize, report.total);
         assert_eq!(json["passed"].as_u64().unwrap() as usize, report.passed);
-        assert!(report.table().contains(&format!("{}/{}", report.passed, report.total)));
+        assert!(
+            report
+                .table()
+                .contains(&format!("{}/{}", report.passed, report.total))
+        );
     }
 
     #[test]
@@ -97,8 +105,8 @@ mod tests {
 
     #[test]
     fn a_case_fails_if_a_tool_is_called_for_a_greeting() {
-        let broken = EvalCase::new("hungry", "Hello")
-            .script(&[r#"time({"kind":"all"})"#, "Hello!"]);
+        let broken =
+            EvalCase::new("hungry", "Hello").script(&[r#"time({"kind":"all"})"#, "Hello!"]);
         let outcome = run_case(&broken, &FakeSelector);
         assert!(!outcome.passed, "the tool appetite should have been caught");
     }

@@ -1,5 +1,5 @@
-//! tacet-skills — the skill layer; the on-device counterpart of Claude's
-//! SKILL.md logic.
+//! tacet-skills — the skill layer: a `SKILL.md` of trigger phrases and a
+//! short piece of guidance, fenced into a single turn's prompt.
 //!
 //! Each tool's detailed usage guide is a `.md` file (frontmatter + body). To
 //! keep the 4096 token window from swelling, "progressive disclosure": not all

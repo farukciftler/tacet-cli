@@ -52,7 +52,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use tacet_core::{
-    Field, Tool, ToolContext, ToolState, ToolFuture, ToolError, ToolResult, ToolOutcome, ArgSchema,
+    ArgSchema, Field, Tool, ToolContext, ToolError, ToolFuture, ToolOutcome, ToolResult, ToolState,
     TraceUpdate, boxed,
 };
 
@@ -121,13 +121,17 @@ impl NetworkShield {
     pub fn find() -> Option<NetworkShield> {
         let sandbox = Path::new("/usr/bin/sandbox-exec");
         if sandbox.is_file() {
-            return Some(NetworkShield::SandboxExec { tool: sandbox.to_path_buf() });
+            return Some(NetworkShield::SandboxExec {
+                tool: sandbox.to_path_buf(),
+            });
         }
         BWRAP_PATHS
             .iter()
             .map(Path::new)
             .find(|y| y.is_file())
-            .map(|y| NetworkShield::Bwrap { tool: y.to_path_buf() })
+            .map(|y| NetworkShield::Bwrap {
+                tool: y.to_path_buf(),
+            })
     }
 
     pub fn name(&self) -> &'static str {
@@ -294,11 +298,23 @@ pub struct Interpreter {
 /// If python is present it is a real second option — a gain Swift did not have,
 /// and the `language` field exists exactly for that (see `schema`).
 const CANDIDATES: &[(&str, &str, &[&str])] = &[
-    ("js", "js", &["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]),
+    (
+        "js",
+        "js",
+        &[
+            "/opt/homebrew/bin/node",
+            "/usr/local/bin/node",
+            "/usr/bin/node",
+        ],
+    ),
     (
         "python",
         "py",
-        &["/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3"],
+        &[
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3",
+            "/usr/bin/python3",
+        ],
     ),
 ];
 
@@ -328,7 +344,11 @@ fn discover_interpreters() -> Vec<Interpreter> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum CodeOutcome {
     /// The script finished without an error. If `output` is EMPTY the caller MUST NOT PRESENT this as a success.
-    Succeeded { output: String, ms: u128, truncated: bool },
+    Succeeded {
+        output: String,
+        ms: u128,
+        truncated: bool,
+    },
     /// The script returned an error (a non-zero exit code) — stderr + partial output.
     Error(String),
     /// The time ran out; the process was killed.
@@ -363,8 +383,13 @@ pub fn run(
     ));
     std::fs::write(&script, code.as_bytes())?;
 
-    let outcome =
-        run_program(shield, &runtime, &interpreter.path, &[script.clone().into()], timeout);
+    let outcome = run_program(
+        shield,
+        &runtime,
+        &interpreter.path,
+        &[script.clone().into()],
+        timeout,
+    );
     // The script is deleted ON EVERY PATH: if model output piles up on disk the
     // sandbox gets dirty and `find_file` lists them as if they were user documents.
     std::fs::remove_file(&script).ok();
@@ -478,7 +503,10 @@ pub fn run_program(
         text.push_str("\n(error output truncated)");
     }
     if !output.trim().is_empty() {
-        text.push_str(&format!("\n--- output before the error ---\n{}", output.trim()));
+        text.push_str(&format!(
+            "\n--- output before the error ---\n{}",
+            output.trim()
+        ));
     }
     Ok(CodeOutcome::Error(text))
 }
@@ -512,7 +540,10 @@ fn read_pipe<R: Read>(pipe: Option<R>) -> (String, bool) {
             }
         }
     }
-    (String::from_utf8_lossy(&accumulated).into_owned(), truncated)
+    (
+        String::from_utf8_lossy(&accumulated).into_owned(),
+        truncated,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -594,7 +625,8 @@ impl RunCodeTool {
     pub fn diagnose() -> String {
         let interpreters = discover_interpreters();
         if interpreters.is_empty() {
-            return "run_code is off: neither node nor python3 was found on the machine".to_string();
+            return "run_code is off: neither node nor python3 was found on the machine"
+                .to_string();
         }
         let names: Vec<&str> = interpreters.iter().map(|y| y.key).collect();
         let Some(shield) = NetworkShield::find() else {
@@ -874,7 +906,8 @@ impl Tool for RunCodeTool {
                 )),
         ));
 
-        let schema = ArgSchema::object(fields).description("Run a short script and return its output");
+        let schema =
+            ArgSchema::object(fields).description("Run a short script and return its output");
         *self.schema_cache.lock().expect("schema lock") = Some(schema.clone());
         schema
     }
@@ -885,11 +918,7 @@ impl Tool for RunCodeTool {
         true
     }
 
-    fn run<'a>(
-        &'a self,
-        args: serde_json::Value,
-        ctx: &'a mut ToolContext,
-    ) -> ToolFuture<'a> {
+    fn run<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolContext) -> ToolFuture<'a> {
         boxed(async move {
             if let Err(h) = self.schema().validate(&args) {
                 return ToolOutcome::failed(&h);
@@ -912,7 +941,11 @@ impl Tool for RunCodeTool {
                 trace,
                 TraceUpdate::state(outcome.state.clone())
                     .text(outcome.chip_text.clone())
-                    .raw_input(args.get("code").and_then(|k| k.as_str()).unwrap_or_default())
+                    .raw_input(
+                        args.get("code")
+                            .and_then(|k| k.as_str())
+                            .unwrap_or_default(),
+                    )
                     .raw_output(outcome.raw_output.clone().unwrap_or_default()),
             );
             // Tainting only for a script that REALLY ran: a denied or
@@ -926,19 +959,18 @@ impl Tool for RunCodeTool {
 }
 
 impl RunCodeTool {
-    fn execute(
-        &self,
-        args: &serde_json::Value,
-        ctx: &ToolContext,
-        attempt: usize,
-    ) -> ToolOutcome {
+    fn execute(&self, args: &serde_json::Value, ctx: &ToolContext, attempt: usize) -> ToolOutcome {
         let last_attempt = attempt >= MAX_ATTEMPTS;
 
-        let Some(code) = args.get("code").and_then(|v| v.as_str()).filter(|k| !k.trim().is_empty())
+        let Some(code) = args
+            .get("code")
+            .and_then(|v| v.as_str())
+            .filter(|k| !k.trim().is_empty())
         else {
             return ToolOutcome::failed(&ToolError::MissingField("code".into()));
         };
-        let interpreter = self.resolve_interpreter(args.get("language").and_then(|v| v.as_str()), code);
+        let interpreter =
+            self.resolve_interpreter(args.get("language").and_then(|v| v.as_str()), code);
         let timeout = Duration::from_secs(
             args.get("timeout_s")
                 .and_then(|v| v.as_u64())
@@ -947,9 +979,10 @@ impl RunCodeTool {
 
         // The shield profile writes the sandbox as a subpath; an unresolved path
         // silently falls to "nothing is permitted" (see `NetworkShield::wrap`).
-        let sandbox = match ctx.resolve_path(".").and_then(|k| {
-            k.canonicalize().map_err(ToolError::Io)
-        }) {
+        let sandbox = match ctx
+            .resolve_path(".")
+            .and_then(|k| k.canonicalize().map_err(ToolError::Io))
+        {
             Ok(k) => k,
             Err(h) => return ToolOutcome::failed(&h),
         };
@@ -963,7 +996,11 @@ impl RunCodeTool {
             // SUCCESS WITH NO OUTPUT IS NOT A SUCCESS (measured in Swift): when
             // the model saw "ok" it MADE THE RESULT UP.
             CodeOutcome::Succeeded { output, .. } if output.trim().is_empty() => ToolOutcome::new(
-                if last_attempt { "The code could not be run" } else { "Error · retrying" },
+                if last_attempt {
+                    "The code could not be run"
+                } else {
+                    "Error · retrying"
+                },
                 ToolState::Failed("no output".into()),
                 error_text(
                     "error: the script ran but printed nothing. A bare last expression is NOT \
@@ -974,7 +1011,11 @@ impl RunCodeTool {
             )
             .raw_output("no output"),
 
-            CodeOutcome::Succeeded { output, ms, truncated } => {
+            CodeOutcome::Succeeded {
+                output,
+                ms,
+                truncated,
+            } => {
                 let short = truncate(&output, MODEL_OUTPUT_CAP);
                 let note = if truncated || short.len() < output.len() {
                     "\n(the output was truncated)"
@@ -1017,7 +1058,11 @@ impl RunCodeTool {
                     format!("error: {message}")
                 };
                 ToolOutcome::new(
-                    if last_attempt { "The code could not be run" } else { "Error · retrying" },
+                    if last_attempt {
+                        "The code could not be run"
+                    } else {
+                        "Error · retrying"
+                    },
                     ToolState::Failed("the script returned an error".into()),
                     error_text(&cause, last_attempt),
                 )
@@ -1067,7 +1112,9 @@ pub fn looks_like_python(code: &str) -> bool {
     // Each of these is either a syntax error or undefined in JS; there is no
     // risk of mistaking a valid JS script for Python. `print(` is DELIBERATELY
     // absent: in many shells it can be defined on the JS side too.
-    const PYTHON_SPECIFIC: &[&str] = &["range(", "def ", "elif ", "end=", " True", " False", " None"];
+    const PYTHON_SPECIFIC: &[&str] = &[
+        "range(", "def ", "elif ", "end=", " True", " False", " None",
+    ];
     if PYTHON_SPECIFIC.iter().any(|i| code.contains(i)) {
         return true;
     }
@@ -1093,8 +1140,8 @@ pub fn looks_like_python(code: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
-    use tacet_core::{InMemoryDataStore, SourceRef, SilentReporter};
     use std::sync::Arc;
+    use tacet_core::{InMemoryDataStore, SilentReporter, SourceRef};
 
     fn hold<F: std::future::Future>(future: F) -> F::Output {
         use std::pin::pin;
@@ -1143,7 +1190,10 @@ mod tests {
         match RunCodeTool::discover() {
             Some(a) => Some(a),
             None => {
-                eprintln!("run_code was not discovered, the execution tests were skipped: {}", RunCodeTool::diagnose());
+                eprintln!(
+                    "run_code was not discovered, the execution tests were skipped: {}",
+                    RunCodeTool::diagnose()
+                );
                 None
             }
         }
@@ -1156,10 +1206,17 @@ mod tests {
     fn the_python_diagnosis_gives_no_false_positive() {
         assert!(looks_like_python("def f(x):\n  return x"));
         assert!(looks_like_python("if x == 1:\n  y = True"));
-        assert!(looks_like_python("for i in range(20):\n  print(i)"), "a block ending in a colon");
+        assert!(
+            looks_like_python("for i in range(20):\n  print(i)"),
+            "a block ending in a colon"
+        );
         // Valid JS must not be taken for Python.
-        assert!(!looks_like_python("for (let i = 0; i < 10; i++) { console.log(i) }"));
-        assert!(!looks_like_python("const o = {a: 1}; console.log(JSON.stringify(o))"));
+        assert!(!looks_like_python(
+            "for (let i = 0; i < 10; i++) { console.log(i) }"
+        ));
+        assert!(!looks_like_python(
+            "const o = {a: 1}; console.log(JSON.stringify(o))"
+        ));
         assert!(!looks_like_python("for (const k in o) { console.log(k) }"));
     }
 
@@ -1187,7 +1244,11 @@ mod tests {
         let d = CodeState::new();
         assert_eq!(d.next_attempt(), 1);
         assert_eq!(d.next_attempt(), 2);
-        assert_eq!(d.next_attempt(), 3, "the third call must exceed MAX_ATTEMPTS");
+        assert_eq!(
+            d.next_attempt(),
+            3,
+            "the third call must exceed MAX_ATTEMPTS"
+        );
         d.new_turn();
         assert_eq!(d.next_attempt(), 1, "it must reset at the start of a turn");
     }
@@ -1197,7 +1258,10 @@ mod tests {
     fn the_shield_profile_closes_the_network_and_the_home_directory() {
         let p = profile(Path::new("/private/tmp/sandbox"));
         assert!(p.contains("(deny network*)"), "the network was left open");
-        assert!(p.contains("(deny default)"), "the default was left permissive");
+        assert!(
+            p.contains("(deny default)"),
+            "the default was left permissive"
+        );
         assert!(p.contains("(allow file-write* (subpath \"/private/tmp/sandbox\"))"));
         // Writing only into the sandbox: there must be no write permission for another subpath.
         assert_eq!(p.matches("allow file-write*").count(), 1);
@@ -1229,7 +1293,9 @@ mod tests {
             return;
         };
         if discover_interpreters().is_empty() {
-            eprintln!("there is no interpreter on this machine; the discovery claim cannot be built");
+            eprintln!(
+                "there is no interpreter on this machine; the discovery claim cannot be built"
+            );
             return;
         }
         let discovered = RunCodeTool::discover().is_some();
@@ -1241,7 +1307,11 @@ mod tests {
                 RunCodeTool::diagnose()
             );
         } else if !discovered {
-            eprintln!("discovery failed ({}): {}", shield.name(), RunCodeTool::diagnose());
+            eprintln!(
+                "discovery failed ({}): {}",
+                shield.name(),
+                RunCodeTool::diagnose()
+            );
         }
     }
 
@@ -1262,17 +1332,35 @@ mod tests {
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
 
-        assert!(args.contains(&"--unshare-net".to_string()), "the network was not cut: {args:?}");
-        let tmpfs = args.iter().position(|a| a == "--tmpfs").expect("the home directory was not covered");
+        assert!(
+            args.contains(&"--unshare-net".to_string()),
+            "the network was not cut: {args:?}"
+        );
+        let tmpfs = args
+            .iter()
+            .position(|a| a == "--tmpfs")
+            .expect("the home directory was not covered");
         assert_eq!(args[tmpfs + 1], "/home/user");
-        let bind = args.iter().position(|a| a == "--bind").expect("the sandbox was not bound");
-        assert!(tmpfs < bind, "the tmpfs covers the sandbox, the order is reversed: {args:?}");
+        let bind = args
+            .iter()
+            .position(|a| a == "--bind")
+            .expect("the sandbox was not bound");
+        assert!(
+            tmpfs < bind,
+            "the tmpfs covers the sandbox, the order is reversed: {args:?}"
+        );
         assert_eq!(args[bind + 1], sandbox.to_string_lossy());
 
         // The root must be bound READ ONLY: that is what cuts writing outside the sandbox.
-        let ro = args.iter().position(|a| a == "--ro-bind").expect("the root was not bound");
+        let ro = args
+            .iter()
+            .position(|a| a == "--ro-bind")
+            .expect("the root was not bound");
         assert_eq!(args[ro + 1], "/");
-        assert!(!args.iter().any(|a| a == "--bind-try"), "a try-bind is used, it passes silently: {args:?}");
+        assert!(
+            !args.iter().any(|a| a == "--bind-try"),
+            "a try-bind is used, it passes silently: {args:?}"
+        );
     }
 
     /// 4d) `--tmpfs /` IS A DISASTER: it empties the root directory and the
@@ -1290,8 +1378,14 @@ mod tests {
                 !args.iter().any(|a| a == "--tmpfs"),
                 "a tmpfs was produced for {home:?}: {args:?}"
             );
-            assert!(args.contains(&"--unshare-net".to_string()), "{home:?}: the network was left open");
-            assert!(args.contains(&"--ro-bind".to_string()), "{home:?}: the root was left writable");
+            assert!(
+                args.contains(&"--unshare-net".to_string()),
+                "{home:?}: the network was left open"
+            );
+            assert!(
+                args.contains(&"--ro-bind".to_string()),
+                "{home:?}: the root was left writable"
+            );
         }
     }
 
@@ -1323,7 +1417,10 @@ mod tests {
         assert_eq!(outcome.state, ToolState::Read, "{}", outcome.chip_text);
         assert!(outcome.to_model.contains("42"), "{}", outcome.to_model);
         assert!(outcome.to_model.starts_with("ok ("));
-        assert!(ctx.session_tainted(), "an external tool ran, the session must be tainted");
+        assert!(
+            ctx.session_tainted(),
+            "an external tool ran, the session must be tainted"
+        );
     }
 
     /// 7) THE NETWORK IS REALLY CUT. This test passing is the only ground on
@@ -1356,7 +1453,11 @@ mod tests {
             !output.contains("NET_OPEN"),
             "THE NETWORK WAS LEFT OPEN — the tool must not be in the catalog: {output}"
         );
-        assert!(output.contains("NET_BLOCKED"), "unexpected output: {output} / {}", outcome.to_model);
+        assert!(
+            output.contains("NET_BLOCKED"),
+            "unexpected output: {output} / {}",
+            outcome.to_model
+        );
     }
 
     /// 8) THE SANDBOX: the script cannot write outside and cannot read the
@@ -1397,9 +1498,19 @@ mod tests {
 
         let outcome = hold(tool.run(json!({"code": code, "timeout_s": 20}), &mut ctx));
         let output = outcome.raw_output.clone().unwrap_or_default();
-        assert!(output.contains("OUT_WRITE_BLOCKED"), "it wrote outside the sandbox: {output}");
-        assert!(!target.exists(), "the file was really created: {}", target.display());
-        assert!(output.contains("IN_WRITE_OK"), "it could not write into the sandbox: {output}");
+        assert!(
+            output.contains("OUT_WRITE_BLOCKED"),
+            "it wrote outside the sandbox: {output}"
+        );
+        assert!(
+            !target.exists(),
+            "the file was really created: {}",
+            target.display()
+        );
+        assert!(
+            output.contains("IN_WRITE_OK"),
+            "it could not write into the sandbox: {output}"
+        );
     }
 
     /// 9) AN INFINITE LOOP: on the timeout the process is KILLED and the
@@ -1417,10 +1528,24 @@ mod tests {
         let started = Instant::now();
         let outcome = hold(tool.run(json!({"code": code, "timeout_s": 2}), &mut ctx));
         let elapsed = started.elapsed();
-        assert!(matches!(outcome.state, ToolState::Failed(_)), "{}", outcome.chip_text);
-        assert!(outcome.to_model.contains("did not finish in time"), "{}", outcome.to_model);
-        assert!(elapsed < Duration::from_secs(10), "the process was not killed: {elapsed:?}");
-        assert!(elapsed >= Duration::from_secs(2), "it returned before the cap: {elapsed:?}");
+        assert!(
+            matches!(outcome.state, ToolState::Failed(_)),
+            "{}",
+            outcome.chip_text
+        );
+        assert!(
+            outcome.to_model.contains("did not finish in time"),
+            "{}",
+            outcome.to_model
+        );
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "the process was not killed: {elapsed:?}"
+        );
+        assert!(
+            elapsed >= Duration::from_secs(2),
+            "it returned before the cap: {elapsed:?}"
+        );
     }
 
     /// 10) SUCCESS WITH NO OUTPUT IS NOT A SUCCESS — so the model cannot see
@@ -1435,7 +1560,11 @@ mod tests {
             _ => "const x = 1 + 1;",
         };
         let outcome = hold(tool.run(json!({"code": code}), &mut ctx));
-        assert!(matches!(outcome.state, ToolState::Failed(_)), "{}", outcome.chip_text);
+        assert!(
+            matches!(outcome.state, ToolState::Failed(_)),
+            "{}",
+            outcome.chip_text
+        );
     }
 
     /// 11) HUGE OUTPUT does not eat the memory, it is truncated and the
@@ -1452,12 +1581,22 @@ mod tests {
         let outcome = hold(tool.run(json!({"code": code, "timeout_s": 25}), &mut ctx));
 
         let raw = outcome.raw_output.clone().unwrap_or_default();
-        assert!(raw.len() <= OUTPUT_CAP + 16, "the cap was exceeded: {}", raw.len());
+        assert!(
+            raw.len() <= OUTPUT_CAP + 16,
+            "the cap was exceeded: {}",
+            raw.len()
+        );
         // The text going to the model is much shorter: even the full output IS NOT DUMPED on the model.
         assert!(outcome.to_model.len() < 900, "{}", outcome.to_model.len());
         if outcome.state == ToolState::Read {
-            assert!(outcome.to_model.contains("source_ref"), "{}", outcome.to_model);
-            let record = ctx.from_store(&SourceRef("code#1".into())).expect("the store record");
+            assert!(
+                outcome.to_model.contains("source_ref"),
+                "{}",
+                outcome.to_model
+            );
+            let record = ctx
+                .from_store(&SourceRef("code#1".into()))
+                .expect("the store record");
             assert!(record.body.len() > MODEL_OUTPUT_CAP);
         }
     }
@@ -1480,7 +1619,11 @@ mod tests {
         }
         let third = hold(tool.run(json!({"code": code}), &mut ctx));
         assert!(matches!(third.state, ToolState::Failed(_)));
-        assert!(third.to_model.starts_with("error_final"), "{}", third.to_model);
+        assert!(
+            third.to_model.starts_with("error_final"),
+            "{}",
+            third.to_model
+        );
 
         // The turn hook resets the counter; the shell binds this to `ToolExecutor`.
         tool.turn_state().new_turn();
@@ -1506,13 +1649,26 @@ mod tests {
         );
 
         assert!(schema.validate(&json!({"code": "x"})).is_ok());
-        assert!(schema.validate(&json!({"code": "x", "timeout_s": 999})).is_err(), "the cap");
-        assert!(schema.validate(&json!({"code": "x", "invented": 1})).is_ok(), "the schema ignores it");
+        assert!(
+            schema
+                .validate(&json!({"code": "x", "timeout_s": 999}))
+                .is_err(),
+            "the cap"
+        );
+        assert!(
+            schema
+                .validate(&json!({"code": "x", "invented": 1}))
+                .is_ok(),
+            "the schema ignores it"
+        );
         if has_language {
-            assert!(schema.validate(&json!({"code": "x", "language": "cobol"})).is_err());
+            assert!(
+                schema
+                    .validate(&json!({"code": "x", "language": "cobol"}))
+                    .is_err()
+            );
         }
     }
-
 
     /// 14) The router must be able to pick this tool for a Calc intent.
     #[test]
@@ -1526,7 +1682,9 @@ mod tests {
         let mut catalog = tacet_core::ToolCatalog::new();
         catalog.add(Arc::new(crate::time::TimeTool::new()));
         catalog.add(Arc::new(RunCodeTool::discover().expect("discovered")));
-        let chosen = Router::new().max(1).select("calculate this with python", &catalog);
+        let chosen = Router::new()
+            .max(1)
+            .select("calculate this with python", &catalog);
         assert_eq!(chosen[0].name(), "run_code");
     }
 
@@ -1535,10 +1693,19 @@ mod tests {
     /// When the source speaks PLAINLY it gives the right language.
     #[test]
     fn language_from_source_recognises_an_explicit_source() {
-        assert_eq!(language_from_source("const a = [];\nlet b = 1;"), Some("js"));
+        assert_eq!(
+            language_from_source("const a = [];\nlet b = 1;"),
+            Some("js")
+        );
         assert_eq!(language_from_source("console.log(42)"), Some("js"));
-        assert_eq!(language_from_source("print(sum(range(10)))"), Some("python"));
-        assert_eq!(language_from_source("import math\nprint(math.pi)"), Some("python"));
+        assert_eq!(
+            language_from_source("print(sum(range(10)))"),
+            Some("python")
+        );
+        assert_eq!(
+            language_from_source("import math\nprint(math.pi)"),
+            Some("python")
+        );
     }
 
     /// Syntax valid in both languages DOES NOT MAKE the guess speak; the
@@ -1571,6 +1738,9 @@ mod tests {
         if tool.interpreters.len() < 2 {
             return;
         }
-        assert_eq!(tool.resolve_interpreter(Some("python"), "1 + 2").key, "python");
+        assert_eq!(
+            tool.resolve_interpreter(Some("python"), "1 + 2").key,
+            "python"
+        );
     }
 }

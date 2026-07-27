@@ -28,8 +28,18 @@ impl EvalReport {
     pub fn new(engine: &str, cases: Vec<CaseOutcome>) -> Self {
         let total = cases.len();
         let passed = cases.iter().filter(|c| c.passed).count();
-        let success_rate = if total == 0 { 0.0 } else { passed as f64 / total as f64 };
-        Self { engine: engine.to_string(), total, passed, success_rate, cases }
+        let success_rate = if total == 0 {
+            0.0
+        } else {
+            passed as f64 / total as f64
+        };
+        Self {
+            engine: engine.to_string(),
+            total,
+            passed,
+            success_rate,
+            cases,
+        }
     }
 
     pub fn all_passed(&self) -> bool {
@@ -48,7 +58,10 @@ impl EvalReport {
 
         let mut s = String::new();
         s.push_str(&format!("engine: {}\n\n", self.engine));
-        s.push_str(&format!("{:<name_width$}  {:<6}  {}\n", "CASE", "STATE", "TOOLS"));
+        s.push_str(&format!(
+            "{:<name_width$}  {:<6}  {}\n",
+            "CASE", "STATE", "TOOLS"
+        ));
         s.push_str(&format!("{}\n", "-".repeat(name_width + 40)));
 
         for c in &self.cases {
@@ -56,7 +69,11 @@ impl EvalReport {
             s.push_str(&format!(
                 "{:<name_width$}  {state:<6}  {}\n",
                 c.name,
-                if c.called.is_empty() { "-".to_string() } else { c.called.join(", ") }
+                if c.called.is_empty() {
+                    "-".to_string()
+                } else {
+                    c.called.join(", ")
+                }
             ));
         }
 
@@ -84,7 +101,8 @@ impl EvalReport {
     /// plain data); even so, it returns an error string rather than turning into
     /// a panic.
     pub fn json(&self) -> String {
-        serde_json::to_string_pretty(self)
-            .unwrap_or_else(|e| format!("{{\"error\":\"the report could not be serialized: {e}\"}}"))
+        serde_json::to_string_pretty(self).unwrap_or_else(|e| {
+            format!("{{\"error\":\"the report could not be serialized: {e}\"}}")
+        })
     }
 }

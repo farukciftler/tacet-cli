@@ -48,9 +48,9 @@ impl fmt::Display for WebError {
             WebError::Unreachable(_) => f.write_str("The search server could not be reached."),
             WebError::Timeout => f.write_str("The search took too long."),
             WebError::ServerCode(c) => write!(f, "The search server did not respond ({c})."),
-            WebError::InvalidJson(_) => {
-                f.write_str("The server did not return JSON; 'formats: json' must be enabled in its settings.")
-            }
+            WebError::InvalidJson(_) => f.write_str(
+                "The server did not return JSON; 'formats: json' must be enabled in its settings.",
+            ),
             WebError::EmptyResult => f.write_str("The search returned no results."),
             WebError::InvalidAddress(_) => f.write_str("The search server address is invalid."),
         }

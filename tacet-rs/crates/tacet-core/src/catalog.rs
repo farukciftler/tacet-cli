@@ -72,6 +72,8 @@ impl ToolCatalog {
 
 impl FromIterator<Arc<dyn Tool>> for ToolCatalog {
     fn from_iter<T: IntoIterator<Item = Arc<dyn Tool>>>(iter: T) -> Self {
-        Self { tools: iter.into_iter().collect() }
+        Self {
+            tools: iter.into_iter().collect(),
+        }
     }
 }

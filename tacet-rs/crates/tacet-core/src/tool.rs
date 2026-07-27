@@ -55,9 +55,5 @@ pub trait Tool: Send + Sync {
     /// because an error too must reach the user as a chip and the model as a
     /// fixed text. Implementations convert internal errors with
     /// `ToolOutcome::failed(&error)`.
-    fn run<'a>(
-        &'a self,
-        args: serde_json::Value,
-        ctx: &'a mut ToolContext,
-    ) -> ToolFuture<'a>;
+    fn run<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolContext) -> ToolFuture<'a>;
 }

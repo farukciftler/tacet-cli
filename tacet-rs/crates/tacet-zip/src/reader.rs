@@ -40,7 +40,9 @@ pub fn open(zip: &[u8]) -> ZipResult<Vec<ZipEntry>> {
     // both malformed archives and specially crafted ones (where the offset winds
     // the data backwards).
     if central_offset > eocd {
-        return Err(ZipError::Malformed("the central directory offset passes the EOCD"));
+        return Err(ZipError::Malformed(
+            "the central directory offset passes the EOCD",
+        ));
     }
 
     let mut entries = Vec::with_capacity(record_count.min(1024));
@@ -53,7 +55,9 @@ pub fn open(zip: &[u8]) -> ZipResult<Vec<ZipEntry>> {
 
         total_decoded += data.len();
         if total_decoded > ARCHIVE_CAP {
-            return Err(ZipError::LimitExceeded("the archive total size cap was exceeded"));
+            return Err(ZipError::LimitExceeded(
+                "the archive total size cap was exceeded",
+            ));
         }
 
         entries.push(ZipEntry {
@@ -69,16 +73,15 @@ pub fn open(zip: &[u8]) -> ZipResult<Vec<ZipEntry>> {
 /// Opens the archive as a name -> content map. If the same name occurs more than
 /// once, the LAST one wins (zip semantics: a later record shadows an earlier one).
 pub fn open_map(zip: &[u8]) -> ZipResult<BTreeMap<String, Vec<u8>>> {
-    Ok(open(zip)?
-        .into_iter()
-        .map(|e| (e.name, e.data))
-        .collect())
+    Ok(open(zip)?.into_iter().map(|e| (e.name, e.data)).collect())
 }
 
 /// Searches for the EOCD signature backwards from the end.
 fn find_eocd(zip: &[u8]) -> ZipResult<usize> {
     if zip.len() < 22 {
-        return Err(ZipError::Malformed("the file is too short for an EOCD record"));
+        return Err(ZipError::Malformed(
+            "the file is too short for an EOCD record",
+        ));
     }
     let latest = zip.len() - 22;
     let earliest = latest.saturating_sub(EOCD_SEARCH_WINDOW);
@@ -114,7 +117,9 @@ struct CentralDirectory {
 
 fn read_central_record(zip: &[u8], offset: usize) -> ZipResult<CentralDirectory> {
     if read32(zip, offset)? != CENTRAL_SIG {
-        return Err(ZipError::Malformed("wrong central directory record signature"));
+        return Err(ZipError::Malformed(
+            "wrong central directory record signature",
+        ));
     }
     let method = read16(zip, offset + 10)?;
     let crc = read32(zip, offset + 16)?;
@@ -135,7 +140,9 @@ fn read_central_record(zip: &[u8], offset: usize) -> ZipResult<CentralDirectory>
         .and_then(|v| v.checked_add(name_length))
         .and_then(|v| v.checked_add(extra_length))
         .and_then(|v| v.checked_add(comment_length))
-        .ok_or(ZipError::Malformed("the central directory offset overflowed"))?;
+        .ok_or(ZipError::Malformed(
+            "the central directory offset overflowed",
+        ))?;
 
     Ok(CentralDirectory {
         name,
@@ -169,7 +176,9 @@ fn decode_entry_data(zip: &[u8], record: &CentralDirectory) -> ZipResult<Vec<u8>
     let decoded = match record.method {
         0 => {
             if record.compressed_size != record.raw_size {
-                return Err(ZipError::Malformed("the sizes of a STORE entry do not match"));
+                return Err(ZipError::Malformed(
+                    "the sizes of a STORE entry do not match",
+                ));
             }
             raw.to_vec()
         }

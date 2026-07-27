@@ -75,7 +75,12 @@ pub struct Addon {
 
 impl Addon {
     pub fn new(name: impl Into<String>, kind: impl Into<String>) -> Self {
-        Self { name: name.into(), kind: kind.into(), open: true, settings: BTreeMap::new() }
+        Self {
+            name: name.into(),
+            kind: kind.into(),
+            open: true,
+            settings: BTreeMap::new(),
+        }
     }
 
     pub fn with_setting(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
@@ -169,7 +174,10 @@ impl Record {
         let root = serde_json::json!({ "addons": array });
         // A trailing newline: so the file does not eat the shell prompt when
         // it is `cat`ed.
-        format!("{}\n", serde_json::to_string_pretty(&root).unwrap_or_else(|_| "{}".into()))
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&root).unwrap_or_else(|_| "{}".into())
+        )
     }
 
     /// SEPARATE AND PUBLIC: so it can be tested without touching the
@@ -200,25 +208,45 @@ impl Record {
                 .or_else(|| a.get("ad"))
                 .and_then(|n| n.as_str())
                 .ok_or_else(|| "the addon has no `name` field".to_string())?;
-            let name = if raw_name == LEGACY_WEB_SEARCH { WEB_SEARCH } else { raw_name };
-            let raw_kind =
-                a.get("kind").or_else(|| a.get("tur")).and_then(|k| k.as_str()).unwrap_or(raw_name);
-            let kind = if raw_kind == LEGACY_WEB_SEARCH { WEB_SEARCH } else { raw_kind };
-            let open = match a.get("state").or_else(|| a.get("durum")).and_then(|s| s.as_str()) {
+            let name = if raw_name == LEGACY_WEB_SEARCH {
+                WEB_SEARCH
+            } else {
+                raw_name
+            };
+            let raw_kind = a
+                .get("kind")
+                .or_else(|| a.get("tur"))
+                .and_then(|k| k.as_str())
+                .unwrap_or(raw_name);
+            let kind = if raw_kind == LEGACY_WEB_SEARCH {
+                WEB_SEARCH
+            } else {
+                raw_kind
+            };
+            let open = match a
+                .get("state")
+                .or_else(|| a.get("durum"))
+                .and_then(|s| s.as_str())
+            {
                 None | Some("open") | Some("acik") => true,
                 Some("closed") | Some("kapali") => false,
                 Some(s) => return Err(format!("'{name}': unknown state '{s}'")),
             };
             let mut settings = BTreeMap::new();
-            if let Some(object) =
-                a.get("settings").or_else(|| a.get("ayarlar")).and_then(|s| s.as_object())
+            if let Some(object) = a
+                .get("settings")
+                .or_else(|| a.get("ayarlar"))
+                .and_then(|s| s.as_object())
             {
                 for (key, value) in object {
                     let v = value
                         .as_str()
                         .ok_or_else(|| format!("'{name}': setting `{key}` must be text"))?;
-                    let key =
-                        if key == LEGACY_ADDRESS_KEY { ADDRESS_KEY.to_string() } else { key.clone() };
+                    let key = if key == LEGACY_ADDRESS_KEY {
+                        ADDRESS_KEY.to_string()
+                    } else {
+                        key.clone()
+                    };
                     settings.insert(key, v.to_string());
                 }
             }
@@ -276,8 +304,9 @@ pub fn read_from_path(path: &Path) -> Result<Record, String> {
 
 /// Writes the registry to disk; creates the config directory if it is missing.
 pub fn write(record: &Record) -> Result<PathBuf, String> {
-    let path = registry_path()
-        .ok_or_else(|| "could not resolve the config directory (TACET_HOME can be set)".to_string())?;
+    let path = registry_path().ok_or_else(|| {
+        "could not resolve the config directory (TACET_HOME can be set)".to_string()
+    })?;
     write_to_path(&path, record)?;
     Ok(path)
 }
@@ -311,7 +340,11 @@ pub fn web_address() -> Option<String> {
             return Some(v);
         }
     }
-    read().ok()?.find(WEB_SEARCH)?.setting(ADDRESS_KEY).map(str::to_string)
+    read()
+        .ok()?
+        .find(WEB_SEARCH)?
+        .setting(ADDRESS_KEY)
+        .map(str::to_string)
 }
 
 #[cfg(test)]
@@ -373,7 +406,10 @@ mod tests {
         )
         .unwrap();
         assert!(r.find(WEB_SEARCH).is_some(), "the record must be INSTALLED");
-        assert!(!r.is_open(WEB_SEARCH), "a closed record must not count as open");
+        assert!(
+            !r.is_open(WEB_SEARCH),
+            "a closed record must not count as open"
+        );
     }
 
     /// DISK FORMAT record: this is what the registry looked like before the
@@ -386,13 +422,17 @@ mod tests {
                 "ayarlar":{"address":"https://example.test/searxng"}}]}"#,
         )
         .unwrap();
-        assert!(r.is_open(WEB_SEARCH), "the old record must map onto the new name");
+        assert!(
+            r.is_open(WEB_SEARCH),
+            "the old record must map onto the new name"
+        );
         assert_eq!(
             r.find(WEB_SEARCH).unwrap().setting(ADDRESS_KEY),
             Some("https://example.test/searxng")
         );
         // The closed state is carried across too.
-        let closed = Record::parse(r#"{"eklentiler":[{"name":"web-search","state":"closed"}]}"#).unwrap();
+        let closed =
+            Record::parse(r#"{"eklentiler":[{"name":"web-search","state":"closed"}]}"#).unwrap();
         assert!(!closed.is_open(WEB_SEARCH));
     }
 
@@ -408,7 +448,10 @@ mod tests {
         r.add(Addon::new(WEB_SEARCH, WEB_SEARCH).with_setting(ADDRESS_KEY, "https://one.test"));
         r.add(Addon::new(WEB_SEARCH, WEB_SEARCH).with_setting(ADDRESS_KEY, "https://two.test"));
         assert_eq!(r.all().len(), 1);
-        assert_eq!(r.find(WEB_SEARCH).unwrap().setting(ADDRESS_KEY), Some("https://two.test"));
+        assert_eq!(
+            r.find(WEB_SEARCH).unwrap().setting(ADDRESS_KEY),
+            Some("https://two.test")
+        );
     }
 
     #[test]
@@ -428,15 +471,25 @@ mod tests {
     #[test]
     fn the_json_output_is_deterministic() {
         let mut r = Record::empty();
-        r.add(Addon::new("b-addon", "web-search").with_setting("z", "1").with_setting("a", "2"));
+        r.add(
+            Addon::new("b-addon", "web-search")
+                .with_setting("z", "1")
+                .with_setting("a", "2"),
+        );
         r.add(Addon::new("a-addon", "web-search"));
         let one = r.json();
         let two = r.json();
         assert_eq!(one, two);
         // Sorted by name: "a-addon" must come first.
-        assert!(one.find("a-addon").unwrap() < one.find("b-addon").unwrap(), "{one}");
+        assert!(
+            one.find("a-addon").unwrap() < one.find("b-addon").unwrap(),
+            "{one}"
+        );
         // The setting keys are sorted too.
-        assert!(one.find("\"a\"").unwrap() < one.find("\"z\"").unwrap(), "{one}");
+        assert!(
+            one.find("\"a\"").unwrap() < one.find("\"z\"").unwrap(),
+            "{one}"
+        );
     }
 
     /// The written file must be in the shape the parser can read (the format
@@ -454,6 +507,9 @@ mod tests {
         )
         .unwrap();
         assert!(r.is_open(WEB_SEARCH));
-        assert_eq!(r.find(WEB_SEARCH).unwrap().setting(ADDRESS_KEY), Some("http://localhost:8888"));
+        assert_eq!(
+            r.find(WEB_SEARCH).unwrap().setting(ADDRESS_KEY),
+            Some("http://localhost:8888")
+        );
     }
 }

@@ -40,19 +40,58 @@ pub struct Command {
 }
 
 pub const COMMANDS: &[Command] = &[
-    Command { name: "/help", description: "the list of commands" },
-    Command { name: "/tools", description: "the tools in the catalog and their descriptions" },
-    Command { name: "/grammar", description: "the grammar generated from a tool's schema" },
-    Command { name: "/eval", description: "run the logic eval set (fake engine, seconds)" },
-    Command { name: "/memory", description: "the saved memory notes" },
-    Command { name: "/history", description: "this session's conversation history" },
-    Command { name: "/model", description: "the active engine, template and constraint" },
-    Command { name: "/clear", description: "delete the conversation history (memory stays)" },
-    Command { name: "/plugins", description: "the installed addons and their state" },
-    Command { name: "/addon", description: "install, remove or toggle an addon (e.g. /addon install web-search)" },
-    Command { name: "/config", description: "view or set personal defaults (model, engine, theme)" },
-    Command { name: "/themes", description: "list colour themes or switch: /themes night" },
-    Command { name: "/quit", description: "exit" },
+    Command {
+        name: "/help",
+        description: "the list of commands",
+    },
+    Command {
+        name: "/tools",
+        description: "the tools in the catalog and their descriptions",
+    },
+    Command {
+        name: "/grammar",
+        description: "the grammar generated from a tool's schema",
+    },
+    Command {
+        name: "/eval",
+        description: "run the logic eval set (fake engine, seconds)",
+    },
+    Command {
+        name: "/memory",
+        description: "the saved memory notes",
+    },
+    Command {
+        name: "/history",
+        description: "this session's conversation history",
+    },
+    Command {
+        name: "/model",
+        description: "the active engine, template and constraint",
+    },
+    Command {
+        name: "/clear",
+        description: "delete the conversation history (memory stays)",
+    },
+    Command {
+        name: "/plugins",
+        description: "the installed addons and their state",
+    },
+    Command {
+        name: "/addon",
+        description: "install, remove or toggle an addon (e.g. /addon install web-search)",
+    },
+    Command {
+        name: "/config",
+        description: "view or set personal defaults (model, engine, theme)",
+    },
+    Command {
+        name: "/themes",
+        description: "list colour themes or switch: /themes night",
+    },
+    Command {
+        name: "/quit",
+        description: "exit",
+    },
 ];
 
 /// The most rows shown in the list.
@@ -84,7 +123,10 @@ fn simplify(s: &str) -> String {
 /// The commands matching the typed prefix. A bare `/` lists everything.
 pub fn matches(buffer: &str) -> Vec<&'static Command> {
     let query = simplify(buffer);
-    COMMANDS.iter().filter(|c| simplify(c.name).starts_with(&query)).collect()
+    COMMANDS
+        .iter()
+        .filter(|c| simplify(c.name).starts_with(&query))
+        .collect()
 }
 
 /// Should the buffer open the slash command list: it MUST START with `/` and
@@ -232,8 +274,8 @@ impl<'a> Editor<'a> {
                     return None;
                 }
                 // While the list is open ENTER SELECTS (it does not send): the
-                // behaviour in Claude Code and the right one — the user does
-                // not end up having sent the command before seeing it.
+                // behaviour a completion list should have — the user does not
+                // end up having sent the command before seeing it.
                 if self.list_open()
                     && let Some(c) = matches(&self.buffer).get(self.selection)
                 {
@@ -403,15 +445,16 @@ impl<'a> Editor<'a> {
             // A long line IS SHIFTED RIGHT (not wrapped): wrapping makes the
             // number of visual lines drawn depend on the content and breaks the
             // overwrite arithmetic (how many lines to move up).
-            let (visible, shift) =
-                window(line, text_width, if i == caret_line_no { caret_column } else { 0 });
+            let (visible, shift) = window(
+                line,
+                text_width,
+                if i == caret_line_no { caret_column } else { 0 },
+            );
             let fill = " ".repeat(text_width.saturating_sub(visible.chars().count()));
             // The prompt marker is BRASS — the same role the landing page's
             // demo gives its `$` and `tacet>` symbols: "you speak here".
             let (d, r, b) = (dim_code(), reset_code(), brass_code());
-            lines.push(format!(
-                "{d}│{r} {b}{marker}{r}{visible}{fill} {d}│{r}"
-            ));
+            lines.push(format!("{d}│{r} {b}{marker}{r}{visible}{fill} {d}│{r}"));
             if i == caret_line_no {
                 caret_at = (lines.len() - 1, 2 + 2 + (caret_column - shift));
             }
@@ -499,7 +542,9 @@ fn dim(text: &str) -> String {
 
 /// The terminal width — a sensible default if it cannot be measured.
 fn width() -> usize {
-    let w = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(80);
+    let w = crossterm::terminal::size()
+        .map(|(w, _)| w as usize)
+        .unwrap_or(80);
     w.clamp(MIN_WIDTH, MAX_WIDTH)
 }
 
@@ -520,7 +565,10 @@ fn truncate(text: &str, wide: usize) -> String {
     if text.chars().count() <= wide {
         return text.to_string();
     }
-    text.chars().take(wide.saturating_sub(1)).collect::<String>() + "…"
+    text.chars()
+        .take(wide.saturating_sub(1))
+        .collect::<String>()
+        + "…"
 }
 
 /// The previous CHARACTER boundary — so we never land in the middle of a

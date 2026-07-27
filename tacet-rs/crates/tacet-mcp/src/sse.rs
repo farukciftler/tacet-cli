@@ -92,7 +92,10 @@ mod tests {
     fn heartbeats_and_irrelevant_fields_are_skipped() {
         let stream = ": ping\nevent: message\nid: 7\nretry: 100\n\
                     data: {\"jsonrpc\":\"2.0\",\"id\":3,\"result\":1}\n\n";
-        assert_eq!(read(stream, 3).expect("event")["result"], serde_json::json!(1));
+        assert_eq!(
+            read(stream, 3).expect("event")["result"],
+            serde_json::json!(1)
+        );
     }
 
     #[test]
@@ -103,7 +106,10 @@ mod tests {
         let stream = "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\n\n\
                     data: {\"jsonrpc\":\"2.0\",\"id\":99,\"result\":\"somebody elses\"}\n\n\
                     data: {\"jsonrpc\":\"2.0\",\"id\":5,\"result\":\"mine\"}\n\n";
-        assert_eq!(read(stream, 5).expect("event")["result"], serde_json::json!("mine"));
+        assert_eq!(
+            read(stream, 5).expect("event")["result"],
+            serde_json::json!("mine")
+        );
     }
 
     #[test]
@@ -111,26 +117,38 @@ mod tests {
         let stream = "data: {\"jsonrpc\":\"2.0\",\n\
                     data: \"id\":2,\n\
                     data: \"result\":{\"a\":1}}\n\n";
-        assert_eq!(read(stream, 2).expect("event")["result"]["a"], serde_json::json!(1));
+        assert_eq!(
+            read(stream, 2).expect("event")["result"]["a"],
+            serde_json::json!(1)
+        );
     }
 
     #[test]
     fn a_last_event_not_closed_by_a_blank_line_is_still_read() {
         let stream = "data: {\"jsonrpc\":\"2.0\",\"id\":4,\"result\":\"last\"}";
-        assert_eq!(read(stream, 4).expect("event")["result"], serde_json::json!("last"));
+        assert_eq!(
+            read(stream, 4).expect("event")["result"],
+            serde_json::json!("last")
+        );
     }
 
     #[test]
     fn a_server_sending_crlf_works() {
         let stream = "data: {\"jsonrpc\":\"2.0\",\"id\":8,\"result\":\"crlf\"}\r\n\r\n";
-        assert_eq!(read(stream, 8).expect("event")["result"], serde_json::json!("crlf"));
+        assert_eq!(
+            read(stream, 8).expect("event")["result"],
+            serde_json::json!("crlf")
+        );
     }
 
     #[test]
     fn our_id_is_picked_out_of_a_batch_array() {
         let stream = "data: [{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"a\"},\
                     {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":\"b\"}]\n\n";
-        assert_eq!(read(stream, 2).expect("event")["result"], serde_json::json!("b"));
+        assert_eq!(
+            read(stream, 2).expect("event")["result"],
+            serde_json::json!("b")
+        );
     }
 
     #[test]
@@ -146,7 +164,11 @@ mod tests {
 
     #[test]
     fn a_broken_json_stream_does_not_panic() {
-        let stream = "data: {this is not json\n\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":9}\n\n";
-        assert_eq!(read(stream, 1).expect("event")["result"], serde_json::json!(9));
+        let stream =
+            "data: {this is not json\n\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":9}\n\n";
+        assert_eq!(
+            read(stream, 1).expect("event")["result"],
+            serde_json::json!(9)
+        );
     }
 }

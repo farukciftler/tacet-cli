@@ -59,8 +59,7 @@ pub fn to_text(html: &str) -> String {
 /// FOR SCORING and its output never goes to the model; the thing being
 /// corrupted was the text that GOES to the model.
 fn simplify_punctuation(text: &str) -> String {
-    text
-        .chars()
+    text.chars()
         .map(|c| match c {
             '\u{2018}' | '\u{2019}' | '\u{201B}' | '\u{2032}' | '\u{00B4}' => '\'',
             '\u{201C}' | '\u{201D}' | '\u{201F}' | '\u{2033}' => '"',
@@ -133,11 +132,16 @@ fn after_block<'a>(body: &'a str, name: &str) -> &'a str {
 fn tag_starts(body: &str, name: &str) -> bool {
     let b = body.strip_prefix('<').unwrap_or(body);
     let b = b.strip_prefix('/').unwrap_or(b);
-    let Some(head) = b.get(..name.len()) else { return false };
+    let Some(head) = b.get(..name.len()) else {
+        return false;
+    };
     if !head.eq_ignore_ascii_case(name) {
         return false;
     }
-    b[name.len()..].chars().next().is_none_or(|c| !c.is_ascii_alphanumeric() && c != '-')
+    b[name.len()..]
+        .chars()
+        .next()
+        .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '-')
 }
 
 /// Deletes tags; leaves a space in place of block tags.
@@ -178,7 +182,11 @@ fn resolve_entities(text: &str) -> String {
         // through the middle of a multi-byte character is a panic, and this
         // input comes to us from the outside world — not one line open to a
         // panic may be left there.
-        let end = body.char_indices().take(12).find(|(_, c)| *c == ';').map(|(j, _)| j);
+        let end = body
+            .char_indices()
+            .take(12)
+            .find(|(_, c)| *c == ';')
+            .map(|(j, _)| j);
         match end.map(|j| (&body[1..j], j)) {
             Some((name, j)) => {
                 output.push_str(&resolution(name).unwrap_or_else(|| body[..=j].to_string()));
@@ -313,7 +321,8 @@ mod tests {
 
     #[test]
     fn script_and_style_bodies_are_dropped_whole() {
-        let h = "<p>before</p><script>var a = 1 < 2;</script><style>p{color:red}</style><p>after</p>";
+        let h =
+            "<p>before</p><script>var a = 1 < 2;</script><style>p{color:red}</style><p>after</p>";
         let t = to_text(h);
         assert_eq!(t, "before after");
         assert!(!t.contains("var a"), "JS must not leak into the text");
@@ -345,15 +354,25 @@ mod tests {
         // `simplify_punctuation`): if either stage failed, this line would stay
         // as `&#8217;`.
         assert_eq!(to_text("<p>&#8217;&#x2019;</p>"), "''");
-        assert_eq!(to_text("<p>&#8364;5</p>"), "€5", "a currency sign must NOT go down to ASCII");
+        assert_eq!(
+            to_text("<p>&#8364;5</p>"),
+            "€5",
+            "a currency sign must NOT go down to ASCII"
+        );
     }
 
     /// REGRESSION TEST — clock corruption. The source page says `10.30’tadır`
     /// and the model was reading it as "130.0".
     #[test]
     fn typographic_punctuation_goes_down_to_ascii() {
-        assert_eq!(to_text("<p>08.55’te, 10.30’tadır</p>"), "08.55'te, 10.30'tadır");
-        assert_eq!(to_text("<p>&ldquo;a&rdquo; &mdash; 07:20 &ndash; 18:05</p>"), "\"a\" - 07:20 - 18:05");
+        assert_eq!(
+            to_text("<p>08.55’te, 10.30’tadır</p>"),
+            "08.55'te, 10.30'tadır"
+        );
+        assert_eq!(
+            to_text("<p>&ldquo;a&rdquo; &mdash; 07:20 &ndash; 18:05</p>"),
+            "\"a\" - 07:20 - 18:05"
+        );
         // Letters and digits are UNTOUCHED: the simplification is punctuation only.
         assert_eq!(to_text("<p>Üsküdar 07:45</p>"), "Üsküdar 07:45");
     }
@@ -368,7 +387,10 @@ mod tests {
             "Kadıköy Üsküdar Ortaköy Günleri"
         );
         // The accent rule covers the rest of Latin-1 too.
-        assert_eq!(to_text("<p>&eacute;&Agrave;&ntilde;&ccedil;&oslash;&aring;</p>"), "éÀñçøå");
+        assert_eq!(
+            to_text("<p>&eacute;&Agrave;&ntilde;&ccedil;&oslash;&aring;</p>"),
+            "éÀñçøå"
+        );
         // On weather pages the degree sign arrives as a named entity; unresolved,
         // `has_unit` does not count it as a value with a unit and the summary
         // loses points.
@@ -377,14 +399,20 @@ mod tests {
 
     #[test]
     fn an_ampersand_that_is_not_an_entity_is_preserved() {
-        assert_eq!(to_text("<p>a & b, c &unknown; d</p>"), "a & b, c &unknown; d");
+        assert_eq!(
+            to_text("<p>a & b, c &unknown; d</p>"),
+            "a & b, c &unknown; d"
+        );
     }
 
     #[test]
     fn block_tags_do_not_glue_words_together() {
         // Without the inserted space this would come out as "onetwothree" and
         // the model would see a single word.
-        assert_eq!(to_text("<li>one</li><li>two</li><div>three</div>"), "one two three");
+        assert_eq!(
+            to_text("<li>one</li><li>two</li><div>three</div>"),
+            "one two three"
+        );
     }
 
     /// REGRESSION TEST — table cells. In the previous version `td` did not
@@ -397,7 +425,10 @@ mod tests {
         let h = "<table><tr><td>08:05</td><td>08:15</td></tr><tr><td>08:55</td><td>09:05</td></tr></table>";
         assert_eq!(to_text(h), "08:05 08:15 08:55 09:05");
         // A header cell separates too: "OrtaköyÜsküdar" must not be one word.
-        assert_eq!(to_text("<tr><th>Ortaköy</th><th>Üsküdar</th></tr>"), "Ortaköy Üsküdar");
+        assert_eq!(
+            to_text("<tr><th>Ortaköy</th><th>Üsküdar</th></tr>"),
+            "Ortaköy Üsküdar"
+        );
     }
 
     #[test]

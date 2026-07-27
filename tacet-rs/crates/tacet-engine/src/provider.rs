@@ -7,9 +7,9 @@
 //! would be impossible. `async-trait` was still NOT added; `boxed_generation`
 //! does the same conversion in one line with no dependency.
 
+use crate::constraint::Constrainer;
 use crate::error::EngineResult;
 use crate::prompt::{Prompt, Template};
-use crate::constraint::Constrainer;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -73,7 +73,12 @@ impl Generation {
         // step. Left to each engine to remember, the thinking would silently leak
         // to the screen the moment a new engine was added.
         let (thinking, visible) = crate::thinking::extract(&text.into());
-        Self { text: visible, thinking, token_count, stop }
+        Self {
+            text: visible,
+            thinking,
+            token_count,
+            stop,
+        }
     }
 }
 

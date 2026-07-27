@@ -39,7 +39,9 @@ pub(crate) const EOCD_SIG: u32 = 0x0605_4b50;
 /// OOXML production a 4 GiB document is a symptom of a bug anyway.
 pub fn pack(entries: &[ZipEntry]) -> ZipResult<Vec<u8>> {
     if entries.len() > u16::MAX as usize {
-        return Err(ZipError::LimitExceeded("exceeds the zip32 entry count limit"));
+        return Err(ZipError::LimitExceeded(
+            "exceeds the zip32 entry count limit",
+        ));
     }
 
     let mut body: Vec<u8> = Vec::new();

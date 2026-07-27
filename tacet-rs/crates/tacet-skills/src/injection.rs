@@ -197,7 +197,10 @@ mod tests {
     fn a_long_tail_does_not_swallow_the_core() {
         // The regression itself: had the core been at the END it would have
         // been cut off.
-        let text = format!("UNBREAKABLE RULE\n<!--/core-->\n{}", "filler line\n".repeat(200));
+        let text = format!(
+            "UNBREAKABLE RULE\n<!--/core-->\n{}",
+            "filler line\n".repeat(200)
+        );
         let body = injection_body(&text, INJECTION_LIMIT);
         assert!(body.starts_with("UNBREAKABLE RULE"));
         assert!(body.chars().count() <= INJECTION_LIMIT);
@@ -223,7 +226,9 @@ mod tests {
     fn a_package_skill_is_capped_at_700_and_a_user_skill_at_500() {
         let package = skill(&"p\n".repeat(900));
         let m = injection_text(&package);
-        let body_len = injection_body(&package.text, INJECTION_LIMIT).chars().count();
+        let body_len = injection_body(&package.text, INJECTION_LIMIT)
+            .chars()
+            .count();
         assert!(body_len <= INJECTION_LIMIT);
         assert!(m.contains("<guidance name=\"test\">"));
 
@@ -252,7 +257,10 @@ mod tests {
             assert!(!s.is_needed("calc"), "turn {}", s.turn());
         }
         s.begin_turn();
-        assert!(s.is_needed("calc"), "must go in again once the distance is up");
+        assert!(
+            s.is_needed("calc"),
+            "must go in again once the distance is up"
+        );
     }
 
     #[test]

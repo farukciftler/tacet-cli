@@ -80,7 +80,10 @@ impl Env {
         // mistakes that for a selection error.
         std::fs::write(dir.join(BUDGET_FILE), BUDGET_CONTENT)?;
 
-        Ok(Self { dir, store: Arc::new(SharedStore::new()) })
+        Ok(Self {
+            dir,
+            store: Arc::new(SharedStore::new()),
+        })
     }
 
     pub fn dir(&self) -> &Path {
@@ -94,7 +97,9 @@ impl Env {
         let mut c = ToolCatalog::new();
         c.add(Arc::new(CalcTool))
             .add(Arc::new(TimeTool::new().fixed_epoch(FIXED_EPOCH)))
-            .add(Arc::new(ReadDocumentTool::with_store(Arc::clone(&self.store))))
+            .add(Arc::new(ReadDocumentTool::with_store(Arc::clone(
+                &self.store,
+            ))))
             .add(Arc::new(CreateDocumentTool::new()))
             .add(Arc::new(FakeExternalTool));
         c

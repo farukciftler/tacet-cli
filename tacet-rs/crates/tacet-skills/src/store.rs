@@ -19,7 +19,10 @@ use std::path::Path;
 const PACKAGE_FILES: &[(&str, &str)] = &[
     ("calc", include_str!("../skills/calc.md")),
     ("read-document", include_str!("../skills/read-document.md")),
-    ("create-document", include_str!("../skills/create-document.md")),
+    (
+        "create-document",
+        include_str!("../skills/create-document.md"),
+    ),
     ("time", include_str!("../skills/time.md")),
 ];
 
@@ -181,8 +184,14 @@ mod tests {
     fn the_tool_gate_blocks_a_skill_from_being_selected() {
         let s = SkillStore::default_set();
         let missing = vec!["time".to_string()];
-        assert!(s.matching("make this an excel file", Some(&missing)).is_none());
-        assert!(s.matching("make this an excel file", Some(&tools())).is_some());
+        assert!(
+            s.matching("make this an excel file", Some(&missing))
+                .is_none()
+        );
+        assert!(
+            s.matching("make this an excel file", Some(&tools()))
+                .is_some()
+        );
     }
 
     #[test]
@@ -197,7 +206,8 @@ mod tests {
         // The trigger "pdf" sits inside "pdfs"; the whole-term condition must
         // hold. (The measured original was Turkish: "dok" inside "dokuz".)
         assert!(
-            s.matching("pdfs everywhere", Some(&tools())).map(|b| b.name.clone())
+            s.matching("pdfs everywhere", Some(&tools()))
+                .map(|b| b.name.clone())
                 != Some("create-document".into())
         );
     }
@@ -223,7 +233,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("mine.md"),
-            format!("---\nname: mine\ntriggers: sharp trigger\n---\n{}", "g".repeat(900)),
+            format!(
+                "---\nname: mine\ntriggers: sharp trigger\n---\n{}",
+                "g".repeat(900)
+            ),
         )
         .unwrap();
         // Broken file: must be skipped silently, loading must not crash.

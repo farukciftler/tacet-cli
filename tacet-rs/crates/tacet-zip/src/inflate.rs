@@ -102,10 +102,7 @@ impl Huffman {
                 offsets[l as usize] += 1;
             }
         }
-        Ok(Huffman {
-            counts,
-            symbols,
-        })
+        Ok(Huffman { counts, symbols })
     }
 
     /// Decodes the canonical code by advancing bit by bit.
@@ -184,11 +181,7 @@ pub fn inflate(data: &[u8], max_output: usize) -> ZipResult<Vec<u8>> {
     Ok(output)
 }
 
-fn stored_block(
-    br: &mut BitReader<'_>,
-    output: &mut Vec<u8>,
-    max_output: usize,
-) -> ZipResult<()> {
+fn stored_block(br: &mut BitReader<'_>, output: &mut Vec<u8>, max_output: usize) -> ZipResult<()> {
     br.align();
     let start = br.byte_position();
     let length = crate::byte::read16(br.data, start)? as usize;
@@ -227,7 +220,9 @@ fn dynamic_tables(br: &mut BitReader<'_>) -> ZipResult<(Huffman, Huffman)> {
     let hdist = br.bits(5)? as usize + 1;
     let hclen = br.bits(4)? as usize + 4;
     if hlit > 286 || hdist > 30 {
-        return Err(ZipError::Malformed("a dynamic table counter exceeds the alphabet"));
+        return Err(ZipError::Malformed(
+            "a dynamic table counter exceeds the alphabet",
+        ));
     }
 
     let mut code_lengths = [0u8; 19];
@@ -252,7 +247,9 @@ fn dynamic_tables(br: &mut BitReader<'_>) -> ZipResult<(Huffman, Huffman)> {
             16 => {
                 // Repeat the previous length 3..6 times.
                 if i == 0 {
-                    return Err(ZipError::Malformed("repeat command with no preceding length"));
+                    return Err(ZipError::Malformed(
+                        "repeat command with no preceding length",
+                    ));
                 }
                 let previous = lengths[i - 1];
                 let repeat = 3 + br.bits(2)? as usize;
@@ -279,7 +276,9 @@ fn dynamic_tables(br: &mut BitReader<'_>) -> ZipResult<(Huffman, Huffman)> {
     }
 
     if lengths[256] == 0 {
-        return Err(ZipError::Malformed("the end-of-block symbol is not encoded"));
+        return Err(ZipError::Malformed(
+            "the end-of-block symbol is not encoded",
+        ));
     }
     let lit = Huffman::new(&lengths[..hlit])?;
     // Streams with a single distance code (or that use no distance at all) are

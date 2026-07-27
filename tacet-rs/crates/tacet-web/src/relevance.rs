@@ -130,7 +130,10 @@ pub fn data_density(text: &str) -> usize {
 /// the website". A clock or a value with a unit, on the other hand, IS the
 /// answer.
 pub fn strong_data_density(text: &str) -> usize {
-    text.split_whitespace().map(token_score).filter(|s| *s >= 2).sum()
+    text.split_whitespace()
+        .map(token_score)
+        .filter(|s| *s >= 2)
+        .sum()
 }
 
 /// The number of CLOCK-shaped tokens in the text.
@@ -152,7 +155,9 @@ pub fn strong_data_density(text: &str) -> usize {
 /// This counter answers the question "is this window a timetable dump" cheaply,
 /// and `web_search` uses it to add the DO NOT pair warning for the model.
 pub fn clock_count(text: &str) -> usize {
-    text.split_whitespace().filter(|t| token_score(t) == 3).count()
+    text.split_whitespace()
+        .filter(|t| token_score(t) == 3)
+        .count()
 }
 
 /// A single token's data score: clock 3, value with a unit 2, bare number 1.
@@ -179,11 +184,15 @@ fn token_score(token: &str) -> usize {
 /// timetable on a query asking about times. With a colon separator there is no
 /// such confusion, so a single-digit hour (`8:30`) is free there.
 fn is_clock(token: &str) -> bool {
-    let Some((left, right)) = token.split_once([':', '.']) else { return false };
+    let Some((left, right)) = token.split_once([':', '.']) else {
+        return false;
+    };
     let dotted = !token.contains(':');
     // Ignore seconds or a suffix: `08:05:30` is a time too, `08.05.2026` is not.
     let right = right.split([':', '.']).next().unwrap_or(right);
-    let (Ok(h), Ok(m)) = (left.parse::<u32>(), right.parse::<u32>()) else { return false };
+    let (Ok(h), Ok(m)) = (left.parse::<u32>(), right.parse::<u32>()) else {
+        return false;
+    };
     // The first two parts of the date `08.05.2026` look like a time; what tells
     // them apart is the four-digit third part.
     if token.split(['.', ':']).nth(2).is_some_and(|p| p.len() == 4) {
@@ -312,7 +321,10 @@ mod tests {
 
     #[test]
     fn simplification_folds_the_turkish_accents() {
-        assert_eq!(simplify("Üsküdar ÇAĞRI ışık Öğün"), "uskudar cagri isik ogun");
+        assert_eq!(
+            simplify("Üsküdar ÇAĞRI ışık Öğün"),
+            "uskudar cagri isik ogun"
+        );
         // The trap of the letter 'I': `to_lowercase` makes it 'i', and folding
         // makes 'ı' into 'i' — the two spellings meet in the same place.
         assert_eq!(simplify("ISIK"), simplify("ışık"));
@@ -330,8 +342,14 @@ mod tests {
     #[test]
     fn the_clock_shape_is_recognized_and_a_date_is_not() {
         assert!(is_clock("08:05"));
-        assert!(is_clock("8:30"), "with a colon separator a single digit is free");
-        assert!(is_clock("08.55"), "on Turkish pages the time is also written with a dot");
+        assert!(
+            is_clock("8:30"),
+            "with a colon separator a single digit is free"
+        );
+        assert!(
+            is_clock("08.55"),
+            "on Turkish pages the time is also written with a dot"
+        );
         assert!(is_clock("23:59"));
         assert!(is_clock("07:45:10"));
         assert!(!is_clock("24:00"), "invalid time");
@@ -349,7 +367,11 @@ mod tests {
     fn data_density_separates_facts_from_talk() {
         let talk = "Güncel sefer saatleri yukarıdaki tablolarda yer almaktadır.";
         let fact = "Ortaköy Kalkış 08:05 08:55 10:15 11:50 Üsküdar 08:15 09:05";
-        assert_eq!(data_density(talk), 0, "a sentence carrying zero facts must score zero");
+        assert_eq!(
+            data_density(talk),
+            0,
+            "a sentence carrying zero facts must score zero"
+        );
         assert!(data_density(fact) >= 18, "{}", data_density(fact));
     }
 
@@ -357,8 +379,15 @@ mod tests {
     #[test]
     fn strong_density_does_not_count_dates_but_does_count_clocks() {
         let dated = "7 Eyl 2025 ... 24 May 2021 ... View all 10 comments · 2 sefer daha";
-        assert_eq!(strong_data_density(dated), 0, "a date or a count is not an answer");
-        assert!(data_density(dated) > 0, "there is still a weak signal for ranking");
+        assert_eq!(
+            strong_data_density(dated),
+            0,
+            "a date or a count is not an answer"
+        );
+        assert!(
+            data_density(dated) > 0,
+            "there is still a weak signal for ranking"
+        );
 
         assert!(strong_data_density("Ortaköy 08:05 Üsküdar 08:15") >= 6);
         assert!(strong_data_density("sıcaklık 28°C, en düşük 21°C, nem %76") >= 6);
@@ -412,9 +441,19 @@ mod tests {
                 .repeat(30)
         );
         let section = relevant_section(&page, &keywords("ortaköy üsküdar vapur saatleri"), 300);
-        assert!(section.contains("08:05"), "the timetable should have been picked: {section}");
-        assert!(!section.contains("Kariyer"), "the navigation text should not have been picked: {section}");
-        assert!(section.chars().count() <= 300, "{}", section.chars().count());
+        assert!(
+            section.contains("08:05"),
+            "the timetable should have been picked: {section}"
+        );
+        assert!(
+            !section.contains("Kariyer"),
+            "the navigation text should not have been picked: {section}"
+        );
+        assert!(
+            section.chars().count() <= 300,
+            "{}",
+            section.chars().count()
+        );
     }
 
     #[test]
@@ -424,13 +463,19 @@ mod tests {
         assert!(s.chars().count() <= 200);
         // Detached chunks are not joined: two distant times cannot be in the
         // same quote.
-        assert!(!(s.contains("08:05") && s.contains("09:00")), "detached chunks were joined: {s}");
+        assert!(
+            !(s.contains("08:05") && s.contains("09:00")),
+            "detached chunks were joined: {s}"
+        );
     }
 
     #[test]
     fn irrelevant_or_empty_text_returns_empty() {
         assert_eq!(relevant_section("", &keywords("vapur"), 200), "");
-        assert_eq!(relevant_section("lorem ipsum dolor", &keywords("vapur"), 200), "");
+        assert_eq!(
+            relevant_section("lorem ipsum dolor", &keywords("vapur"), 200),
+            ""
+        );
         // A cap of zero is empty too: if the caller has no budget we produce no
         // quote.
         assert_eq!(relevant_section("08:05 vapur", &keywords("vapur"), 0), "");
@@ -447,7 +492,10 @@ mod tests {
     fn chunking_does_not_split_a_word_in_half() {
         let c = chunk("one two three four five six seven eight nine ten", 12);
         assert!(c.iter().all(|x| x.chars().count() <= 12), "{c:?}");
-        assert_eq!(c.join(" "), "one two three four five six seven eight nine ten");
+        assert_eq!(
+            c.join(" "),
+            "one two three four five six seven eight nine ten"
+        );
     }
 }
 
@@ -465,16 +513,30 @@ mod network_tests {
     #[ignore = "requires the real network"]
     fn smoke_from_page_extracts_the_timetable() {
         let address = "https://sehirhatlari.istanbul/tr/seferler/ic-hatlar/bogaz-hatlari/ortakoy-uskudar-kadikoy-173";
-        let text = crate::WebSearchClient::new().page_text(address).expect("the page must arrive");
+        let text = crate::WebSearchClient::new()
+            .page_text(address)
+            .expect("the page must arrive");
         let words = keywords("ortaköy üsküdar vapur saatleri");
 
         println!("--- PAGE LEN : {} characters", text.chars().count());
-        println!("--- FRONT TRUNCATION (old behaviour):\n{}", crate::truncate_at_word(&text, 300));
+        println!(
+            "--- FRONT TRUNCATION (old behaviour):\n{}",
+            crate::truncate_at_word(&text, 300)
+        );
         let section = relevant_section(&text, &words, 700);
-        println!("--- RELEVANT SECTION ({} characters):\n{section}", section.chars().count());
+        println!(
+            "--- RELEVANT SECTION ({} characters):\n{section}",
+            section.chars().count()
+        );
 
         assert!(section.chars().count() <= 700);
-        let clocks = section.split_whitespace().filter(|t| token_score(t) == 3).count();
-        assert!(clocks >= 5, "at least five times should have come out of the timetable, got {clocks}");
+        let clocks = section
+            .split_whitespace()
+            .filter(|t| token_score(t) == 3)
+            .count();
+        assert!(
+            clocks >= 5,
+            "at least five times should have come out of the timetable, got {clocks}"
+        );
     }
 }

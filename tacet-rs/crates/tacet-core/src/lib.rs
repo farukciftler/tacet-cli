@@ -34,9 +34,7 @@ pub use data_store::{DataStore, InMemoryDataStore, Record, SourceRef};
 pub use env::{config_dir, config_path, env_var};
 pub use error::{ERROR_MODEL_TEXT, ToolError, ToolResult};
 pub use outcome::{ToolOutcome, source_ref_suffix};
-pub use reporter::{
-    Reporter, SilentReporter, ToolTrace, TraceCollector, TraceId, TraceUpdate,
-};
+pub use reporter::{Reporter, SilentReporter, ToolTrace, TraceCollector, TraceId, TraceUpdate};
 pub use schema::{ArgSchema, Field, SchemaKind};
 pub use state::ToolState;
 pub use tool::{Tool, ToolFuture, boxed};
@@ -60,7 +58,11 @@ mod tests {
         }
         fn schema(&self) -> ArgSchema {
             ArgSchema::object(vec![
-                Field::new("query", ArgSchema::text().description("the text to search for")).required(),
+                Field::new(
+                    "query",
+                    ArgSchema::text().description("the text to search for"),
+                )
+                .required(),
                 Field::new("scope", ArgSchema::choice(["all", "near"])),
                 Field::new("count", ArgSchema::integer().range(Some(1.0), Some(50.0))),
             ])
@@ -68,11 +70,7 @@ mod tests {
         fn taints_session(&self) -> bool {
             true
         }
-        fn run<'a>(
-            &'a self,
-            args: serde_json::Value,
-            ctx: &'a mut ToolContext,
-        ) -> ToolFuture<'a> {
+        fn run<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolContext) -> ToolFuture<'a> {
             boxed(async move {
                 if let Err(e) = self.schema().validate(&args) {
                     return ToolOutcome::failed(&e);
@@ -146,7 +144,10 @@ mod tests {
             Arc::new(TraceCollector::new()),
         );
         let outcome = block_on(FakeTool.run(json!({"query": "test"}), &mut ctx));
-        assert!(outcome.to_model.len() < 80, "the text sent to the model must be short");
+        assert!(
+            outcome.to_model.len() < 80,
+            "the text sent to the model must be short"
+        );
         assert!(outcome.to_model.contains("source_ref"));
         assert!(ctx.session_tainted());
         let r = SourceRef("fake#1".into());

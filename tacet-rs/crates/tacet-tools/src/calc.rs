@@ -158,7 +158,11 @@ pub fn calculate(expression: &str) -> ToolResult<f64> {
     // working with byte indices risks landing in the middle of a multi-byte
     // character.
     let chars: Vec<char> = expression.chars().collect();
-    let mut p = Parser { input: &chars, position: 0, depth: 0 };
+    let mut p = Parser {
+        input: &chars,
+        position: 0,
+        depth: 0,
+    };
 
     let value = p.sum()?;
     p.skip_space();
@@ -214,7 +218,11 @@ impl Parser<'_> {
             // right-hand term. Whoever wants the absolute form writes it with
             // parentheses: "250 + (18%)" -> 250.18.
             let applied = if is_percent { left * right } else { right };
-            left = finite(if operator == '+' { left + applied } else { left - applied })?;
+            left = finite(if operator == '+' {
+                left + applied
+            } else {
+                left - applied
+            })?;
         }
     }
 
@@ -286,7 +294,9 @@ impl Parser<'_> {
                 self.position += 1;
                 self.depth += 1;
                 if self.depth > MAX_DEPTH {
-                    return Err(ToolError::InvalidArgument("expression nested too deeply".into()));
+                    return Err(ToolError::InvalidArgument(
+                        "expression nested too deeply".into(),
+                    ));
                 }
                 let value = self.sum()?;
                 if !self.swallow(')') {
@@ -296,7 +306,9 @@ impl Parser<'_> {
                 Ok(value)
             }
             Some(c) if c.is_ascii_digit() || c == '.' || c == ',' => self.number(),
-            Some(c) => Err(ToolError::InvalidArgument(format!("unexpected character: '{c}'"))),
+            Some(c) => Err(ToolError::InvalidArgument(format!(
+                "unexpected character: '{c}'"
+            ))),
             None => Err(ToolError::InvalidArgument("expression ended early".into())),
         }
     }
@@ -339,7 +351,9 @@ fn finite(value: f64) -> ToolResult<f64> {
     } else if value.is_nan() {
         Err(ToolError::Other("This operation is not defined.".into()))
     } else {
-        Err(ToolError::Other("The result does not fit the numeric range.".into()))
+        Err(ToolError::Other(
+            "The result does not fit the numeric range.".into(),
+        ))
     }
 }
 
@@ -380,8 +394,8 @@ fn truncate_for_chip(expression: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
-    use tacet_core::{InMemoryDataStore, Reporter, ToolTrace, TraceCollector};
     use std::sync::Arc;
+    use tacet_core::{InMemoryDataStore, Reporter, ToolTrace, TraceCollector};
 
     fn approx(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
@@ -391,7 +405,10 @@ mod tests {
     fn the_four_operations_and_precedence() {
         assert!(approx(calculate("2 + 3 * 4").unwrap(), 14.0));
         assert!(approx(calculate("12 x 34").unwrap(), 408.0));
-        assert!(approx(calculate("10 - 2 - 3").unwrap(), 5.0), "must bind to the left");
+        assert!(
+            approx(calculate("10 - 2 - 3").unwrap(), 5.0),
+            "must bind to the left"
+        );
         assert!(approx(calculate("100 / 4 / 5").unwrap(), 5.0));
         assert!(approx(calculate("-3 + 5").unwrap(), 2.0));
         assert!(approx(calculate("3,5 * 2").unwrap(), 7.0), "comma decimal");
@@ -410,7 +427,10 @@ mod tests {
     #[test]
     fn the_exponent_binds_right_and_takes_a_negative_exponent() {
         assert!(approx(calculate("2^10").unwrap(), 1024.0));
-        assert!(approx(calculate("2^3^2").unwrap(), 512.0), "must bind to the right");
+        assert!(
+            approx(calculate("2^3^2").unwrap(), 512.0),
+            "must bind to the right"
+        );
         assert!(approx(calculate("2^-2").unwrap(), 0.25));
         // -2^2 = -(2^2): the unary minus is applied after the exponent.
         assert!(approx(calculate("-2^2").unwrap(), -4.0));
@@ -432,9 +452,16 @@ mod tests {
         assert!(calculate("1 / 0").is_err());
         assert!(calculate("5 / (3 - 3)").is_err());
         let e = calculate("9^9^9").expect_err("overflows");
-        assert!(e.short_error().contains("does not fit"), "{}", e.short_error());
+        assert!(
+            e.short_error().contains("does not fit"),
+            "{}",
+            e.short_error()
+        );
         assert!(calculate("0^-1").is_err());
-        assert!(calculate("(-8)^0,5").is_err(), "NaN must count as undefined");
+        assert!(
+            calculate("(-8)^0,5").is_err(),
+            "NaN must count as undefined"
+        );
     }
 
     #[test]
@@ -459,7 +486,11 @@ mod tests {
     // --- The tool contract ---
 
     fn context(reporter: Arc<dyn Reporter>) -> ToolContext {
-        ToolContext::new(Arc::new(InMemoryDataStore::new()), "/tmp/tacet-calc", reporter)
+        ToolContext::new(
+            Arc::new(InMemoryDataStore::new()),
+            "/tmp/tacet-calc",
+            reporter,
+        )
     }
 
     #[test]
@@ -469,7 +500,10 @@ mod tests {
         let outcome = execute(CalcTool.run(json!({"expression": "12 x 34"}), &mut ctx));
 
         assert_eq!(outcome.chip_text, "12 x 34 = 408");
-        assert_eq!(outcome.to_model, "408", "only the result should go to the model");
+        assert_eq!(
+            outcome.to_model, "408",
+            "only the result should go to the model"
+        );
         assert_eq!(outcome.state, ToolState::Read);
         // A read-only tool must not change the world.
         assert!(!outcome.state.changed_world());
@@ -527,7 +561,11 @@ mod tests {
         let mut ctx = context(Arc::new(TraceCollector::new()));
         let outcome = execute(CalcTool.run(json!({"expression": long}), &mut ctx));
         assert_eq!(outcome.to_model, "41");
-        assert!(outcome.chip_text.chars().count() < 70, "{}", outcome.chip_text);
+        assert!(
+            outcome.chip_text.chars().count() < 70,
+            "{}",
+            outcome.chip_text
+        );
         assert!(outcome.chip_text.contains('…'));
     }
 

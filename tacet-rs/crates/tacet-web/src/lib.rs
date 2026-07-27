@@ -46,6 +46,7 @@ pub mod client;
 pub mod download;
 pub mod error;
 pub mod outcome;
+pub mod release;
 pub mod relevance;
 pub mod text;
 
