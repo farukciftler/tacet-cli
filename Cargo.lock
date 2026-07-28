@@ -1919,7 +1919,7 @@ dependencies = [
 
 [[package]]
 name = "tacet-cli"
-version = "0.1.4"
+version = "0.1.6"
 dependencies = [
  "clap",
  "crossterm",
@@ -1972,7 +1972,7 @@ dependencies = [
 
 [[package]]
 name = "tacet-kernel"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1981,7 +1981,7 @@ dependencies = [
 
 [[package]]
 name = "tacet-mcp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1992,7 +1992,7 @@ dependencies = [
 
 [[package]]
 name = "tacet-memory"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2010,7 +2010,7 @@ dependencies = [
 
 [[package]]
 name = "tacet-tools"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde_json",
  "tacet-engine",
@@ -2023,7 +2023,7 @@ dependencies = [
 
 [[package]]
 name = "tacet-web"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde_json",
  "tacet-kernel",

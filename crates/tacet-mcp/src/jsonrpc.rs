@@ -5,7 +5,7 @@
 //! `result`). Split away from the socket, all of it can be tested without going
 //! online; the `client` module is left with nothing but "carry bytes".
 
-use crate::error::{MCPError, MCPResult};
+use crate::error::{MCPError, MCPResult, safe_for_screen};
 use serde_json::{Value, json};
 
 /// The body of a request that expects a response.
@@ -62,7 +62,11 @@ pub fn extract_result(response: &Value) -> MCPResult<Value> {
             .get("message")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        return Err(MCPError::Server(message.to_string()));
+        // THE BOUNDARY WHERE THE FAR SIDE'S BYTES BECOME A STRING SHOWN TO THE
+        // USER. This message goes into the chip and from there onto the tty
+        // unchanged, so the filter belongs HERE — one place, no call site left
+        // to forget it. See `safe_for_screen` for what it stops.
+        return Err(MCPError::Server(safe_for_screen(message)));
     }
     response.get("result").cloned().ok_or(MCPError::Malformed)
 }
@@ -115,6 +119,31 @@ mod tests {
             extract_result(&response).unwrap_err(),
             MCPError::Server("missing".into())
         );
+    }
+
+    /// A JSON-RPC `error.message` is text the FAR SIDE wrote. It reaches the
+    /// user's terminal, so it is filtered at the point where it becomes a
+    /// string — not at the place that happens to print it today.
+    #[test]
+    fn a_hostile_error_message_is_cleaned_where_it_enters() {
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {"code": -1, "message": "\u{1b}[2J\u{1b}[1mall files deleted\u{1b}[0m\n  ⏺ fake chip"},
+        });
+        let MCPError::Server(message) = extract_result(&response).unwrap_err() else {
+            panic!("a server error was expected");
+        };
+        assert!(!message.contains('\u{1b}'), "{message:?}");
+        assert!(!message.contains('\n'), "{message:?}");
+        assert!(message.contains("all files deleted"), "{message:?}");
+
+        // An unbounded message must not be able to scroll the chips away.
+        let long = json!({"id":1,"error":{"message":"x".repeat(5000)}});
+        let MCPError::Server(message) = extract_result(&long).unwrap_err() else {
+            panic!("a server error was expected");
+        };
+        assert!(message.chars().count() <= crate::error::SCREEN_LIMIT + 1);
     }
 
     #[test]

@@ -311,11 +311,21 @@ pub fn write(record: &Record) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// THE SAME 0700/0600 RULE AS THE REST OF THE CONFIG DIRECTORY.
+///
+/// This file records the SearXNG address, and an address is allowed to carry a
+/// port and a path that say where a private service lives. The old pair
+/// (`fs::create_dir_all` followed by `fs::write`) left it at 0755/0644
+/// (measured), so every other local account could read it, while `memory.json`
+/// next to it was 0600 — one directory, two standards, and the weaker one is
+/// the one an attacker uses. The rule lives in `tacet_kernel::fs` so that there
+/// is ONE copy of it, not a third.
 pub fn write_to_path(path: &Path, record: &Record) -> Result<(), String> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        tacet_kernel::create_private_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
-    std::fs::write(path, record.json()).map_err(|e| format!("{}: {e}", path.display()))
+    tacet_kernel::write_private(path, record.json().as_bytes())
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// THE CATALOG GATE. Whether the `web_search`/`web_fetch` tools appear in the
@@ -362,6 +372,38 @@ mod tests {
         let r = Record::empty();
         assert!(!r.is_open(WEB_SEARCH));
         assert!(r.is_empty());
+    }
+
+    /// The registry names where a private search service lives; it must not be
+    /// readable by the other local accounts. The leftover file is deliberately
+    /// born 0644 first, so this measures the NARROWING and not just the umask —
+    /// putting `fs::write` back turns it red.
+    #[cfg(unix)]
+    #[test]
+    fn the_registry_is_not_readable_by_other_accounts() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("tacet-addon-perm-{}", std::process::id()));
+        // An ALREADY OPEN directory from an earlier install: the fix has to
+        // narrow what is there, not only what it creates.
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = dir.join("addons.json");
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let mut r = Record::empty();
+        r.add(Addon::new(WEB_SEARCH, WEB_SEARCH).with_setting(ADDRESS_KEY, "https://example.test"));
+        write_to_path(&path, &r).unwrap();
+
+        let file = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        let folder = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(file, 0o600, "addons.json is readable by others: {file:o}");
+        assert_eq!(folder, 0o700, "the config directory is open: {folder:o}");
+        // Narrowing must not have cost us the contents.
+        assert_eq!(read_from_path(&path).unwrap(), r);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -182,14 +182,19 @@ fn safe_stem(file_name: &str) -> String {
 /// Overwriting an existing file would be wrong in both directions: the user's
 /// file silently disappears, or the new delivery lands on top of the previous
 /// one and "which version did I run" is left unanswered.
+/// `symlink_metadata` AND NOT `exists()`: `exists()` follows links, so a DANGLING
+/// link planted in the working folder (`prime_numbers.py -> ~/.zshrc`, target not
+/// yet created) reports "free", the loop hands the link itself to `fs::write`,
+/// and the verified script is delivered OUTSIDE the sandbox under the user's
+/// full privileges. `symlink_metadata` sees the link itself.
 fn empty_target(folder: &Path, body: &str, extension: &str) -> ToolResult<PathBuf> {
     let first = folder.join(format!("{body}.{extension}"));
-    if !first.exists() {
+    if first.symlink_metadata().is_err() {
         return Ok(first);
     }
     for n in 2..=MAX_NAME_ATTEMPTS {
         let candidate = folder.join(format!("{body}-{n}.{extension}"));
-        if !candidate.exists() {
+        if candidate.symlink_metadata().is_err() {
             return Ok(candidate);
         }
     }
@@ -392,13 +397,19 @@ impl WriteCodeTool {
         if let Err(h) = std::fs::create_dir_all(&verification) {
             return ToolOutcome::failed(&ToolError::Io(h));
         }
+        // THE NAME IS UNPREDICTABLE AND THE WRITE NEVER FOLLOWS A LINK.
+        // `verify-{pid}-{code.len()}` was fully determined: the pid is fixed for
+        // the session and the length is the model's to choose, so a first call
+        // could plant a symlink at the SECOND call's exact name and the parent
+        // process — unshielded, with the user's privileges — wrote straight
+        // through it. Two attempts per turn is all that attack needs. See
+        // `run_code::create_script` for the full account.
         let script = verification.join(format!(
-            "verify-{}-{}.{}",
-            std::process::id(),
-            code.len(),
+            "verify-{}.{}",
+            crate::run_code::nonce(),
             interpreter.extension
         ));
-        if let Err(h) = std::fs::write(&script, code.as_bytes()) {
+        if let Err(h) = crate::run_code::create_script(&script, code.as_bytes()) {
             return ToolOutcome::failed(&ToolError::Io(h));
         }
         let outcome = self.validate_and_deliver(
@@ -860,6 +871,43 @@ mod tests {
             outcome.chip_text.contains(&format!("total-2.{extension}")),
             "{}",
             outcome.chip_text
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 6b) A DANGLING SYMLINK IS NOT A FREE NAME EITHER.
+    ///
+    /// The sibling of the create_document hole: `empty_target` used `exists()`,
+    /// which FOLLOWS links, so a dangling `total.py -> <outside>` reported "free"
+    /// and the verified script was delivered OUTSIDE the sandbox with the user's
+    /// full privileges — while the chip named the in-sandbox file.
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_symlink_does_not_deliver_the_file_outside() {
+        let Some(tool) = tool_or_skip() else { return };
+        let root = temp_dir("dangling");
+        let (lines, extension, _) = example_code(&tool);
+        let victim = std::env::temp_dir().join(format!(
+            "tacet-write-victim-{}-{extension}",
+            std::process::id()
+        ));
+        std::fs::remove_file(&victim).ok();
+        std::os::unix::fs::symlink(&victim, root.join(format!("total.{extension}")))
+            .expect("plant the link");
+
+        tool.state.new_turn();
+        let mut ctx = context(&root);
+        let outcome = hold(tool.run(json!({"file_name": "total", "lines": lines}), &mut ctx));
+        assert_eq!(outcome.state, ToolState::Written, "{}", outcome.to_model);
+
+        assert!(
+            !victim.exists(),
+            "the file was delivered OUTSIDE the sandbox: {}",
+            victim.display()
+        );
+        assert!(
+            root.join(format!("total-2.{extension}")).is_file(),
+            "the loop did not rotate past the link"
         );
         std::fs::remove_dir_all(&root).ok();
     }

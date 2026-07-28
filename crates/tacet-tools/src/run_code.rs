@@ -77,6 +77,27 @@ pub(crate) const MAX_ATTEMPTS: usize = 2;
 /// sensitive, but long enough not to burn the CPU for nothing.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+/// How long we wait for the pipe readers AFTER the process has finished or been
+/// killed, before abandoning them (see the bounded join in `run_program`).
+///
+/// Generous on purpose: on the normal path the readers only have a pipe buffer
+/// left to drain and finish in microseconds, so this bound never fires for
+/// legitimate work. It exists so a stuck reader costs 2 seconds instead of the
+/// whole turn.
+const JOIN_GRACE: Duration = Duration::from_secs(2);
+
+// `killpg`/`setsid` WITHOUT A libc CRATE — the zero-dependency identity holds;
+// these two symbols live in the C library every unix already links.
+#[cfg(unix)]
+unsafe extern "C" {
+    fn setsid() -> i32;
+    fn killpg(group: i32, signal: i32) -> i32;
+}
+
+/// `SIGKILL` is 9 on every unix (POSIX fixes the first fifteen numbers).
+#[cfg(unix)]
+const SIGKILL: i32 = 9;
+
 // ---------------------------------------------------------------------------
 // The network shield
 // ---------------------------------------------------------------------------
@@ -155,7 +176,21 @@ impl NetworkShield {
         match self {
             NetworkShield::SandboxExec { tool } => {
                 let mut k = Command::new(tool);
-                k.arg("-p").arg(profile(sandbox)).arg(program).args(args);
+                // THE PATHS GO IN AS PARAMETERS, NEVER AS PROFILE TEXT (see
+                // `profile`). `-D KEY=value` is a separate argv element, so no
+                // character in the value can ever reach the SBPL parser.
+                let mut sandbox_param = OsString::from(format!("{PARAM_SANDBOX}="));
+                sandbox_param.push(sandbox);
+                let mut home_param = OsString::from(format!("{PARAM_HOME}="));
+                home_param.push(shield_home());
+                k.arg("-D")
+                    .arg(sandbox_param)
+                    .arg("-D")
+                    .arg(home_param)
+                    .arg("-p")
+                    .arg(profile())
+                    .arg(program)
+                    .args(args);
                 k
             }
             NetworkShield::Bwrap { tool } => {
@@ -256,26 +291,96 @@ fn bwrap_args(sandbox: &Path, home: Option<&Path>) -> Vec<OsString> {
 /// — that a file exists and its size are visible, reading its content is still
 /// forbidden. The alternative would have been "take node off the list"; that
 /// would have crippled the tool instead of closing a gate.
-fn profile(sandbox: &Path) -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users".to_string());
-    let sandbox = sandbox.display();
-    format!(
-        "(version 1)\
-         (deny default)\
-         (allow process-exec*)\
-         (allow process-fork)\
-         (allow file-read*)\
-         (deny file-read* (subpath \"{home}\"))\
-         (allow file-read-metadata)\
-         (allow file-read* (subpath \"{sandbox}\"))\
-         (allow file-write* (subpath \"{sandbox}\"))\
-         (allow file-write-data (literal \"/dev/null\"))\
-         (allow sysctl-read)\
-         (allow mach-lookup)\
-         (allow ipc-posix-shm)\
-         (allow signal)\
-         (deny network*)"
-    )
+///
+/// THE PROFILE IS A CONSTANT AND CARRIES NO PATH. It used to `format!` the
+/// sandbox path and `HOME` straight into the text, and SBPL string escapes were
+/// never applied — a directory named `evil")) (allow default) ;` (macOS allows
+/// those characters in a name, and a zip or repo can carry one) closed the
+/// quote, added its own rule and commented out THE REST OF THE PROFILE, network
+/// deny included. MEASURED: under the spliced form that directory gave
+/// `OUTSIDE_WRITE_OK` + `NET_OPEN` and the file outside really appeared; under
+/// the form below the same directory gives `OUTSIDE_WRITE_BLOCKED` +
+/// `NET_BLOCKED`. DO NOT try to fix this by escaping — SBPL string escaping is
+/// version dependent and fails silently. `(param "...")` is the prepared
+/// statement of this world: the value is handed to `sandbox-exec` as a separate
+/// `-D KEY=value` argv element and never passes through the parser as text.
+///
+/// `(allow mach-lookup)` IS NOT LEFT UNFILTERED. Unfiltered it opens XPC to
+/// every system Mach service, the pasteboard among them, and the model could
+/// then run `/usr/bin/pbpaste` and print the user's clipboard — typically the
+/// password just copied out of a password manager — straight into its own
+/// window, while `description()` promises "NO access to this device". MEASURED:
+/// node and python3 both start under the whitelist below and `pbpaste` dies.
+///
+/// `(allow process-fork)` WAS REMOVED, and that is the root fix for the timeout
+/// gate. With fork allowed the script could `spawn('/bin/sleep', {detached:true})`;
+/// node makes such a child its own session leader, so it survived the kill,
+/// KEPT THE STDOUT PIPE OPEN and the turn hung forever. MEASURED: node and
+/// python3 (homebrew) both start without this permission, `node --check` and
+/// `python3 -m py_compile` both pass, and the detached spawn fails with
+/// `SPAWN_BLOCKED`. It also puts macOS on a par with the Linux path, where
+/// `--unshare-pid` already tears down the whole namespace with the child.
+/// KNOWN COST, ACCEPTED: `/usr/bin/python3` on macOS is an Xcode shim that
+/// spawns the real interpreter and therefore needs fork. On a machine whose
+/// ONLY interpreter is that shim, `verify_shield` will now fail and the tool
+/// leaves the catalog — fail-closed with a reason in `diagnose()`, which is this
+/// file's rule, not a silent hole. Spawning processes was never part of what
+/// this tool promises.
+fn profile() -> &'static str {
+    "(version 1)\
+     (deny default)\
+     (allow process-exec*)\
+     (allow file-read*)\
+     (deny file-read* (subpath (param \"HOMEDIR\")))\
+     (allow file-read-metadata)\
+     (allow file-read* (subpath (param \"SBOX\")))\
+     (allow file-write* (subpath (param \"SBOX\")))\
+     (allow file-write-data (literal \"/dev/null\"))\
+     (allow sysctl-read)\
+     (allow mach-lookup \
+       (global-name \"com.apple.system.opendirectoryd.libinfo\") \
+       (global-name \"com.apple.system.notification_center\") \
+       (global-name \"com.apple.CoreServices.coreservicesd\") \
+       (global-name \"com.apple.SystemConfiguration.configd\"))\
+     (allow ipc-posix-shm)\
+     (allow signal)\
+     (deny network*)"
+}
+
+/// The parameter names the profile reads. They are spelled out in the profile
+/// text above too; changing one without the other makes `sandbox-exec` refuse
+/// the profile, which is loud — the failure mode we want.
+const PARAM_SANDBOX: &str = "SBOX";
+const PARAM_HOME: &str = "HOMEDIR";
+
+/// The home directory the profile closes to reading.
+///
+/// A missing `HOME` falls back to `/Users`: an EMPTY value would make the deny
+/// rule match nothing and quietly open the user's whole home directory.
+fn shield_home() -> PathBuf {
+    match std::env::var_os("HOME") {
+        Some(h) if !h.is_empty() => PathBuf::from(h),
+        _ => PathBuf::from("/Users"),
+    }
+}
+
+/// FAIL-CLOSED, second layer. `(param ...)` already makes splicing impossible;
+/// this exists so that a future patch "simplifying" the profile back into a
+/// `format!` cannot silently reopen the hole.
+///
+/// ONLY THE CHARACTERS THAT CAN BREAK OUT OF AN SBPL STRING ARE REFUSED — the
+/// quote, the backslash, control characters, and a path that is not UTF-8 at
+/// all. `(`, `)` and `;` are DELIBERATELY ALLOWED: on their own they are inert
+/// inside a quoted string, and macOS users really do have folders called
+/// `Project (old)`. Refusing those would turn a hardening layer into a bug
+/// report.
+fn path_is_shield_safe(path: &Path) -> bool {
+    let Some(text) = path.to_str() else {
+        return false; // not UTF-8: we cannot reason about it, so we refuse
+    };
+    !text
+        .chars()
+        .any(|c| c.is_control() || matches!(c, '"' | '\\'))
 }
 
 // ---------------------------------------------------------------------------
@@ -375,13 +480,8 @@ pub fn run(
     // that place be read, so keeping the script anywhere else would make it unreadable.
     let runtime = sandbox.join("code");
     std::fs::create_dir_all(&runtime)?;
-    let script = runtime.join(format!(
-        "script-{}-{}.{}",
-        std::process::id(),
-        Instant::now().elapsed().as_nanos() ^ (code.len() as u128),
-        interpreter.extension
-    ));
-    std::fs::write(&script, code.as_bytes())?;
+    let script = runtime.join(format!("script-{}.{}", nonce(), interpreter.extension));
+    create_script(&script, code.as_bytes())?;
 
     let outcome = run_program(
         shield,
@@ -394,6 +494,73 @@ pub fn run(
     // sandbox gets dirty and `find_file` lists them as if they were user documents.
     std::fs::remove_file(&script).ok();
     outcome
+}
+
+/// A per-call name fragment that an ATTACKER CANNOT PREDICT.
+///
+/// The old names were `script-{pid}-{Instant::now().elapsed().as_nanos() ^ len}`
+/// and `verify-{pid}-{code.len()}` — fully determined by values the model
+/// controls or can read. (`Instant::now().elapsed()` measures the time between
+/// two adjacent statements: MEASURED on this machine it only ever returned 0,
+/// 41 or 42 nanoseconds, i.e. three candidates.) Under the shield the script can
+/// read its own path (`__filename` / `sys.argv[0]`), learn the pid, and plant a
+/// symlink at the NEXT call's name — a link created inside the sandbox, which
+/// the profile permits. The parent process then wrote through it with the user's
+/// full privileges.
+///
+/// THE REAL BARRIER IS `create_script`, NOT THIS. Wall-clock nanoseconds plus a
+/// process-wide counter are only defence in depth, so the attacker cannot even
+/// aim.
+pub(crate) fn nonce() -> String {
+    static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+    let step = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{}-{now:x}-{step:x}", std::process::id())
+}
+
+/// `O_NOFOLLOW` — the value differs per platform and there is no libc crate here
+/// (zero-dependency identity). `0` on an unknown platform means "no extra flag";
+/// `create_new` alone still refuses an existing path, so the gate never opens.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+const O_NOFOLLOW: i32 = 0x0100;
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const O_NOFOLLOW: i32 = 0x20000;
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "android"
+)))]
+const O_NOFOLLOW: i32 = 0;
+
+/// Writes the script WITHOUT EVER FOLLOWING an existing path.
+///
+/// THE ATTACK THIS CLOSES: a script running under the shield may create a
+/// symlink inside the sandbox (the profile allows writing there, and a link IS a
+/// write). Pointed at `~/.zshrc`, `~/Library/LaunchAgents/*.plist` or
+/// `~/.ssh/authorized_keys`, the PARENT process — which is `tacet` itself, with
+/// no shield and the user's full privileges — used to `std::fs::write` straight
+/// through it. That is arbitrary file write outside the sandbox and, with any of
+/// those three targets, persistent code execution as the user.
+///
+/// `create_new` is `O_CREAT|O_EXCL`, which POSIX requires to fail with `EEXIST`
+/// when the path names an existing symlink — DANGLING OR NOT — so the link is
+/// refused instead of followed. `O_NOFOLLOW` is a second belt for the case where
+/// the final component is a link.
+pub(crate) fn create_script(script: &Path, code: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(O_NOFOLLOW);
+    }
+    let mut file = options.open(script)?;
+    file.write_all(code)
 }
 
 /// Runs any program with the given arguments under the shield.
@@ -411,6 +578,14 @@ pub fn run_program(
     args: &[OsString],
     timeout: Duration,
 ) -> ToolResult<CodeOutcome> {
+    // FAIL-CLOSED BEFORE THE SHIELD IS BUILT (see `path_is_shield_safe`): if a
+    // path cannot be safely represented we do not run at all. Refusing is the
+    // natural extension of this file's rule that a shield we cannot set up means
+    // the tool does not exist.
+    if !path_is_shield_safe(runtime) || !path_is_shield_safe(&shield_home()) {
+        return Err(ToolError::SandboxViolation(runtime.to_path_buf()));
+    }
+
     let mut command = shield.wrap(runtime, program, args);
     command
         .current_dir(runtime)
@@ -433,16 +608,49 @@ pub fn run_program(
     command.env("PYTHONNOUSERSITE", "1");
     command.env("NODE_OPTIONS", "");
 
+    // ITS OWN SESSION / PROCESS GROUP. On the timeout path we must be able to
+    // signal THE WHOLE TREE, not just the process we spawned: a child left
+    // behind keeps the stdout/stderr pipe ends open (see the join below) and
+    // goes on burning the user's CPU after the tool has already reported
+    // "timed out".
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: `setsid` is async-signal-safe and touches nothing but the
+        // calling process's session id, which is exactly what `pre_exec`
+        // permits. A failure means we are already a group leader — harmless.
+        unsafe {
+            command.pre_exec(|| {
+                setsid();
+                Ok(())
+            });
+        }
+    }
+
     let start = Instant::now();
     let mut child = command.spawn()?;
+    #[cfg(unix)]
+    let group = child.id() as i32;
 
     // The two pipes are read IN TWO SEPARATE THREADS. Reading them in turn on
     // one thread is the classic deadlock: while waiting for stdout to the end
     // the child fills the stderr pipe, blocks, and the two wait for each other forever.
+    //
+    // THE READERS WRITE INTO A SHARED BUFFER instead of returning their result,
+    // so the main path can give up on them (see the bounded join) and still keep
+    // everything they managed to read.
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let out_arm = std::thread::spawn(move || read_pipe(stdout));
-    let err_arm = std::thread::spawn(move || read_pipe(stderr));
+    let out_sink = std::sync::Arc::new(Mutex::new(PipeSink::default()));
+    let err_sink = std::sync::Arc::new(Mutex::new(PipeSink::default()));
+    let out_arm = {
+        let sink = out_sink.clone();
+        std::thread::spawn(move || read_pipe(stdout, &sink))
+    };
+    let err_arm = {
+        let sink = err_sink.clone();
+        std::thread::spawn(move || read_pipe(stderr, &sink))
+    };
 
     let mut timed_out = false;
     let exit = loop {
@@ -464,18 +672,38 @@ pub fn run_program(
     };
 
     if timed_out {
-        // KILL AND REAP. `kill` alone is not enough: without `wait` the process
-        // stays a zombie and in a long session the process table fills up.
+        // KILL THE WHOLE GROUP, then reap. `child.kill()` alone signals only the
+        // process we spawned; anything it left behind survives. `kill` without
+        // `wait` leaves a zombie and in a long session the process table fills up.
+        #[cfg(unix)]
+        unsafe {
+            killpg(group, SIGKILL);
+        }
         child.kill().ok();
         child.wait().ok();
     }
     let ms = start.elapsed().as_millis();
 
-    // The pipe readers get EOF because the child is gone and finish; `join`
-    // therefore does not hang. We still fall back to the default against a
-    // panic — a crashing tool takes the whole turn down.
-    let (output, truncated_out) = out_arm.join().unwrap_or_default();
-    let (error_text, truncated_err) = err_arm.join().unwrap_or_default();
+    // THE JOIN IS BOUNDED, AND THAT IS NOT BELT AND BRACES.
+    //
+    // The comment that used to stand here claimed the readers "get EOF because
+    // the child is gone, so join does not hang". THAT IS WRONG, and it was
+    // measured wrong: a pipe end closes when the LAST process holding it dies,
+    // not when the process we spawned dies. Any surviving descendant keeps the
+    // fd open, `read` never returns 0, and an unbounded `join` blocks the tool
+    // call — and because this runs synchronously inside the async body, gate 4
+    // (cancellation) cannot rescue the user either; the turn is simply lost.
+    // Removing `(allow process-fork)` from the profile takes the macOS way of
+    // producing such a descendant away, but the bound stays: we must never again
+    // depend on "nothing can be holding this pipe".
+    //
+    // Whatever the reader managed to store IS KEPT — it lives in the shared
+    // buffer, not in the thread's return value — and an abandoned thread is left
+    // to finish on its own.
+    join_before(out_arm, JOIN_GRACE);
+    join_before(err_arm, JOIN_GRACE);
+    let (output, truncated_out) = drain(&out_sink);
+    let (error_text, truncated_err) = drain(&err_sink);
 
     if timed_out {
         return Ok(CodeOutcome::Timeout);
@@ -511,39 +739,72 @@ pub fn run_program(
     Ok(CodeOutcome::Error(text))
 }
 
+/// What a reader thread has collected SO FAR.
+///
+/// It is shared rather than returned because the main path may have to give up
+/// on the thread (see the bounded join in `run_program`) and must still keep
+/// what was read up to that point.
+#[derive(Default)]
+struct PipeSink {
+    accumulated: Vec<u8>,
+    truncated: bool,
+}
+
 /// Reads the pipe TO THE END but DISCARDS anything over the cap.
 ///
 /// Stopping the reads locks the child once the pipe fills (and keeps it waiting
 /// until the timeout); having no cap at all lets infinite output eat all the
 /// memory. The middle of the two: keep reading, stop storing.
-fn read_pipe<R: Read>(pipe: Option<R>) -> (String, bool) {
-    let Some(mut pipe) = pipe else {
-        return (String::new(), false);
-    };
-    let mut accumulated: Vec<u8> = Vec::new();
+fn read_pipe<R: Read>(pipe: Option<R>, sink: &Mutex<PipeSink>) {
+    let Some(mut pipe) = pipe else { return };
     let mut buffer = [0u8; 8192];
-    let mut truncated = false;
     loop {
         match pipe.read(&mut buffer) {
             Ok(0) | Err(_) => break,
             Ok(n) => {
-                let slot = OUTPUT_CAP.saturating_sub(accumulated.len());
+                let mut sink = sink.lock().expect("pipe sink lock");
+                let slot = OUTPUT_CAP.saturating_sub(sink.accumulated.len());
                 if slot == 0 {
-                    truncated = true;
+                    sink.truncated = true;
                     continue;
                 }
                 let taken = n.min(slot);
-                accumulated.extend_from_slice(&buffer[..taken]);
+                sink.accumulated.extend_from_slice(&buffer[..taken]);
                 if taken < n {
-                    truncated = true;
+                    sink.truncated = true;
                 }
             }
         }
     }
+}
+
+/// Takes what a reader has collected. A poisoned lock (the reader panicked) is
+/// treated as "nothing was read": a crashing helper thread must not take the
+/// whole turn down with it.
+fn drain(sink: &Mutex<PipeSink>) -> (String, bool) {
+    let Ok(sink) = sink.lock() else {
+        return (String::new(), false);
+    };
     (
-        String::from_utf8_lossy(&accumulated).into_owned(),
-        truncated,
+        String::from_utf8_lossy(&sink.accumulated).into_owned(),
+        sink.truncated,
     )
+}
+
+/// Joins the thread, but GIVES UP after `grace` and leaves it orphaned.
+///
+/// Std has no timed join, so the finish flag is polled — the same trick as the
+/// process wait loop above. Abandoning a thread is deliberate: the alternative
+/// is a tool call that never returns (see the rationale at the call site).
+fn join_before(handle: std::thread::JoinHandle<()>, grace: Duration) {
+    let deadline = Instant::now() + grace;
+    while !handle.is_finished() {
+        if Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+    let _ = handle.join();
 }
 
 // ---------------------------------------------------------------------------
@@ -785,7 +1046,17 @@ fn verify_shield(shield: &NetworkShield, interpreter: &Interpreter) -> bool {
             // from the SAME output: measuring them in two separate runs would
             // double the startup time.
             Ok(CodeOutcome::Succeeded { output, .. }) => {
-                output.contains("NET_BLOCKED") && !output.contains("NET_OPEN")
+                let network = output.contains("NET_BLOCKED") && !output.contains("NET_OPEN");
+                // THE CLIPBOARD IS MEASURED TOO, on the same run. Only measuring
+                // the network is what let `(allow mach-lookup)` sit there
+                // unfiltered for so long: the sentence "NO access to this
+                // device" was checked against exactly one of the things it
+                // claims. If someone loosens the profile again the tool now
+                // DISAPPEARS from the catalog instead of quietly handing the
+                // user's clipboard to the model.
+                let clipboard = !cfg!(target_os = "macos")
+                    || (output.contains("PB_BLOCKED") && !output.contains("PB_OPEN"));
+                network && clipboard
             }
             _ => false,
         };
@@ -807,7 +1078,39 @@ fn verify_shield(shield: &NetworkShield, interpreter: &Interpreter) -> bool {
 /// the error comes at once and startup is not delayed; if it does not, 2
 /// seconds are added to startup — but in that case the tool will leave the
 /// catalog anyway, so the price is paid once.
-fn measurement_script(key: &str) -> &'static str {
+fn measurement_script(key: &str) -> String {
+    format!("{}{}", clipboard_probe(key), network_probe(key))
+}
+
+/// The clipboard half of the measurement — macOS only, because `pbpaste` and the
+/// pasteboard Mach service are macOS notions. It runs BEFORE the network probe:
+/// the js network probe ends in `process.exit(0)` inside a callback, so anything
+/// placed after it might never run.
+#[cfg(target_os = "macos")]
+fn clipboard_probe(key: &str) -> &'static str {
+    match key {
+        "python" => {
+            "import subprocess\n\
+             try:\n\
+             \x20   subprocess.run(['/usr/bin/pbpaste'], check=True, capture_output=True)\n\
+             \x20   print('PB_OPEN')\n\
+             except Exception:\n\
+             \x20   print('PB_BLOCKED')\n"
+        }
+        _ => {
+            "try{require('child_process')\
+             .execFileSync('/usr/bin/pbpaste',{stdio:['ignore','pipe','ignore']});\
+             console.log('PB_OPEN')}catch(e){console.log('PB_BLOCKED')}\n"
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn clipboard_probe(_key: &str) -> &'static str {
+    ""
+}
+
+fn network_probe(key: &str) -> &'static str {
     match key {
         "python" => {
             "import socket\n\
@@ -1256,17 +1559,52 @@ mod tests {
     /// 4) The shield profile binds the sandbox and the home directory to the RIGHT rules.
     #[test]
     fn the_shield_profile_closes_the_network_and_the_home_directory() {
-        let p = profile(Path::new("/private/tmp/sandbox"));
+        let p = profile();
         assert!(p.contains("(deny network*)"), "the network was left open");
         assert!(
             p.contains("(deny default)"),
             "the default was left permissive"
         );
-        assert!(p.contains("(allow file-write* (subpath \"/private/tmp/sandbox\"))"));
+        assert!(p.contains("(allow file-write* (subpath (param \"SBOX\")))"));
         // Writing only into the sandbox: there must be no write permission for another subpath.
         assert_eq!(p.matches("allow file-write*").count(), 1);
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users".to_string());
-        assert!(p.contains(&format!("(deny file-read* (subpath \"{home}\"))")));
+        assert!(p.contains("(deny file-read* (subpath (param \"HOMEDIR\")))"));
+
+        // NO PATH MAY BE SPLICED INTO THE PROFILE TEXT. This is the claim that
+        // keeps the SBPL-injection fix from being undone by a well-meaning
+        // "simplification" back to `format!` (see `profile`).
+        // EVERY `subpath` MUST BE A PARAMETER. `(literal "/dev/null")` is a
+        // fixed device node and carries no attacker-controlled text, so it is
+        // deliberately not covered by this claim.
+        assert!(
+            !p.contains("(subpath \""),
+            "a literal path leaked into a subpath rule: {p}"
+        );
+        // The clipboard: `(allow mach-lookup)` MUST NOT stand unfiltered.
+        assert!(
+            !p.contains("(allow mach-lookup)"),
+            "mach-lookup was left unfiltered — pbpaste becomes reachable"
+        );
+        assert!(p.contains("(allow mach-lookup (global-name"));
+        // Forking is what let a detached grandchild outlive the timeout kill.
+        assert!(
+            !p.contains("process-fork"),
+            "process-fork is back: a detached child can outlive the timeout"
+        );
+    }
+
+    /// 4a) The fail-closed path check: only what can actually break out of an
+    ///     SBPL string is refused, and a folder called `Project (old)` — which
+    ///     real users have — must still run.
+    #[test]
+    fn only_quote_breaking_paths_are_refused() {
+        assert!(path_is_shield_safe(Path::new("/Users/x/Project (old)")));
+        assert!(path_is_shield_safe(Path::new("/Users/x/a;b")));
+        assert!(!path_is_shield_safe(Path::new(
+            "/private/tmp/evil\")) (allow default) ;"
+        )));
+        assert!(!path_is_shield_safe(Path::new("/tmp/back\\slash")));
+        assert!(!path_is_shield_safe(Path::new("/tmp/new\nline")));
     }
 
     /// 4b) IS DISCOVERY REALLY PASSING — `tool_or_skip()` IS A SILENT ESCAPE
@@ -1393,6 +1731,66 @@ mod tests {
                 "{home:?}: the root was left writable"
             );
         }
+    }
+
+    /// 4e) THE SCRIPT WRITE NEVER FOLLOWS A PLANTED LINK.
+    ///
+    /// The attack it measures: the script running under the shield may create a
+    /// symlink inside the sandbox and aim it at the NEXT call's file name; the
+    /// parent process (unshielded, full user privileges) then wrote through it
+    /// and could overwrite `~/.zshrc`. Both a DANGLING link (the target does not
+    /// exist yet, which is the interesting case — the victim file gets CREATED)
+    /// and a live one must be refused.
+    #[cfg(unix)]
+    #[test]
+    fn the_script_write_refuses_a_planted_symlink() {
+        let root = temp_dir("plant");
+        let outside = std::env::temp_dir().join(format!(
+            "tacet-plant-victim-{}-{}.txt",
+            std::process::id(),
+            nonce()
+        ));
+        std::fs::remove_file(&outside).ok();
+
+        let script = root.join("script-known-name.js");
+        std::os::unix::fs::symlink(&outside, &script).expect("plant the link");
+
+        let error = create_script(&script, b"console.log(1)").expect_err("must be refused");
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::AlreadyExists,
+            "the link must be refused, not followed: {error}"
+        );
+        assert!(
+            !outside.exists(),
+            "the file OUTSIDE the sandbox was created: {}",
+            outside.display()
+        );
+
+        // A live link is refused too, and the target is NOT overwritten.
+        let live = root.join("live-target.txt");
+        std::fs::write(&live, "original").expect("target");
+        let second = root.join("script-live.js");
+        std::os::unix::fs::symlink(&live, &second).expect("plant");
+        assert!(create_script(&second, b"console.log(2)").is_err());
+        assert_eq!(std::fs::read_to_string(&live).expect("read"), "original");
+
+        // A fresh name still works — the gate must not break legitimate writes.
+        let fresh = root.join("fresh.js");
+        create_script(&fresh, b"console.log(3)").expect("a fresh name must work");
+        assert_eq!(
+            std::fs::read_to_string(&fresh).expect("read"),
+            "console.log(3)"
+        );
+    }
+
+    /// 4f) THE SCRIPT NAME IS NOT PREDICTABLE. The old name was
+    ///     `verify-{pid}-{code.len()}`, i.e. fully determined by values the
+    ///     model controls — which is what let it aim the link above.
+    #[test]
+    fn the_script_name_does_not_repeat() {
+        let names: std::collections::HashSet<String> = (0..64).map(|_| nonce()).collect();
+        assert_eq!(names.len(), 64, "the nonce repeated itself");
     }
 
     /// 5) Truncation works at a character boundary — it DOES NOT SPLIT a multi-byte character.
@@ -1552,6 +1950,196 @@ mod tests {
             elapsed >= Duration::from_secs(2),
             "it returned before the cap: {elapsed:?}"
         );
+    }
+
+    /// 9b) THE TIMEOUT REALLY BOUNDS THE CALL, even when the script tries to
+    ///     leave a process behind that holds the output pipe.
+    ///
+    /// THE ATTACK: `spawn('/bin/sleep', {detached:true, stdio:[...,'inherit','inherit']})`
+    /// plus an endless loop. Killing only the direct child left the grandchild
+    /// alive, the stdout pipe never reached EOF, and the unbounded `join` hung
+    /// the turn FOREVER — with gate 4 (cancellation) unable to help, because
+    /// this runs synchronously inside the async body. Two independent fixes now
+    /// stand between that and a hang (no `process-fork` in the profile, and a
+    /// bounded join); this test measures the OUTCOME, so it stays honest if
+    /// either one is changed.
+    #[test]
+    fn a_detached_child_cannot_hang_the_turn() {
+        let Some(tool) = tool_or_skip() else { return };
+        let root = temp_dir("detach");
+        let code = match tool.interpreters()[0].key {
+            "python" => {
+                "import subprocess\n\
+                 try:\n\
+                 \x20   subprocess.Popen(['/bin/sleep','600'], start_new_session=True)\n\
+                 except Exception:\n\
+                 \x20   pass\n\
+                 while True: pass\n"
+            }
+            _ => {
+                "try{require('child_process').spawn('/bin/sleep',['600'],\
+                 {detached:true,stdio:['ignore','inherit','inherit']}).unref()}catch(e){}\
+                 while(true){}"
+            }
+        };
+
+        let started = Instant::now();
+        let outcome = run(
+            &tool.shield,
+            &tool.interpreters()[0],
+            &root,
+            code,
+            Duration::from_secs(2),
+        )
+        .expect("run_program must return");
+        let elapsed = started.elapsed();
+
+        assert_eq!(outcome, CodeOutcome::Timeout, "{outcome:?}");
+        // 2 s timeout + JOIN_GRACE + slack. Before the fix this never returned.
+        assert!(
+            elapsed < Duration::from_secs(8),
+            "the call did not return within its bound: {elapsed:?}"
+        );
+    }
+
+    /// 9c) A parent that EXITS IMMEDIATELY while a descendant keeps the pipe
+    ///     open must not hang the call either. This is the case the timeout path
+    ///     never sees (`timed_out == false`), so the process-group kill alone
+    ///     would not save it — only the bounded join does.
+    #[test]
+    fn a_pipe_held_after_the_parent_exits_does_not_hang_the_turn() {
+        let Some(tool) = tool_or_skip() else { return };
+        let root = temp_dir("orphan");
+        let code = match tool.interpreters()[0].key {
+            "python" => {
+                "import subprocess\n\
+                 try:\n\
+                 \x20   subprocess.Popen(['/bin/sleep','600'], start_new_session=True)\n\
+                 except Exception:\n\
+                 \x20   pass\n\
+                 print('PARENT_DONE')\n"
+            }
+            _ => {
+                "try{require('child_process').spawn('/bin/sleep',['600'],\
+                 {detached:true,stdio:['ignore','inherit','inherit']}).unref()}catch(e){}\
+                 console.log('PARENT_DONE')"
+            }
+        };
+
+        let started = Instant::now();
+        let outcome = run(
+            &tool.shield,
+            &tool.interpreters()[0],
+            &root,
+            code,
+            Duration::from_secs(20),
+        )
+        .expect("run_program must return");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "the call hung on a pipe held by a descendant: {elapsed:?} / {outcome:?}"
+        );
+    }
+
+    /// 9d) THE CLIPBOARD IS REALLY CUT. `(allow mach-lookup)` used to stand
+    ///     unfiltered, which opened XPC to the pasteboard: the script could run
+    ///     `/usr/bin/pbpaste` and print whatever the user had just copied —
+    ///     typically a password or a 2FA code — straight into the model's
+    ///     window. The counterpart of `the_network_is_really_cut`; without it
+    ///     the "NO access to this device" sentence is a promise, not a fact.
+    ///
+    /// It reads the GENERAL pasteboard but never writes to it: the test must not
+    /// disturb what the developer has on their clipboard.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_clipboard_is_really_cut() {
+        let Some(tool) = tool_or_skip() else { return };
+        let root = temp_dir("clipboard");
+        let mut ctx = context(&root);
+        let code = match tool.interpreters()[0].key {
+            "python" => {
+                "import subprocess\n\
+                 try:\n\
+                 \x20   subprocess.run(['/usr/bin/pbpaste'], check=True, capture_output=True)\n\
+                 \x20   print('PB_OPEN')\n\
+                 except Exception:\n\
+                 \x20   print('PB_BLOCKED')\n"
+            }
+            _ => {
+                "try{require('child_process').execFileSync('/usr/bin/pbpaste',\
+                 {stdio:['ignore','pipe','ignore']});console.log('PB_OPEN')}\
+                 catch(e){console.log('PB_BLOCKED')}"
+            }
+        };
+
+        let outcome = hold(tool.run(json!({"code": code, "timeout_s": 20}), &mut ctx));
+        let output = outcome.raw_output.clone().unwrap_or_default();
+        assert!(
+            !output.contains("PB_OPEN"),
+            "THE CLIPBOARD WAS READABLE — the tool must not be in the catalog: {output}"
+        );
+        assert!(
+            output.contains("PB_BLOCKED"),
+            "unexpected output: {output} / {}",
+            outcome.to_model
+        );
+    }
+
+    /// 9e) A WORKING DIRECTORY WHOSE NAME CAN BREAK OUT OF THE PROFILE STRING
+    ///     MUST NOT RUN AT ALL.
+    ///
+    /// Before the fix the sandbox path was spliced into the SBPL text: a folder
+    /// called `evil")) (allow default) ;` closed the quote, added `(allow
+    /// default)` and commented out the rest of the profile — network deny
+    /// included. MEASURED before the fix, that exact folder gave `NET_OPEN` and
+    /// really created a file outside. `verify_shield` could never see it,
+    /// because it measures on a CLEAN temp path. Two layers answer it now: the
+    /// profile carries no path at all, and this path is refused outright.
+    #[test]
+    fn a_profile_breaking_directory_name_never_runs() {
+        let Some(tool) = tool_or_skip() else { return };
+        let root = std::env::temp_dir().join(format!(
+            "tacet-evil\")) (allow default) ;-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("temp dir");
+        let root = root.canonicalize().expect("resolved");
+        let target = std::env::temp_dir().join(format!("tacet-sbpl-{}.txt", std::process::id()));
+        std::fs::remove_file(&target).ok();
+
+        let code = match tool.interpreters()[0].key {
+            "python" => format!(
+                "try:\n\
+                 \x20   open({target:?}, 'w').write('x')\n\
+                 \x20   print('OUT_WRITE_OK')\n\
+                 except Exception:\n\
+                 \x20   print('OUT_WRITE_BLOCKED')\n"
+            ),
+            _ => format!(
+                "const fs=require('fs');\
+                 try{{fs.writeFileSync({target:?},'x');console.log('OUT_WRITE_OK')}}\
+                 catch(e){{console.log('OUT_WRITE_BLOCKED')}}"
+            ),
+        };
+
+        let result = run(
+            &tool.shield,
+            &tool.interpreters()[0],
+            &root,
+            &code,
+            Duration::from_secs(10),
+        );
+        assert!(
+            matches!(result, Err(ToolError::SandboxViolation(_))),
+            "a path that can break the profile must be refused: {result:?}"
+        );
+        assert!(
+            !target.exists(),
+            "the shield was open, the file outside was created: {}",
+            target.display()
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// 10) SUCCESS WITH NO OUTPUT IS NOT A SUCCESS — so the model cannot see

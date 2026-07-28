@@ -62,11 +62,7 @@ impl Release {
 /// someone who typed `tacet update`.
 pub fn latest(repo: &str, timeout: Duration) -> WebResult<Release> {
     let url = format!("{API}/repos/{repo}/releases/latest");
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(timeout))
-        .max_redirects(5)
-        .build()
-        .into();
+    let agent = release_agent(timeout);
 
     let body = match agent
         .get(&url)
@@ -88,6 +84,23 @@ pub fn latest(repo: &str, timeout: Duration) -> WebResult<Release> {
     };
 
     parse(&body)
+}
+
+/// The agent the release check uses. SPLIT OUT SO IT CAN BE ASSERTED ON — see
+/// the test at the bottom of this file.
+fn release_agent(timeout: Duration) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .max_redirects(5)
+        // THE SCHEME GATE MUST HOLD ON EVERY HOP. `API` is https, but that
+        // only covers hop 0: `ureq`'s scheme enforcement lives in one place
+        // and only runs when this flag is on, and its default is FALSE. What
+        // is read here decides which file gets downloaded and then WRITTEN
+        // OVER THE RUNNING BINARY (`tacet-cli::update`), so a chain that drops
+        // to plain text lets whoever sits on the path choose that file.
+        .https_only(true)
+        .build()
+        .into()
 }
 
 /// Split out from the network call so it can be tested against a recorded
@@ -230,6 +243,16 @@ mod tests {
     fn a_shorter_version_is_padded_with_zeros() {
         assert!(!is_newer("1.0", "1.0.0"));
         assert!(is_newer("1.0.1", "1.0"));
+    }
+
+    /// The release JSON decides which asset the updater downloads and installs
+    /// over the running binary. A `30x` that drops the chain onto plain http
+    /// would put that choice in the hands of whoever is on the path; the only
+    /// thing standing in the way is this flag, and a flag has no observable
+    /// behaviour until the day it matters.
+    #[test]
+    fn the_release_agent_refuses_to_leave_https() {
+        assert!(release_agent(Duration::from_secs(5)).config().https_only());
     }
 
     #[test]

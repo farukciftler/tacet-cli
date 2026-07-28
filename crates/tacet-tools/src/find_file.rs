@@ -418,10 +418,14 @@ impl FindFileTool {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .unwrap_or(".");
-        let root = ctx.resolve_path(relative_folder)?;
-        if !root.is_dir() {
-            return Err(ToolError::FileNotFound(root));
-        }
+        // THE ROOT IS RESOLVED, NOT JUST CHECKED FOR SHAPE. `resolve_path` is
+        // lexical and `is_dir()` FOLLOWS links, so `folder="gate"` (a link
+        // planted in the sandbox by `run_code`) used to pass and the whole walk
+        // ran on the tree OUTSIDE. The per-entry `symlink_metadata` skip below
+        // only guards CHILDREN — it never sees the root. That escape is heavier
+        // than a read_document one: the MATCHING LINE ITSELF goes to the model,
+        // so the attacker exfiltrates exactly the secret searched for.
+        let root = crate::sandbox_path::resolve_existing_dir(ctx, relative_folder)?;
 
         let search_content = args
             .get("search_content")
@@ -610,6 +614,58 @@ mod tests {
         // An escape attempt MUST NOT TAINT the session: no data was read.
         assert!(!ctx.session_tainted());
         fs::remove_dir_all(&root).ok();
+    }
+
+    /// 3b) THE SEARCH ROOT ITSELF MAY BE A PLANTED LINK — and that used to be the
+    ///     way out. `run_code` is allowed to write inside the sandbox, and
+    ///     creating a symlink IS a write, so a poisoned prompt could plant
+    ///     `gate -> /Users/<victim>` and then call
+    ///     `find_file(pattern="seed phrase", folder="gate")`. `resolve_path` is
+    ///     lexical and `is_dir()` follows links, so the whole walk ran on the
+    ///     tree OUTSIDE. The per-entry skip in `search` never sees the root.
+    ///
+    /// This escape is heavier than the read_document one: THE MATCHING LINE
+    /// ITSELF goes to the model, so the attacker gets exactly the secret they
+    /// searched for. Measured before the fix, the model was handed
+    /// "wallet.md [content] — seed phrase: correct horse battery".
+    ///
+    /// `folder="gate/deep"` is measured TOO: checking only the last component
+    /// would let that one through.
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_link_cannot_be_the_search_root() {
+        let root = temp_dir("link-root");
+        let outside = temp_dir("victim");
+        write(&outside, "wallet.md", "seed phrase: correct horse battery");
+        write(
+            &outside,
+            "deep/wallet.md",
+            "seed phrase: correct horse battery",
+        );
+        std::os::unix::fs::symlink(&outside, root.join("gate")).expect("plant the link");
+
+        let store = Arc::new(InMemoryDataStore::new());
+        let mut ctx = context(&root, store);
+        for folder in ["gate", "gate/deep"] {
+            let outcome = block_on(FindFileTool::new().run(
+                json!({"pattern": "seed phrase", "folder": folder}),
+                &mut ctx,
+            ));
+            assert!(
+                matches!(outcome.state, ToolState::Failed(_)),
+                "the walk escaped through {folder}: {}",
+                outcome.to_model
+            );
+            assert_eq!(outcome.to_model, tacet_kernel::ERROR_MODEL_TEXT);
+            assert!(
+                !outcome.to_model.contains("correct horse battery"),
+                "the secret leaked to the model"
+            );
+        }
+        // A refused escape read nothing, so it must not taint the session.
+        assert!(!ctx.session_tainted());
+        fs::remove_dir_all(&root).ok();
+        fs::remove_dir_all(&outside).ok();
     }
 
     /// 4) Binary and large files do not enter the content scan; a symbolic link is

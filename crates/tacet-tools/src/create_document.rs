@@ -161,6 +161,17 @@ pub fn write_document(
 ) -> ToolResult<PathBuf> {
     prepare_folder(folder)?;
     let target = target_path(file_name, engine.format(), folder);
+    // BELT AND BRACES. The naming loop already rotates past a link, but the write
+    // gate must not depend on the naming rule staying correct forever: if the
+    // target were a symlink, `write_raw`/`finish_up` would act on a file OUTSIDE
+    // the sandbox while we report the in-sandbox name back to the model.
+    if target
+        .symlink_metadata()
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return Err(ToolError::SandboxViolation(target));
+    }
     engine.write_raw(&target, title, body, table)?;
     finish_up(&target)?;
     Ok(target)
@@ -243,7 +254,14 @@ fn target_path(file_name: &str, format: DocumentFormat, folder: &Path) -> PathBu
 
     let mut candidate = folder.join(format!("{base}.{}", format.extension()));
     let mut i = 2;
-    while candidate.exists() {
+    // NOT `exists()`: it FOLLOWS symlinks, so a DANGLING link (`report.md ->
+    // ~/Library/Preferences/whatever.txt`, target not yet created) reports FALSE,
+    // the loop never turns, and `fs::write` follows the link and creates the file
+    // OUTSIDE the sandbox — while the model and the user are told "report.md was
+    // written to the working folder". `symlink_metadata` sees the LINK ITSELF,
+    // dangling or not, so the "never overwrite anything" contract now covers
+    // links too.
+    while candidate.symlink_metadata().is_ok() {
         candidate = folder.join(format!("{base}-{i}.{}", format.extension()));
         i += 1;
     }
@@ -1114,6 +1132,50 @@ mod tests {
         let third = write_document(&engine, "../escape", None, Some("x"), None, &root).unwrap();
         assert_eq!(third.parent().unwrap(), root);
         fs::remove_dir_all(&root).ok();
+    }
+
+    /// A DANGLING SYMLINK IS NOT A FREE NAME.
+    ///
+    /// The attack: leave `report.md -> ~/Library/Preferences/whatever.txt` in the
+    /// working folder with the target NOT YET EXISTING, then get the model to
+    /// call `create_document(file_name="report")`. The collision loop used
+    /// `exists()`, which FOLLOWS the link — a dangling link reports false, so the
+    /// loop never turned, the candidate WAS the link, and `fs::write` created the
+    /// file outside the sandbox while the model was told "report.md was written
+    /// to the working folder". `finish_up` then stamped 0600 on the foreign file
+    /// too. Measured before the fix: `state=Written`, victim exists.
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_symlink_is_not_written_through() {
+        let root = temp_dir("dangling");
+        let outside = temp_dir("dangling-victim");
+        let victim = outside.join("planted.md");
+        let _ = fs::remove_file(&victim);
+        std::os::unix::fs::symlink(&victim, root.join("report.md")).expect("plant the link");
+
+        let engine = TextEngine::new(DocumentFormat::Markdown);
+        let written = write_document(&engine, "report", None, Some("body"), None, &root).unwrap();
+
+        assert_eq!(
+            written.file_name().unwrap(),
+            "report-2.md",
+            "the loop did not rotate past the link"
+        );
+        assert!(
+            !victim.exists(),
+            "the file OUTSIDE the sandbox was created: {}",
+            victim.display()
+        );
+        assert!(
+            root.join("report.md")
+                .symlink_metadata()
+                .expect("the link")
+                .file_type()
+                .is_symlink(),
+            "the link itself was replaced"
+        );
+        fs::remove_dir_all(&root).ok();
+        fs::remove_dir_all(&outside).ok();
     }
 
     /// If the model bakes an extension INTO THE NAME no double extension MUST be

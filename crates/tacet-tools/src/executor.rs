@@ -244,9 +244,10 @@ fn recover_nameless_json(raw: &str, catalog: &ToolCatalog) -> Option<ToolCall> {
 /// back to the `Debug` form. The reason is to avoid a silent false match — had
 /// we reduced the key to the name, two legitimate calls with different
 /// arguments (`read_document` on two different files) would look like a repeat.
-fn call_key(call: &ToolCall) -> String {
-    let args = serde_json::to_string(&call.args).unwrap_or_else(|_| format!("{:?}", call.args));
-    format!("{}|{args}", call.name)
+/// THE NAME IS THE CANONICAL ONE, NOT THE MODEL'S SPELLING (see `execute`).
+fn call_key(name: &str, args: &Value) -> String {
+    let text = serde_json::to_string(args).unwrap_or_else(|_| format!("{args:?}"));
+    format!("{name}|{text}")
 }
 
 /// Returns the identifier at the END of the text (`[A-Za-z0-9_]*`).
@@ -590,6 +591,20 @@ impl ToolExecutor {
             );
         };
 
+        // FROM HERE ON THE CATALOG'S SPELLING IS AUTHORITATIVE, NEVER THE MODEL'S.
+        //
+        // `ToolCatalog::find` forgives ASCII case ON PURPOSE — it is a SPELLING
+        // gate and a model that writes `Web_ara(...)` should still be understood.
+        // But every gate below matches a `String` EXACTLY: `external_tools`
+        // (gate 3), `turn_calls` (gate 5) and the denial cache. Feeding them the
+        // model's spelling turned that relaxation into an APPROVAL BYPASS:
+        // `Web_fetch` resolved to `web_fetch` at gate 1 and then MISSED gate 3,
+        // so in a tainted session data left the device with no question asked —
+        // measured end to end, the receiving server really saw the request. A
+        // poisoned MCP tool description is enough to make the model capitalise a
+        // name. Canonicalising once, here, closes it for every gate at the same time.
+        let name = tool.name().to_string();
+
         // GATE 2 — the schema. The tool validates internally too; this layer
         // guarantees the tool NEVER RUNS (which matters for tools with side effects).
         if let Err(error) = tool.schema().validate(&call.args) {
@@ -617,7 +632,7 @@ impl ToolExecutor {
         //    marked "done" and its repeat tells the model "duplicate_call". The
         //    right answer is "permission_denied": the model must know it was
         //    denied, not that it repeated itself.
-        let key = call_key(call);
+        let key = call_key(&name, &call.args);
         if self
             .turn_calls
             .lock()
@@ -625,7 +640,7 @@ impl ToolExecutor {
             .contains(&key)
         {
             return self.outcome(
-                &call.name,
+                &name,
                 ExecutionReason::RepeatedCall,
                 REPEAT_MODEL_TEXT.to_string(),
                 // THE CHIP TEXT IS EMPTY: the user must not see this as an
@@ -642,11 +657,11 @@ impl ToolExecutor {
         // GATE 3 — approval. Only in a tainted session and only for external
         // tools. It is not asked in a clean session: what is rare gets read,
         // what is frequent stops being read and the gate loses its function.
-        if self.external_tools.contains(&call.name) && self.session_tainted() {
+        if self.external_tools.contains(&name) && self.session_tainted() {
             let content = serde_json::to_string(&call.args).unwrap_or_default();
             let request = ApprovalRequest {
-                source: call.name.clone(),
-                tool_name: call.name.clone(),
+                source: name.clone(),
+                tool_name: name.clone(),
                 content,
             };
             if !self.ask_approval(&request) {
@@ -657,7 +672,7 @@ impl ToolExecutor {
                         .raw_input(request.content.clone()),
                 );
                 return self.outcome(
-                    &call.name,
+                    &name,
                     ExecutionReason::ApprovalDenied,
                     DENIAL_MODEL_TEXT.to_string(),
                     format!("{} · not sent", request.source),
@@ -698,7 +713,7 @@ impl ToolExecutor {
         };
 
         self.outcome(
-            &call.name,
+            &name,
             reason,
             outcome.to_model,
             outcome.chip_text,
@@ -1186,6 +1201,131 @@ mod tests {
         assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 
+    /// A counting version of the external tool: only "the tool did not run"
+    /// proves the gate held. `Ok`/`Err` on the outcome would not — a tool that
+    /// ran and then failed looks the same from outside.
+    struct CountingExternal(Arc<std::sync::atomic::AtomicUsize>);
+    impl Tool for CountingExternal {
+        fn name(&self) -> &str {
+            "send_out"
+        }
+        fn description(&self) -> &str {
+            "Sends the data out."
+        }
+        fn schema(&self) -> ArgSchema {
+            ArgSchema::object(vec![Field::new("body", ArgSchema::text()).required()])
+        }
+        fn run<'a>(&'a self, _a: Value, _c: &'a mut ToolContext) -> ToolFuture<'a> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            boxed(async move { ToolOutcome::read_ok("sent", "sent") })
+        }
+    }
+
+    /// THE APPROVAL BYPASS. `ToolCatalog::find` forgives ASCII case on purpose,
+    /// but `external_tools` matched the model's spelling EXACTLY — so
+    /// `Web_fetch`/`Send_out` resolved at gate 1 and then MISSED gate 3, and in a
+    /// tainted session the data left the device with no question asked (measured
+    /// end to end: the receiving server really saw the request). A poisoned MCP
+    /// tool description is enough to make the model capitalise a name.
+    #[test]
+    fn a_capitalised_external_tool_still_hits_the_approval_gate() {
+        let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut k = ToolCatalog::new();
+        k.add(Arc::new(PersonalTool))
+            .add(Arc::new(CountingExternal(Arc::clone(&counter))));
+        let y = ToolExecutor::new(k).external_tool("send_out");
+        let mut ctx = context();
+
+        run(y.execute(
+            &ToolCall::new("personal_read", serde_json::json!({"what": "calendar"})),
+            y.active_turn(),
+            &mut ctx,
+        ));
+        for spelling in ["Send_out", "SEND_OUT", "sEnD_OuT"] {
+            let s = run(y.execute(
+                &ToolCall::new(spelling, serde_json::json!({"body": "data: 42"})),
+                y.new_turn(),
+                &mut ctx,
+            ));
+            assert_eq!(
+                s.reason,
+                ExecutionReason::ApprovalDenied,
+                "the gate was skipped for {spelling}"
+            );
+        }
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            0,
+            "THE TOOL REALLY RAN — data left the device without a question"
+        );
+    }
+
+    /// The denial cache is keyed by name too: a case variant must not be a fresh
+    /// question, or the model gets an insistence loop for free.
+    #[test]
+    fn a_case_variant_does_not_reopen_a_denied_source() {
+        struct CountingGate(Arc<std::sync::atomic::AtomicUsize>);
+        impl ApprovalGate for CountingGate {
+            fn request(&self, _i: &ApprovalRequest) -> bool {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                false
+            }
+        }
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut k = ToolCatalog::new();
+        k.add(Arc::new(PersonalTool)).add(Arc::new(ExternalTool));
+        let y = ToolExecutor::new(k)
+            .external_tool("send_out")
+            .with_gate(CountingGate(Arc::clone(&asked)));
+        let mut ctx = context();
+
+        run(y.execute(
+            &ToolCall::new("personal_read", serde_json::json!({"what": "x"})),
+            y.active_turn(),
+            &mut ctx,
+        ));
+        for spelling in ["send_out", "SEND_OUT", "Send_Out"] {
+            run(y.execute(
+                &ToolCall::new(spelling, serde_json::json!({"body": "x"})),
+                y.new_turn(),
+                &mut ctx,
+            ));
+        }
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            1,
+            "a case variant asked the user again"
+        );
+    }
+
+    /// Gate 5 is keyed by name too: rewriting the name in another case is not a
+    /// new call, it is the same call.
+    #[test]
+    fn a_case_variant_is_still_a_repeated_call() {
+        let (y, counter) = counting();
+        let mut ctx = context();
+        let ticket = y.new_turn();
+
+        let first = run(y.execute(
+            &ToolCall::new("say", serde_json::json!({"x": "a"})),
+            ticket,
+            &mut ctx,
+        ));
+        assert_eq!(first.reason, ExecutionReason::Ok);
+
+        let second = run(y.execute(
+            &ToolCall::new("Say", serde_json::json!({"x": "a"})),
+            ticket,
+            &mut ctx,
+        ));
+        assert_eq!(second.reason, ExecutionReason::RepeatedCall);
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            1,
+            "the case variant ran the tool a second time"
+        );
+    }
+
     // --- Side effect / retry ---
 
     #[test]
@@ -1410,10 +1550,10 @@ mod tests {
     fn argument_order_does_not_break_sameness() {
         let a = ToolCall::new("say", serde_json::json!({"x": "1", "y": "2"}));
         let b = ToolCall::new("say", serde_json::json!({"y": "2", "x": "1"}));
-        assert_eq!(call_key(&a), call_key(&b));
+        assert_eq!(call_key(&a.name, &a.args), call_key(&b.name, &b.args));
         // A different value, a different key.
         let c = ToolCall::new("say", serde_json::json!({"x": "9", "y": "2"}));
-        assert_ne!(call_key(&a), call_key(&c));
+        assert_ne!(call_key(&a.name, &a.args), call_key(&c.name, &c.args));
     }
 
     #[test]
