@@ -41,4 +41,4 @@ While Ollama is a general-purpose local LLM runner and server, Tacet is a specia
 ## Links
 
 - Website: https://usetacet.com
-- Repository: https://github.com/farukciftler/ketum
+- Repository: https://github.com/farukciftler/tacet-cli
