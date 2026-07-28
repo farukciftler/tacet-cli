@@ -478,6 +478,15 @@ enum EngineChoice {
 }
 
 fn main() -> ExitCode {
+    // ANSWERED BEFORE ANYTHING ELSE, including argument parsing. `tacet update
+    // --install` runs the DOWNLOADED binary with this flag to ask what it was
+    // built with, and that question has to be cheap and impossible to fail:
+    // no config read, no model discovery, no banner. One word, then exit.
+    if std::env::args().any(|a| a == "--print-features") {
+        println!("{}", update::compiled_features());
+        return ExitCode::SUCCESS;
+    }
+
     // Clears the `.old` left behind by a previous Windows self-update. It could
     // not be removed at the time, because it was the file then executing. A
     // no-op on Unix, and it touches nothing but that one path.
@@ -1585,7 +1594,11 @@ fn stdin_has_data() -> bool {
     // visible rather than silent.
     const WAIT_MS: i32 = 120;
 
-    let mut fd = PollFd { fd: 0, events: POLLIN, revents: 0 };
+    let mut fd = PollFd {
+        fd: 0,
+        events: POLLIN,
+        revents: 0,
+    };
     // SAFETY: one descriptor, valid for the call; `poll` writes only `revents`.
     let ready = unsafe { poll(&mut fd, 1, WAIT_MS) };
     ready > 0 && (fd.revents & POLLIN) != 0
@@ -2377,7 +2390,15 @@ fn chat(run: ChatRun) -> ExitCode {
             // `/addon on web-search` said "opened" while the session kept
             // answering "the addon is CLOSED" until a restart).
             let addon_touched = message.trim_start().starts_with("/addon ");
-            match slash(&message, &catalog, &memory, &mut history, &engine, &color, &last_artifact) {
+            match slash(
+                &message,
+                &catalog,
+                &memory,
+                &mut history,
+                &engine,
+                &color,
+                &last_artifact,
+            ) {
                 SlashResult::Quit => break,
                 SlashResult::Handled => {
                     // /clear must also clear the COUNTER LINE: leaving the old
@@ -2652,7 +2673,10 @@ fn chat(run: ChatRun) -> ExitCode {
                 // this file; it looks like the model ignored them.
                 let mut parts = Vec::new();
                 if report.dropped_turns > 0 {
-                    parts.push(format!("{} older turns left the window", report.dropped_turns));
+                    parts.push(format!(
+                        "{} older turns left the window",
+                        report.dropped_turns
+                    ));
                 }
                 if report.guide_dropped {
                     parts.push("the skill guide was dropped".to_string());
@@ -2663,7 +2687,11 @@ fn chat(run: ChatRun) -> ExitCode {
                 eprintln!(
                     "{}",
                     color.paint(
-                        if report.question_truncated { YELLOW } else { DIM },
+                        if report.question_truncated {
+                            YELLOW
+                        } else {
+                            DIM
+                        },
                         &format!("(making room: {})", parts.join(" · "))
                     )
                 );
@@ -3372,9 +3400,15 @@ fn slash(
         // keystroke (ctrl-o) shows what was just written, numbered, capped.
         "/preview" => {
             match last_artifact {
-                None => println!("{}", color.paint(DIM, "(nothing saved in this session yet)")),
+                None => println!(
+                    "{}",
+                    color.paint(DIM, "(nothing saved in this session yet)")
+                ),
                 Some(p) => match std::fs::read_to_string(p) {
-                    Err(e) => println!("{}", color.paint(YELLOW, &format!("({} could not be read: {e})", p.display()))),
+                    Err(e) => println!(
+                        "{}",
+                        color.paint(YELLOW, &format!("({} could not be read: {e})", p.display()))
+                    ),
                     Ok(text) => {
                         const CAP: usize = 60;
                         println!("{}", color.paint(BOLD, &p.display().to_string()));
@@ -3383,7 +3417,13 @@ fn slash(
                         }
                         let total = text.lines().count();
                         if total > CAP {
-                            println!("{}", color.paint(DIM, &format!("  … {} more lines in the file", total - CAP)));
+                            println!(
+                                "{}",
+                                color.paint(
+                                    DIM,
+                                    &format!("  … {} more lines in the file", total - CAP)
+                                )
+                            );
                         }
                     }
                 },
