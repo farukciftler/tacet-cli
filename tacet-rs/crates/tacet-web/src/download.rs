@@ -22,7 +22,7 @@
 //! download(...) }`) looks like it writes the same thing but does not: it gets
 //! forgotten at the next call site and nobody notices.
 //!
-//! PRODUCTION CALLER: `tacet-cli` → `model_download` (`tacet model download <name>`).
+//! PRODUCTION CALLER: `tacet-cli` → `model_download` (`tacet models download <name>`).
 //! For one turn this was a TESTED BUT UNWIRED mechanism — the `tacet-cli`
 //! manifest had no `tacet-web` dependency, so although the build was green
 //! nothing called this file in production. The dependency was added and the
@@ -225,7 +225,7 @@ impl fmt::Display for DownloadError {
 /// SEARCH ("The search server could not be reached.", "The search took too
 /// long.") and, because the same variants come back over the wire here too, a
 /// user downloading a model was being shown a sentence ABOUT SEARCH. This was
-/// found by measurement: `tacet model download` was run with an invalid host
+/// found by measurement: `tacet models download` was run with an invalid host
 /// name and the output said "The search server could not be reached."
 ///
 /// Generalising `WebError`'s strings (to, say, "The server could not be

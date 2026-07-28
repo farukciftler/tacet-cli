@@ -16,7 +16,7 @@
 //! here one by one; they derive from the `model_package` module. The variable
 //! names and the config path used to be written HERE BY HAND; both had gone
 //! stale after a brand change and, because doc comments are not compiled, nobody
-//! noticed. The single source for the current list: `tacet model list` (it
+//! noticed. The single source for the current list: `tacet models list` (it
 //! PRINTS the roots and the packages found) and `tacet_kernel::env` (the config
 //! directory).
 //!
@@ -876,17 +876,88 @@ mod model_package {
         pub sha256: Option<String>,
     }
 
-    /// THE EMBEDDED CATALOG IS EMPTY — and that is not an omission, it is a
-    /// decision.
+    /// The catalog shipped with the binary, so a fresh install can fetch a
+    /// working model without writing a JSON file first.
     ///
-    /// To embed a URL here, that address and that file's SHA-256 would have to be
-    /// VERIFIED. Neither was measured on this machine. A made-up digest blows up
-    /// verification on the first download and pushes the user to say "turn
-    /// verification off"; a made-up URL sends the user to a mirror we did not
-    /// choose. An empty catalog makes the user write their own source — KNOWING
-    /// which weight they are pulling.
+    /// THIS USED TO BE EMPTY, and the reason it was empty still stands as the bar
+    /// every entry here had to clear: an invented address sends the user to a
+    /// mirror nobody chose, and an invented digest fails verification on the
+    /// first download and teaches the user to switch verification off. So none of
+    /// the values below were written from memory. Each URL was requested and
+    /// answered 200 without credentials, and each `content-length` matched the
+    /// size recorded here. The digests are the registry's own `lfs.oid`, which
+    /// for a Hugging Face LFS object IS the SHA-256 of the content — a fact that
+    /// can be checked without downloading gigabytes, and which the first real
+    /// download then confirms.
+    ///
+    /// `sha256: None` on the Qwen2.5 tokenizer is NOT an oversight: that file is
+    /// stored inline rather than through LFS, so the registry publishes no
+    /// digest for it. Rather than invent one, the download path falls back to
+    /// trust-on-first-use — it computes the digest, shows it, and records it.
+    ///
+    /// A user's own `packages.json` still wins by name: this is a default, not a
+    /// lock. And nothing here downloads on its own — the approval gate prints the
+    /// address and the size and waits for a keypress.
     pub fn embedded_catalog() -> Vec<RemotePackage> {
-        Vec::new()
+        fn package(name: &str, files: [(&str, &str, u64, Option<&str>); 2]) -> RemotePackage {
+            RemotePackage {
+                name: name.to_string(),
+                files: files
+                    .into_iter()
+                    .map(|(file, url, bytes, sha)| RemoteFile {
+                        name: file.to_string(),
+                        url: url.to_string(),
+                        bytes: Some(bytes),
+                        sha256: sha.map(str::to_string),
+                    })
+                    .collect(),
+            }
+        }
+
+        vec![
+            // The default (`DEFAULT_MODEL`). Q4_K_M: the smallest quantisation
+            // that still answers well enough to be worth shipping as the one a
+            // first-time user gets.
+            package(
+                "qwen3-4b",
+                [
+                    (
+                        "model.gguf",
+                        "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf",
+                        2_497_280_256,
+                        Some("7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5"),
+                    ),
+                    // The tokenizer lives in the base repository, not the GGUF
+                    // one: a GGUF carries its vocabulary internally, but this
+                    // engine wants a `tokenizer.json` on disk.
+                    (
+                        "tokenizer.json",
+                        "https://huggingface.co/Qwen/Qwen3-4B/resolve/main/tokenizer.json",
+                        11_422_654,
+                        Some("aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"),
+                    ),
+                ],
+            ),
+            // A smaller second option for machines where 2.5 GB of weights is
+            // the constraint rather than the quality.
+            package(
+                "qwen2.5-3b",
+                [
+                    (
+                        "model.gguf",
+                        "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
+                        2_104_932_768,
+                        Some("626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d"),
+                    ),
+                    (
+                        "tokenizer.json",
+                        "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct/resolve/main/tokenizer.json",
+                        7_031_645,
+                        None,
+                    ),
+                ],
+            ),
+        ]
     }
 
     /// The full path of `packages.json` (in the config directory — this is a
@@ -910,9 +981,15 @@ mod model_package {
   ]
 }"#;
 
-    /// Reads the remote catalog. `Err` = the file EXISTS but is broken — not
-    /// silently swallowed. If the file is missing, `Ok(vec![])` (the embedded
-    /// catalog is empty too).
+    /// Reads the remote catalog: the user's `packages.json` MERGED over the
+    /// embedded defaults. `Err` = the file EXISTS but is broken — not silently
+    /// swallowed.
+    ///
+    /// Merged rather than replaced, and by NAME. Writing one entry of your own
+    /// used to hide every default, so a user who added a private mirror silently
+    /// lost `qwen3-4b` and had no way to tell that their file was the cause.
+    /// Same name = yours wins; that is the override anyone writing the file
+    /// actually means.
     pub fn read_remote_catalog() -> Result<Vec<RemotePackage>, String> {
         let Some(path) = remote_catalog_path() else {
             return Ok(embedded_catalog());
@@ -922,7 +999,16 @@ mod model_package {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(embedded_catalog()),
             Err(e) => return Err(format!("{}: {e}", path.display())),
         };
-        parse_remote_catalog(&raw).map_err(|e| format!("{}: {e}", path.display()))
+        let mut merged =
+            parse_remote_catalog(&raw).map_err(|e| format!("{}: {e}", path.display()))?;
+        let taken: std::collections::HashSet<String> =
+            merged.iter().map(|p| p.name.clone()).collect();
+        merged.extend(
+            embedded_catalog()
+                .into_iter()
+                .filter(|p| !taken.contains(&p.name)),
+        );
+        Ok(merged)
     }
 
     /// SEPARATE AND PUBLIC: so it can be tested without touching the file system.
@@ -1106,7 +1192,7 @@ fn model_not_found_report(requested: &str, color: &Color) {
     let packages = model_package::scan(&roots);
     if packages.is_empty() {
         // NO PACKAGES AT ALL. What to suggest depends on THE STATE OF THE
-        // CATALOG: `tacet model download` now exists but downloads ONLY from the
+        // CATALOG: `tacet models download` now exists but downloads ONLY from the
         // user's own `packages.json` (the embedded catalog is deliberately
         // empty). So suggesting the command with an empty catalog would send the
         // user to a line that does nothing.
@@ -1121,7 +1207,7 @@ fn model_not_found_report(requested: &str, color: &Color) {
                 );
                 eprintln!(
                     "{}",
-                    color.paint(DIM, &format!("  to download: tacet model download {}", names[0]))
+                    color.paint(DIM, &format!("  to download: tacet models download {}", names[0]))
                 );
             }
             // A BROKEN CATALOG IS NOT PASSED OVER IN SILENCE: the user wrote the
@@ -1134,7 +1220,7 @@ fn model_not_found_report(requested: &str, color: &Color) {
                     color.paint(
                         DIM,
                         &format!(
-                            "  you can write a download source into {}; for the shape: tacet model list --json",
+                            "  you can write a download source into {}; for the shape: tacet models list --json",
                             p.display()
                         )
                     )
@@ -1157,7 +1243,7 @@ fn model_not_found_report(requested: &str, color: &Color) {
 
     eprintln!(
         "{}",
-        color.paint(DIM, "  what was found (tacet model list):")
+        color.paint(DIM, "  what was found (tacet models list):")
     );
     for p in &packages {
         let note = if p.is_complete() {
@@ -2589,7 +2675,7 @@ fn package_list(json: bool) -> ExitCode {
 // model — model (weight) packages
 // ---------------------------------------------------------------------------
 
-/// `tacet model list` — prints the installed model packages.
+/// `tacet models list` — prints the installed model packages.
 ///
 /// WHY IT EXISTS: model discovery was silent. The shell either said
 /// "(model: /long/path.gguf)" or "not found"; NOTHING IN BETWEEN was visible —
@@ -2759,7 +2845,7 @@ fn model_list(json: bool, selected_name: &str) -> ExitCode {
             if let Some(first) = names.first() {
                 println!(
                     "{}",
-                    color.paint(DIM, &format!("to download: tacet model download {first}"))
+                    color.paint(DIM, &format!("to download: tacet models download {first}"))
                 );
             }
         }
@@ -2913,7 +2999,7 @@ fn download_root() -> Option<std::path::PathBuf> {
     model_package::model_roots().into_iter().next()
 }
 
-/// `tacet model download <name>` — downloads the package from `packages.json`.
+/// `tacet models download <name>` — downloads the package from `packages.json`.
 ///
 /// A PRODUCTION CALL: this function really does call `tacet_web::download`. The
 /// module sat "tested but not wired" for a whole round; it is written out step by
@@ -3643,13 +3729,95 @@ mod tests {
         );
     }
 
-    /// THE EMBEDDED CATALOG MUST STAY EMPTY. If a URL/SHA is embedded here both
-    /// must be VERIFIED; this test catches that decision loosening in silence.
+    /// The embedded catalog was EMPTY until a default was shipped, and the test
+    /// that guarded the emptiness caught this change rather than letting it pass
+    /// — which is what it was for. It is replaced, not deleted: the reason the
+    /// catalog was empty was that an unverified address or digest is worse than
+    /// no catalog, so what is measured now is that every entry still clears that
+    /// bar.
     #[test]
-    fn the_embedded_catalog_is_empty() {
-        assert!(model_package::embedded_catalog().is_empty());
-        // The example text carries no real address either.
+    fn every_embedded_entry_is_complete_and_https() {
+        let catalog = model_package::embedded_catalog();
+        assert!(!catalog.is_empty(), "the default catalog disappeared");
+
+        for package in &catalog {
+            // Both files, or the package downloads and still cannot be loaded:
+            // the engine wants a tokenizer next to the weight.
+            let names: Vec<&str> = package.files.iter().map(|f| f.name.as_str()).collect();
+            assert!(names.contains(&"model.gguf"), "{}: no weight", package.name);
+            assert!(
+                names.contains(&"tokenizer.json"),
+                "{}: no tokenizer",
+                package.name
+            );
+
+            for file in &package.files {
+                assert!(
+                    file.url.starts_with("https://"),
+                    "{} / {}: not https",
+                    package.name,
+                    file.name
+                );
+                // The size is what the approval screen shows. Without it the
+                // user is asked to accept a download of unknown size, which is
+                // the one quantitative fact that decision rests on.
+                assert!(
+                    file.bytes.is_some_and(|b| b > 0),
+                    "{} / {}: no size declared",
+                    package.name,
+                    file.name
+                );
+                // `None` is allowed — it means trust-on-first-use — but a value
+                // that is present must LOOK like a SHA-256, or verification
+                // fails on the first download and teaches the user to disable it.
+                if let Some(sha) = &file.sha256 {
+                    assert_eq!(sha.len(), 64, "{}: digest is not 64 chars", file.name);
+                    assert!(
+                        sha.chars()
+                            .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()),
+                        "{}: digest is not lowercase hex",
+                        file.name
+                    );
+                }
+            }
+        }
+
+        // The default model must be gettable, or a fresh install lands on the
+        // FakeEngine with no way out that the tool itself can offer.
+        assert!(
+            catalog.iter().any(|p| p.name == DEFAULT_MODEL),
+            "the catalog does not carry the default model ({DEFAULT_MODEL})"
+        );
+        // The example text still invents no address of its own.
         assert!(model_package::EXAMPLE_CATALOG.contains("<your-own-mirror>"));
+    }
+
+    /// A user's own entry overrides by name and does NOT hide the rest.
+    #[test]
+    fn a_user_entry_overrides_by_name_and_keeps_the_other_defaults() {
+        let mine = model_package::parse_remote_catalog(
+            r#"{"packages":[{"name":"qwen3-4b","files":[
+                 {"name":"model.gguf","url":"https://mine.invalid/m.gguf"},
+                 {"name":"tokenizer.json","url":"https://mine.invalid/t.json"}]}]}"#,
+        )
+        .unwrap();
+        let taken: std::collections::HashSet<String> =
+            mine.iter().map(|p| p.name.clone()).collect();
+        let merged: Vec<_> = mine
+            .iter()
+            .cloned()
+            .chain(
+                model_package::embedded_catalog()
+                    .into_iter()
+                    .filter(|p| !taken.contains(&p.name)),
+            )
+            .collect();
+
+        let overridden = merged.iter().find(|p| p.name == "qwen3-4b").unwrap();
+        assert_eq!(overridden.files[0].url, "https://mine.invalid/m.gguf");
+        // The one the user did not mention survives — before merging, writing a
+        // single entry silently emptied the rest of the catalog.
+        assert!(merged.iter().any(|p| p.name == "qwen2.5-3b"));
     }
 
     /// A SEAM TEST — the model variable's name must be the same on the DISCOVERY
