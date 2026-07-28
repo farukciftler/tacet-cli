@@ -386,12 +386,22 @@ pub fn addon_diagnoses(catalog: &ToolCatalog, gates: AddonGates) -> Vec<String> 
     // here rather than in the tool, which would otherwise need a second copy of
     // the name rule to explain itself.
     if gates.shell && catalog.find("shell").is_none() {
-        out.push(
+        // TWO REASONS, AND THEY MUST NOT SHARE A SENTENCE. On Windows the tool is
+        // absent whatever the allowlist says, so telling a Windows user to fix
+        // their command list sends them round a loop they cannot finish — the
+        // failure this whole function exists to prevent.
+        out.push(if cfg!(unix) {
             "shell is off: the addon is open but its command list holds no usable program name. \
              `tacet addon install shell` records one BARE name per line (git, ls, rg) — with no \
              usable name the tool is not in the catalog at all."
-                .to_string(),
-        );
+                .to_string()
+        } else {
+            "shell is off on this platform, and the allowlist is not the reason. Stopping a \
+             command that overruns its timeout needs a process group, which this build only has \
+             on macOS and Linux; on Windows a runaway command and everything it started would \
+             keep running. The tool stays out rather than run without the one bound it promises."
+                .to_string()
+        });
     }
     out
 }

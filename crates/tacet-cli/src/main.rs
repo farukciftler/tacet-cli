@@ -63,6 +63,7 @@ mod addon;
 mod config;
 mod filter;
 mod format;
+mod host_memory;
 mod input;
 mod receipt;
 mod session;
@@ -1625,6 +1626,16 @@ fn load_weights(
     gguf: &str,
     tokenizer: Option<&str>,
 ) -> Result<Arc<dyn EngineProvider>, String> {
+    // THE MEMORY QUESTION IS ASKED BEFORE THE ALLOCATION, because after it there
+    // is nobody left to ask: the kernel's OOM killer sends SIGKILL, which no
+    // handler can catch, and the user is left with the shell's bare `Killed`
+    // under a spinner that was still saying "loading". Measured on a Linux VPS
+    // running 0.1.11 — four attempts, four one-word failures. See `host_memory`
+    // for why this only speaks up on Linux and why the estimate is deliberately
+    // small.
+    if let Some(refusal) = host_memory::refusal(std::path::Path::new(gguf), model_name) {
+        return Err(refusal);
+    }
     let mut indicator = if human {
         TurnIndicator::start(Arc::clone(screen), &CANCEL, "loading the model")
     } else {

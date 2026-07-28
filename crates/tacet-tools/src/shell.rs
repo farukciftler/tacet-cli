@@ -148,6 +148,25 @@ impl ShellTool {
     /// judged open by the state after it.
     pub fn discover() -> Option<ShellTool> {
         use tacet_web::addon;
+        // NOT ON WINDOWS, AND NOT BECAUSE IT WOULD FAIL TO COMPILE — it compiles
+        // fine. The timeout is what is missing. On unix a run gets its own
+        // process group (`setsid`) and the timeout path signals the GROUP, so a
+        // build that spawns compilers dies with it. Both of those calls are
+        // `#[cfg(unix)]`; on Windows the same path can only do `child.kill()`,
+        // which leaves every descendant running with the pipes open. The tool
+        // would still return output and still look like it works, while the one
+        // promise that bounds it — "a runaway command is stopped" — quietly did
+        // not hold.
+        //
+        // That is the same rule `run_code` follows when no sandbox can be
+        // measured: the tool leaves the catalog rather than run with a guarantee
+        // it cannot keep. Windows needs a job object (`CreateJobObject` +
+        // `TerminateJobObject`), which is a real piece of work and an unmeasured
+        // one here. Until someone does it and runs it on Windows, the honest
+        // state is absent.
+        if !cfg!(unix) {
+            return None;
+        }
         let record = addon::read().ok()?;
         let entry = record.find(addon::SHELL)?;
         if !entry.open {
@@ -1038,6 +1057,7 @@ mod tests {
     /// `; rm -rf`, `$(...)`, `&&`, `*` and `|` are handed to `echo` and come
     /// back as the text they are. If a shell ever creeps in between, the sentinel
     /// file disappears and the output stops matching.
+    #[cfg(unix)]
     #[test]
     fn an_argument_is_not_interpreted_as_a_command() {
         let root = temp_dir("injection");
@@ -1063,6 +1083,7 @@ mod tests {
     }
 
     /// The command runs in the CONTEXT'S folder, not in the process's.
+    #[cfg(unix)]
     #[test]
     fn the_command_runs_in_the_working_directory() {
         let root = temp_dir("cwd").canonicalize().expect("canonical fixture");
@@ -1079,6 +1100,7 @@ mod tests {
     /// A COMMAND THAT RAN TAINTS THE SESSION, whatever its exit code — the
     /// output is in the context either way, so the next outgoing call must meet
     /// the approval gate.
+    #[cfg(unix)]
     #[test]
     fn a_command_that_ran_taints_the_session() {
         let root = temp_dir("taint");
@@ -1095,6 +1117,7 @@ mod tests {
 
     /// A NON-ZERO EXIT IS AN ANSWER, NOT A TOOL FAILURE: `false` exits 1 and the
     /// model must be able to report that instead of being told to retry.
+    #[cfg(unix)]
     #[test]
     fn a_non_zero_exit_is_reported_not_treated_as_a_failure() {
         let root = temp_dir("exit");
@@ -1112,6 +1135,7 @@ mod tests {
 
     /// THE TIMEOUT REALLY KILLS. `sleep 30` under a one-second deadline has to
     /// come back in about a second, not in thirty.
+    #[cfg(unix)]
     #[test]
     fn the_timeout_kills_the_command() {
         let root = temp_dir("timeout");
@@ -1134,6 +1158,7 @@ mod tests {
 
     /// BIG OUTPUT DOES NOT GO THROUGH THE MODEL. What the model sees is bounded
     /// and the whole thing is in the DataStore behind a reference.
+    #[cfg(unix)]
     #[test]
     fn large_output_is_cut_and_the_rest_goes_to_the_store() {
         let root = temp_dir("large");
@@ -1189,6 +1214,7 @@ mod tests {
     /// screen-clearing escape sequence must arrive with no control characters
     /// left in it — in the chip's detail view, in the model's text, and in the
     /// store, because all three end up on a terminal eventually.
+    #[cfg(unix)]
     #[test]
     fn control_characters_do_not_survive_the_output() {
         let root = temp_dir("ansi");

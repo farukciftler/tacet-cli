@@ -47,9 +47,11 @@ tacet-grammar = { path = "crates/tacet-grammar", version = "0.1.0" }
 # a gate has to be the MINIMUM, or the install looks identical while missing the
 # thing it was published for. That has happened here once already (see tacet-web).
 tacet-engine = { path = "crates/tacet-engine", version = "0.1.2" }
-# 0.1.3: the addon gates and the five tools behind them live here. Below it,
+# 0.1.3 brought the addon gates and the five tools behind them; below it,
 # `catalog.rs` has no gate to ask and `shell`/`http`/`db` do not exist at all.
-tacet-tools = { path = "crates/tacet-tools", version = "0.1.3" }
+# 0.1.4 IS THE FLOOR: below it `shell` is offered on Windows, where the timeout
+# cannot kill the process group and a runaway command would outlive the turn.
+tacet-tools = { path = "crates/tacet-tools", version = "0.1.4" }
 tacet-skills = { path = "crates/tacet-skills", version = "0.1.0" }
 tacet-memory = { path = "crates/tacet-memory", version = "0.1.0" }
 # THE NETWORK MONOPOLY: a network call exists ONLY in these two crates. No
