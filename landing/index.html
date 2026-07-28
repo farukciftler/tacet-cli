@@ -60,11 +60,11 @@
                 <span class="brand-mark">Tacet</span>
             </a>
             <nav class="nav-links">
-                <a href="#demo">See it work</a>
+                <a href="#install">Get started</a>
                 <a href="#features">What it does</a>
                 <a href="#private">Why private</a>
+                <a href="#compare">vs Ollama</a>
                 <a href="#github">Open Source</a>
-                <a href="#install">Get started</a>
             </nav>
             <div class="nav-actions">
                 <button class="copy-btn nav-code-btn" data-copy="cargo install tacet-cli">
@@ -118,6 +118,31 @@
                 <div class="terminal-screen" id="demo-screen"></div>
             </div>
             <p class="demo-caption">The demo above plays by itself, on a loop. The real thing is exactly this simple: you type, Tacet answers.</p>
+        </div>
+    </section>
+
+    <!-- Quickstart Installation -->
+    <section id="install" class="section alt-bg">
+        <div class="section-container">
+            <div class="section-header text-center">
+                <span class="section-label">GET STARTED</span>
+                <h2>One line does everything</h2>
+                <p>Copy it, paste it, come back in five minutes: the installer sets up Tacet, fetches the model (one-time, ~2&nbsp;GB) and starts your first chat.</p>
+            </div>
+
+            <div class="install-box">
+                <div class="os-tabs" role="tablist" aria-label="Choose your system">
+                    <button class="os-tab" data-os="unix" role="tab">macOS · Linux</button>
+                    <button class="os-tab" data-os="win" role="tab">Windows</button>
+                </div>
+
+                <div class="install-line">
+                    <code id="install-cmd">curl -fsSL https://usetacet.com/install.sh | sh</code>
+                    <button id="install-copy" class="copy-btn copy-code-btn" data-copy="curl -fsSL https://usetacet.com/install.sh | sh">Copy</button>
+                </div>
+
+                <p class="install-alt">Already have Rust? <code>cargo install tacet-cli</code> works everywhere, then <code>tacet chat</code>. The model download stays on your disk; nothing else is fetched, ever.</p>
+            </div>
         </div>
     </section>
 
@@ -230,34 +255,6 @@
                         Contributing Guidelines ↗
                     </a>
                 </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- Quickstart Installation -->
-    <section id="install" class="section alt-bg">
-        <div class="section-container">
-            <div class="section-header text-center">
-                <span class="section-label">GET STARTED</span>
-                <h2>One line does everything</h2>
-                <p>Copy it, paste it, come back in five minutes: the installer sets up Tacet, fetches the model (one-time, ~2&nbsp;GB) and starts your first chat.</p>
-            </div>
-
-            <div class="install-box">
-                <div class="os-tabs" role="tablist" aria-label="Choose your system">
-                    <button class="os-tab" data-os="unix" role="tab">macOS · Linux</button>
-                    <button class="os-tab" data-os="win" role="tab">Windows</button>
-                </div>
-
-                <!-- ONE visible line; the tabs only swap its content. No hidden
-                     duplicates: with stale CSS or no JS this still renders as
-                     exactly one sensible command. -->
-                <div class="install-line">
-                    <code id="install-cmd">curl -fsSL https://usetacet.com/install.sh | sh</code>
-                    <button id="install-copy" class="copy-btn copy-code-btn" data-copy="curl -fsSL https://usetacet.com/install.sh | sh">Copy</button>
-                </div>
-
-                <p class="install-alt">Already have Rust? <code>cargo install tacet-cli</code> works everywhere, then <code>tacet chat</code>. The model download stays on your disk; nothing else is fetched, ever.</p>
             </div>
         </div>
     </section>
