@@ -431,10 +431,10 @@ impl CandleEngine {
         let mut produced: Vec<u32> = Vec::with_capacity(setting.max_tokens);
         // Diagnostics (env-gated, read once — polling an environment variable at
         // every step of the hot loop would slow down the measurement itself).
-        // The read goes through a single place (`tacet_core::env`) — it MUST read
+        // The read goes through a single place (`tacet_kernel::env`) — it MUST read
         // the same variable as the CLI's trace dump flag; a diagnostic that opens
         // in two halves is useless.
-        let dump = tacet_core::env_var("TACET_TRACE_DUMP").is_some();
+        let dump = tacet_kernel::env_var("TACET_TRACE_DUMP").is_some();
         // How many tokens were produced in a STRUCTURAL region (repeat penalty
         // skipped).
         let mut structural_count = 0usize;

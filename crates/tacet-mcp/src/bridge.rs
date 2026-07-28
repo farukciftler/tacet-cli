@@ -1,7 +1,7 @@
 //! THE TOOL BRIDGE: MCP's JSON Schema -> our `ArgSchema`.
 //!
 //! THIS IS THE MOST DANGEROUS PLACE. `ArgSchema` is deliberately CLOSED and
-//! SMALL (see `tacet-core::schema`): that is the condition for it to be
+//! SMALL (see `tacet-kernel::schema`): that is the condition for it to be
 //! compilable into a grammar. MCP servers, on the other hand, write full JSON
 //! Schema — `oneOf`, `$ref`, `pattern`, `additionalProperties`. When the
 //! incoming schema is WIDER than ours there are three options:
@@ -39,7 +39,7 @@
 //! every launch (eval would become incomparable).
 
 use serde_json::Value;
-use tacet_core::{ArgSchema, Field, SchemaKind};
+use tacet_kernel::{ArgSchema, Field, SchemaKind};
 
 /// The nesting cap. The root object is level 1.
 ///

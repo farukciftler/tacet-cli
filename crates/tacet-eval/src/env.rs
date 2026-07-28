@@ -15,7 +15,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tacet_core::{
+use tacet_kernel::{
     ArgSchema, Field, Tool, ToolCatalog, ToolContext, ToolFuture, ToolOutcome, boxed,
 };
 use tacet_tools::calc::CalcTool;

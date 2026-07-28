@@ -10,7 +10,7 @@
 //! WHY IN THIS CRATE: two separate sides read the registry — the shell that
 //! runs the commands (`tacet-cli`) and the tool layer that builds the catalog
 //! gate (`tacet-tools`). The shell depends on the tool layer, not the other way
-//! round; so the registry has to live in a crate BELOW both. `tacet-core` was a
+//! round; so the registry has to live in a crate BELOW both. `tacet-kernel` was a
 //! candidate too, but the rule there is "no work happens in this crate" (no
 //! file reads, no directory creation), while the registry writes to disk. What
 //! is left is `tacet-web`: today's only addon kind is the very thing that opens
@@ -269,11 +269,11 @@ impl Record {
 /// the rename would find web search silently off, with a "the addon was never
 /// installed" symptom that points nowhere.
 pub fn registry_path() -> Option<PathBuf> {
-    let current = tacet_core::env::config_path(REGISTRY_FILE)?;
+    let current = tacet_kernel::env::config_path(REGISTRY_FILE)?;
     if current.exists() {
         return Some(current);
     }
-    let legacy = tacet_core::env::config_path(LEGACY_REGISTRY_FILE)?;
+    let legacy = tacet_kernel::env::config_path(LEGACY_REGISTRY_FILE)?;
     if legacy.exists() {
         return Some(legacy);
     }
@@ -334,7 +334,7 @@ pub fn web_search_is_open() -> bool {
 /// exists it returns `None` and the client raises a "server not configured"
 /// error — THERE IS NO ADDRESS BAKED INTO THE CODE.
 pub fn web_address() -> Option<String> {
-    if let Some(v) = tacet_core::env_var(crate::client::ADDRESS_VARIABLE) {
+    if let Some(v) = tacet_kernel::env_var(crate::client::ADDRESS_VARIABLE) {
         let v = v.to_string_lossy().trim().to_string();
         if !v.is_empty() {
             return Some(v);

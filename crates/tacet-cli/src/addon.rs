@@ -591,7 +591,7 @@ fn take_approval(color: &Color, no_approval: bool) -> bool {
 }
 
 fn searxng_dir() -> Option<PathBuf> {
-    tacet_core::env::config_dir().map(|d| d.join(SEARXNG_DIR))
+    tacet_kernel::env::config_dir().map(|d| d.join(SEARXNG_DIR))
 }
 
 /// The output of `docker --version`. `None` = docker missing or not running.

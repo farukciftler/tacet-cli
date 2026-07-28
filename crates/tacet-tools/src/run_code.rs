@@ -51,7 +51,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use tacet_core::{
+use tacet_kernel::{
     ArgSchema, Field, Tool, ToolContext, ToolError, ToolFuture, ToolOutcome, ToolResult, ToolState,
     TraceUpdate, boxed,
 };
@@ -1032,7 +1032,7 @@ impl RunCodeTool {
                         &format!("{} characters of code output", output.len()),
                         output.clone(),
                     );
-                    tacet_core::source_ref_suffix(r.as_str())
+                    tacet_kernel::source_ref_suffix(r.as_str())
                 } else {
                     String::new()
                 };
@@ -1141,7 +1141,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::sync::Arc;
-    use tacet_core::{InMemoryDataStore, SilentReporter, SourceRef};
+    use tacet_kernel::{InMemoryDataStore, SilentReporter, SourceRef};
 
     fn hold<F: std::future::Future>(future: F) -> F::Output {
         use std::pin::pin;
@@ -1685,7 +1685,7 @@ mod tests {
         // The Calc profile hints: "code", "run".
         assert!(text.contains("code") && text.contains("run"));
 
-        let mut catalog = tacet_core::ToolCatalog::new();
+        let mut catalog = tacet_kernel::ToolCatalog::new();
         catalog.add(Arc::new(crate::time::TimeTool::new()));
         catalog.add(Arc::new(RunCodeTool::discover().expect("discovered")));
         let chosen = Router::new()

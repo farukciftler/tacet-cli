@@ -33,7 +33,7 @@ const KNOWN: &[(&str, &str)] = &[
 ];
 
 fn file_path() -> Option<PathBuf> {
-    tacet_core::config_path(FILE)
+    tacet_kernel::config_path(FILE)
 }
 
 fn load_map() -> Map<String, Value> {

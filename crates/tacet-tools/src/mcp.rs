@@ -43,7 +43,7 @@
 
 use serde_json::Value;
 use std::sync::Arc;
-use tacet_core::{
+use tacet_kernel::{
     ArgSchema, Tool, ToolCatalog, ToolContext, ToolError, ToolOutcome, TraceUpdate, boxed,
 };
 use tacet_mcp::{
@@ -163,7 +163,7 @@ impl Tool for MCPTool {
                     let chip = format!("{} · {}", self.connection_name, error.short_error());
                     ctx.update_chip(
                         trace,
-                        TraceUpdate::state(tacet_core::ToolState::Failed(chip.clone()))
+                        TraceUpdate::state(tacet_kernel::ToolState::Failed(chip.clone()))
                             .text(chip.clone()),
                     );
                     let mut o = ToolOutcome::failed(&converted);
@@ -399,7 +399,7 @@ pub fn load_from_config(config: &Config) -> LoadOutcome {
 }
 
 /// Loads from `mcp.json` in the configuration directory (the path is decided by
-/// `tacet_core::env`, not by `tacet_mcp`). If the file is missing it stays quietly
+/// `tacet_kernel::env`, not by `tacet_mcp`). If the file is missing it stays quietly
 /// empty. **GOES ON THE NETWORK.**
 pub fn load_from_default() -> LoadOutcome {
     let mut outcome = LoadOutcome::default();
@@ -439,7 +439,7 @@ pub fn bind_executor(
     executor
 }
 
-use tacet_core::ToolFuture;
+use tacet_kernel::ToolFuture;
 
 #[cfg(test)]
 mod tests {
@@ -448,10 +448,10 @@ mod tests {
         AlwaysApprove, DENIAL_MODEL_TEXT, ExecutionReason, SilentDeny, ToolCall, ToolExecutor,
     };
     use serde_json::json;
-    use tacet_core::{
+    use tacet_engine::wait;
+    use tacet_kernel::{
         ERROR_MODEL_TEXT, Field, InMemoryDataStore, SilentReporter, ToolState, boxed,
     };
-    use tacet_engine::wait;
 
     fn context() -> ToolContext {
         ToolContext::new(
@@ -799,7 +799,7 @@ mod tests {
         // All of it is in the store; the raw form also stands in the chip detail
         // (transparency).
         let record = ctx
-            .from_store(&tacet_core::SourceRef("mcp#1".into()))
+            .from_store(&tacet_kernel::SourceRef("mcp#1".into()))
             .expect("must be in the store");
         assert_eq!(record.body, raw);
         assert_eq!(outcome.raw_output.as_deref(), Some(raw.as_str()));

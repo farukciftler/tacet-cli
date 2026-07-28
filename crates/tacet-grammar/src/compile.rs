@@ -12,7 +12,7 @@
 //! the hot path; they are produced once at compile time.
 
 use std::sync::Arc;
-use tacet_core::{ArgSchema, Field, SchemaKind};
+use tacet_kernel::{ArgSchema, Field, SchemaKind};
 
 /// A compiled object field.
 #[derive(Debug, Clone)]

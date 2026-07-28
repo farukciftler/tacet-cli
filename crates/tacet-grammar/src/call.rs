@@ -33,8 +33,8 @@
 
 use crate::{Grammar, GrammarState, TokenMask};
 use std::sync::Arc;
-use tacet_core::ToolCatalog;
 use tacet_engine::{Constrainer, ConstraintSession, EngineError};
+use tacet_kernel::ToolCatalog;
 
 /// The immutable body of the constraint. Shared via `Arc` because
 /// `Constrainer::session` returns `Box<dyn ConstraintSession>` (that is,
@@ -371,7 +371,7 @@ impl ConstraintSession for CallSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tacet_core::{ArgSchema, Field, Tool, ToolContext, ToolFuture, ToolOutcome, boxed};
+    use tacet_kernel::{ArgSchema, Field, Tool, ToolContext, ToolFuture, ToolOutcome, boxed};
 
     /// A tool with one required field and one enum field — the two most
     /// important claims of the constraint (missing required field, value outside
@@ -408,7 +408,7 @@ mod tests {
     }
 
     fn constraint() -> CallConstraint {
-        let mut c = tacet_core::ToolCatalog::new();
+        let mut c = tacet_kernel::ToolCatalog::new();
         c.add(Arc::new(DocumentTool));
         CallConstraint::new(&vocab(), &c)
     }

@@ -15,7 +15,7 @@
 //! IMMEDIATELY BEFORE the question is deliberate too: in a small model the last
 //! blocks carry the most weight.
 
-use tacet_core::ToolCatalog;
+use tacet_kernel::ToolCatalog;
 
 /// The wire format of the prompt — which fences the pieces are joined with.
 ///

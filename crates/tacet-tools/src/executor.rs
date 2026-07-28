@@ -37,7 +37,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use tacet_core::{ERROR_MODEL_TEXT, ToolCatalog, ToolContext, ToolError, ToolOutcome, ToolState};
+use tacet_kernel::{ERROR_MODEL_TEXT, ToolCatalog, ToolContext, ToolError, ToolOutcome, ToolState};
 
 /// The FIXED text returned to the model when approval is denied.
 ///
@@ -653,7 +653,7 @@ impl ToolExecutor {
                 let trace = ctx.start_chip("approval", &format!("{} · not sent", request.source));
                 ctx.update_chip(
                     trace,
-                    tacet_core::TraceUpdate::state(ToolState::NeedsPermission)
+                    tacet_kernel::TraceUpdate::state(ToolState::NeedsPermission)
                         .raw_input(request.content.clone()),
                 );
                 return self.outcome(
@@ -756,7 +756,7 @@ impl ToolExecutor {
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use tacet_core::{
+    use tacet_kernel::{
         ArgSchema, Field, InMemoryDataStore, SilentReporter, Tool, ToolFuture, boxed,
     };
 

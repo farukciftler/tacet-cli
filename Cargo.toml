@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/tacet-core",
+    "crates/tacet-kernel",
     "crates/tacet-zip",
     "crates/tacet-grammar",
     "crates/tacet-engine",
@@ -21,6 +21,8 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+repository = "https://github.com/farukciftler/tacet-cli"
+homepage = "https://github.com/farukciftler/tacet-cli"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -32,19 +34,19 @@ clap = { version = "4", features = ["derive"] }
 # them in. A dead manifest line looks harmless and is not: because it stands in
 # the list it counts as "already permitted" and nobody asks for a rationale on
 # the next addition. On top of that, for tokio the code says the opposite —
-# tacet-engine and tacet-core write "this crate MUST NOT PICK an executor, so
+# tacet-engine and tacet-kernel write "this crate MUST NOT PICK an executor, so
 # no tokio". A dependency comes back when it is needed, with its rationale.
 
-tacet-core = { path = "crates/tacet-core" }
-tacet-zip = { path = "crates/tacet-zip" }
-tacet-grammar = { path = "crates/tacet-grammar" }
-tacet-engine = { path = "crates/tacet-engine" }
-tacet-tools = { path = "crates/tacet-tools" }
-tacet-skills = { path = "crates/tacet-skills" }
-tacet-memory = { path = "crates/tacet-memory" }
+tacet-kernel = { path = "crates/tacet-kernel", version = "0.1.0" }
+tacet-zip = { path = "crates/tacet-zip", version = "0.1.0" }
+tacet-grammar = { path = "crates/tacet-grammar", version = "0.1.0" }
+tacet-engine = { path = "crates/tacet-engine", version = "0.1.0" }
+tacet-tools = { path = "crates/tacet-tools", version = "0.1.0" }
+tacet-skills = { path = "crates/tacet-skills", version = "0.1.0" }
+tacet-memory = { path = "crates/tacet-memory", version = "0.1.0" }
 # THE NETWORK MONOPOLY: a network call exists ONLY in these two crates. No
 # other crate opens a socket; so the rule can be audited by eye rather than by
 # an `audit` script, the HTTP dependency also stands only in these two manifests.
-tacet-web = { path = "crates/tacet-web" }
-tacet-mcp = { path = "crates/tacet-mcp" }
-tacet-eval = { path = "crates/tacet-eval" }
+tacet-web = { path = "crates/tacet-web", version = "0.1.0" }
+tacet-mcp = { path = "crates/tacet-mcp", version = "0.1.0" }
+tacet-eval = { path = "crates/tacet-eval", version = "0.1.0" }

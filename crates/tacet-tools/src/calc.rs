@@ -16,7 +16,7 @@
 //! would mean making the model resolve a reference as well — the channel is used
 //! where it pays off.
 
-use tacet_core::{
+use tacet_kernel::{
     ArgSchema, Field, Tool, ToolContext, ToolError, ToolFuture, ToolOutcome, ToolResult, ToolState,
     TraceUpdate, boxed,
 };
@@ -395,7 +395,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::sync::Arc;
-    use tacet_core::{InMemoryDataStore, Reporter, ToolTrace, TraceCollector};
+    use tacet_kernel::{InMemoryDataStore, Reporter, ToolTrace, TraceCollector};
 
     fn approx(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
@@ -519,7 +519,7 @@ mod tests {
         let mut ctx = context(Arc::new(TraceCollector::new()));
         let outcome = execute(CalcTool.run(json!({"expression": "1 / 0"}), &mut ctx));
 
-        assert_eq!(outcome.to_model, tacet_core::ERROR_MODEL_TEXT);
+        assert_eq!(outcome.to_model, tacet_kernel::ERROR_MODEL_TEXT);
         assert_eq!(outcome.chip_text, "Division by zero is not possible.");
         assert!(matches!(outcome.state, ToolState::Failed(_)));
     }

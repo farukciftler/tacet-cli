@@ -3,13 +3,15 @@ name = "tacet-eval"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Case-based behavioural evaluation for an assistant's tool use."
 
 # EVAL PULLS NO WEIGHTS: `tacet-engine` is taken with its DEFAULT features, so
 # the candle tree does not come along. All the cases run on `FakeEngine`; a real
 # engine is supplied from outside through `EngineSelector`. That way running eval
 # does not depend on a GGUF file or on a build that takes minutes.
 [dependencies]
-tacet-core.workspace = true
+tacet-kernel.workspace = true
 tacet-tools.workspace = true
 # The grammar constraint runs in eval too: if the production path were
 # constrained and eval unconstrained, what is measured would not be the

@@ -51,7 +51,7 @@ pub use candle_engine::{Architecture, CandleEngine, ModelSetting};
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use tacet_core::{
+    use tacet_kernel::{
         ArgSchema, Field, Tool, ToolCatalog, ToolContext, ToolFuture, ToolOutcome, boxed,
     };
 
@@ -354,7 +354,7 @@ mod tests {
     /// model has no other place to learn which field it may omit.
     #[test]
     fn the_short_signature_marks_required_plain_and_optional_with_a_question_mark() {
-        use tacet_core::{ArgSchema, Field};
+        use tacet_kernel::{ArgSchema, Field};
         let schema = ArgSchema::object(vec![
             Field::new("expression", ArgSchema::text()).required(),
             Field::new("digits", ArgSchema::integer()),

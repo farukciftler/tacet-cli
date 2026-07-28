@@ -1,3 +1,7 @@
+<!-- Mirrors the repository README. crates.io only packages files inside the
+     crate directory, so the canonical copy at the repo root is duplicated here
+     at publish time. Edit the root one. -->
+
 # Tacet
 
 *tacet* — in musical notation: *this instrument is silent in this passage*. Here, the silent instrument is the network.

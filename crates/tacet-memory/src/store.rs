@@ -147,11 +147,11 @@ impl MemoryStore {
 
     /// `memory.json` in the config directory.
     ///
-    /// This crate does not know WHERE the directory is — `tacet_core::env` does
+    /// This crate does not know WHERE the directory is — `tacet_kernel::env` does
     /// (on Unix `$XDG_CONFIG_HOME/tacet` or `~/.tacet`, on Windows
     /// `%APPDATA%\Tacet`). `TACET_HOME` overrides all of it.
     pub fn default_path() -> Option<PathBuf> {
-        tacet_core::config_path("memory.json")
+        tacet_kernel::config_path("memory.json")
     }
 
     pub fn notes(&self) -> &[MemoryNote] {

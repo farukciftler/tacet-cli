@@ -33,7 +33,7 @@ use std::io::{IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use tacet_core::{Reporter, ToolState, ToolTrace, TraceCollector, TraceId, TraceUpdate};
+use tacet_kernel::{Reporter, ToolState, ToolTrace, TraceCollector, TraceId, TraceUpdate};
 
 // ANSI escapes. The palette is INK/GREY: NO accent colour, NO status dot. State
 // is told in words and marks — not in colour.
@@ -635,7 +635,7 @@ impl Reporter for LiveReporter {
         // and the output are zero; without it, diagnosing tools that carry
         // model-written code (write_code/run_code) in the field was impossible
         // (there is no UI in a terminal where you can touch a chip).
-        if tacet_core::env_var("TACET_TRACE_DUMP").is_some()
+        if tacet_kernel::env_var("TACET_TRACE_DUMP").is_some()
             && let Some(trace) = self.inner.traces().into_iter().find(|t| t.id == id)
         {
             if let Some(input) = &trace.raw_input {

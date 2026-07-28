@@ -3,6 +3,12 @@ name = "tacet-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "A private AI assistant that lives in your terminal. Fully on-device, no account, no telemetry."
+# Five is the crates.io maximum.
+keywords = ["ai", "assistant", "llm", "offline", "privacy"]
+categories = ["command-line-utilities", "text-processing"]
+readme = "README.md"
 
 # THE BINARY IS NAMED `tacet`, the crate is named `tacet-cli`. The user types
 # `tacet` in the terminal; `cargo install --path crates/tacet-cli` puts that name
@@ -21,7 +27,7 @@ path = "src/main.rs"
 # when `--engine candle` is asked for, this crate is rebuilt with the `candle`
 # feature; the default `cargo build` finishes in seconds.
 [dependencies]
-tacet-core.workspace = true
+tacet-kernel.workspace = true
 tacet-tools.workspace = true
 tacet-grammar.workspace = true
 tacet-engine.workspace = true
@@ -51,7 +57,7 @@ tacet-web.workspace = true
 serde_json.workspace = true
 clap.workspace = true
 # crossterm ONLY HERE — by the user's explicit decision, and the boundary is the
-# same as clap's: the terminal is a SHELL matter, the core layers (tacet-core,
+# same as clap's: the terminal is a SHELL matter, the core layers (tacet-kernel,
 # tacet-engine, tacet-grammar, tacet-tools, tacet-zip) stay zero-dependency. It
 # was DELIBERATELY not added to the workspace `[workspace.dependencies]` list:
 # standing there would have meant "any crate may pull it".

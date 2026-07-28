@@ -3,6 +3,8 @@ name = "tacet-mcp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "A hand-written Model Context Protocol client: JSON-RPC 2.0 over Streamable HTTP with SSE."
 
 # THE NETWORK MONOPOLY: no crate outside this one and `tacet-web` opens a
 # socket. So that the rule stays auditable, the HTTP dependency lives only in
@@ -18,7 +20,7 @@ license.workspace = true
 # gives the body as a `Read`, so we can read the SSE stream line by line
 # (`reqwest`'s blocking mode does that, but still carries tokio behind it).
 [dependencies]
-tacet-core.workspace = true
+tacet-kernel.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

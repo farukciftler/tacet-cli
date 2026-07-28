@@ -3,6 +3,8 @@ name = "tacet-engine"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Prompt construction, context budget and the model contract: Prompt, ModelProvider, Constrainer, TokenCounter."
 
 # DEPENDENCY DECISION: the default build pulls only core + serde/thiserror.
 # Real inference (candle) sits behind an OPTIONAL feature and is ABSENT by
@@ -11,7 +13,7 @@ license.workspace = true
 # FakeEngine, and there is no payoff in dragging a minutes-long weight build
 # into that.
 [dependencies]
-tacet-core = { workspace = true }
+tacet-kernel = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

@@ -23,7 +23,7 @@
 use crate::data_store::{SharedStore, Table, Value as StoredValue};
 use serde_json::Value;
 use std::sync::Arc;
-use tacet_core::{
+use tacet_kernel::{
     ArgSchema, Field, SourceRef, Tool, ToolContext, ToolError, ToolFuture, ToolOutcome, ToolResult,
     TraceUpdate, boxed,
 };
@@ -235,7 +235,7 @@ impl ReadDocumentTool {
         let body = truncate_at_line_boundary(&table.markdown_truncated(preview), MODEL_CAP);
         let suffix = source
             .as_ref()
-            .map(|r| tacet_core::source_ref_suffix(r.as_str()))
+            .map(|r| tacet_kernel::source_ref_suffix(r.as_str()))
             .unwrap_or_default();
 
         ToolOutcome::read_ok(
@@ -263,7 +263,7 @@ impl ReadDocumentTool {
         let body = truncate_at_line_boundary(text, MODEL_CAP);
         let suffix = source
             .as_ref()
-            .map(|r| tacet_core::source_ref_suffix(r.as_str()))
+            .map(|r| tacet_kernel::source_ref_suffix(r.as_str()))
             .unwrap_or_default();
 
         ToolOutcome::read_ok(
@@ -627,7 +627,7 @@ fn resolve_entity(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tacet_core::{ERROR_MODEL_TEXT, InMemoryDataStore, SilentReporter, ToolState};
+    use tacet_kernel::{ERROR_MODEL_TEXT, InMemoryDataStore, SilentReporter, ToolState};
     use tacet_zip::{ZipEntry, pack};
 
     /// no tokio dependency; the minimum executor that suffices for a test.

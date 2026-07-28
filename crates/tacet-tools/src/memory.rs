@@ -11,7 +11,7 @@
 //! tainted and every call that would send data out hits the approval gate.
 
 use std::sync::{Arc, Mutex};
-use tacet_core::{
+use tacet_kernel::{
     ArgSchema, Field, Tool, ToolContext, ToolError, ToolFuture, ToolOutcome, ToolState,
     TraceUpdate, boxed,
 };
@@ -276,7 +276,7 @@ mod tests {
     use super::*;
     use crate::data_store::SharedStore;
     use serde_json::json;
-    use tacet_core::{DataStore, Reporter, TraceCollector};
+    use tacet_kernel::{DataStore, Reporter, TraceCollector};
 
     fn context(store: Arc<SharedStore>, reporter: Arc<dyn Reporter>) -> ToolContext {
         ToolContext::new(store, "/tmp/tacet-memory-tool", reporter)
@@ -313,7 +313,7 @@ mod tests {
             &mut ctx,
         ));
         assert!(matches!(o.state, ToolState::Failed(_)));
-        assert_eq!(o.to_model, tacet_core::ERROR_MODEL_TEXT);
+        assert_eq!(o.to_model, tacet_kernel::ERROR_MODEL_TEXT);
         assert_eq!(memory.with(|s| s.count()), Some(0));
         assert!(
             !ctx.session_tainted(),
@@ -369,7 +369,7 @@ mod tests {
         assert!(o.to_model.len() < 80, "{}", o.to_model);
         assert!(!o.to_model.contains("numbered fact"));
         // The body sits COMPLETE in the store.
-        let r = tacet_core::SourceRef(
+        let r = tacet_kernel::SourceRef(
             o.to_model
                 .split("source_ref=")
                 .nth(1)

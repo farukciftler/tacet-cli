@@ -9,7 +9,7 @@
 
 use super::*;
 use std::sync::Arc;
-use tacet_core::{ArgSchema, Field};
+use tacet_kernel::{ArgSchema, Field};
 
 fn sample_schema() -> ArgSchema {
     ArgSchema::object(vec![
@@ -180,7 +180,7 @@ fn the_text_length_limit_forces_closing() {
         Field::new(
             "m",
             ArgSchema {
-                kind: tacet_core::SchemaKind::Text {
+                kind: tacet_kernel::SchemaKind::Text {
                     max_length: Some(3),
                 },
                 description: None,

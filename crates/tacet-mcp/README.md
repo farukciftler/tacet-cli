@@ -60,7 +60,7 @@ servers running on this machine BY ITSELF — the user writes them down by hand.
 The file's location is the operating system's config directory: on Unix
 `$XDG_CONFIG_HOME/tacet/mcp.json` (or `~/.tacet/mcp.json`), on Windows
 `%APPDATA%\Tacet\mcp.json`. The single source of truth for the path is
-`tacet_core::env` — the memory and skill layers point at the same directory.
+`tacet_kernel::env` — the memory and skill layers point at the same directory.
 `TACET_MCP_CONFIG` redirects the file somewhere else directly; an empty value
 counts as "undefined" and the default path is used.
 

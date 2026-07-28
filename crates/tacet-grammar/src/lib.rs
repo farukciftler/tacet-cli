@@ -14,7 +14,7 @@
 //!
 //! Example:
 //! ```
-//! use tacet_core::{ArgSchema, Field};
+//! use tacet_kernel::{ArgSchema, Field};
 //! use tacet_grammar::Grammar;
 //!
 //! let schema = ArgSchema::object(vec![

@@ -13,7 +13,7 @@
 //! produced, and the tool could not see it.
 //! THE RUST COUNTERPART — WHY NO FIELD WAS ADDED TO `ToolContext`: `ToolContext`
 //! THE RUST COUNTERPART — WHY NO FIELD WAS ADDED TO `ToolContext`:
-//! `ToolContext` lives in `tacet-core` and core is SINGLE-OWNER; besides, "the
+//! `ToolContext` lives in `tacet-kernel` and core is SINGLE-OWNER; besides, "the
 //! last document" is not a contract concept but an APPLICATION intuition — put
 //! into core, every tool would have to carry it. Instead there is a three-tier
 //! resolution (see `workable_document`): an explicit `path` argument → the
@@ -36,7 +36,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use tacet_core::{
+use tacet_kernel::{
     ArgSchema, Field, SourceRef, Tool, ToolContext, ToolError, ToolFuture, ToolOutcome, ToolResult,
     ToolState, TraceUpdate, boxed,
 };
@@ -505,7 +505,7 @@ mod tests {
     use crate::data_store::SharedStore;
     use serde_json::json;
     use std::sync::Arc;
-    use tacet_core::{DataStore as CoreDataStore, SilentReporter};
+    use tacet_kernel::{DataStore as CoreDataStore, SilentReporter};
 
     fn hold<F: std::future::Future>(gelecek: F) -> F::Output {
         use std::pin::pin;
@@ -677,7 +677,7 @@ mod tests {
 
         assert_eq!(outcome.state, ToolState::Read);
         assert!(outcome.to_model.starts_with("no_document_in_play"));
-        assert_ne!(outcome.to_model, tacet_core::ERROR_MODEL_TEXT);
+        assert_ne!(outcome.to_model, tacet_kernel::ERROR_MODEL_TEXT);
         assert!(!ctx.session_tainted(), "no document was read");
         fs::remove_dir_all(&root).ok();
     }
@@ -699,7 +699,7 @@ mod tests {
                 matches!(s.state, ToolState::Failed(_)),
                 "the escape passed: {escape}"
             );
-            assert_eq!(s.to_model, tacet_core::ERROR_MODEL_TEXT);
+            assert_eq!(s.to_model, tacet_kernel::ERROR_MODEL_TEXT);
         }
 
         let previous_count = fs::read_dir(&root).unwrap().count();
@@ -876,7 +876,7 @@ mod tests {
         let text = simplify(EditDocumentTool::new().name());
         assert!(text.contains("document") && text.contains("edit"));
 
-        let mut catalog = tacet_core::ToolCatalog::new();
+        let mut catalog = tacet_kernel::ToolCatalog::new();
         catalog.add(Arc::new(crate::calc::CalcTool));
         catalog.add(Arc::new(EditDocumentTool::new()));
         let chosen = Router::new()

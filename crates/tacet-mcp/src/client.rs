@@ -495,17 +495,17 @@ mod tests {
 
     /// GOES ONLINE — deliberately `#[ignore]`. Runs with
     /// `cargo test -p tacet-mcp -- --ignored` when TACET_MCP_TEST_URL is given.
-    /// The variables are read through `tacet_core::env_var`: an empty value
+    /// The variables are read through `tacet_kernel::env_var`: an empty value
     /// counts as "undefined" and the test is skipped silently.
     #[test]
     #[ignore = "goes online; needs TACET_MCP_TEST_URL"]
     fn handshake_with_a_real_server() {
-        let Some(url) = tacet_core::env_var("TACET_MCP_TEST_URL") else {
+        let Some(url) = tacet_kernel::env_var("TACET_MCP_TEST_URL") else {
             panic!("TACET_MCP_TEST_URL is not defined");
         };
         let url = url.to_string_lossy().into_owned();
         let key =
-            tacet_core::env_var("TACET_MCP_TEST_KEY").map(|k| k.to_string_lossy().into_owned());
+            tacet_kernel::env_var("TACET_MCP_TEST_KEY").map(|k| k.to_string_lossy().into_owned());
         let client = MCPClient::new(url, key).expect("client");
         client.handshake().expect("handshake");
         let tools = client.tools().expect("tools/list");

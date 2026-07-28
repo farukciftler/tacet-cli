@@ -35,13 +35,13 @@ use crate::env::Env;
 use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;
-use tacet_core::{
-    ArgSchema, Tool, ToolCatalog, ToolContext, ToolFuture, ToolOutcome, TraceCollector, boxed,
-};
 use tacet_engine::{
     EngineProvider, MAX_TURNS, Prompt, SYSTEM_INSTRUCTIONS, SamplingSetting, Turn, wait,
 };
 use tacet_grammar::CallConstraint;
+use tacet_kernel::{
+    ArgSchema, Tool, ToolCatalog, ToolContext, ToolFuture, ToolOutcome, TraceCollector, boxed,
+};
 use tacet_tools::executor::ToolExecutor;
 use tacet_tools::memory::SharedMemory;
 use tacet_tools::router::Router;
@@ -591,9 +591,9 @@ pub fn run_selection_case(
     let executor = ToolExecutor::new(catalog.clone());
     let traces = Arc::new(TraceCollector::new());
     let mut ctx = ToolContext::new(
-        Arc::clone(&env.store) as Arc<dyn tacet_core::DataStore>,
+        Arc::clone(&env.store) as Arc<dyn tacet_kernel::DataStore>,
         env.dir(),
-        Arc::clone(&traces) as Arc<dyn tacet_core::Reporter>,
+        Arc::clone(&traces) as Arc<dyn tacet_kernel::Reporter>,
     );
     // The constraint is built once OUTSIDE the loop: the trie cost is
     // proportional to the vocabulary size.
