@@ -47,6 +47,9 @@ tacet-memory = { path = "crates/tacet-memory", version = "0.1.0" }
 # THE NETWORK MONOPOLY: a network call exists ONLY in these two crates. No
 # other crate opens a socket; so the rule can be audited by eye rather than by
 # an `audit` script, the HTTP dependency also stands only in these two manifests.
-tacet-web = { path = "crates/tacet-web", version = "0.1.0" }
+# 0.1.2 IS A FLOOR, NOT A PREFERENCE. The SSRF gate landed there; `^0.1.0`
+# would happily resolve to 0.1.1, which does not have it, and the install
+# would look identical while missing the fix it was published for.
+tacet-web = { path = "crates/tacet-web", version = "0.1.2" }
 tacet-mcp = { path = "crates/tacet-mcp", version = "0.1.0" }
 tacet-eval = { path = "crates/tacet-eval", version = "0.1.0" }
