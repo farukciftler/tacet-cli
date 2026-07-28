@@ -15,7 +15,7 @@
 //! generic word and makes the result deterministic — so eval stays comparable.
 
 use std::sync::Arc;
-use tacet_core::{Tool, ToolCatalog};
+use tacet_kernel::{Tool, ToolCatalog};
 
 /// The most tools shown to the model in one session.
 pub const MAX_TOOLS: usize = 8;
@@ -466,7 +466,7 @@ impl Router {
 mod tests {
     use super::*;
     use serde_json::Value;
-    use tacet_core::{
+    use tacet_kernel::{
         ArgSchema, InMemoryDataStore, SilentReporter, Tool, ToolContext, ToolFuture, ToolOutcome,
         boxed,
     };

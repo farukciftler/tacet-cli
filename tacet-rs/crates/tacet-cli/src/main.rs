@@ -17,7 +17,7 @@
 //! names and the config path used to be written HERE BY HAND; both had gone
 //! stale after a brand change and, because doc comments are not compiled, nobody
 //! noticed. The single source for the current list: `tacet model list` (it
-//! PRINTS the roots and the packages found) and `tacet_core::env` (the config
+//! PRINTS the roots and the packages found) and `tacet_kernel::env` (the config
 //! directory).
 //!
 //! In short: the weights can be given directly with `TACET_MODEL`/
@@ -54,7 +54,7 @@
 //! winning trade.
 //!
 //! THE BOUNDARY FOLLOWS THE SAME RULE AS THE NETWORK MONOPOLY: `crossterm` DOES
-//! NOT LEAK into the core layers. tacet-core, tacet-engine, tacet-grammar,
+//! NOT LEAK into the core layers. tacet-kernel, tacet-engine, tacet-grammar,
 //! tacet-tools and tacet-zip stay zero-dependency; the terminal is a SHELL
 //! matter, just like `clap`. All the screen work lives in the `ui` module (see
 //! the head of that file).
@@ -68,14 +68,14 @@ mod ui;
 mod update;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use tacet_core::{
-    ArgSchema, DataStore as CoreDataStore, Reporter, ToolCatalog, ToolContext, TraceCollector,
-};
 use tacet_engine::{
     CONTEXT_BUDGET, EngineProvider, FakeEngine, Prompt, SamplingSetting, TokenCounter, Turn, wait,
 };
 use tacet_eval::{FakeSelector, SYSTEM_INSTRUCTIONS};
 use tacet_grammar::{CallConstraint, Grammar};
+use tacet_kernel::{
+    ArgSchema, DataStore as CoreDataStore, Reporter, ToolCatalog, ToolContext, TraceCollector,
+};
 use tacet_memory::MemoryStore;
 use tacet_skills::{InjectionState, SkillStore, injection_text};
 use tacet_tools::data_store::SharedStore;
@@ -678,7 +678,7 @@ mod model_package {
     /// The model roots, IN PRIORITY ORDER.
     ///
     /// THIS IS NOT THE CONFIG DIRECTORY and it DELIBERATELY does not tie into
-    /// `tacet_core::env::config_dir`. That is where SETTINGS live (`mcp.json`,
+    /// `tacet_kernel::env::config_dir`. That is where SETTINGS live (`mcp.json`,
     /// `memory.json` — kilobytes of text, right to travel with a roaming
     /// profile). Model weights are not a setting, they are GIGABYTES OF DATA;
     /// putting them in `%APPDATA%` (the roaming profile) or `$XDG_CONFIG_HOME`
@@ -816,8 +816,8 @@ mod model_package {
     /// branch comes BEFORE the catalog — an explicit request is ahead of
     /// discovery.
     pub fn pair_from_env() -> Option<(String, String)> {
-        let m = tacet_core::env_var(MODEL_VARIABLE)?;
-        let t = tacet_core::env_var(TOKENIZER_VARIABLE)?;
+        let m = tacet_kernel::env_var(MODEL_VARIABLE)?;
+        let t = tacet_kernel::env_var(TOKENIZER_VARIABLE)?;
         Some((
             m.to_string_lossy().into_owned(),
             t.to_string_lossy().into_owned(),
@@ -893,7 +893,7 @@ mod model_package {
     /// SETTING, not the weight itself; for the root distinction see
     /// `model_roots`).
     pub fn remote_catalog_path() -> Option<PathBuf> {
-        tacet_core::env::config_path(CATALOG_FILE)
+        tacet_kernel::env::config_path(CATALOG_FILE)
     }
 
     /// The example shown to the user. There is NO real URL: the field names and
@@ -1790,7 +1790,7 @@ fn chat(
             // model's RAW generation — the call shape (a grammared `name({...})`
             // or the bare JSON that falls into the recovery path) and, if present,
             // the thinking block can only be seen from here.
-            if tacet_core::env_var("TACET_TRACE_DUMP").is_some() {
+            if tacet_kernel::env_var("TACET_TRACE_DUMP").is_some() {
                 if let Some(t) = &generation.thinking {
                     eprintln!(
                         "\n--- thinking ({} tokens total) ---\n{t}",
@@ -2461,7 +2461,7 @@ fn tools(print_schema: bool) -> ExitCode {
 }
 
 fn kind_text(schema: &ArgSchema) -> String {
-    use tacet_core::SchemaKind::*;
+    use tacet_kernel::SchemaKind::*;
     match &schema.kind {
         Object { fields } => format!("object({} fields)", fields.len()),
         Array { .. } => "array".into(),
@@ -2494,7 +2494,7 @@ fn package_list(json: bool) -> ExitCode {
     let mut store = SkillStore::default_set();
     let embedded = store.count();
 
-    // The user directory: `tacet_skills::user_dir` -> `tacet_core::env`. The path
+    // The user directory: `tacet_skills::user_dir` -> `tacet_kernel::env`. The path
     // is NOT computed HERE; it comes from the same single source as memory and
     // MCP.
     let dir = tacet_skills::user_dir();
@@ -3253,7 +3253,7 @@ mod tests {
         // test binary reads `TACET_HOME`, and both assertions run inside this one
         // test, in order.
         unsafe {
-            std::env::set_var(tacet_core::env::HOME_VAR, &home);
+            std::env::set_var(tacet_kernel::env::HOME_VAR, &home);
             // With a direct path override in place MCP takes its own branch; we
             // turn it off so what is measured is the SHARED directory.
             std::env::remove_var(tacet_mcp::config::PATH_VARIABLE);
@@ -3269,20 +3269,20 @@ mod tests {
             home.join("mcp.json")
         );
 
-        unsafe { std::env::remove_var(tacet_core::env::HOME_VAR) };
+        unsafe { std::env::remove_var(tacet_kernel::env::HOME_VAR) };
     }
 
     /// Collects the `Choice` fields of a tool's root schema: (field name, allowed
     /// values). Only the root object is walked — no tool nests a choice deeper,
     /// and walking blind would invite false positives.
     fn choice_fields(schema: &ArgSchema) -> Vec<(String, Vec<String>)> {
-        let tacet_core::SchemaKind::Object { fields } = &schema.kind else {
+        let tacet_kernel::SchemaKind::Object { fields } = &schema.kind else {
             return Vec::new();
         };
         fields
             .iter()
             .filter_map(|f| match &f.schema.kind {
-                tacet_core::SchemaKind::Choice { choices } => {
+                tacet_kernel::SchemaKind::Choice { choices } => {
                     Some((f.name.clone(), choices.clone()))
                 }
                 _ => None,
@@ -3389,7 +3389,7 @@ mod tests {
         });
         let example_args = example.1;
         let fields: Vec<String> = match &example_tool.schema().kind {
-            tacet_core::SchemaKind::Object { fields } => {
+            tacet_kernel::SchemaKind::Object { fields } => {
                 fields.iter().map(|f| f.name.clone()).collect()
             }
             _ => Vec::new(),
@@ -3551,7 +3551,7 @@ mod tests {
 
     /// THE ENV BRANCHES IN ONE TEST. Environment variables are PROCESS-WIDE; split
     /// across separate tests they would see each other's values while running in
-    /// parallel (the same rationale as the `tacet_core::env` tests).
+    /// parallel (the same rationale as the `tacet_kernel::env` tests).
     #[test]
     fn the_env_pair_does_not_resolve_unless_both_are_given() {
         // SAFETY: a single-threaded test body; no other test in this binary reads
@@ -3580,7 +3580,7 @@ mod tests {
         // resolves.
         assert!(model_package::resolve_pair("no-such-package").is_some());
 
-        // An empty value counts as "undefined" (see `tacet_core::env_var`).
+        // An empty value counts as "undefined" (see `tacet_kernel::env_var`).
         unsafe { std::env::set_var(MODEL_VARIABLE, "") };
         assert!(model_package::pair_from_env().is_none());
 

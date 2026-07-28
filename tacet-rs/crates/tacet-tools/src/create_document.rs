@@ -22,7 +22,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use tacet_core::{
+use tacet_kernel::{
     ArgSchema, Field, SourceRef, Tool, ToolContext, ToolError, ToolFuture, ToolOutcome, ToolResult,
     ToolState, TraceUpdate, boxed,
 };
@@ -941,7 +941,7 @@ mod tests {
     use crate::data_store::{SharedStore, Value};
     use std::future::Future;
     use std::sync::Arc;
-    use tacet_core::{DataStore as CoreDataStore, SilentReporter};
+    use tacet_kernel::{DataStore as CoreDataStore, SilentReporter};
 
     /// There is no tokio in core; this crate must not pick an executor either.
     /// a minimal ~15 line poll loop that only ever returns `Ready` is enough (core made the same call 3 times).
@@ -1237,7 +1237,7 @@ mod tests {
             &mut ctx,
         ));
         assert!(matches!(outcome.state, ToolState::Failed(_)));
-        assert_eq!(outcome.to_model, tacet_core::ERROR_MODEL_TEXT);
+        assert_eq!(outcome.to_model, tacet_kernel::ERROR_MODEL_TEXT);
         fs::remove_dir_all(&root).ok();
     }
 

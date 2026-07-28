@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tacet_core::{
+use tacet_kernel::{
     ArgSchema, Field, Tool, ToolContext, ToolError, ToolFuture, ToolOutcome, ToolResult, ToolState,
     TraceUpdate, boxed,
 };
@@ -583,7 +583,7 @@ mod tests {
     use super::*;
     use crate::run_code::RunCodeTool;
     use serde_json::json;
-    use tacet_core::{InMemoryDataStore, SilentReporter};
+    use tacet_kernel::{InMemoryDataStore, SilentReporter};
 
     fn hold<F: std::future::Future>(gelecek: F) -> F::Output {
         use std::pin::pin;

@@ -41,12 +41,12 @@ pub use store::SkillStore;
 /// The directory user skills are read from: config directory + `skills`.
 ///
 /// The path itself IS NOT COMPUTED HERE. Memory, MCP and skills have to point
-/// at the same directory; the rule lives in a single place, `tacet_core::env`,
+/// at the same directory; the rule lives in a single place, `tacet_kernel::env`,
 /// and that is where the platform difference (XDG / `%APPDATA%`) is known. The
 /// `TACET_HOME` variable still overrides it — so tests and the developer shell
 /// can run without polluting the real settings directory.
 pub fn user_dir() -> Option<std::path::PathBuf> {
-    tacet_core::config_path("skills")
+    tacet_kernel::config_path("skills")
 }
 
 #[cfg(test)]

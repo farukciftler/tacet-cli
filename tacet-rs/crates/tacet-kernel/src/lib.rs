@@ -1,4 +1,4 @@
-//! tacet-core — the contract layer of the architecture.
+//! tacet-kernel — the contract layer of the architecture.
 //!
 //! NO WORK IS DONE in this crate; only the types everyone agrees on live here:
 //! what a tool is (`Tool`), how it describes its arguments (`ArgSchema`), what

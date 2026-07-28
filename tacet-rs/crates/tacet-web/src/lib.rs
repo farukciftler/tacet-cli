@@ -6,7 +6,7 @@
 //! auditability: the answer to "where does the user's query leave from" is a
 //! single file (`client.rs`).
 //!
-//! THIS CRATE DOES NOT KNOW `tacet-core`. The tool contract, chips,
+//! THIS CRATE DOES NOT KNOW `tacet-kernel`. The tool contract, chips,
 //! `ToolOutcome`, `DataStore` — none of them occur here. The translation is done
 //! at the `tacet-tools/src/web_search.rs` boundary. That way the network layer
 //! does not change when the tool architecture does; and a caller that never

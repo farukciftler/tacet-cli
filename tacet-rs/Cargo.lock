@@ -1924,24 +1924,15 @@ dependencies = [
  "clap",
  "crossterm",
  "serde_json",
- "tacet-core",
  "tacet-engine",
  "tacet-eval",
  "tacet-grammar",
+ "tacet-kernel",
  "tacet-mcp",
  "tacet-memory",
  "tacet-skills",
  "tacet-tools",
  "tacet-web",
-]
-
-[[package]]
-name = "tacet-core"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -1952,7 +1943,7 @@ dependencies = [
  "candle-transformers",
  "serde",
  "serde_json",
- "tacet-core",
+ "tacet-kernel",
  "thiserror 2.0.19",
  "tokenizers",
 ]
@@ -1963,9 +1954,9 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
- "tacet-core",
  "tacet-engine",
  "tacet-grammar",
+ "tacet-kernel",
  "tacet-tools",
 ]
 
@@ -1974,8 +1965,17 @@ name = "tacet-grammar"
 version = "0.1.0"
 dependencies = [
  "serde_json",
- "tacet-core",
  "tacet-engine",
+ "tacet-kernel",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "tacet-kernel"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
  "thiserror 2.0.19",
 ]
 
@@ -1985,7 +1985,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
- "tacet-core",
+ "tacet-kernel",
  "thiserror 2.0.19",
  "ureq",
 ]
@@ -1996,7 +1996,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
- "tacet-core",
+ "tacet-kernel",
  "tacet-skills",
 ]
 
@@ -2004,8 +2004,8 @@ dependencies = [
 name = "tacet-skills"
 version = "0.1.0"
 dependencies = [
- "tacet-core",
  "tacet-engine",
+ "tacet-kernel",
 ]
 
 [[package]]
@@ -2013,8 +2013,8 @@ name = "tacet-tools"
 version = "0.1.0"
 dependencies = [
  "serde_json",
- "tacet-core",
  "tacet-engine",
+ "tacet-kernel",
  "tacet-mcp",
  "tacet-memory",
  "tacet-web",
@@ -2026,7 +2026,7 @@ name = "tacet-web"
 version = "0.1.0"
 dependencies = [
  "serde_json",
- "tacet-core",
+ "tacet-kernel",
  "ureq",
 ]
 

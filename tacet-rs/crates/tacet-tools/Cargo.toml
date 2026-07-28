@@ -3,9 +3,11 @@ name = "tacet-tools"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "The concrete tools of an on-device assistant, the four-gate executor and the router."
 
 [dependencies]
-tacet-core.workspace = true
+tacet-kernel.workspace = true
 tacet-zip.workspace = true
 # For the `remember` tool: the notes are not owned by this crate but by
 # tacet-memory.

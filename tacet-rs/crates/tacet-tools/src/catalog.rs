@@ -25,7 +25,7 @@ use crate::run_code::{CodeState, RunCodeTool};
 use crate::time::TimeTool;
 use crate::web_search::{WebFetchTool, WebSearchTool};
 use std::sync::Arc;
-use tacet_core::ToolCatalog;
+use tacet_kernel::ToolCatalog;
 
 /// The diagnostic text returned when code execution could not be discovered —
 /// given as a second value rather than a `Result` so the call site can inform the

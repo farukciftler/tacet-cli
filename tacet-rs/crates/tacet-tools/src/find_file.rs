@@ -24,7 +24,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use tacet_core::{
+use tacet_kernel::{
     ArgSchema, Field, Tool, ToolContext, ToolError, ToolFuture, ToolOutcome, ToolResult,
     TraceUpdate, boxed,
 };
@@ -492,7 +492,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::sync::Arc;
-    use tacet_core::{InMemoryDataStore, SilentReporter, SourceRef, ToolState};
+    use tacet_kernel::{InMemoryDataStore, SilentReporter, SourceRef, ToolState};
 
     /// Core has no tokio; this crate must not pick a runtime either (the same
     /// pattern as `block_on` in the create_document tests).
@@ -605,7 +605,7 @@ mod tests {
                 matches!(outcome.state, ToolState::Failed(_)),
                 "escape got through: {escape}"
             );
-            assert_eq!(outcome.to_model, tacet_core::ERROR_MODEL_TEXT);
+            assert_eq!(outcome.to_model, tacet_kernel::ERROR_MODEL_TEXT);
         }
         // An escape attempt MUST NOT TAINT the session: no data was read.
         assert!(!ctx.session_tainted());
@@ -697,7 +697,7 @@ mod tests {
             "an empty result must not fail"
         );
         assert!(outcome.to_model.starts_with("no_results_found"));
-        assert_ne!(outcome.to_model, tacet_core::ERROR_MODEL_TEXT);
+        assert_ne!(outcome.to_model, tacet_kernel::ERROR_MODEL_TEXT);
         fs::remove_dir_all(&root).ok();
     }
 
@@ -790,7 +790,7 @@ mod tests {
         assert!(text.contains("file"));
         assert!(text.contains("find"));
 
-        let mut catalog = tacet_core::ToolCatalog::new();
+        let mut catalog = tacet_kernel::ToolCatalog::new();
         catalog.add(Arc::new(crate::calc::CalcTool));
         catalog.add(Arc::new(FindFileTool::new()));
         let chosen = Router::new().max(1).select("find that file", &catalog);

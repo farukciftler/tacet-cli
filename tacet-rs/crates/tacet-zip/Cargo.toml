@@ -3,5 +3,7 @@ name = "tacet-zip"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Hand-written zip, deflate and CRC32 for reading and writing OOXML (.xlsx, .docx) with no ready-made zip crate."
 
 [dependencies]

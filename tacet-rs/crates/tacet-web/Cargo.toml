@@ -3,6 +3,8 @@ name = "tacet-web"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "The one crate allowed to reach the network: search against a self-hosted server, page text, verified downloads, release checks."
 
 [dependencies]
 serde_json.workspace = true
@@ -12,7 +14,7 @@ serde_json.workspace = true
 # undefined" must live in ONE place. Copying the rule here would mean two copies
 # drifting apart silently — that is exactly why it was centralized for
 # memory/skills/MCP.
-tacet-core.workspace = true
+tacet-kernel.workspace = true
 
 # DEPENDENCY RATIONALE — `ureq`.
 #

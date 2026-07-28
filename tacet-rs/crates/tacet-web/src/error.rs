@@ -1,7 +1,7 @@
 //! The web layer's error type.
 //!
 //! WHY A SEPARATE ENUM (instead of using `ToolError` directly): this crate is
-//! NOT, and must not be, dependent on `tacet-core`. Making the network code
+//! NOT, and must not be, dependent on `tacet-kernel`. Making the network code
 //! know the tool contract would force tomorrow's non-network caller (a CLI
 //! diagnostic command, say) to pull in the core as well. The translation
 //! happens on the `tacet-tools` side, at the tool boundary — that side already

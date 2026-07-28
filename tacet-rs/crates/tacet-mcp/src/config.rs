@@ -1,7 +1,7 @@
 //! The connection list: `mcp.json` in the config directory.
 //!
 //! THE DIRECTORY IS NOT THIS CRATE'S KNOWLEDGE. The path comes from
-//! `tacet_core::env` — on Unix `$XDG_CONFIG_HOME/tacet` or `~/.tacet`, on
+//! `tacet_kernel::env` — on Unix `$XDG_CONFIG_HOME/tacet` or `~/.tacet`, on
 //! Windows `%APPDATA%\Tacet`; the memory and skill layers point at the SAME
 //! directory.
 //!
@@ -119,13 +119,13 @@ pub const PATH_VARIABLE: &str = "TACET_MCP_CONFIG";
 /// build `mcp.json` inside a hidden folder; the same expression was also
 /// written out in the memory and skill layers, and nothing guaranteed the three
 /// stayed the same — changing one would silently separate the others. The path
-/// now lives in one place, `tacet_core::env`, and that is where the platform
+/// now lives in one place, `tacet_kernel::env`, and that is where the platform
 /// difference (XDG / `%APPDATA%`) and the `TACET_HOME` override are known.
 pub fn default_path() -> Option<PathBuf> {
-    if let Some(p) = tacet_core::env_var(PATH_VARIABLE) {
+    if let Some(p) = tacet_kernel::env_var(PATH_VARIABLE) {
         return Some(PathBuf::from(p));
     }
-    tacet_core::config_path("mcp.json")
+    tacet_kernel::config_path("mcp.json")
 }
 
 /// Reads from the file. **If the file does not exist an empty config is

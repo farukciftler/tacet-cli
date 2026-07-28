@@ -33,7 +33,7 @@
 use crate::router::simplify;
 use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tacet_core::{
+use tacet_kernel::{
     ArgSchema, Field, Tool, ToolContext, ToolError, ToolFuture, ToolOutcome, ToolState,
     TraceUpdate, boxed,
 };
@@ -697,7 +697,7 @@ pub fn local_offset_minutes() -> Option<i64> {
     // as undefined" rule holds here too. A script that writes `TACET_TZ_OFFSET=`
     // to clear it must not try to parse the empty string and silently fall to
     // `None` — it must go straight to the system path.
-    if let Some(raw) = tacet_core::env_var("TACET_TZ_OFFSET")
+    if let Some(raw) = tacet_kernel::env_var("TACET_TZ_OFFSET")
         && let Ok(min) = raw.to_string_lossy().trim().parse::<i64>()
         && min.abs() <= 14 * 60
     {
@@ -1094,7 +1094,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::task::{Context, Poll};
-    use tacet_core::{InMemoryDataStore, SilentReporter};
+    use tacet_kernel::{InMemoryDataStore, SilentReporter};
 
     /// 2026-07-20 12:00:00 UTC — a Monday.
     const NOW: i64 = 1_784_548_800;

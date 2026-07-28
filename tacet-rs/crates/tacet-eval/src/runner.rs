@@ -18,11 +18,11 @@
 use crate::case::EvalCase;
 use crate::env::{EXTERNAL_TOOL, Env};
 use std::sync::Arc;
-use tacet_core::{ToolCatalog, ToolContext, TraceCollector};
 use tacet_engine::{
     EngineProvider, FakeEngine, MAX_TURNS, Prompt, SYSTEM_INSTRUCTIONS, SamplingSetting, Turn, wait,
 };
 use tacet_grammar::CallConstraint;
+use tacet_kernel::{ToolCatalog, ToolContext, TraceCollector};
 use tacet_tools::executor::{ExecutionReason, ToolExecutor};
 use tacet_tools::router::Router;
 
@@ -97,9 +97,9 @@ pub fn run_case(case: &EvalCase, selector: &dyn EngineSelector) -> CaseOutcome {
     // saw the `ToolOutcome`.
     let traces = Arc::new(TraceCollector::new());
     let mut ctx = ToolContext::new(
-        Arc::clone(&env.store) as Arc<dyn tacet_core::DataStore>,
+        Arc::clone(&env.store) as Arc<dyn tacet_kernel::DataStore>,
         env.dir(),
-        Arc::clone(&traces) as Arc<dyn tacet_core::Reporter>,
+        Arc::clone(&traces) as Arc<dyn tacet_kernel::Reporter>,
     );
 
     let engine = selector.engine_for(case);

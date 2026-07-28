@@ -281,7 +281,7 @@ The path was written as `HOME` + a hidden folder in THREE SEPARATE places
 (memory, skills, MCP) and nothing guaranteed the three would stay the same:
 changing one would SILENTLY separate the others — the user's skills would end up
 in one directory and their memory in another. The single source is
-`tacet_core::env`:
+`tacet_kernel::env`:
 
 | platform | directory |
 | --- | --- |
@@ -290,8 +290,8 @@ in one directory and their memory in another. The single source is
 | Windows | `%APPDATA%\Tacet` |
 
 `tacet-mcp::config::default_path` was still reading its own `HOME` — it was
-wired up. `tacet-memory` was CALLING `tacet_core` but NOT DECLARING it in its
-manifest: the workspace did not compile (`unresolved module tacet_core`,
+wired up. `tacet-memory` was CALLING `tacet_kernel` but NOT DECLARING it in its
+manifest: the workspace did not compile (`unresolved module tacet_kernel`,
 `store.rs:141`). The dependency was added.
 
 **Divergence is now caught at run time:**
@@ -848,7 +848,7 @@ because every one of these was invisible to the check the arms actually ran.
 | `std::env::var` rewritten to `std::env::has` | the two examples carry `required-features = ["candle"]`, so the default `--workspace --all-targets` never builds them | `tacet-engine/examples/{measure,gemma_probe}.rs` |
 | A test made VACUOUS: the fixture emitted `Baslik N` while the assertion checked `Title 5` | it still passes — an assertion that can no longer fail is green forever | `web_search::the_text_going_to_the_model_shows_at_most_five_results` |
 | Ignored network tests still asserting the PRE-rename wire format `kaynak_ref` | `#[ignore]`, so CI never runs them; they would fail the moment anyone did | `web_search` smoke tests (3) |
-| Turkish leaking into the MODEL-facing surface: `"sayi"` as the type name in `short_signature()` | it is prompt text, not code — no compiler sees it | `tacet-core/src/schema.rs` |
+| Turkish leaking into the MODEL-facing surface: `"sayi"` as the type name in `short_signature()` | it is prompt text, not code — no compiler sees it | `tacet-kernel/src/schema.rs` |
 | A model-facing repair hint naming a field that does not exist (`dil:"python"` — the schema field is `language`) | same: prompt text | `tacet-tools/src/write_code.rs` |
 | User-facing Turkish left in shipped strings: `"Sifira bolme yapilamaz."`, `"Hafizaya su an erisilemiyor."`, `"Dosyalar araniyor…"`, `"Hesaplaniyor"`, `"{} giris gezildi"`, `"{total} web sonucu"` | never asserted by any test | `calc`, `memory`, `find_file`, `web_search` |
 | Half-translated doc comments — sentences that stop mid-thought, orphan Turkish clauses, a dropped line | comments do not compile | `web_search.rs` above all (the file was ~40% untranslated) |

@@ -21,7 +21,7 @@
 //! have to return a clone or contract compatibility would be lost.
 
 use std::sync::Mutex;
-use tacet_core::{DataStore as CoreDataStore, Record, SourceRef};
+use tacet_kernel::{DataStore as CoreDataStore, Record, SourceRef};
 
 /// The body formats that may be put into the store.
 ///

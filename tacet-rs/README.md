@@ -59,11 +59,11 @@ tacet-cli ──────────────► the developer shell; dri
    ├── tacet-tools ─────► concrete Tool implementations + ToolExecutor + Router
    │        └── tacet-zip ──► hand-written zip/deflate/crc32 → OOXML generation
    │
-   └── tacet-core ──────► THE CONTRACT: Tool, ArgSchema, ToolOutcome, ToolError,
+   └── tacet-kernel ──────► THE CONTRACT: Tool, ArgSchema, ToolOutcome, ToolError,
                           ToolState, ToolContext, DataStore, ToolCatalog
 ```
 
-The arrows are the direction of dependency: `tacet-core` depends on nothing,
+The arrows are the direction of dependency: `tacet-kernel` depends on nothing,
 everyone depends on it. The contract therefore does not bend under the pressure
 of the implementations.
 
@@ -78,7 +78,7 @@ have compiled the grammar code for nothing.
 
 | Crate | Its job |
 | --- | --- |
-| `tacet-core` | The types all layers agree on. No work is done here. **Single-owner:** the others only read. |
+| `tacet-kernel` | The types all layers agree on. No work is done here. **Single-owner:** the others only read. |
 | `tacet-zip` | Pure-Rust zip/deflate/crc32; OOXML (xlsx) generation and reading. No off-the-shelf crate. DOES NOT PANIC on broken input. |
 | `tacet-grammar` | `ArgSchema` → grammar (PDA + token mask). `CallConstraint` wires this into the generation loop. |
 | `tacet-engine` | Prompt assembly, context budget, the engine contract, session constants. `FakeEngine` + `CandleEngine`. |
@@ -104,7 +104,7 @@ screen is an event that really happened in the code; the model cannot hallucinat
 a visible step.
 
 **The bypass channel has exactly one wire format.** The reference suffix going to
-the model is produced only with `tacet_core::source_ref_suffix`:
+the model is produced only with `tacet_kernel::source_ref_suffix`:
 `\n(full content ready, source_ref=document#1)`. When two separate call sites
 write their own `format!`, the model learns two formats.
 

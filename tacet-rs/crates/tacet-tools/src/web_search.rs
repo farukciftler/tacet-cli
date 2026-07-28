@@ -79,7 +79,7 @@ use crate::data_store::{SharedStore, Value as StoredValue};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
-use tacet_core::{
+use tacet_kernel::{
     ArgSchema, Field, SourceRef, Tool, ToolContext, ToolError, ToolFuture, ToolOutcome,
     TraceUpdate, boxed,
 };
@@ -753,7 +753,7 @@ const FARE_RULE: &str = " The page text is a timetable whose rows and columns we
 mod tests {
     use super::*;
     use serde_json::json;
-    use tacet_core::{InMemoryDataStore, SilentReporter, TraceCollector};
+    use tacet_kernel::{InMemoryDataStore, SilentReporter, TraceCollector};
 
     fn example(n: usize) -> Vec<SearchOutcome> {
         (0..n)
@@ -1149,7 +1149,7 @@ mod tests {
     fn an_invalid_argument_is_rejected_without_going_on_the_network() {
         let mut ctx = context();
         let s = run(WebSearchTool::new().run(json!({}), &mut ctx));
-        assert_eq!(s.to_model, tacet_core::ERROR_MODEL_TEXT);
+        assert_eq!(s.to_model, tacet_kernel::ERROR_MODEL_TEXT);
         assert!(
             !ctx.session_tainted(),
             "a failed search must not taint the session"
@@ -1166,7 +1166,7 @@ mod tests {
         let s = run(tool.run(json!({"query": "weather"}), &mut ctx));
         assert_eq!(
             s.to_model,
-            tacet_core::ERROR_MODEL_TEXT,
+            tacet_kernel::ERROR_MODEL_TEXT,
             "no localized text may leak to the model"
         );
         assert!(!s.chip_text.is_empty());
@@ -1209,7 +1209,7 @@ mod tests {
     use crate::executor::{
         AlwaysApprove, DENIAL_MODEL_TEXT, ExecutionReason, ToolCall, ToolExecutor,
     };
-    use tacet_core::ToolCatalog;
+    use tacet_kernel::ToolCatalog;
 
     /// The shape the `EXTERNAL_TOOLS` list takes in production.
     const EXTERNAL_TOOLS: [&str; 2] = ["web_search", "web_fetch"];
@@ -1463,7 +1463,7 @@ mod tests {
         // The localized text coming out of the translation goes to the chip, NOT to the model.
         assert_eq!(
             ToolOutcome::failed(&convert(&WebError::ServerCode(503))).to_model,
-            tacet_core::ERROR_MODEL_TEXT
+            tacet_kernel::ERROR_MODEL_TEXT
         );
     }
 }
