@@ -74,6 +74,17 @@ const SEARXNG_DIR: &str = "searxng";
 pub const ADDON_MISSING: &str =
     "the web search addon is not installed: `tacet addon install web-search`";
 
+/// The same two sentences as typed INSIDE the shell.
+///
+/// MEASURED, from a real session: the gate fired mid-chat and told the user to
+/// run `tacet addon open web-search`. Inside the shell that is not a command —
+/// there the verb is `/addon on` — so the user typed the suggestion, got a usage
+/// error, and then typed it as a chat message, which the model answered as if it
+/// were a question. A hint that names a command the reader cannot run is worse
+/// than no hint: it costs a turn and it teaches the wrong verb.
+const SHELL_MISSING: &str = "the web search addon is not installed: `/addon install web-search`";
+const SHELL_CLOSED: &str = "the web search addon is CLOSED: `/addon on web-search`";
+
 /// INSTALLED BUT CLOSED is a separate state and needs a separate sentence.
 ///
 /// In the first version both were told "not installed" and this WAS MEASURED: to
@@ -94,13 +105,19 @@ pub fn web_installed() -> bool {
 }
 
 /// The right sentence to print while the gate is closed: is it not installed, or
-/// closed.
-pub fn closed_gate_message() -> &'static str {
-    match tacet_web::addon::read() {
-        Ok(r) if r.find(WEB_SEARCH).is_some() => ADDON_CLOSED,
+/// closed — and in the verb the reader can actually type.
+///
+/// `in_shell` picks the wording, not the meaning: the state is read once, here,
+/// so the two forms cannot drift apart.
+pub fn closed_gate_message(in_shell: bool) -> &'static str {
+    let installed = matches!(tacet_web::addon::read(), Ok(r) if r.find(WEB_SEARCH).is_some());
+    match (installed, in_shell) {
+        (true, true) => SHELL_CLOSED,
+        (true, false) => ADDON_CLOSED,
         // An unreadable registry counts as "missing" too (the gate counts it that
         // way as well).
-        _ => ADDON_MISSING,
+        (false, true) => SHELL_MISSING,
+        (false, false) => ADDON_MISSING,
     }
 }
 
@@ -1101,23 +1118,45 @@ mod tests {
     }
 
     /// INSTALLED-BUT-CLOSED and NOT-INSTALLED-AT-ALL must get separate sentences,
-    /// and THE SUGGESTED COMMAND must be right (`open` or `install`).
+    /// and THE SUGGESTED COMMAND must be one the reader can actually type where
+    /// they are reading it.
     #[test]
     fn closed_and_not_installed_are_separate_sentences() {
         assert!(ADDON_MISSING.contains("addon install"));
         assert!(ADDON_CLOSED.contains("addon open"));
         assert_ne!(ADDON_MISSING, ADDON_CLOSED);
+        assert_ne!(SHELL_MISSING, SHELL_CLOSED);
+
+        // The shell forms must carry the SLASH verbs. A real session was lost to
+        // this: the in-chat hint said `tacet addon open web-search`, which the
+        // shell rejects — the user typed it, got a usage error, then sent it as
+        // a chat message and the model answered it as a question.
+        assert!(SHELL_CLOSED.contains("/addon on "), "{SHELL_CLOSED}");
+        assert!(SHELL_MISSING.contains("/addon install "), "{SHELL_MISSING}");
+        // And they must NOT carry the external form, or the shell teaches a verb
+        // that does not work there.
+        assert!(!SHELL_CLOSED.contains("tacet addon"), "{SHELL_CLOSED}");
+        assert!(!SHELL_MISSING.contains("tacet addon"), "{SHELL_MISSING}");
+
         // Whatever state the registry is in on this machine, the chosen sentence
-        // must match that state.
+        // must match that state — in both wordings.
         let installed = tacet_web::addon::read()
             .map(|r| r.find(WEB_SEARCH).is_some())
             .unwrap_or(false);
         assert_eq!(
-            closed_gate_message(),
+            closed_gate_message(false),
             if installed {
                 ADDON_CLOSED
             } else {
                 ADDON_MISSING
+            }
+        );
+        assert_eq!(
+            closed_gate_message(true),
+            if installed {
+                SHELL_CLOSED
+            } else {
+                SHELL_MISSING
             }
         );
     }
