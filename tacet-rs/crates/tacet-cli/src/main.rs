@@ -143,6 +143,7 @@ static CANCEL: AtomicBool = AtomicBool::new(false);
 #[derive(Parser)]
 #[command(
     name = "tacet",
+    version,
     about = "Tacet — the terminal shell of the on-device assistant"
 )]
 struct Shell {
@@ -484,6 +485,22 @@ fn main() -> ExitCode {
     // no config read, no model discovery, no banner. One word, then exit.
     if std::env::args().any(|a| a == "--print-features") {
         println!("{}", update::compiled_features());
+        return ExitCode::SUCCESS;
+    }
+    // `-v` AND `--v` TOO, not just clap's `-V`/`--version`. Those two are what
+    // people actually type, and answering an obvious question with
+    // "unexpected argument" for a spelling difference is a bad first minute
+    // with any tool. clap owns the canonical pair (it appears in `--help`);
+    // these are caught before parsing because clap cannot alias its built-in.
+    // ALL FOUR SPELLINGS ANSWER THE SAME, and they are answered HERE rather
+    // than by clap so that they answer with the FEATURE too. clap's built-in
+    // prints the number alone, and the number alone is not the answer to
+    // "which tacet is this" — `cargo install` does not remember `--features`,
+    // so 0.1.8 can be a binary that runs a model or one that cannot.
+    // `#[command(version)]` stays on the struct so the flag is listed in
+    // `--help`; this branch just gets there first.
+    if std::env::args().any(|a| a == "-v" || a == "--v" || a == "-V" || a == "--version") {
+        println!("{}", version_line());
         return ExitCode::SUCCESS;
     }
 
@@ -1289,7 +1306,7 @@ fn setup_engine(
                 Err(e) => {
                     eprintln!(
                         "{}",
-                        color.paint(YELLOW, &format!("(the real model could note be used: {e})"))
+                        color.paint(YELLOW, &format!("(the real model could not be used: {e})"))
                     );
                     eprintln!(
                         "{}",
@@ -2259,7 +2276,12 @@ fn chat(run: ChatRun) -> ExitCode {
     // the first byte, which is not a decoration problem, it is a broken command.
     if human {
         if interactive {
-            println!("{}{}", color.paint(BOLD, "Tacet"), color.paint(BRASS, "."));
+            println!(
+                "{}{}  {}",
+                color.paint(BOLD, "Tacet"),
+                color.paint(BRASS, "."),
+                color.paint(DIM, &version_line().replace("tacet ", ""))
+            );
             println!(
                 "{}",
                 color.paint(
@@ -3166,6 +3188,20 @@ fn chat(run: ChatRun) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// `tacet 0.1.9 (metal)` — the version AND what it can do.
+///
+/// The feature belongs on this line because it is the difference between a
+/// binary that runs a model and one that cannot, and that difference has
+/// already cost a user an afternoon: `cargo install` does not remember
+/// `--features`, so the same version number can mean either program.
+fn version_line() -> String {
+    format!(
+        "tacet {} ({})",
+        env!("CARGO_PKG_VERSION"),
+        update::compiled_features()
+    )
+}
+
 /// The interactive settings menu behind a bare `/config`.
 ///
 /// Enter CYCLES the value and writes it immediately, and the menu STAYS OPEN —
@@ -3303,7 +3339,15 @@ fn slash(
         // shells and refusing it costs nothing.
         "/quit" | "/exit" => SlashResult::Quit,
         "/help" => {
-            println!("{}", color.paint(BOLD, "commands"));
+            // THE VERSION SITS AT THE TOP OF HELP because "which build am I in"
+            // is the question that gets asked when something behaves oddly, and
+            // the answer includes the feature: a shell on the fake engine looks
+            // identical to one on a real model until it answers.
+            println!(
+                "{}  {}",
+                color.paint(BOLD, "commands"),
+                color.paint(DIM, &version_line())
+            );
             // THE LIST IS IN ONE PLACE (input::COMMANDS). There is no chance of
             // the `/` popup list and this output diverging: both read the same
             // array.
