@@ -316,6 +316,26 @@ pub fn selection_cases() -> Vec<SelectionCase> {
             "Write a script that converts temperature data from Celsius to Fahrenheit and put it in my folder.",
             "write_code",
         ),
+        // --- git --- the distinction from `find_file`: the question is about the
+        // REPOSITORY (what did I change, what was committed), not about a file
+        // whose name or content is being looked for.
+        //
+        // WHAT THIS MEASURES AND WHAT IT DOES NOT: the eval working directory
+        // (`Env::setup`) is a temp folder and NOT a git repository, so the tool
+        // answers "no_git_repository" here. That is enough for a SELECTION
+        // measurement — the score is decided by which tool the model called — but
+        // it is not enough to measure the ANSWER. A `git init` fixture in
+        // `env.rs` would close that gap.
+        SelectionCase::tool(
+            "git-status",
+            "Which files have I changed in this git repository?",
+            "git",
+        ),
+        SelectionCase::tool(
+            "git-commit-message",
+            "Summarize my git changes and write me a commit message.",
+            "git",
+        ),
         // --- IRRELEVANCE --- no tool must be called
         SelectionCase::chat("chat-greeting", "Hello"),
         SelectionCase::chat("chat-thanks", "Thank you very much."),

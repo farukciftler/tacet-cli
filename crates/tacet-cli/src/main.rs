@@ -64,6 +64,7 @@ mod config;
 mod filter;
 mod format;
 mod input;
+mod session;
 mod ui;
 mod update;
 
@@ -79,14 +80,16 @@ use tacet_kernel::{
 use tacet_memory::MemoryStore;
 use tacet_skills::{InjectionState, SkillStore, injection_text};
 use tacet_tools::data_store::SharedStore;
-use tacet_tools::executor::{ApprovalGate, ApprovalRequest, SilentDeny, ToolExecutor};
+use tacet_tools::executor::{
+    ApprovalGate, ApprovalRequest, ExecutionOutcome, SilentDeny, ToolExecutor,
+};
 use tacet_tools::mcp;
 use tacet_tools::memory::SharedMemory;
 use tacet_tools::router::Router;
 use tacet_tools::run_code::CodeState;
 use ui::{BOLD, BRASS, Color, DIM, LiveReporter, RESET, Screen, TurnIndicator, YELLOW, paper_code};
 
-use std::io::Write;
+use std::io::{IsTerminal, Read as _, Write};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -179,6 +182,44 @@ enum Command {
         /// `TACET_MODEL`/`TACET_TOKENIZER` OVERRIDE all of these.
         #[arg(long)]
         model: Option<String>,
+        /// One line of JSON per turn on stdout, and NOTHING ELSE — no banner,
+        /// no chips, no colour, no streaming text.
+        ///
+        /// WHY IT EXISTS: `tacet -m "..."` was already scriptable, but the
+        /// answer arrived mixed into human decoration ("Tacet: ", chip lines,
+        /// a blank line) and the only way to consume it was to guess at the
+        /// prefix. A caller that wants a machine answer should not have to
+        /// parse a screen; `tacet -m "..." --json | jq -r .answer` is the whole
+        /// contract.
+        #[arg(long)]
+        json: bool,
+        /// Loads the most recent stored session into this one's history.
+        ///
+        /// `continue` IS A RUST KEYWORD, hence the field rename. The flag the
+        /// user types is `--continue`, which is the name every other shell
+        /// uses for this.
+        #[arg(long = "continue")]
+        continue_session: bool,
+        /// Loads ONE named session (`tacet sessions` prints the names).
+        #[arg(long = "session", value_name = "ID")]
+        session_id: Option<String>,
+    },
+    /// Lists the conversations kept on disk — and deletes them.
+    ///
+    /// A SEPARATE TOP-LEVEL COMMAND, not `config sessions`: this is the one
+    /// place where the answer to "what does Tacet keep about me, and how do I
+    /// get rid of it" lives, and a privacy answer buried under a settings verb
+    /// is an answer nobody finds. `/sessions` inside the shell reaches the same
+    /// listing.
+    Sessions {
+        /// JSON instead of a human table — same pattern as every other list.
+        #[arg(long)]
+        json: bool,
+        /// Deletes EVERY stored session and the folder itself. On a terminal it
+        /// asks first; piped it does not (a script that typed this flag meant
+        /// it, and there is nobody to ask).
+        #[arg(long)]
+        purge: bool,
     },
     /// Runs the eval set; the exit code depends on the success rate.
     Eval {
@@ -450,6 +491,9 @@ fn main() -> ExitCode {
         dir: ".".to_string(),
         message: None,
         model: None,
+        json: false,
+        continue_session: false,
+        session_id: None,
     });
     match command {
         Command::Chat {
@@ -459,6 +503,9 @@ fn main() -> ExitCode {
             dir,
             message,
             model,
+            json,
+            continue_session,
+            session_id,
         } => {
             // flag > env (applied deeper) > config file > built-in default —
             // the config file only speaks when the flag stays silent.
@@ -474,8 +521,19 @@ fn main() -> ExitCode {
             } else {
                 engine
             };
-            chat(engine, script, show_prompt, &dir, message, &model)
+            chat(ChatRun {
+                choice: engine,
+                script,
+                show_prompt,
+                dir,
+                single_message: message,
+                model_name: model,
+                json,
+                continue_session,
+                session_id,
+            })
         }
+        Command::Sessions { json, purge } => sessions(json, purge),
         Command::Eval {
             json,
             threshold,
@@ -673,20 +731,48 @@ mod model_package {
         pub dir: PathBuf,
         pub gguf: PathBuf,
         pub gguf_bytes: u64,
-        /// `tokenizer.json`. If `None` the package is HALF and no engine can be
-        /// set up.
+        /// `tokenizer.json` SITTING NEXT TO THE WEIGHTS, if the user has one.
+        /// `None` no longer means the package is half — see `gguf_tokenizer`.
         pub tokenizer: Option<PathBuf>,
+        /// Does the `.gguf` carry its own vocabulary in a shape we can rebuild.
+        ///
+        /// MEASURED ONCE, AT DISCOVERY, and only when it can change the answer.
+        /// `gguf_has_tokenizer` walks the metadata header and stops before the
+        /// tensor section (4-6 ms on a 2.5 GB file), but `models list` scans
+        /// every package, so a needless read per package would be a visible
+        /// pause on a machine holding several weights. When a `tokenizer.json`
+        /// is already there the field is left `false` WITHOUT asking: the file
+        /// wins anyway, so the answer could not change the outcome.
+        pub gguf_tokenizer: bool,
         /// The root this package was found in — the same name can sit in two
         /// roots and the user needs to see WHICH ONE wins.
         pub root: PathBuf,
     }
 
     impl ModelPackage {
-        /// Is it ENOUGH to set up an engine. A half package (with no tokenizer)
-        /// IS VISIBLE in the catalog but cannot be selected: this is exactly the
-        /// answer to "my folder is right there but the model is not found".
+        /// Is it ENOUGH to set up an engine.
+        ///
+        /// THIS USED TO BE `self.tokenizer.is_some()` AND THAT WAS A BUG, not a
+        /// policy: a `.gguf` already carries its vocabulary, its merges and its
+        /// special tokens, so a user who downloaded one file by hand was told
+        /// their package was half and could not be selected — while the engine
+        /// sitting behind this check could have loaded it. The two sides now ask
+        /// the same question (`CandleEngine::files_exist` runs exactly this
+        /// `gguf_has_tokenizer` call when no `tokenizer.json` is given); if they
+        /// disagreed, discovery would refuse packages the loader can handle.
         pub fn is_complete(&self) -> bool {
-            self.tokenizer.is_some()
+            self.tokenizer.is_some() || self.gguf_tokenizer
+        }
+
+        /// What to print next to the package, in one phrase.
+        pub fn tokenizer_note(&self) -> &'static str {
+            if self.tokenizer.is_some() {
+                "tokenizer: tokenizer.json"
+            } else if self.gguf_tokenizer {
+                "tokenizer: inside the .gguf"
+            } else {
+                "tokenizer: MISSING — this package cannot be selected"
+            }
         }
     }
 
@@ -810,12 +896,17 @@ mod model_package {
         let gguf = ggufs.into_iter().next()?;
         let gguf_bytes = gguf.metadata().map(|m| m.len()).unwrap_or(0);
         let tok = dir.join("tokenizer.json");
+        let tokenizer = tok.is_file().then_some(tok);
+        // Asked ONLY when the answer can change the outcome (see the field's
+        // note): with a `tokenizer.json` present the file wins either way.
+        let gguf_tokenizer = tokenizer.is_none() && tacet_engine::gguf_has_tokenizer(&gguf);
         Some(ModelPackage {
             name,
             dir: dir.to_path_buf(),
             gguf,
             gguf_bytes,
-            tokenizer: tok.is_file().then_some(tok),
+            tokenizer,
+            gguf_tokenizer,
             root: root.to_path_buf(),
         })
     }
@@ -825,32 +916,53 @@ mod model_package {
         scan(&model_roots())
     }
 
-    /// The pair given DIRECTLY through environment variables.
+    /// What the engine needs: the weights, and a tokenizer file ONLY IF one was
+    /// named. `None` on the second field means "read it out of the GGUF".
+    pub type Weights = (String, Option<String>);
+
+    /// The weights given DIRECTLY through environment variables.
     ///
-    /// BOTH are required: if only one is given the user's intent is incomplete,
-    /// and setting up an engine with half a pair would be a silent mistake. This
-    /// branch comes BEFORE the catalog — an explicit request is ahead of
+    /// `TACET_TOKENIZER` USED TO BE MANDATORY HERE and it no longer is. The old
+    /// rule ("both or neither") existed because half a pair could not load; now
+    /// it can, because the vocabulary is in the `.gguf`. What has NOT changed is
+    /// the direction of the override: a named `tokenizer.json` still wins, and
+    /// if the named file does not exist the load FAILS instead of quietly using
+    /// the one inside the weights (`ModelSetting::new`'s own rule — a typo must
+    /// not turn into an unexplainable difference in output).
+    ///
+    /// `TACET_TOKENIZER` ALONE, with no `TACET_MODEL`, is still nothing: there
+    /// are no weights to attach it to.
+    ///
+    /// This branch comes BEFORE the catalog — an explicit request is ahead of
     /// discovery.
-    pub fn pair_from_env() -> Option<(String, String)> {
+    pub fn pair_from_env() -> Option<Weights> {
         let m = tacet_kernel::env_var(MODEL_VARIABLE)?;
-        let t = tacet_kernel::env_var(TOKENIZER_VARIABLE)?;
+        let t = tacet_kernel::env_var(TOKENIZER_VARIABLE);
         Some((
             m.to_string_lossy().into_owned(),
-            t.to_string_lossy().into_owned(),
+            t.map(|t| t.to_string_lossy().into_owned()),
         ))
     }
 
-    /// The (gguf, tokenizer) pair for `name` from the given package list.
+    /// The weights for `name` from the given package list.
     ///
     /// SEPARATE AND PURE: so the discovery logic can be tested without touching
     /// environment variables. Environment variables are PROCESS-WIDE and tests
     /// running in parallel step on each other.
-    pub fn to_pair(packages: &[ModelPackage], name: &str) -> Option<(String, String)> {
+    ///
+    /// A package with NEITHER tokenizer is still refused (`is_complete`) — it
+    /// is refused HERE rather than at load time so the user gets the catalog
+    /// report instead of a 2.5 GB wait ending in an error.
+    pub fn to_pair(packages: &[ModelPackage], name: &str) -> Option<Weights> {
         let p = packages.iter().find(|p| p.name == name)?;
-        let t = p.tokenizer.as_ref()?;
+        if !p.is_complete() {
+            return None;
+        }
         Some((
             p.gguf.to_string_lossy().into_owned(),
-            t.to_string_lossy().into_owned(),
+            p.tokenizer
+                .as_ref()
+                .map(|t| t.to_string_lossy().into_owned()),
         ))
     }
 
@@ -861,7 +973,7 @@ mod model_package {
     /// `Architecture::resolve`). If the name and the content diverge — if the
     /// user puts another weight in the folder — the right thing is to follow the
     /// content.
-    pub fn resolve_pair(name: &str) -> Option<(String, String)> {
+    pub fn resolve_pair(name: &str) -> Option<Weights> {
         if let Some(p) = pair_from_env() {
             return Some(p);
         }
@@ -1144,7 +1256,7 @@ fn setup_engine(
     match choice {
         EngineChoice::Fake => Ok(fake(script)),
         EngineChoice::Candle => match model_package::resolve_pair(model_name) {
-            Some((m, t)) => candle_engine_from_path(&m, &t),
+            Some((m, t)) => candle_engine_from_path(&m, t.as_deref()),
             // `--engine candle` is an EXPLICIT request: with no model, erroring
             // out is right, not falling back to fake (see the `Auto` branch,
             // which does the opposite).
@@ -1158,7 +1270,7 @@ fn setup_engine(
             }
         },
         EngineChoice::Auto => match model_package::resolve_pair(model_name) {
-            Some((m, t)) => match candle_engine_from_path(&m, &t) {
+            Some((m, t)) => match candle_engine_from_path(&m, t.as_deref()) {
                 Ok(engine) => {
                     eprintln!("{}", color.paint(DIM, &format!("(model: {m})")));
                     Ok(engine)
@@ -1201,13 +1313,21 @@ fn setup_engine(
 /// `TACET_MODEL` is set would mislead — in that case discovery never ran at all.
 fn model_not_found_report(requested: &str, color: &Color) {
     if let Some((m, t)) = model_package::pair_from_env() {
+        // The tokenizer line reports what was ACTUALLY asked for. Printing a
+        // `TACET_TOKENIZER` value the user never set would send them looking for
+        // a variable that is not in their environment.
+        let tokenizer_line = match &t {
+            Some(t) => format!("\n   tokenizer: {t}"),
+            None => format!(
+                "\n   tokenizer: not set ({TOKENIZER_VARIABLE}) — the one inside the .gguf would be used"
+            ),
+        };
         eprintln!(
             "{}",
             color.paint(
                 YELLOW,
                 &format!(
-                    "({}/{} are set but the files could note be loaded:\n   gguf : {m}\n   tokenizer: {t})",
-                    MODEL_VARIABLE, TOKENIZER_VARIABLE
+                    "({MODEL_VARIABLE} is set but the files could note be loaded:\n   gguf : {m}{tokenizer_line})"
                 )
             )
         );
@@ -1303,7 +1423,7 @@ fn model_not_found_report(requested: &str, color: &Color) {
         let note = if p.is_complete() {
             ""
         } else {
-            "  [NO tokenizer.json — cannot be selected]"
+            "  [no tokenizer, in the folder or in the .gguf — cannot be selected]"
         };
         eprintln!("{}", color.paint(DIM, &format!("    {}{note}", p.name)));
     }
@@ -1396,20 +1516,544 @@ fn refresh_session(
 }
 
 // ---------------------------------------------------------------------------
+// Piped standard input — CONTEXT, not a message
+// ---------------------------------------------------------------------------
+
+/// The ceiling on piped input that becomes context.
+///
+/// DERIVED FROM THE WINDOW, not chosen for looks. `TokenCounter::estimate`
+/// charges roughly one token per three bytes (biased high on purpose), and the
+/// prompt half of the 4096-token window is `prompt_cap()` ≈ 3072 tokens — of
+/// which the system block and the tool descriptions already eat ~2300 on a full
+/// catalog. 8 KiB of pasted text is ~2700 estimated tokens: still larger than
+/// the room actually left, which is deliberate. The point of the cap is not to
+/// make the paste fit (truncation handles that, and it is allowed to bite here)
+/// but to stop a `cat 10mb.log |` from making the shell allocate and hash
+/// megabytes before the counter ever sees them.
+const STDIN_CONTEXT_LIMIT: usize = 8 * 1024;
+
+/// What arrived on a pipe, and whether we had to cut it.
+struct PipedInput {
+    text: String,
+    /// The size before the cut. `None` when nothing was cut.
+    original_bytes: Option<usize>,
+}
+
+/// Reads piped stdin, capped.
+///
+/// WHY THIS EXISTS AT ALL — A MEASURED BUG: `echo "..." | tacet chat --message
+/// "question"` sent the question and DROPPED THE PIPE ON THE FLOOR. Nothing
+/// said so; the model answered as if the pipe had never been there, so the user
+/// got a confident answer about data the model had never seen. Silent data loss
+/// is the worst shape a bug can take in an assistant.
+///
+/// It reads BYTES and converts lossily rather than demanding UTF-8: a pipe
+/// carrying one bad byte in the middle of a log is still worth reading, and
+/// failing the whole turn over it would be the same silent loss in a new
+/// costume.
+/// Is there anything on stdin worth waiting for?
+///
+/// WHY THIS GATE EXISTS: `read_to_end` on a pipe that is OPEN BUT IDLE never
+/// returns. That is not a rare shape — a CI step, a `bash -c` with an inherited
+/// descriptor, a shell function called from a script all hand the process a
+/// stdin nobody will ever write to or close. Without this check
+/// `tacet -m "..." --json` hangs forever there, and it hangs SILENTLY: no
+/// output, no error, just a job that never finishes.
+///
+/// `poll` with a short timeout answers "has the producer said anything yet".
+/// Once the first byte is there we go back to a full blocking read, so a slow
+/// producer is not cut off mid-stream — only a producer that has not started
+/// within the window is skipped.
+#[cfg(unix)]
+fn stdin_has_data() -> bool {
+    // `poll` WITHOUT A libc CRATE — same reasoning as `setsid`/`killpg` in
+    // tacet-tools: the symbol is in the C library every unix already links.
+    unsafe extern "C" {
+        fn poll(fds: *mut PollFd, nfds: u64, timeout: i32) -> i32;
+    }
+    #[repr(C)]
+    struct PollFd {
+        fd: i32,
+        events: i16,
+        revents: i16,
+    }
+    const POLLIN: i16 = 0x0001;
+    // 120 ms. Long enough that a program starting up and immediately writing is
+    // caught, short enough that a person never perceives it. NOT TUNED against
+    // a slow producer on a loaded machine — if this proves too tight, the
+    // symptom is piped input being ignored, which the fence in the prompt makes
+    // visible rather than silent.
+    const WAIT_MS: i32 = 120;
+
+    let mut fd = PollFd { fd: 0, events: POLLIN, revents: 0 };
+    // SAFETY: one descriptor, valid for the call; `poll` writes only `revents`.
+    let ready = unsafe { poll(&mut fd, 1, WAIT_MS) };
+    ready > 0 && (fd.revents & POLLIN) != 0
+}
+
+/// NOT MEASURED ON WINDOWS. Without an equivalent gate the old behaviour
+/// stands: a pipe that is open but idle blocks. Left as it was rather than
+/// guessed at, because the fix has to be tested on the platform it targets.
+#[cfg(not(unix))]
+fn stdin_has_data() -> bool {
+    true
+}
+
+fn read_piped_stdin() -> Option<PipedInput> {
+    if !stdin_has_data() {
+        return None;
+    }
+    let mut stdin = std::io::stdin().lock();
+    let mut raw = Vec::new();
+    // One byte over the limit, so "did it fill the limit exactly" and "was there
+    // more" are distinguishable without reading the rest of a 10 MB log.
+    if stdin
+        .by_ref()
+        .take(STDIN_CONTEXT_LIMIT as u64 + 1)
+        .read_to_end(&mut raw)
+        .is_err()
+    {
+        return None;
+    }
+    if raw.iter().all(u8::is_ascii_whitespace) {
+        // An empty pipe (`tacet -m "hi" < /dev/null`) is not context. An empty
+        // `<stdin>` fence would tell the model "you were given data and it was
+        // blank", which is a claim about the user's files that is not true.
+        return None;
+    }
+    let overflowed = raw.len() > STDIN_CONTEXT_LIMIT;
+    if overflowed {
+        // The rest of the pipe is DRAINED, not left in the buffer: a writer
+        // blocked on a full pipe would otherwise see EPIPE and print its own
+        // error over ours. Failure here is not worth reporting — we already
+        // have what we came for.
+        let mut sink = std::io::sink();
+        let _ = std::io::copy(&mut stdin, &mut sink);
+        raw.truncate(STDIN_CONTEXT_LIMIT);
+        // Back off to a character boundary so the lossy conversion does not
+        // turn the last real character into a replacement mark.
+        while !raw.is_empty() && (raw[raw.len() - 1] & 0b1100_0000) == 0b1000_0000 {
+            raw.pop();
+        }
+    }
+    Some(PipedInput {
+        text: String::from_utf8_lossy(&raw).into_owned(),
+        original_bytes: overflowed.then_some(STDIN_CONTEXT_LIMIT + 1),
+    })
+}
+
+/// The piped text as the model sees it: fenced, and HONEST ABOUT THE CUT.
+///
+/// The cut is written INSIDE the fence, in the model's own language, because
+/// the model is the one who would otherwise conclude "the file ends here" and
+/// answer about a log it only saw the head of. The user is told separately, on
+/// stderr — two audiences, two sentences, neither standing in for the other.
+fn stdin_fence(piped: &PipedInput) -> String {
+    let mut fence = String::from("<stdin>\n");
+    fence.push_str(piped.text.trim_end());
+    if piped.original_bytes.is_some() {
+        fence.push_str("\n…(truncated: only the first ");
+        fence.push_str(&byte_text(STDIN_CONTEXT_LIMIT as u64));
+        fence.push_str(" of the piped input is shown)");
+    }
+    fence.push_str("\n</stdin>");
+    fence
+}
+
+// ---------------------------------------------------------------------------
+// The working directory, as one short block in the prompt
+// ---------------------------------------------------------------------------
+
+/// How many names the listing shows before it starts counting instead.
+const DIR_CONTEXT_ENTRIES: usize = 40;
+/// The hard ceiling on the block, in bytes. SEE THE MEASUREMENT in
+/// `dir_context`: this number, not the entry count, is what actually bounds the
+/// cost, because one directory of long names can blow past a short list.
+const DIR_CONTEXT_BYTES: usize = 500;
+
+/// A short census of the working directory, fenced, or `None` when there is
+/// nothing worth saying.
+///
+/// WHY IT IS IN THE PROMPT AT ALL: "what's in here?" is the first thing a person
+/// types in a terminal assistant, and answering it used to cost a `run_code`
+/// round trip — a tool call, an approval-shaped pause and two more seconds — for
+/// a fact that fits in one line.
+///
+/// MEASURED COST — and it is NOT free, so here are the real numbers rather than
+/// an adjective. Estimated with `TokenCounter::estimate` (the same counter the
+/// budget uses), on 28 Jul 2026:
+///
+///     directory                       bytes   tokens   % of 4096
+///     tacet-rs/crates (11 entries)      165       66        1.6%
+///     the ketum repo root (13)          240       96        2.3%
+///     the cap (500 bytes + tail)       ~568     ~228        5.6%
+///
+/// For scale, `SYSTEM_INSTRUCTIONS` alone is 442 tokens and a full 12-tool
+/// catalog description is ~2000, so a typical prompt was ~2480 before this
+/// block and ~2580 after. The block is therefore ~4% of what is already there —
+/// but it is ~20% of what is LEFT under `prompt_cap()`, which is the number that
+/// matters and the reason the byte cap is 500 and not 2000.
+///
+/// IT IS SENT ON EVERY TURN, and that is a choice, not an oversight. It sits in
+/// the system block, the one piece truncation never touches, so a "what's in
+/// here?" asked on turn 30 is answered exactly as well as one asked on turn 1.
+/// First-turn-only would have cost the same on turn 1 and then gone missing
+/// precisely when the conversation is long enough for the model to have
+/// forgotten. If this ever needs to shrink, shrink `DIR_CONTEXT_BYTES` — the
+/// cost is linear in it and the table above is the calibration.
+///
+/// HIDDEN FILES ARE EXCLUDED. `.env`, `.git/`, `.ssh/` and friends are where
+/// secrets live, and this block goes into a prompt on every turn; the user asked
+/// for an assistant, not for their dotfiles to be recited. The tools can still
+/// read them WHEN ASKED — that path has a sandbox check and an audit chip, which
+/// is the difference between "reached for" and "handed over".
+fn dir_context(dir: &str) -> Option<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return None;
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                return None;
+            }
+            let folder = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            Some(if folder { format!("{name}/") } else { name })
+        })
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    // SORTED, so the same directory produces a bit-identical prompt on two
+    // machines — `read_dir` order is the file system's, and a prompt that
+    // changes shape between runs makes every measurement incomparable.
+    names.sort();
+    let total = names.len();
+
+    let mut shown = 0usize;
+    let mut body = String::new();
+    for name in names.iter().take(DIR_CONTEXT_ENTRIES) {
+        // The +2 accounts for the separator and keeps the check honest about
+        // the string we are actually building.
+        if body.len() + name.len() + 2 > DIR_CONTEXT_BYTES {
+            break;
+        }
+        if !body.is_empty() {
+            body.push_str(", ");
+        }
+        body.push_str(name);
+        shown += 1;
+    }
+    if shown == 0 {
+        return None;
+    }
+    let mut block = format!("<cwd>\n{dir}\n{body}");
+    if shown < total {
+        // THE REMAINDER IS COUNTED, NOT SWALLOWED. A list that silently stops at
+        // forty teaches the model that the directory holds forty things, and it
+        // will then say so.
+        block.push_str(&format!("\n({} more not listed)", total - shown));
+    }
+    block.push_str("\n</cwd>");
+    Some(block)
+}
+
+/// The system block the model actually gets: the fixed instructions plus, if
+/// there is one, the directory census.
+fn system_text(dir_block: Option<&String>) -> String {
+    match dir_block {
+        Some(b) => format!("{SYSTEM_INSTRUCTIONS}\n\n{b}"),
+        None => SYSTEM_INSTRUCTIONS.to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The transcript on disk — the shell's half of `session.rs`
+// ---------------------------------------------------------------------------
+
+/// Stored turns → prompt turns.
+///
+/// THE CONVERSION LIVES HERE, NOT IN `session.rs`, and deliberately: that module
+/// owns the FILE FORMAT and this one owns the PROMPT, and tying the two together
+/// would make a prompt refactor a change to a file the user already has on disk.
+/// This function is the seam.
+///
+/// `Role::Tool` TURNS ARE CARRIED OVER. Dropping them is tempting — tool results
+/// are the bulkiest thing in a transcript and the 4096-token window is tight —
+/// but a resumed conversation without them reads as if the assistant knew the
+/// weather by magic, and the model, seeing its own past answer with no source,
+/// learns that inventing facts is what it does here. The truncation policy
+/// already drops from the front when the window fills, which is the right place
+/// for that decision because it can see the whole prompt.
+fn to_engine_turns(stored: &[session::Turn]) -> Vec<Turn> {
+    stored
+        .iter()
+        .map(|t| match t.role {
+            session::Role::User => Turn::user(&t.text),
+            session::Role::Assistant => Turn::assistant(&t.text),
+            session::Role::Tool => Turn::tool(&t.text),
+        })
+        .collect()
+}
+
+/// The marker that says the privacy notice has already been shown.
+///
+/// IT LIVES IN THE SESSIONS FOLDER, not in `config.json`. Two reasons, and the
+/// second is the one that decided it: `config.json` takes only keys that are
+/// also flags (see the `Config` command's note) and this is not a setting; and
+/// the marker sitting inside the folder means `tacet sessions --purge`, which
+/// removes the folder, ALSO forgets that the notice was shown. That is correct
+/// behaviour rather than a leak — a user who has just erased everything and
+/// starts again is owed the sentence about where the new writing goes.
+const TRANSCRIPT_NOTICE_MARK: &str = ".notice-shown";
+
+/// Prints, ONCE PER INSTALL, where the conversation is being kept.
+///
+/// WHY IT IS SAID AT ALL: this shell's whole promise is that nothing leaves the
+/// machine, and a user who discovers a folder of their chat transcripts they
+/// were never told about will read that promise differently afterwards — even
+/// though the file never left the disk. Consent for a local write is cheap to
+/// give and expensive to skip.
+///
+/// WHY ONLY ONCE: a privacy line on every start is a line nobody reads by the
+/// third day, and the point of it is that it IS read.
+///
+/// It is called on the write path (not at start-up) so that a shell which is
+/// opened and closed without a word never claims to have stored anything.
+fn announce_transcript(color: &Color, human: bool) {
+    let Some(dir) = session::dir() else {
+        return;
+    };
+    let mark = dir.join(TRANSCRIPT_NOTICE_MARK);
+    if mark.exists() {
+        return;
+    }
+    // The directory may not exist yet — the first `append` creates it. Best
+    // effort throughout: failing to record that we spoke is not a reason to
+    // refuse to speak, and the worst case is the sentence appearing twice.
+    let _ = tacet_kernel::fs::create_private_dir(&dir);
+    let _ = tacet_kernel::fs::write_private(&mark, b"");
+    if !human {
+        // Under `--json` the sentence has nowhere to go on stdout without
+        // breaking the contract, so it goes to stderr — still said, still once.
+        eprintln!("{}", session::PRIVACY_NOTICE);
+        return;
+    }
+    eprintln!();
+    eprintln!("{}", color.paint(DIM, session::PRIVACY_NOTICE));
+    eprintln!(
+        "{}",
+        color.paint(
+            DIM,
+            &format!(
+                "  {}   ·   list: tacet sessions   ·   delete: tacet sessions --purge",
+                dir.display()
+            )
+        )
+    );
+    eprintln!();
+}
+
+/// One executed tool, as the `--json` trace records it.
+///
+/// THE ARGUMENTS ARE SUMMARISED, NOT REPRODUCED. A `write_code` call carries a
+/// whole file in its arguments; a caller reading this trace wants to know WHICH
+/// tool ran with roughly what, and a reader who pipes the output somewhere would
+/// otherwise be moving a document they never asked to move.
+fn tool_record(outcome: &ExecutionOutcome, raw_generation: &str) -> serde_json::Value {
+    /// Long enough to identify a call, short enough not to be a payload.
+    const ARG_SUMMARY_CHARS: usize = 160;
+
+    // The arguments are re-parsed from the raw generation rather than taken off
+    // the outcome, which does not carry them. A `None` here is not a failure:
+    // the executor has its own recovery path for shapes `ToolCall::parse` does
+    // not accept, and a missing summary is better than a guessed one.
+    let args = tacet_tools::executor::ToolCall::parse(raw_generation).map(|c| {
+        let text = c.args.to_string();
+        if text.chars().count() > ARG_SUMMARY_CHARS {
+            let head: String = text.chars().take(ARG_SUMMARY_CHARS).collect();
+            format!("{head}…")
+        } else {
+            text
+        }
+    });
+    serde_json::json!({
+        "tool": outcome.tool_name,
+        "args": args,
+        // The machine-readable verdict. `reason` is the executor's own vocabulary
+        // (why it ended), `state` is what the world looks like afterwards; a
+        // caller deciding whether to retry needs the second, one logging needs
+        // the first.
+        "reason": format!("{:?}", outcome.reason),
+        "state": match &outcome.state {
+            tacet_kernel::ToolState::Running => "running".to_string(),
+            tacet_kernel::ToolState::Read => "read".to_string(),
+            tacet_kernel::ToolState::Written => "written".to_string(),
+            tacet_kernel::ToolState::NeedsPermission => "needs_permission".to_string(),
+            tacet_kernel::ToolState::Failed(why) => format!("failed: {why}"),
+        },
+        "error": outcome.is_error(),
+        "world_changed": outcome.world_changed,
+    })
+}
+
+/// `tacet sessions` — what is kept, and how to be rid of it.
+fn sessions(json: bool, purge: bool) -> ExitCode {
+    let color = Color::setup();
+    let dir = session::dir();
+
+    if purge {
+        // THE QUESTION IS ASKED ON A TERMINAL AND NOT IN A PIPE. There is nobody
+        // to ask in a pipe, and a script that typed `--purge` said what it
+        // meant; blocking on a prompt nobody can answer would hang the script
+        // instead of protecting anyone.
+        if std::io::stdin().is_terminal()
+            && std::io::stdout().is_terminal()
+            && !ui::ask_yes_no(
+                &color,
+                "delete EVERY stored conversation? this cannot be undone",
+            )
+        {
+            println!("{}", color.paint(DIM, "(nothing was deleted)"));
+            return ExitCode::SUCCESS;
+        }
+        return match session::Session::purge_all() {
+            Ok(n) => {
+                if json {
+                    println!("{}", serde_json::json!({ "purged": n }));
+                } else {
+                    println!("{n} conversations deleted");
+                }
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{}", color.paint(YELLOW, &format!("could not delete: {e}")));
+                ExitCode::FAILURE
+            }
+        };
+    }
+
+    let list = session::Session::list();
+    if json {
+        // The same shape as every other list in this shell: context at the top
+        // level, records underneath.
+        let records: Vec<serde_json::Value> = list
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "id": s.id,
+                    "at": s.at,
+                    "local_time": s.local_time(),
+                    "turns": s.turns,
+                    "preview": s.preview,
+                    "path": s.path.display().to_string(),
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({
+                "dir": dir.as_ref().map(|d| d.display().to_string()),
+                "sessions": records,
+            })
+        );
+        return ExitCode::SUCCESS;
+    }
+
+    match &dir {
+        Some(d) => println!("{}", color.paint(DIM, &format!("kept in: {}", d.display()))),
+        None => println!(
+            "{}",
+            color.paint(
+                YELLOW,
+                "the config directory could not be resolved — nothing is being kept"
+            )
+        ),
+    }
+    println!();
+    if list.is_empty() {
+        println!("{}", color.paint(DIM, "(no stored conversation)"));
+        return ExitCode::SUCCESS;
+    }
+    for s in &list {
+        println!(
+            "{}  {}",
+            color.paint(BOLD, &s.id),
+            color.paint(DIM, &format!("{} · {} turns", s.local_time(), s.turns))
+        );
+        if !s.preview.is_empty() {
+            println!("  {}", color.paint(DIM, &ui::one_line(&s.preview)));
+        }
+    }
+    println!();
+    println!(
+        "{}",
+        color.paint(
+            DIM,
+            "continue the last one: tacet --continue   ·   a specific one: tacet --session <id>"
+        )
+    );
+    println!(
+        "{}",
+        color.paint(DIM, "delete every one of them: tacet sessions --purge")
+    );
+    ExitCode::SUCCESS
+}
+
+// ---------------------------------------------------------------------------
 // chat
 // ---------------------------------------------------------------------------
 
-fn chat(
+/// Everything `chat` needs. A STRUCT, not nine positional arguments: the list
+/// had already reached six `&str`/`bool`/`Option<String>` values where a swapped
+/// pair would still compile.
+struct ChatRun {
     choice: EngineChoice,
     script: Vec<String>,
     show_prompt: bool,
-    dir: &str,
+    dir: String,
     single_message: Option<String>,
-    model_name: &str,
-) -> ExitCode {
+    model_name: String,
+    json: bool,
+    continue_session: bool,
+    session_id: Option<String>,
+}
+
+#[allow(clippy::too_many_lines)]
+fn chat(run: ChatRun) -> ExitCode {
+    let ChatRun {
+        choice,
+        script,
+        show_prompt,
+        dir,
+        single_message,
+        model_name,
+        json,
+        continue_session,
+        session_id,
+    } = run;
+    let dir = dir.as_str();
+    let model_name = model_name.as_str();
     let color = Color::setup();
     let screen = Screen::setup();
     let interactive = single_message.is_none();
+    // `--json` OWNS THE WHOLE OF STDOUT. Every human decoration below asks this
+    // question rather than `interactive`, because the two are not the same: a
+    // `--json` run in a terminal is still a machine-readable run.
+    let human = !json;
+
+    // THE PIPE IS CONTEXT ONLY ALONGSIDE `--message`.
+    //
+    // With no `--message` the loop READS ITS MESSAGES from stdin line by line
+    // (`input::read` falls back to `read_line` off a tty) and every script in
+    // the wild depends on that. Slurping stdin here would take those lines away
+    // and break them silently — trading one silent bug for another.
+    let piped = if single_message.is_some() && !std::io::stdin().is_terminal() {
+        read_piped_stdin()
+    } else {
+        None
+    };
 
     let engine = match setup_engine(choice, script, model_name, &color) {
         Ok(e) => e,
@@ -1433,6 +2077,62 @@ fn chat(
     } else {
         SharedMemory::in_memory()
     };
+
+    // THE TRANSCRIPT ON DISK.
+    //
+    // PERSISTED IN INTERACTIVE MODE, and in a one-shot run ONLY IF the user
+    // asked for a transcript by naming one (`--continue` / `--session`). The
+    // rule is the same one memory follows two blocks up, for the same reason: a
+    // CI script running `tacet -m` in a loop would otherwise write a file per
+    // invocation and, at fifty sessions, evict the conversations the user
+    // actually had. Naming a session is the opt-in.
+    let keep_transcript = interactive || continue_session || session_id.is_some();
+    let mut chat_session = if keep_transcript {
+        Some(session::Session::start())
+    } else {
+        None
+    };
+
+    // WHAT IS BEING CONTINUED. `--session <id>` is more specific than
+    // `--continue`, so it wins; asking for both is not an error worth refusing
+    // a shell over.
+    let mut resumed: Vec<Turn> = Vec::new();
+    if let Some(id) = &session_id {
+        match session::Session::load(id) {
+            Some(turns) => resumed = to_engine_turns(&turns),
+            // NOT SILENT. A typo'd id that quietly opened an empty session is
+            // the shape of failure this whole module exists to avoid: the user
+            // would talk to a model that has forgotten everything and blame the
+            // model.
+            None => eprintln!(
+                "{}",
+                color.paint(
+                    YELLOW,
+                    &format!("(no session named '{id}' — starting a fresh one; `tacet sessions` lists them)")
+                )
+            ),
+        }
+    } else if continue_session {
+        match session::Session::latest() {
+            Some(turns) => resumed = to_engine_turns(&turns),
+            None => eprintln!(
+                "{}",
+                color.paint(
+                    DIM,
+                    "(no stored session to continue — starting a fresh one)"
+                )
+            ),
+        }
+    }
+    if !resumed.is_empty() && human {
+        println!(
+            "{}",
+            color.paint(
+                DIM,
+                &format!("(continuing — {} earlier turns loaded)", resumed.len())
+            )
+        );
+    }
 
     // SKILLS: the embedded skills + (if present) the user's `skills` directory.
     let mut skill_store = SkillStore::default_set();
@@ -1494,7 +2194,17 @@ fn chat(
 
     let router = Router::new();
     let counter = TokenCounter::default();
-    let mut history: Vec<Turn> = Vec::new();
+    let mut history: Vec<Turn> = resumed;
+
+    // THE DIRECTORY CENSUS IS TAKEN ONCE, at session start, not per turn.
+    //
+    // A `read_dir` per turn would put a syscall on the latency path of every
+    // question to save a staleness the user can fix by restarting; and worse,
+    // the prompt would change shape mid-conversation for reasons the user never
+    // did, which is precisely the kind of drift that makes a measurement
+    // meaningless. See `dir_context` for the measured token cost.
+    let dir_block = dir_context(dir);
+    let system = system_text(dir_block.as_ref());
     // TOKEN ACCOUNTING. No new counter WAS INVENTED: the prompt side comes from
     // `TokenCounter`'s truncation report (`final_estimate` — the real prompt size
     // AFTER truncation), the generation side from the engine's reported
@@ -1506,6 +2216,8 @@ fn chat(
     let mut last_turn_prompt = 0usize;
     let mut last_turn_generation = 0usize;
     let mut last_context = 0usize;
+    // The most recent file a tool produced — what ctrl-o / /preview opens.
+    let mut last_artifact: Option<std::path::PathBuf> = None;
     let mut input_history: Vec<String> = Vec::new();
 
     // THE CONSTRAINT is set up ONCE OUTSIDE the loop (the trie cost is
@@ -1528,32 +2240,75 @@ fn chat(
     // brand's ensō dot in its typographic form ("the sentence ends here") — and
     // the spinning ensō of the turn indicator; everything else stays in
     // ink/grey tones.
-    if interactive {
-        println!("{}{}", color.paint(BOLD, "Tacet"), color.paint(BRASS, "."));
-        println!(
-            "{}",
-            color.paint(
-                DIM,
-                &format!(
-                    "{} · {} tools · /help",
-                    engine.name(),
-                    catalog.tools().len()
+    //
+    // UNDER `--json` NOTHING OF THIS IS PRINTED. The contract is one line of
+    // JSON on stdout and nothing else; a banner above it makes `| jq` fail on
+    // the first byte, which is not a decoration problem, it is a broken command.
+    if human {
+        if interactive {
+            println!("{}{}", color.paint(BOLD, "Tacet"), color.paint(BRASS, "."));
+            println!(
+                "{}",
+                color.paint(
+                    DIM,
+                    &format!(
+                        "{} · {} tools · /help",
+                        engine.name(),
+                        catalog.tools().len()
+                    )
                 )
-            )
-        );
-    } else {
-        println!(
-            "Tacet — engine: {} · tools: {}",
-            engine.name(),
-            catalog.tools().len()
-        );
+            );
+        } else {
+            println!(
+                "Tacet — engine: {} · tools: {}",
+                engine.name(),
+                catalog.tools().len()
+            );
+        }
+        println!();
     }
-    println!();
+
+    // THE PIPE IS ANNOUNCED, AND ITS CUT IS ANNOUNCED LOUDER. On stderr, so it
+    // never lands in `--json` output; the model is told separately, inside the
+    // fence (see `stdin_fence`) — the user and the model need the same fact in
+    // two different places, and neither notice covers the other.
+    if let Some(p) = &piped {
+        match p.original_bytes {
+            None => eprintln!(
+                "{}",
+                color.paint(
+                    DIM,
+                    &format!(
+                        "(read {} from the pipe as context)",
+                        byte_text(p.text.len() as u64)
+                    )
+                )
+            ),
+            Some(_) => eprintln!(
+                "{}",
+                color.paint(
+                    YELLOW,
+                    &format!(
+                        "(the piped input was CUT at {} — the model sees only the beginning; \
+                         the 4096-token window cannot hold more)",
+                        byte_text(STDIN_CONTEXT_LIMIT as u64)
+                    )
+                )
+            ),
+        }
+    }
 
     // Counts COMPLETED turns, for the one-time update offer below. Not a
     // metric and not persisted: it exists so the question lands after the
     // user has actually used the shell rather than on the first line.
     let mut completed_turns: usize = 0;
+    // WHY A FLAG AND NOT JUST A PRINT: with `--json` the failure has to reach
+    // the READER, and the reader is a script. An engine error printed to stderr
+    // while stdout carries `"answer":""` and the process exits 0 is a silent
+    // failure — `jq -r .answer` yields an empty string and the pipeline carries
+    // on as though the model had answered.
+    let mut turn_error: Option<String> = None;
+    let mut any_turn_failed = false;
     loop {
         let message = match single_message.clone() {
             Some(m) => m,
@@ -1601,13 +2356,28 @@ fn chat(
 
         // Slash commands: they DO NOT GO to the model as a message.
         if message.starts_with('/') {
+            // A SLASH COMMAND HAS NO JSON SHAPE. Every one of them prints a
+            // human table to stdout, which is exactly the byte stream `--json`
+            // promises not to produce. Saying so in JSON keeps the promise:
+            // the caller gets a parseable line and a non-zero exit instead of a
+            // table that breaks their parser three fields in.
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "error": "slash commands have no --json form",
+                        "command": message.trim(),
+                    })
+                );
+                return ExitCode::FAILURE;
+            }
             let cleared = message.trim() == "/clear";
             // An /addon verb with arguments changes the registry; the running
             // session must see the change (the transcript that forced this:
             // `/addon on web-search` said "opened" while the session kept
             // answering "the addon is CLOSED" until a restart).
             let addon_touched = message.trim_start().starts_with("/addon ");
-            match slash(&message, &catalog, &memory, &mut history, &engine, &color) {
+            match slash(&message, &catalog, &memory, &mut history, &engine, &color, &last_artifact) {
                 SlashResult::Quit => break,
                 SlashResult::Handled => {
                     // /clear must also clear the COUNTER LINE: leaving the old
@@ -1618,6 +2388,18 @@ fn chat(
                         last_turn_prompt = 0;
                         last_turn_generation = 0;
                         last_context = 0;
+                        // AND IT CLOSES THE TRANSCRIPT. `/clear` says "forget
+                        // this conversation"; a shell that kept appending to the
+                        // same file would leave the cleared turns sitting in the
+                        // record `--continue` reloads — the user would have said
+                        // forget and been remembered anyway. The file already
+                        // written is NOT deleted (that is `tacet sessions
+                        // --purge`, and deleting on a keystroke that reads as
+                        // "start fresh" would be a surprise); from here on the
+                        // new turns go to a NEW file.
+                        if let Some(s) = &mut chat_session {
+                            *s = session::Session::start();
+                        }
                     }
                     if addon_touched {
                         refresh_session(
@@ -1740,6 +2522,22 @@ fn chat(
         // contexts, encouraged it to repeat the question.
         let mut turn_tools: Vec<Turn> = Vec::new();
 
+        // WHAT THE MODEL IS ASKED, as opposed to what the user typed. They are
+        // the same string unless something was piped in, in which case the pipe
+        // is fenced ABOVE the question — data first, instruction last, because
+        // in a small model the final block carries the most weight and the
+        // question is the instruction.
+        //
+        // `message` STAYS THE USER'S OWN WORDS everywhere else in this turn:
+        // the router selects tools from it, the skill store matches on it, the
+        // memory store queries with it. Handing an 8 KiB log to a keyword router
+        // would let the pasted text, not the question, decide which tools the
+        // model is even shown.
+        let asked = match &piped {
+            Some(p) => format!("{}\n\n{message}", stdin_fence(p)),
+            None => message.clone(),
+        };
+
         // The tool budget derives ONLY from the user message.
         let selected: ToolCatalog = router.select(&message, &catalog).into_iter().collect();
         let selected_names: Vec<String> = selected.names().into_iter().map(String::from).collect();
@@ -1748,7 +2546,7 @@ fn chat(
         // the SINGLE skill matching the message, into that turn's prompt behind a
         // `<guidance>` fence. Turn-distance repeat suppression via
         // `injection_state`: the same skill is not added again on every turn.
-        let guide = skill_store
+        let mut guide = skill_store
             .matching(&message, Some(&selected_names))
             .and_then(|s| {
                 if injection_state.is_needed(&s.name) {
@@ -1758,6 +2556,22 @@ fn chat(
                     None
                 }
             });
+
+        // THE WEB NUDGE. The intent detector already fires when the gate is
+        // CLOSED (it offers the switch); with the gate OPEN the same signal now
+        // reaches the MODEL. Measured without it: ferry times were answered
+        // from memory (wrong) and the user had to say "search the internet" as
+        // a second turn — the small model simply does not reach for web_search
+        // on its own. One guide sentence, only on turns whose dominant intent
+        // is the web, fixes the reach without touching any other question.
+        if web_addon_open && addon::is_web_request(&message) {
+            const WEB_NUDGE: &str = "this question needs live information from the internet. \
+                 Call the web_search tool first; do not answer it from memory.";
+            guide = Some(match guide {
+                Some(g) => format!("{g}\n{WEB_NUDGE}"),
+                None => WEB_NUDGE.to_string(),
+            });
+        }
 
         // MEMORY INJECTION (600 limit): the notes matching the message, in the
         // system block.
@@ -1769,7 +2583,12 @@ fn chat(
         // the sum of all of them — that is the real cost spent on a single
         // question.
         let mut turn_prompt = 0usize;
+        // See the truncation notice below: printed at most once per turn.
+        let mut truncation_reported = false;
         let mut turn_generation = 0usize;
+        // Every tool that really ran this turn, in order — the `--json` trace
+        // and the tool-name list the transcript stores.
+        let mut turn_calls: Vec<serde_json::Value> = Vec::new();
         for _ in 0..tacet_eval::MAX_TURNS {
             // History = the previous turns + the results of the tools that ran in
             // THIS turn. The question also sits at the end separately (see the
@@ -1787,18 +2606,22 @@ fn chat(
             //   it for unanswered and called the tool again. That is where the
             //   loop came from.
             let first_turn = turn_tools.is_empty();
-            let question = if first_turn { message.as_str() } else { "" };
+            let question = if first_turn { asked.as_str() } else { "" };
             let previous: Vec<Turn> = if first_turn {
                 history.clone()
             } else {
                 history
                     .iter()
                     .cloned()
-                    .chain(std::iter::once(Turn::user(&message)))
+                    // `asked`, not `message`: once the question moves into the
+                    // history the piped data has to move with it, or the model
+                    // loses the very thing it was asked about the moment it
+                    // calls its first tool.
+                    .chain(std::iter::once(Turn::user(&asked)))
                     .chain(turn_tools.iter().cloned())
                     .collect()
             };
-            let mut prompt = Prompt::new(SYSTEM_INSTRUCTIONS, question)
+            let mut prompt = Prompt::new(&system, question)
                 .with_tools(&selected)
                 .with_history(previous);
             if let Some(g) = &guide {
@@ -1812,15 +2635,36 @@ fn chat(
             // The context-fullness measure is the size of the LAST prompt: that
             // is the room left in the window, not a cumulative total.
             last_context = report.final_estimate;
-            if report.changed() {
+            // ONCE PER USER TURN. The prompt is rebuilt for every tool round,
+            // so this used to print two or three times inside a single answer
+            // (measured: "(2 turns dropped)" then "(4 turns dropped)" twice) —
+            // noise that reads like the shell is malfunctioning.
+            if report.changed() && !truncation_reported {
+                truncation_reported = true;
+                // ALL THREE SACRIFICES ARE NAMED, not just the cheapest one.
+                // Only `dropped_turns` was reported here, so the two that
+                // actually lose the CURRENT request went by in silence: the
+                // guide being dropped, and the question itself being cut. The
+                // question is cut FROM THE FRONT, which is exactly where piped
+                // content sits — `cat big.log | tacet -m "summarise"` could lose
+                // the head of the file and answer confidently about the rest.
+                // Silent loss of the user's own input is the worst outcome in
+                // this file; it looks like the model ignored them.
+                let mut parts = Vec::new();
+                if report.dropped_turns > 0 {
+                    parts.push(format!("{} older turns left the window", report.dropped_turns));
+                }
+                if report.guide_dropped {
+                    parts.push("the skill guide was dropped".to_string());
+                }
+                if report.question_truncated {
+                    parts.push("THE START OF YOUR INPUT WAS CUT".to_string());
+                }
                 eprintln!(
                     "{}",
                     color.paint(
-                        DIM,
-                        &format!(
-                            "(context truncated: {} turns dropped)",
-                            report.dropped_turns
-                        )
+                        if report.question_truncated { YELLOW } else { DIM },
+                        &format!("(making room: {})", parts.join(" · "))
                     )
                 );
             }
@@ -1831,12 +2675,21 @@ fn chat(
                 // text, which made prompt bugs impossible to see. Diagnostic
                 // output has to be the same wire that REALLY goes to the model.
                 let wire = prompt.text_with_template(engine.template());
-                println!("--- PROMPT ({:?}) ---", engine.template());
-                println!("{wire}");
-                println!(
-                    "--- ~{} tokens (estimate) ---",
+                let dump = format!(
+                    "--- PROMPT ({:?}) ---\n{wire}\n--- ~{} tokens (estimate) ---",
+                    engine.template(),
                     TokenCounter::estimate(&wire)
                 );
+                // UNDER `--json` IT MOVES TO STDERR RATHER THAN DISAPPEARING.
+                // Asking for both flags is asking for two different things at
+                // once, and the useful reading of that is "the machine answer on
+                // stdout, the diagnostic beside it" — dropping a diagnostic the
+                // user explicitly requested would be the worse answer.
+                if human {
+                    println!("{dump}");
+                } else {
+                    eprintln!("{dump}");
+                }
             }
 
             // THE INDICATOR + THE INPUT LOCK OPEN BEFORE GENERATION AND CLOSE WHEN
@@ -1873,11 +2726,47 @@ fn chat(
             // single-message/diagnostic mode the answer is printed once at the
             // end; streaming would duplicate the output (streaming text + the
             // "Tacet:" line).
+            // THE REPETITION GUARD. Small models sometimes spiral: the same
+            // passage re-announced and re-printed three, four times until the
+            // token cap fills (measured on the 4B: a calculator repeated with
+            // "let me provide a clean version now" between copies). Tool calls
+            // have a structural repeat gate; this is the same idea for TEXT.
+            // When a long stretch of the answer reappears verbatim, generation
+            // is stopped through the same flag Ctrl-C uses; `repetition_stop`
+            // picks the honest message below. The window is long (240 chars,
+            // whitespace collapsed) so legitimate structure — lists, similar
+            // rows — does not trip it; only a whole repeated passage can.
+            let repetition_stop = AtomicBool::new(false);
+            let answer_seen = std::sync::Mutex::new((String::new(), 0usize));
+
+            // `interactive` USED TO STAND IN FOR "paint the screen" and it no
+            // longer can: a `--json` run in a terminal is interactive by every
+            // other measure and must still not stream a single byte onto stdout.
+            let stream_to_screen = interactive && human;
             let listener = |chunk: &str| {
-                if !interactive {
+                if !stream_to_screen {
                     return;
                 }
                 let mut visible = filter.lock().expect("filter lock").feed(chunk);
+                {
+                    let mut seen = answer_seen.lock().expect("repeat lock");
+                    seen.0.push_str(&visible);
+                    // Throttled: the check runs every ~160 new chars, not per token.
+                    if seen.0.len() >= seen.1 + 160 {
+                        seen.1 = seen.0.len();
+                        let flat = seen.0.split_whitespace().collect::<Vec<_>>().join(" ");
+                        let chars: Vec<char> = flat.chars().collect();
+                        const WINDOW: usize = 240;
+                        if chars.len() > WINDOW * 2 {
+                            let tail: String = chars[chars.len() - WINDOW..].iter().collect();
+                            let head: String = chars[..chars.len() - WINDOW].iter().collect();
+                            if head.contains(&tail) {
+                                repetition_stop.store(true, Ordering::Relaxed);
+                                CANCEL.store(true, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                }
                 if !streaming.load(Ordering::Relaxed) {
                     // Empty lines AT THE START of the answer are dropped: the
                     // model often begins by skipping a line, leaving the "Tacet"
@@ -1926,6 +2815,8 @@ fn chat(
                 Err(e) => {
                     indicator.finish();
                     eprintln!("\nengine error: {e}");
+                    turn_error = Some(e.to_string());
+                    any_turn_failed = true;
                     break;
                 }
             };
@@ -1965,7 +2856,10 @@ fn chat(
             } else {
                 remaining.trim_start().to_string()
             };
-            if interactive && !streaming.load(Ordering::Relaxed) && !remaining.trim().is_empty() {
+            if stream_to_screen
+                && !streaming.load(Ordering::Relaxed)
+                && !remaining.trim().is_empty()
+            {
                 indicator.quiet();
                 streaming.store(true, Ordering::Relaxed);
                 screen.write(&color.paint(DIM, "Tacet "));
@@ -1987,10 +2881,24 @@ fn chat(
             // be a tool call, and running that call in a cancelled turn would mean
             // ignoring the user saying "stop".
             if CANCEL.load(Ordering::Relaxed) {
-                executor.cancel();
                 indicator.finish();
-                screen.line(&color.paint(DIM, "  (stopped)"));
-                answer = String::new();
+                if repetition_stop.load(Ordering::Relaxed) {
+                    // Not the user's stop: the guard's. What streamed stays on
+                    // screen AND in the history — the first copy of the passage
+                    // is usually a perfectly good answer.
+                    if human {
+                        screen.line(
+                            &color.paint(DIM, "  (stopped: the answer began repeating itself)"),
+                        );
+                    }
+                    answer = generation.text;
+                } else {
+                    executor.cancel();
+                    if human {
+                        screen.line(&color.paint(DIM, "  (stopped)"));
+                    }
+                    answer = String::new();
+                }
                 break;
             }
 
@@ -2022,7 +2930,7 @@ fn chat(
                 // can decide, or the text taken for a call turns out not to be a
                 // valid tool call. In both cases leaving the screen blank would
                 // mean swallowing the answer.
-                if interactive && !streaming.load(Ordering::Relaxed) {
+                if stream_to_screen && !streaming.load(Ordering::Relaxed) {
                     screen.write(&color.paint(DIM, "Tacet "));
                     screen.write(paper_code());
                     screen.line(&format::Formatter::all(screen.tty(), answer.trim()));
@@ -2033,6 +2941,13 @@ fn chat(
             indicator.finish();
             let is_error = outcome.is_error();
             let retryable = outcome.retryable;
+
+            // THE MACHINE-READABLE TRACE, recorded HERE rather than reconstructed
+            // from the chips afterwards. A chip carries an icon and a human
+            // sentence — deliberately, it is a screen object — and reverse
+            // engineering a tool name out of it would be a second, weaker source
+            // for a fact this line already has exactly.
+            turn_calls.push(tool_record(&outcome, &generation.text));
 
             // THE MODEL MUST SEE ITS OWN CALL IN THE HISTORY. Only the tool RESULT
             // used to be fed back; on the next turn the model saw a context-free
@@ -2063,11 +2978,24 @@ fn chat(
         last_turn_generation = turn_generation;
         session_tokens += turn_prompt + turn_generation;
 
+        // THE LAST ARTIFACT — what ctrl-o / /preview shows. Code is hidden by
+        // default (a tool call never pours onto the screen); this remembers
+        // which file the turn produced so the user can peek at it on demand.
+        if let Some(p) = traces
+            .traces()
+            .iter()
+            .rev()
+            .find_map(|t| t.file_path.clone())
+        {
+            last_artifact = Some(p);
+        }
+
         // Chips: Tacet does not hide what it did. In interactive mode they were
         // already printed LIVE (see `LiveReporter`); printing them again here
         // would duplicate the screen. In single-message/diagnostic mode this is
-        // the only place they are printed.
-        if !interactive {
+        // the only place they are printed — and under `--json` they are not
+        // printed at all, because the same facts leave in the `tools` field.
+        if !interactive && human {
             for trace in traces.traces() {
                 if !trace.text.trim().is_empty() {
                     println!(
@@ -2082,17 +3010,104 @@ fn chat(
         }
         // THE PERSISTENT HISTORY is written when the turn ends and its ORDER is
         // meaningful: user -> tool results -> assistant.
-        history.push(Turn::user(&message));
+        //
+        // `asked`, NOT `message`: what is replayed on the next turn has to be
+        // what the model was actually given, or a `--continue` would resume a
+        // conversation whose first question referred to data that is no longer
+        // anywhere in the context.
+        history.push(Turn::user(&asked));
         history.append(&mut turn_tools);
         if !answer.is_empty() {
             history.push(Turn::assistant(&answer));
             // In interactive mode the answer was already printed while streaming;
             // do not print it again.
-            if !interactive {
+            if !interactive && human {
                 println!("Tacet: {answer}");
             }
         }
-        println!();
+
+        let tool_names: Vec<String> = turn_calls
+            .iter()
+            .filter_map(|c| c.get("tool").and_then(|t| t.as_str()).map(str::to_string))
+            .collect();
+
+        // THE TRANSCRIPT IS WRITTEN AT THE END OF THE TURN, not at its start.
+        //
+        // A turn only becomes a conversation once there is an answer; appending
+        // the question first and then crashing would leave a record of a
+        // question nobody answered, and `--continue` would replay it as though
+        // the model had simply ignored the user.
+        if let Some(s) = &mut chat_session {
+            // FIRST WRITE, ONE NOTICE. The user is told where their words are
+            // going BEFORE the file grows, once per install — see
+            // `announce_transcript`.
+            announce_transcript(&color, human);
+            let stored_user = session::Turn::new(session::Role::User, &asked);
+            let mut failure = s.append(&stored_user).err();
+            if !answer.is_empty() {
+                let stored_answer = session::Turn::new(session::Role::Assistant, &answer)
+                    .with_tools(tool_names.clone());
+                failure = failure.or(s.append(&stored_answer).err());
+            }
+            // SAID ONCE, THEN THE SHELL SHUTS UP ABOUT IT. A full disk fails on
+            // every turn, and a warning per turn would bury the conversation;
+            // but staying silent from the start would let the user believe a
+            // transcript exists that does not. So: report, then stop writing.
+            if let Some(reason) = failure {
+                // THE PATH IS NAMED. "Could not write" without a target sends
+                // the user looking through a config directory they have never
+                // opened; a permissions or full-disk problem is fixable only by
+                // someone who knows which file to look at.
+                let where_to = s
+                    .path()
+                    .map(|p| format!(" ({})", p.display()))
+                    .unwrap_or_default();
+                eprintln!(
+                    "{}",
+                    color.paint(
+                        YELLOW,
+                        &format!(
+                            "(this conversation is NOT being saved{where_to} — {reason}; nothing \
+                             else will be written this session)"
+                        )
+                    )
+                );
+                chat_session = None;
+            }
+        }
+
+        if json {
+            // ONE LINE, ON STDOUT, AND IT IS THE ONLY THING ON STDOUT. In an
+            // interactive `--json` session this makes the stream JSONL: one
+            // object per turn, which is what a reader consuming a live pipe can
+            // actually parse.
+            println!(
+                "{}",
+                serde_json::json!({
+                    "answer": answer,
+                    "tools": tool_names,
+                    "traces": turn_calls,
+                    "tokens": {
+                        "prompt": turn_prompt,
+                        "generation": turn_generation,
+                        "context": last_context,
+                        "session": session_tokens,
+                    },
+                    // `null` when nothing is being kept (see `keep_transcript`):
+                    // an invented id would point at a file that does not exist.
+                    "session": chat_session.as_ref().and_then(session::Session::id),
+                    // ABSENT ON SUCCESS, so `has("error")` is the check a script
+                    // makes. Present and non-null means `answer` is not an
+                    // answer — do not treat an empty string as one.
+                    "error": turn_error,
+                })
+            );
+        } else {
+            println!();
+        }
+        // Cleared per turn: an interactive session must not carry one failure
+        // into every later JSON line.
+        turn_error = None;
         let _ = std::io::stdout().flush();
 
         if single_message.is_some() {
@@ -2114,6 +3129,12 @@ fn chat(
         eprintln!("{line}");
     }
 
+    // A turn that never produced an answer is a FAILED RUN. This matters most
+    // for `tacet -m "..." --json`, where the caller is a script and the exit
+    // code is the only signal it checks before piping the output onward.
+    if any_turn_failed {
+        return ExitCode::FAILURE;
+    }
     ExitCode::SUCCESS
 }
 
@@ -2246,6 +3267,7 @@ fn slash(
     history: &mut Vec<Turn>,
     engine: &Arc<dyn EngineProvider>,
     color: &Color,
+    last_artifact: &Option<std::path::PathBuf>,
 ) -> SlashResult {
     let name = command.split_whitespace().next().unwrap_or("");
     match name {
@@ -2345,9 +3367,39 @@ fn slash(
             );
             SlashResult::Handled
         }
+        // The peek key. Code stays HIDDEN by default — a tool call never pours
+        // onto the screen — and this is the other half of that bargain: one
+        // keystroke (ctrl-o) shows what was just written, numbered, capped.
+        "/preview" => {
+            match last_artifact {
+                None => println!("{}", color.paint(DIM, "(nothing saved in this session yet)")),
+                Some(p) => match std::fs::read_to_string(p) {
+                    Err(e) => println!("{}", color.paint(YELLOW, &format!("({} could not be read: {e})", p.display()))),
+                    Ok(text) => {
+                        const CAP: usize = 60;
+                        println!("{}", color.paint(BOLD, &p.display().to_string()));
+                        for (i, line) in text.lines().take(CAP).enumerate() {
+                            println!("  {} {line}", color.paint(DIM, &format!("{:>4}", i + 1)));
+                        }
+                        let total = text.lines().count();
+                        if total > CAP {
+                            println!("{}", color.paint(DIM, &format!("  … {} more lines in the file", total - CAP)));
+                        }
+                    }
+                },
+            }
+            SlashResult::Handled
+        }
         "/clear" => {
             history.clear();
             println!("{}", color.paint(DIM, "(history deleted — the fixed prompt and tools still occupy the window on the next turn)"));
+            SlashResult::Handled
+        }
+        // The in-shell face of `tacet sessions`. LISTING ONLY — `--purge` is
+        // deliberately not reachable from here: deleting every conversation is
+        // not a thing to be one keystroke away from in the middle of one.
+        "/sessions" => {
+            let _ = sessions(false, false);
             SlashResult::Handled
         }
         // The in-shell view of `tacet addon list`: which addons are installed
@@ -2522,12 +3574,19 @@ fn report_mcp(load: &mcp::LoadOutcome, color: &Color) {
 // candle engine setup
 // ---------------------------------------------------------------------------
 
+/// `tokenizer: None` means "the vocabulary is inside the weights". The choice is
+/// made ONE LEVEL UP, in discovery (`model_package::to_pair`), so that the two
+/// places that answer "is this package usable" — the catalog report the user
+/// reads and the loader — cannot drift apart.
 #[cfg(feature = "candle")]
 fn candle_engine_from_path(
     model: &str,
-    tokenizer: &str,
+    tokenizer: Option<&str>,
 ) -> Result<Arc<dyn EngineProvider>, String> {
-    let setting = tacet_engine::ModelSetting::new(model, tokenizer);
+    let setting = match tokenizer {
+        Some(t) => tacet_engine::ModelSetting::new(model, t),
+        None => tacet_engine::ModelSetting::from_gguf(model),
+    };
     // File existence is checked BEFORE a 2.5 GB load; learning about a missing
     // file at the end of that wait is a pointless delay.
     tacet_engine::CandleEngine::files_exist(&setting).map_err(|e| e.to_string())?;
@@ -2535,10 +3594,16 @@ fn candle_engine_from_path(
     // WHICH ARCHITECTURE was loaded is printed. Had it stayed silent, a model
     // running with the wrong template would look like "it gives odd answers" and
     // be hard to diagnose.
+    //
+    // WHICH TOKENIZER is printed for the same reason and it is the sharper of
+    // the two: the two sources are indistinguishable from the output — a
+    // vocabulary rebuilt from the wrong place does not error, it produces text
+    // that reads like broken weights.
     eprintln!(
-        "(architecture: {}, template: {:?})",
+        "(architecture: {}, template: {:?}, tokenizer: {})",
         engine.architecture().name(),
-        engine.architecture().template()
+        engine.architecture().template(),
+        engine.tokenizer_source().name()
     );
     Ok(Arc::new(engine) as Arc<dyn EngineProvider>)
 }
@@ -2546,7 +3611,7 @@ fn candle_engine_from_path(
 #[cfg(not(feature = "candle"))]
 fn candle_engine_from_path(
     _model: &str,
-    _tokenizer: &str,
+    _tokenizer: Option<&str>,
 ) -> Result<Arc<dyn EngineProvider>, String> {
     Err("this binary was built without the `candle` feature".into())
 }
@@ -2593,7 +3658,7 @@ fn eval_tool_selection(
 ) -> ExitCode {
     let color = Color::setup();
     let engine = match model_package::resolve_pair(model_name) {
-        Some((m, t)) => match candle_engine_from_path(&m, &t) {
+        Some((m, t)) => match candle_engine_from_path(&m, t.as_deref()) {
             Ok(engine) => {
                 eprintln!("{}", color.paint(DIM, &format!("(model: {m})")));
                 engine
@@ -2855,6 +3920,11 @@ fn model_list(json: bool, selected_name: &str) -> ExitCode {
                     "gguf": p.gguf.display().to_string(),
                     "gguf_bytes": p.gguf_bytes,
                     "tokenizer": p.tokenizer.as_ref().map(|t| t.display().to_string()),
+                    // A SEPARATE FIELD rather than a fabricated `tokenizer`
+                    // path: there is no file to name, and writing the .gguf's
+                    // path into a field called `tokenizer` would make a script
+                    // hand that path to `TACET_TOKENIZER`.
+                    "gguf_tokenizer": p.gguf_tokenizer,
                     "complete": p.is_complete(),
                     "root": p.root.display().to_string(),
                     // "Selected": if there is an env override NONE is selected —
@@ -2893,14 +3963,15 @@ fn model_list(json: bool, selected_name: &str) -> ExitCode {
     if let Some((m, t)) = &env {
         // With an override in place the catalog IS NOT SILENCED, but the warning
         // comes first: none of the list below is being used.
+        let tokenizer_line = match t {
+            Some(t) => format!("  tokenizer : {t}"),
+            None => format!("  tokenizer : inside the .gguf ({TOKENIZER_VARIABLE} not set)"),
+        };
         println!(
             "{}",
             color.paint(
                 YELLOW,
-                &format!(
-                    "{}/{} set — discovery disabled:\n  gguf      : {m}\n  tokenizer : {t}",
-                    MODEL_VARIABLE, TOKENIZER_VARIABLE
-                )
+                &format!("{MODEL_VARIABLE} set — discovery disabled:\n  gguf      : {m}\n{tokenizer_line}")
             )
         );
     }
@@ -2923,19 +3994,15 @@ fn model_list(json: bool, selected_name: &str) -> ExitCode {
             mark
         );
         println!("  {}", color.paint(DIM, &p.gguf.display().to_string()));
-        match &p.tokenizer {
-            Some(_) => println!("  {}", color.paint(DIM, "tokenizer: tokenizer.json")),
-            // A HALF PACKAGE IS SAID PLAINLY: the `.gguf` is there but no engine
-            // can be set up, and the user would only learn that by trying
-            // `--engine candle` and getting an error.
-            None => println!(
-                "  {}",
-                color.paint(
-                    YELLOW,
-                    "tokenizer: MISSING — this package cannot be selected"
-                )
-            ),
-        }
+        // A HALF PACKAGE IS SAID PLAINLY: the `.gguf` is there but no engine can
+        // be set up, and the user would only learn that by trying
+        // `--engine candle` and getting an error. A `.gguf` carrying its own
+        // vocabulary is NOT half and is no longer described as if it were.
+        let note = p.tokenizer_note();
+        println!(
+            "  {}",
+            color.paint(if p.is_complete() { DIM } else { YELLOW }, note)
+        );
         println!();
     }
 
@@ -3489,6 +4556,193 @@ mod tests {
     // `filter.rs` and its tests are there (the old `is_call` made a one-shot
     // decision, the new filter follows the whole stream).
 
+    // -----------------------------------------------------------------------
+    // The piped pipe — the bug this round exists for
+    // -----------------------------------------------------------------------
+
+    /// THE FENCE IS THE CONTRACT. Whatever came off the pipe has to reach the
+    /// model INSIDE a marked block, or the model cannot tell the user's question
+    /// from the data it is being asked about.
+    #[test]
+    fn piped_text_reaches_the_model_inside_a_fence() {
+        let piped = PipedInput {
+            text: "NUMBER: 42\n".to_string(),
+            original_bytes: None,
+        };
+        let fence = stdin_fence(&piped);
+        assert!(fence.starts_with("<stdin>\n"), "{fence}");
+        assert!(fence.ends_with("\n</stdin>"), "{fence}");
+        assert!(fence.contains("NUMBER: 42"), "{fence}");
+        // Nothing about truncation when nothing was truncated: a model told its
+        // input was cut will hedge about data it has in full.
+        assert!(!fence.contains("truncated"), "{fence}");
+    }
+
+    /// A CUT IS DECLARED TO THE MODEL, not only to the user. Without this the
+    /// model reads the head of a log as the whole log and answers "the file
+    /// contains N lines" about a file it never saw the end of.
+    #[test]
+    fn a_cut_pipe_says_so_inside_the_fence() {
+        let piped = PipedInput {
+            text: "line\n".repeat(10),
+            original_bytes: Some(STDIN_CONTEXT_LIMIT + 1),
+        };
+        let fence = stdin_fence(&piped);
+        assert!(fence.contains("truncated"), "{fence}");
+        assert!(fence.ends_with("\n</stdin>"), "{fence}");
+    }
+
+    // -----------------------------------------------------------------------
+    // The directory block
+    // -----------------------------------------------------------------------
+
+    /// HIDDEN FILES STAY OUT. This block goes into a prompt on every turn, and
+    /// `.env` / `.git` / `.ssh` is where the things a user did not mean to
+    /// recite live.
+    #[test]
+    fn the_directory_block_skips_hidden_names_and_marks_folders() {
+        let dir = std::env::temp_dir().join(format!(
+            "tacet-dir-context-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("notes.md"), b"x").unwrap();
+        std::fs::write(dir.join(".env"), b"SECRET=1").unwrap();
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+
+        let block = dir_context(&dir.display().to_string()).expect("no block");
+        assert!(block.contains("notes.md"), "{block}");
+        assert!(block.contains("src/"), "the folder is not marked: {block}");
+        assert!(!block.contains(".env"), "a dotfile leaked: {block}");
+        assert!(!block.contains(".git"), "a dotfile leaked: {block}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// THE MEASURED CEILING. This block is a FIXED COST ON EVERY PROMPT, so the
+    /// thing that must not drift is its worst case — the table in `dir_context`
+    /// is only honest while this holds. A directory of two hundred long names
+    /// must not quietly become a thousand-token tax.
+    #[test]
+    fn the_directory_block_cannot_grow_past_its_measured_ceiling() {
+        let dir = std::env::temp_dir().join(format!(
+            "tacet-dir-cap-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..200 {
+            std::fs::write(
+                dir.join(format!("a-quite-long-file-name-number-{i:03}.txt")),
+                b"x",
+            )
+            .unwrap();
+        }
+        let block = dir_context(&dir.display().to_string()).expect("no block");
+        let tokens = TokenCounter::estimate(&block);
+        assert!(
+            tokens <= 250,
+            "the directory block costs {tokens} tokens — the comment in `dir_context` promises ~228 at the cap"
+        );
+        // AND IT DOES NOT LIE ABOUT THE REST. A list that silently stops teaches
+        // the model that the directory holds only what it can see.
+        assert!(block.contains("more not listed"), "{block}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The block is glued to the instructions, not to the question: it must be
+    /// in the SYSTEM text, the one piece truncation never touches.
+    #[test]
+    fn the_directory_block_rides_in_the_system_instructions() {
+        let plain = system_text(None);
+        assert_eq!(plain, SYSTEM_INSTRUCTIONS);
+        let with = system_text(Some(&"<cwd>\n.\na, b/\n</cwd>".to_string()));
+        assert!(with.starts_with(SYSTEM_INSTRUCTIONS), "{with}");
+        assert!(with.contains("<cwd>"), "{with}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Model packages: a lone .gguf is a whole package
+    // -----------------------------------------------------------------------
+
+    /// THE BUG THIS ROUND FIXED. A package whose vocabulary lives inside the
+    /// weights was reported as half and could not be selected, while the engine
+    /// behind the check could have loaded it.
+    #[test]
+    fn a_gguf_that_carries_its_own_tokenizer_is_a_whole_package() {
+        use model_package::ModelPackage;
+        let base = ModelPackage {
+            name: "m".into(),
+            dir: "/m".into(),
+            gguf: "/m/model.gguf".into(),
+            gguf_bytes: 1,
+            tokenizer: None,
+            gguf_tokenizer: false,
+            root: "/".into(),
+        };
+
+        let bare = ModelPackage { ..base.clone() };
+        assert!(!bare.is_complete());
+        assert!(bare.tokenizer_note().contains("MISSING"));
+        assert_eq!(model_package::to_pair(&[bare], "m"), None);
+
+        let inside = ModelPackage {
+            gguf_tokenizer: true,
+            ..base.clone()
+        };
+        assert!(inside.is_complete());
+        assert!(inside.tokenizer_note().contains("inside the .gguf"));
+        assert_eq!(
+            model_package::to_pair(&[inside], "m"),
+            // NO TOKENIZER PATH: this `None` is what makes the engine take the
+            // `ModelSetting::from_gguf` branch.
+            Some(("/m/model.gguf".to_string(), None))
+        );
+
+        let both = ModelPackage {
+            tokenizer: Some("/m/tokenizer.json".into()),
+            gguf_tokenizer: true,
+            ..base
+        };
+        assert!(both.is_complete());
+        assert_eq!(
+            model_package::to_pair(&[both], "m"),
+            // THE EXPLICIT FILE WINS. If this ever flips, a user who dropped a
+            // corrected `tokenizer.json` next to their weights would be silently
+            // ignored.
+            Some((
+                "/m/model.gguf".to_string(),
+                Some("/m/tokenizer.json".to_string())
+            ))
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The stored transcript
+    // -----------------------------------------------------------------------
+
+    /// Stored roles must survive the trip back into a prompt — INCLUDING the
+    /// tool role. A resumed conversation missing its tool results teaches the
+    /// model that its past answers came from nowhere.
+    #[test]
+    fn a_stored_transcript_becomes_a_prompt_history_with_every_role() {
+        let stored = vec![
+            session::Turn::new(session::Role::User, "what time is it"),
+            session::Turn::new(session::Role::Tool, "14:35"),
+            session::Turn::new(session::Role::Assistant, "It is 14:35."),
+        ];
+        let turns = to_engine_turns(&stored);
+        assert_eq!(turns.len(), 3);
+        assert_eq!(turns[0].role, tacet_engine::Role::User);
+        assert_eq!(turns[1].role, tacet_engine::Role::Tool);
+        assert_eq!(turns[1].text, "14:35");
+        assert_eq!(turns[2].role, tacet_engine::Role::Assistant);
+    }
+
     /// The counter line: a hint on the first turn, numbers afterwards.
     #[test]
     fn the_status_line_shows_a_hint_first_and_numbers_later() {
@@ -3830,7 +5084,7 @@ mod tests {
     /// across separate tests they would see each other's values while running in
     /// parallel (the same rationale as the `tacet_kernel::env` tests).
     #[test]
-    fn the_env_pair_does_not_resolve_unless_both_are_given() {
+    fn the_env_pair_resolves_with_an_optional_tokenizer() {
         // SAFETY: a single-threaded test body; no other test in this binary reads
         // these two variables.
         unsafe {
@@ -3839,10 +5093,12 @@ mod tests {
         }
         assert!(model_package::pair_from_env().is_none());
 
+        // The tokenizer became OPTIONAL in the pair (a GGUF can carry its
+        // own): model alone now resolves, with `None` for the tokenizer side.
         unsafe { std::env::set_var(MODEL_VARIABLE, "/path/m.gguf") };
-        assert!(
-            model_package::pair_from_env().is_none(),
-            "with only the model given, no engine must be set up from half a pair"
+        assert_eq!(
+            model_package::pair_from_env(),
+            Some(("/path/m.gguf".to_string(), None))
         );
 
         unsafe { std::env::set_var(TOKENIZER_VARIABLE, "/path/tokenizer.json") };
@@ -3850,7 +5106,7 @@ mod tests {
             model_package::pair_from_env(),
             Some((
                 "/path/m.gguf".to_string(),
-                "/path/tokenizer.json".to_string()
+                Some("/path/tokenizer.json".to_string())
             ))
         );
         // The env override is AHEAD OF DISCOVERY: even a name not in the catalog

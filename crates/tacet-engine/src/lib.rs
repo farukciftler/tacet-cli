@@ -23,6 +23,11 @@ pub mod constraint;
 pub mod error;
 pub mod executor;
 pub mod fake;
+// NOT BEHIND THE `candle` FEATURE — deliberately. The GGUF metadata reader is
+// plain `std::io`, and the DISCOVERY side (which package is loadable at all) runs
+// in the default build, where candle is absent. Only the function that produces a
+// `tokenizers::Tokenizer` is gated inside the module.
+pub mod gguf_tokenizer;
 pub mod prompt;
 pub mod provider;
 pub mod session;
@@ -36,6 +41,9 @@ pub use constraint::{Constrainer, ConstraintSession, FreeConstraint};
 pub use error::{EngineError, EngineResult};
 pub use executor::wait;
 pub use fake::{FakeEngine, FakeStep};
+pub use gguf_tokenizer::gguf_has_tokenizer;
+#[cfg(feature = "candle")]
+pub use gguf_tokenizer::tokenizer_from_gguf;
 pub use prompt::{GUIDE_LIMIT, Prompt, Role, Turn};
 pub use provider::{
     EngineProvider, Generation, GenerationFuture, SamplingSetting, StopReason, boxed_generation,
@@ -45,7 +53,7 @@ pub use thinking::extract as extract_thinking;
 pub use token::{CONTEXT_BUDGET, GENERATION_SHARE, TokenCounter, TruncationReport};
 
 #[cfg(feature = "candle")]
-pub use candle_engine::{Architecture, CandleEngine, ModelSetting};
+pub use candle_engine::{Architecture, CandleEngine, ModelSetting, TokenizerSource};
 
 #[cfg(test)]
 mod tests {
