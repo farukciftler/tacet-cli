@@ -220,6 +220,65 @@ pub fn path() -> ExitCode {
     }
 }
 
+/// The values a key may take, in the order Enter walks through them.
+///
+/// `None` means the key is free text and cannot be cycled — `model` is the only
+/// one, and even it becomes a list when packages are on disk, because in
+/// practice the answer is always one of the folders that exist.
+pub fn choices(key: &str) -> Option<Vec<String>> {
+    match key {
+        "engine" => Some(vec!["auto".into(), "candle".into(), "fake".into()]),
+        "theme" => Some(
+            crate::ui::THEMES
+                .iter()
+                .map(|t| t.name.to_string())
+                .collect(),
+        ),
+        "update.check" => Some(vec!["ask".into(), "on".into(), "off".into()]),
+        "model" => {
+            let found = crate::model_package::catalog();
+            if found.is_empty() {
+                None
+            } else {
+                Some(found.into_iter().map(|p| p.name).collect())
+            }
+        }
+        _ => None,
+    }
+}
+
+/// The next value after the current one, wrapping. An unset key starts at the
+/// first choice rather than the second: pressing Enter once should land on
+/// something, not skip past it.
+pub fn next_value(key: &str) -> Option<String> {
+    let list = choices(key)?;
+    let current = get_str(key);
+    let index = current
+        .as_deref()
+        .and_then(|c| list.iter().position(|v| v == c))
+        .map(|i| (i + 1) % list.len())
+        .unwrap_or(0);
+    list.get(index).cloned()
+}
+
+/// Every known key with its description — for the menu.
+pub fn keys() -> Vec<(&'static str, &'static str)> {
+    KNOWN.to_vec()
+}
+
+/// The value as the menu should show it.
+pub fn shown_value(key: &str) -> String {
+    match get_str(key) {
+        Some(v) => v,
+        None => match key {
+            // A default that is real should be named, or the reader thinks the
+            // setting does nothing until they touch it.
+            "update.check" => "ask (default)".to_string(),
+            _ => "unset".to_string(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
