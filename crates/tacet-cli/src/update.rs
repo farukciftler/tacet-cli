@@ -56,6 +56,40 @@ pub fn asset_name(triple: &str) -> String {
     format!("tacet-{triple}{suffix}")
 }
 
+/// Which inference features this binary was compiled with.
+///
+/// THE REASON THIS EXISTS IS A REAL LOSS. `cargo install tacet-cli --features
+/// metal` produces a binary that runs the model; `tacet update --install`
+/// replaced it with a release asset built WITHOUT those features, and the next
+/// launch quietly said "fell back to FakeEngine". Nothing errored, nothing was
+/// corrupted — the user simply had a different program with the same name, and
+/// the only clue was one grey line above the prompt.
+///
+/// Printed by `--print-features` so the freshly downloaded binary can be ASKED
+/// what it is before it takes over.
+pub fn compiled_features() -> &'static str {
+    if cfg!(feature = "metal") {
+        "metal"
+    } else if cfg!(feature = "candle") {
+        "candle"
+    } else {
+        "none"
+    }
+}
+
+/// Ranks a feature string so two binaries can be compared.
+///
+/// `metal` and `candle` both mean "this one can run a model" — the difference
+/// between them is speed, and swapping a GPU build for a CPU build is a
+/// judgement call rather than a loss. Losing inference entirely is the loss.
+fn inference_rank(features: &str) -> u8 {
+    match features {
+        "metal" => 2,
+        "candle" => 2,
+        _ => 0,
+    }
+}
+
 fn current_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
@@ -208,6 +242,26 @@ pub fn install(color: &Color, no_approval: bool) -> Result<(), String> {
         .map_err(|e| format!("download failed: {e}"))?;
 
     make_executable(&staged)?;
+
+    // ASK THE NEW BINARY WHAT IT IS, BEFORE IT TAKES OVER.
+    //
+    // The release assets are built from the same source but not necessarily
+    // with the same features, and a binary that cannot run a model is not an
+    // upgrade for someone who installed one that can. This is not guessed from
+    // the file name or the tag — the downloaded file is EXECUTED with
+    // `--print-features` and asked. If it answers with less than this build
+    // has, the swap does not happen at all.
+    let incoming = probe_features(&staged);
+    let mine = compiled_features();
+    if inference_rank(&incoming) < inference_rank(mine) {
+        let _ = std::fs::remove_file(&staged);
+        return Err(format!(
+            "refusing to install: this build has `{mine}` compiled in, the release binary has `{incoming}` \
+             — replacing it would silently drop model inference and fall back to the fake engine.\n  \
+             update with the features instead:  cargo install tacet-cli --features {mine}"
+        ));
+    }
+
     swap(&current, &staged)?;
 
     eprintln!();
@@ -234,6 +288,26 @@ pub fn install(color: &Color, no_approval: bool) -> Result<(), String> {
     );
     eprintln!("  path:   {}", current.display());
     Ok(())
+}
+
+/// Runs the downloaded binary once, just to ask what it was built with.
+///
+/// It is already on disk and about to become the program the user runs, so
+/// executing it here adds no trust that installing it would not. The call is
+/// given a short leash and a failure reads as "unknown", which ranks as no
+/// inference — the safe direction, because the cost of a false alarm is a
+/// message and the cost of a false pass is a silently degraded install.
+fn probe_features(path: &Path) -> String {
+    match std::process::Command::new(path)
+        .arg("--print-features")
+        .output()
+    {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        // An older release predates the flag and exits with a usage error. That
+        // is exactly the build that has no features to report, so "unknown" is
+        // the honest reading rather than a special case.
+        _ => "unknown".to_string(),
+    }
 }
 
 /// Where the new binary is written before it takes over.
@@ -521,5 +595,50 @@ mod tests {
         // If this fails on a platform we build for, `--install` there would
         // report "not published" for a release that does carry the asset.
         assert!(host_triple().is_some(), "no triple mapped for this host");
+    }
+}
+
+#[cfg(test)]
+mod downgrade_guard_tests {
+    use super::*;
+
+    /// The loss this guard exists to prevent: a build that can run a model must
+    /// not be replaced by one that cannot.
+    #[test]
+    fn losing_inference_ranks_lower() {
+        assert!(inference_rank("none") < inference_rank("metal"));
+        assert!(inference_rank("none") < inference_rank("candle"));
+        assert!(inference_rank("unknown") < inference_rank("candle"));
+    }
+
+    /// metal <-> candle is a speed choice, not a loss, so the guard must not
+    /// block it — otherwise a Linux user could never take a Linux release.
+    #[test]
+    fn swapping_gpu_for_cpu_is_not_a_downgrade() {
+        assert_eq!(inference_rank("metal"), inference_rank("candle"));
+    }
+
+    /// An old release predates `--print-features` and exits with a usage error;
+    /// that reads as "unknown", which is exactly the build with nothing to
+    /// report. The safe direction: a false alarm costs a message, a false pass
+    /// costs the user their inference.
+    #[test]
+    fn an_unreadable_answer_is_treated_as_no_inference() {
+        assert_eq!(inference_rank("unknown"), 0);
+        assert_eq!(inference_rank(""), 0);
+    }
+
+    /// The flag must report what the crate was actually compiled with, or the
+    /// guard compares two strings that mean nothing.
+    #[test]
+    fn the_reported_feature_matches_the_build() {
+        let reported = compiled_features();
+        if cfg!(feature = "metal") {
+            assert_eq!(reported, "metal");
+        } else if cfg!(feature = "candle") {
+            assert_eq!(reported, "candle");
+        } else {
+            assert_eq!(reported, "none");
+        }
     }
 }

@@ -18,14 +18,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-latest,   target: aarch64-apple-darwin,      ext: "" }
+          # `features` IS PART OF THE MATRIX because a released binary without
+          # inference is not the program people install. `metal` is Apple-only;
+          # everywhere else `candle` gives CPU inference. A user who ran
+          # `cargo install --features metal` and then `tacet update --install`
+          # used to end up with a binary that fell back to the fake engine, and
+          # the only sign was one grey line above the prompt.
+          - { os: macos-latest,   target: aarch64-apple-darwin,      ext: "", features: metal }
           # Intel macOS is CROSS-COMPILED on the Apple Silicon runner. The
           # macos-13 runner it used to need is being retired and its queue can
           # sit unserved indefinitely; the Apple toolchain builds both
           # architectures from either host, so the runner is not load-bearing.
-          - { os: macos-latest,   target: x86_64-apple-darwin,       ext: "" }
-          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu,  ext: "" }
-          - { os: windows-latest, target: x86_64-pc-windows-msvc,    ext: ".exe" }
+          - { os: macos-latest,   target: x86_64-apple-darwin,       ext: "", features: metal }
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu,  ext: "", features: candle }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc,    ext: ".exe", features: candle }
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -33,11 +39,22 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
 
-      # Released without inference features on purpose. `candle` pulls a large
-      # tree and `metal` is Apple-only; a user who wants real inference builds
-      # with `cargo install tacet-cli --features metal|candle`. The released
-      # binary still runs eval, tools, model discovery and the addon flow.
-      - run: cargo build --release -p tacet-cli --target ${{ matrix.target }}
+      # WITH the inference feature for the platform. This costs build time and
+      # binary size; the alternative cost was users losing model inference on
+      # update, which is worse and invisible.
+      - run: cargo build --release -p tacet-cli --target ${{ matrix.target }} --features ${{ matrix.features }}
+
+      # The binary must be able to answer what it was built with — `tacet update
+      # --install` runs exactly this on the downloaded file and refuses to swap
+      # if the answer is weaker than the running build. A release that ships the
+      # wrong answer here would defeat that guard, so it is checked at build time.
+      - name: The binary reports its features
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: |
+          got=$(./target/${{ matrix.target }}/release/tacet --print-features 2>/dev/null || echo MISSING)
+          echo "reported: $got  expected: ${{ matrix.features }}"
+          [ "$got" = "${{ matrix.features }}" ] || exit 1
 
       - name: Package
         shell: bash
