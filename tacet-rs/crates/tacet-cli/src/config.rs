@@ -35,10 +35,21 @@ const KNOWN: &[(&str, &str)] = &[
     // question the user has to answer, so it is stored rather than assumed.
     // `ask` (the default) means it has not been answered yet.
     (
+        "thinking",
+        "qwen thinking mode: auto (per-turn heuristic, default) | on | off",
+    ),
+    (
         "update.check",
         "look for a newer release once a day: on | off | ask (default: ask, once, in the shell)",
     ),
 ];
+
+/// The known keys with their help lines — the in-shell `/config` menu reads
+/// the same table `set` validates against, so the menu can never offer a key
+/// the validator would refuse.
+pub fn known_keys() -> &'static [(&'static str, &'static str)] {
+    KNOWN
+}
 
 /// How `update.check` is set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,6 +148,11 @@ fn validate(key: &str, value: &str) -> Result<(), String> {
     if key == "engine" && !matches!(value, "auto" | "candle" | "fake") {
         return Err(format!(
             "'{value}' is not an engine — expected: auto | candle | fake"
+        ));
+    }
+    if key == "thinking" && !matches!(value, "auto" | "on" | "off") {
+        return Err(format!(
+            "'{value}' is not a thinking mode — expected: auto | on | off"
         ));
     }
     if key == "update.check" && !matches!(value, "on" | "off" | "ask") {

@@ -190,8 +190,56 @@ impl SelectionCase {
 /// it" may work while "what is the date today" does not, and a single-case set
 /// reports that as "the time tool is fine". Phrasing variety is the only tool
 /// that asks whether the description really covers the intent.
+/// The TURKISH selection set — a SEPARATE list, exactly as the module doc
+/// promises: mixing languages into one list would make the single hit-rate
+/// number unreadable. The intents mirror the English set's core (arithmetic,
+/// clock, dates in natural Turkish, documents, files, web, memory, smalltalk
+/// that must select NOTHING), so the two reports are comparable side by side.
+/// Run with `tacet eval --tool-selection --turkish`.
+pub fn turkish_selection_cases() -> Vec<SelectionCase> {
+    vec![
+        // --- calculate ---
+        SelectionCase::tool("tr-hesap-carpma", "125 çarpı 8 kaç eder?", "calculate"),
+        SelectionCase::tool("tr-hesap-yuzde", "480'in yüzde 18'i ne kadar?", "calculate"),
+        SelectionCase::tool("tr-hesap-toplama", "347 ile 268'i toplar mısın?", "calculate"),
+        // --- time ---
+        SelectionCase::tool("tr-saat", "Saat kaç şu an?", "time"),
+        SelectionCase::tool("tr-tarih", "Bugün ayın kaçı?", "time"),
+        SelectionCase::tool("tr-gun-farki", "Yılbaşına kaç gün kaldı?", "time"),
+        SelectionCase::tool("tr-hafta-gunu", "Bugün günlerden ne?", "time"),
+        SelectionCase::tool("tr-dogal-tarih", "Önümüzdeki salıya kaç gün var?", "time"),
+        // --- documents ---
+        SelectionCase::tool("tr-belge-olustur", "Alışveriş listemi bir excel tablosu yap", "create_document"),
+        SelectionCase::tool("tr-belge-oku", "notlar.md dosyasında ne yazıyor, özetler misin?", "read_document"),
+        SelectionCase::tool("tr-belge-duzenle", "Az önceki tabloya bir satır daha ekle", "edit_document"),
+        // --- files ---
+        SelectionCase::tool("tr-dosya-ara", "Bütçeyle ilgili notu hangi dosyaya yazmıştım?", "find_file"),
+        // --- code ---
+        SelectionCase::tool("tr-kod-calistir", "1'den 100'e kadar asal sayıları listeler misin?", "run_code"),
+        SelectionCase::tool("tr-kod-dosya", "Bana fibonacci hesaplayan bir python betiği yaz ve kaydet", "write_code"),
+        // --- web ---
+        SelectionCase::tool("tr-hava", "İstanbul'da yarın hava nasıl olacak?", "web_search"),
+        SelectionCase::tool("tr-haber", "Dolar kuru şu an ne durumda?", "web_search"),
+        // --- memory ---
+        SelectionCase::tool("tr-hatirla", "Kardeşimin doğum günü 3 mayıs, bunu unutma", "remember"),
+        SelectionCase::tool("tr-unut", "Kahve sevdiğimi unut artık", "remember"),
+        // --- irrelevance: NOTHING must be selected ---
+        SelectionCase::chat("tr-selam", "Selam, nasılsın?"),
+        SelectionCase::chat("tr-tesekkur", "Çok teşekkürler, harikaydı!"),
+        SelectionCase::chat("tr-sohbet", "Bugün biraz yorgunum ya"),
+        SelectionCase::chat("tr-fikir", "Sence sabah sporu mu akşam sporu mu daha iyi?"),
+    ]
+}
+
 pub fn selection_cases() -> Vec<SelectionCase> {
     vec![
+        // --- calendar (macOS bridge; the tool is in the production catalog there) ---
+        SelectionCase::tool("calendar-day", "What is on my calendar tomorrow?", "calendar"),
+        SelectionCase::tool(
+            "calendar-remind",
+            "Remind me to call the dentist tomorrow at 9",
+            "calendar",
+        ),
         // --- calculate ---
         SelectionCase::tool("calculate-multiply", "What is 125 times 8?", "calculate"),
         SelectionCase::tool("calculate-add", "Could you add 347 and 268?", "calculate"),

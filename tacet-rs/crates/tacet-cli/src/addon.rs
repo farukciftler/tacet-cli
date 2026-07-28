@@ -1,8 +1,25 @@
 //! `tacet addon ...` — addon install, list and try.
 //!
-//! WHAT IT DOES: manages the user's `addons.json` registry and drives two
-//! install paths for the web search addon — (a) bringing up a local SearXNG with
-//! docker, (b) the user entering their own server address.
+//! WHAT IT DOES: manages the user's `addons.json` registry and runs the install
+//! flow of whichever addon was named.
+//!
+//! THE FLOW IS DRIVEN BY THE DEFINITION, NOT BY THE NAME. This file used to open
+//! with `if name != WEB_SEARCH { reject }`, which made the "addon system" a
+//! single install flow with one name compiled into it — a second addon could not
+//! be added without editing install, list, gate and try in four places. What an
+//! addon is now lives in `tacet_web::addon::DEFINITIONS`, and this file walks
+//! that table: it asks the questions the definition names, checks the answers
+//! against the SHAPE the definition names, and writes them. Adding an addon here
+//! costs a row in that table.
+//!
+//! ONE ADDON STILL HAS A FLOW OF ITS OWN: `web-search` can bring up a local
+//! SearXNG with docker, so it keeps its two paths — (a) the container, (b) the
+//! user's own server address. That is a genuine difference in kind (nothing else
+//! installs a server), not a name being special.
+//!
+//! THIRD-PARTY EXTENSION IS MCP, and `list` says so. The names in this table are
+//! the ones the build ships; a user's own tool goes in `mcp.json` and needs no
+//! build of ours (see `MCP_NOTE`).
 //!
 //! THE NETWORK MONOPOLY IS PRESERVED. This file OPENS NO SOCKET and does not
 //! pull `ureq`; verification goes through
@@ -64,6 +81,27 @@ const IMAGE: &str = "searxng/searxng:latest";
 
 /// The subdirectory (under the config directory) the compose files go into.
 const SEARXNG_DIR: &str = "searxng";
+
+/// THE LIST IN THIS COMMAND IS NOT THE EXTENSION POINT — and the user has to be
+/// told, in the place they came looking.
+///
+/// The addons here are the ones THIS BUILD ships: adding a sixth means a row in
+/// `tacet_web::addon::DEFINITIONS` and a Rust build. Anybody wanting to plug
+/// their OWN tool into Tacet does it with an MCP server, which needs no build
+/// and no permission from us. A user who types `tacet addon list` looking for
+/// "plugins" and sees five fixed names concludes the system is closed; that
+/// conclusion is wrong and it is this command's fault for not saying so.
+const MCP_NOTE: &str = "your own tools plug in through MCP, not through this list.";
+
+/// Where the MCP door actually is. A hint that does not name the file leaves
+/// the reader to search for it.
+///
+/// IT NAMES A FILE, NOT A COMMAND. There is no `tacet mcp` subcommand in this
+/// build, and this file has already paid for suggesting a command the reader
+/// cannot run (see `SHELL_CLOSED`): the user types it, gets a usage error, and
+/// the hint has cost them a turn instead of saving one.
+const MCP_WHERE: &str =
+    "add a server to `mcp.json` in the config directory; its tools join the catalog at startup.";
 
 /// The ONE sentence told to the user when the addon is not installed.
 ///
@@ -149,17 +187,48 @@ pub fn list(json: bool) -> ExitCode {
             .all()
             .iter()
             .map(|a| {
+                // THE SECRETS ARE COVERED HERE TOO. `--json` is the output a
+                // user pipes into a file and pastes into a bug report; a db
+                // password printed here has left the machine by the time
+                // anybody notices.
+                let settings: serde_json::Map<String, serde_json::Value> = a
+                    .settings
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            k.clone(),
+                            serde_json::Value::String(tacet_web::addon::shown_value(&a.name, k, v)),
+                        )
+                    })
+                    .collect();
                 serde_json::json!({
                     "name": a.name,
                     "kind": a.kind,
                     "state": a.state_text(),
-                    "settings": a.settings,
+                    "settings": settings,
+                    "tools": tacet_web::addon::definition(&a.name).map(|d| d.tools),
+                })
+            })
+            .collect();
+        let available: Vec<serde_json::Value> = tacet_web::addon::DEFINITIONS
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "name": d.name,
+                    "summary": d.summary,
+                    "tools": d.tools,
+                    "effect": d.effect,
+                    "network": d.network,
+                    "installed": record.find(d.name).is_some(),
+                    "open": record.is_open(d.name),
                 })
             })
             .collect();
         let output = serde_json::json!({
             "registry": path.as_ref().map(|p| p.display().to_string()),
             "addons": records,
+            "available": available,
+            "third_party": MCP_NOTE,
             "web_search_open": record.is_open(WEB_SEARCH),
         });
         println!("{output}");
@@ -186,26 +255,69 @@ pub fn list(json: bool) -> ExitCode {
 
     if record.is_empty() {
         println!("{}", color.paint(DIM, "no addon installed."));
-        println!("{}", color.paint(DIM, "  tacet addon install web-search"));
-        return ExitCode::SUCCESS;
+    } else {
+        println!("{}", color.paint(BOLD, "installed"));
+        for a in record.all() {
+            let state = if a.open { "open" } else { "closed" };
+            println!(
+                "  {}  {}",
+                color.paint(BOLD, &a.name),
+                color.paint(DIM, state)
+            );
+            match tacet_web::addon::definition(&a.name) {
+                // WHAT IT DOES, not which tools it has: `workspace` has none and
+                // a "tools:" line would be blank for it.
+                Some(d) => println!("    {}", color.paint(DIM, d.effect)),
+                // A record this build has no definition for — an addon removed
+                // in an upgrade, or a hand-written line. It is SHOWN rather than
+                // hidden: a record that gates nothing but sits in the file is
+                // exactly what a user needs to be told about.
+                None => println!(
+                    "    {}",
+                    color.paint(YELLOW, "this build does not know this addon; it opens no tool.")
+                ),
+            }
+            for (key, value) in &a.settings {
+                let shown = tacet_web::addon::shown_value(&a.name, key, value);
+                let mut lines = shown.split(tacet_web::addon::VALUE_SEPARATOR);
+                if let Some(first) = lines.next() {
+                    println!("    {} {first}", color.paint(DIM, &format!("{key}:")));
+                }
+                for line in lines {
+                    println!("    {}  {line}", " ".repeat(key.len()));
+                }
+            }
+        }
     }
 
-    for a in record.all() {
-        let state = if a.open { "open" } else { "closed" };
-        println!(
-            "{}  {}",
-            color.paint(BOLD, &a.name),
-            color.paint(DIM, state)
-        );
-        println!("  {} {}", color.paint(DIM, "kind:"), a.kind);
-        for (key, value) in &a.settings {
-            println!("  {} {value}", color.paint(DIM, &format!("{key}:")));
-        }
+    // WHAT ELSE COULD BE INSTALLED. Without this the command answers "what have
+    // I got" and never "what is there" — and the second question is the one a
+    // user opens this list with.
+    let missing: Vec<_> = tacet_web::addon::DEFINITIONS
+        .iter()
+        .filter(|d| record.find(d.name).is_none())
+        .collect();
+    if !missing.is_empty() {
         println!();
+        println!("{}", color.paint(BOLD, "not installed"));
+        for d in missing {
+            let network = if d.network { "  (network)" } else { "" };
+            println!(
+                "  {:<11} {}{}",
+                d.name,
+                color.paint(DIM, d.summary),
+                color.paint(YELLOW, network)
+            );
+            println!(
+                "{}",
+                color.paint(DIM, &format!("              tacet addon install {}", d.name))
+            );
+        }
     }
 
     // THE EFFECT ON THE TOOL CATALOG IS STATED PLAINLY: what the user really
     // wants to learn from this command is "does web search work".
+    println!();
     let open = record.is_open(WEB_SEARCH);
     println!(
         "{}",
@@ -218,6 +330,12 @@ pub fn list(json: bool) -> ExitCode {
             }
         )
     );
+    // WHERE THIRD-PARTY EXTENSION ACTUALLY LIVES. Measured behaviour, not a
+    // guess: a user looking for "plugins" comes to this command, finds a list
+    // of five names that only this build can grow, and leaves without ever
+    // learning that MCP is the door for everything else.
+    println!("{}", color.paint(DIM, MCP_NOTE));
+    println!("{}", color.paint(DIM, &format!("  {MCP_WHERE}")));
     ExitCode::SUCCESS
 }
 
@@ -225,23 +343,51 @@ pub fn list(json: bool) -> ExitCode {
 // install
 // ---------------------------------------------------------------------------
 
-pub fn install(name: &str, address: Option<String>, local: bool, no_approval: bool) -> ExitCode {
+/// `value` is the `--address` flag. It is NAMED for web search because that is
+/// the addon it was written for, but it is read here as "the one setting, given
+/// on the command line" — the only way to install a settings-taking addon from
+/// a script. It applies only to a definition with EXACTLY ONE setting; with
+/// more than one there is no way to tell which was meant, so the install stays
+/// interactive rather than guess.
+pub fn install(name: &str, value: Option<String>, local: bool, no_approval: bool) -> ExitCode {
     let color = Color::setup();
-    if name != WEB_SEARCH {
+    let Some(def) = tacet_web::addon::definition(name) else {
         eprintln!(
             "{}",
             color.paint(YELLOW, &format!("unknown addon: '{name}'"))
         );
+        eprintln!("{}", color.paint(DIM, "  installable:"));
+        for d in tacet_web::addon::DEFINITIONS {
+            eprintln!(
+                "{}",
+                color.paint(DIM, &format!("   • {:<11} {}", d.name, d.summary))
+            );
+        }
+        eprintln!("{}", color.paint(DIM, &format!("  {MCP_NOTE}")));
+        return ExitCode::FAILURE;
+    };
+
+    // `--local` MEANS "bring up the container", and only one addon has one.
+    // Accepting it silently elsewhere would let a user believe they had asked
+    // for something local when the flag did nothing at all.
+    if local && def.name != WEB_SEARCH {
         eprintln!(
             "{}",
-            color.paint(DIM, &format!("  installable: {WEB_SEARCH}"))
+            color.paint(
+                YELLOW,
+                &format!("--local belongs to '{WEB_SEARCH}' — '{name}' sets up no local server")
+            )
         );
         return ExitCode::FAILURE;
     }
 
+    if def.name != WEB_SEARCH {
+        return install_generic(&color, def, value, no_approval);
+    }
+
     // IF THE FLAGS CLASH WE STOP: silently picking one of the two could have
     // installed a local container instead of the user's server.
-    if local && address.is_some() {
+    if local && value.is_some() {
         eprintln!(
             "{}",
             color.paint(YELLOW, "--local and --address cannot be given together")
@@ -251,7 +397,7 @@ pub fn install(name: &str, address: Option<String>, local: bool, no_approval: bo
 
     let choice = if local {
         InstallPath::Local
-    } else if let Some(a) = address {
+    } else if let Some(a) = value {
         InstallPath::Address(a)
     } else {
         match ask_path(&color) {
@@ -264,6 +410,276 @@ pub fn install(name: &str, address: Option<String>, local: bool, no_approval: bo
         InstallPath::Local => install_local(&color, no_approval),
         InstallPath::Address(a) => install_with_address(&color, &a),
     }
+}
+
+/// THE INSTALL FLOW OF EVERY ADDON THAT IS NOT `web-search`.
+///
+/// ONE FLOW, NOT FIVE. What differs between `shell`, `workspace`, `http`, `db`
+/// and `clipboard` is entirely in the DEFINITION — which questions get asked,
+/// what shape the answers must have, whether an answer is a secret. The steps
+/// are the same for all of them and in this order: say what it does → ask →
+/// CHECK THE SHAPE → show what will be stored → take the approval → write. The
+/// order is the point: the approval question is asked when there is something
+/// concrete to approve, and nothing is written before the answer.
+fn install_generic(
+    color: &Color,
+    def: &tacet_web::addon::Definition,
+    value: Option<String>,
+    no_approval: bool,
+) -> ExitCode {
+    println!("{}", color.paint(BOLD, &format!("{} addon", def.name)));
+    println!("{}", color.paint(DIM, def.summary));
+    println!(
+        "{}",
+        color.paint(DIM, &format!("once installed: {}", def.effect))
+    );
+    if def.network {
+        println!(
+            "{}",
+            color.paint(YELLOW, "THIS ONE GOES ON THE NETWORK: data leaves this machine.")
+        );
+    }
+    println!("{}", color.paint(YELLOW, def.warning));
+    println!();
+
+    // A flag was given but there is nowhere to put it. Silence here would make
+    // `tacet addon install clipboard --address https://x` look like it did
+    // something with the address.
+    if value.is_some() && def.settings.len() != 1 {
+        let complaint = if def.settings.is_empty() {
+            format!("'{}' takes no settings", def.name)
+        } else {
+            format!(
+                "'{}' takes {} settings — install it without the flag and answer the questions",
+                def.name,
+                def.settings.len()
+            )
+        };
+        eprintln!("{}", color.paint(YELLOW, &complaint));
+        return ExitCode::FAILURE;
+    }
+
+    let mut collected: Vec<(&'static str, String)> = Vec::new();
+    for spec in def.settings {
+        let raw = match &value {
+            Some(v) => {
+                if spec.secret {
+                    // MEASURED FROM THE SHELL'S SIDE, not from ours: a value
+                    // typed on the command line is in the shell's history file
+                    // and in the process list while the command runs. We cannot
+                    // take it back, so we say it.
+                    eprintln!(
+                        "{}",
+                        color.paint(
+                            YELLOW,
+                            "the value was given on the command line: it is in your shell history now."
+                        )
+                    );
+                }
+                // The flag carries many values separated by commas. THE PROMPT
+                // TAKES ONE PER LINE and has no such limit — a value with a
+                // comma in it (a directory can have one) has to be typed at the
+                // prompt.
+                if spec.many {
+                    v.split(',').map(|s| s.trim().to_string()).collect()
+                } else {
+                    vec![v.trim().to_string()]
+                }
+            }
+            None => match ask_setting(color, spec) {
+                Some(values) => values,
+                // EOF or a cancelled prompt: nothing is written.
+                None => {
+                    eprintln!("{}", color.paint(DIM, "cancelled — nothing was written."));
+                    return ExitCode::FAILURE;
+                }
+            },
+        };
+
+        let mut values: Vec<String> = raw
+            .into_iter()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .collect();
+        if values.is_empty() {
+            if spec.required {
+                eprintln!(
+                    "{}",
+                    color.paint(
+                        YELLOW,
+                        &format!("'{}' is required — nothing was written.", spec.prompt)
+                    )
+                );
+                return ExitCode::FAILURE;
+            }
+            continue;
+        }
+        // SORTED AND DEDUPLICATED, so the same answers always produce the same
+        // file and a list does not grow a second copy of an entry on reinstall.
+        values.sort();
+        values.dedup();
+
+        for v in &values {
+            if let Err(e) = spec.shape.check(v) {
+                eprintln!("{}", color.paint(YELLOW, &format!("not accepted: {e}")));
+                eprintln!("{}", color.paint(DIM, &format!("  {}", spec.help)));
+                eprintln!("{}", color.paint(DIM, "  nothing was written."));
+                return ExitCode::FAILURE;
+            }
+            // What the SHAPE cannot know: whether the thing is THERE on this
+            // machine. Some of that is a refusal and some of it is a warning —
+            // `machine_check` decides which, and the difference is whether the
+            // layer that will use the value refuses it too.
+            match machine_check(spec, v) {
+                Ok(warnings) => {
+                    for warning in warnings {
+                        eprintln!("{}", color.paint(YELLOW, &format!("  ! {warning}")));
+                    }
+                }
+                Err(e) => {
+                    eprintln!("{}", color.paint(YELLOW, &format!("not accepted: {e}")));
+                    eprintln!("{}", color.paint(DIM, "  nothing was written."));
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        collected.push((spec.key, tacet_web::addon::join_values(&values)));
+    }
+
+    // WHAT WILL BE WRITTEN, BEFORE THE APPROVAL — with the secrets covered up:
+    // the approval screen is the most-screenshotted screen there is.
+    println!();
+    println!("{}", color.paint(BOLD, "this will be recorded:"));
+    println!("  addon : {}", def.name);
+    println!("  state : open");
+    if collected.is_empty() {
+        println!("{}", color.paint(DIM, "  (no settings)"));
+    }
+    for (key, joined) in &collected {
+        let shown = tacet_web::addon::shown_value(def.name, key, joined);
+        let mut lines = shown.split(tacet_web::addon::VALUE_SEPARATOR);
+        if let Some(first) = lines.next() {
+            println!("  {key}: {first}");
+        }
+        // The continuation lines are indented UNDER the first value, not under
+        // the key: a list of six commands read as one line each is the only way
+        // the approval screen shows what is actually being allowed.
+        for line in lines {
+            println!("  {}  {line}", " ".repeat(key.len()));
+        }
+    }
+    if !take_approval(color, no_approval) {
+        println!("{}", color.paint(DIM, "cancelled — nothing was written."));
+        return ExitCode::FAILURE;
+    }
+
+    save(color, def, collected)
+}
+
+/// Asks ONE setting. `None` = the user cancelled or the input ended (EOF): the
+/// caller writes nothing.
+///
+/// MANY VALUES ARE TAKEN ONE PER LINE and an empty line ends the list. Not
+/// comma-separated, because a comma is a legal character in a directory name
+/// and this is the only place the user can type one.
+fn ask_setting(color: &Color, spec: &tacet_web::addon::Setting) -> Option<Vec<String>> {
+    println!("{}", color.paint(BOLD, spec.prompt));
+    println!("{}", color.paint(DIM, &format!("  {}", spec.help)));
+    if spec.secret {
+        println!(
+            "{}",
+            color.paint(
+                DIM,
+                "  it is stored in a file only you can read, and is not printed back."
+            )
+        );
+    }
+    if !spec.many {
+        print!("> ");
+        let _ = std::io::stdout().flush();
+        return read_line().map(|l| vec![l.trim().to_string()]);
+    }
+
+    println!(
+        "{}",
+        color.paint(DIM, "  one per line; an empty line ends the list.")
+    );
+    let mut values = Vec::new();
+    loop {
+        print!("> ");
+        let _ = std::io::stdout().flush();
+        // EOF with nothing collected is a cancellation; EOF after some lines is
+        // the end of a pipe and what came before it counts.
+        let Some(line) = read_line() else {
+            return (!values.is_empty()).then_some(values);
+        };
+        let line = line.trim().to_string();
+        if line.is_empty() {
+            return Some(values);
+        }
+        values.push(line);
+    }
+}
+
+/// What the machine can say about a value that its SHAPE cannot.
+///
+/// `Err` REFUSES the install, `Ok(warnings)` lets it through with a note. Which
+/// of the two a check gets is decided by ONE question: does the layer that will
+/// actually use the value refuse it as well?
+///
+/// * A DIRECTORY IS A REFUSAL, and the rule is not written here — it is
+///   `tacet_tools::workspace::validate_root`, which refuses a missing root, a
+///   root that is not a directory, and a root at or above the home directory
+///   ("see everything"). It is CALLED rather than copied: a second opinion about
+///   what a legal root is would let the install accept a root the file layer
+///   then rejects, and the user would be looking at a configured workspace that
+///   answers "no such file".
+/// * A COMMAND IS A WARNING. `PATH` is not the same in every shell and a program
+///   installed tomorrow is a legitimate entry; refusing it would send the user
+///   round a loop over a guess.
+fn machine_check(
+    spec: &tacet_web::addon::Setting,
+    value: &str,
+) -> Result<Vec<String>, String> {
+    use tacet_web::addon::Shape;
+    match spec.shape {
+        Shape::Directory => tacet_tools::workspace::validate_root(value)
+            .map(|_| Vec::new())
+            .map_err(|e| e.to_string()),
+        Shape::CommandName => Ok(if on_path(value) {
+            Vec::new()
+        } else {
+            vec![format!("{value}: not found on PATH")]
+        }),
+        _ => Ok(Vec::new()),
+    }
+}
+
+/// Is there an executable by this name on `PATH`.
+///
+/// NO PROCESS IS STARTED. Running the command to find out whether it exists is
+/// how a "check" turns into an execution of something the user has not approved
+/// yet; the directories on `PATH` are read instead. The executable BIT is what
+/// is asked for, not merely existence: a data file named `git` sitting in a
+/// `PATH` directory is not the command.
+fn on_path(command: &str) -> bool {
+    let Some(path) = tacet_kernel::env_var("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| {
+        let candidate = dir.join(command);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::metadata(&candidate)
+                .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+                .unwrap_or(false)
+        }
+        #[cfg(not(unix))]
+        {
+            candidate.is_file()
+        }
+    })
 }
 
 /// The two install paths. The trailing underscore keeps it clear of
@@ -431,7 +847,23 @@ fn verify(address: &str) -> Result<usize, tacet_web::WebError> {
     tacet_web::WebSearchClient::with_address(address).health()
 }
 
+/// The web search record — the verified address and nothing else.
 fn write_registry(color: &Color, address: &str) -> ExitCode {
+    let def = tacet_web::addon::definition(WEB_SEARCH)
+        .expect("the web-search definition is in the table");
+    save(color, def, vec![(ADDRESS_KEY, address.to_string())])
+}
+
+/// WRITES THE RECORD — the one place any addon becomes installed.
+///
+/// Read, replace, write: `Record::add` replaces the record with the same name,
+/// so a reinstall updates the settings rather than leaving two records behind
+/// with no answer to which one is in force.
+fn save(
+    color: &Color,
+    def: &tacet_web::addon::Definition,
+    settings: Vec<(&'static str, String)>,
+) -> ExitCode {
     let mut record = match tacet_web::addon::read() {
         Ok(r) => r,
         Err(e) => {
@@ -445,7 +877,11 @@ fn write_registry(color: &Color, address: &str) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    record.add(Addon::new(WEB_SEARCH, WEB_SEARCH).with_setting(ADDRESS_KEY, address));
+    let mut addon = Addon::new(def.name, def.name);
+    for (key, value) in settings {
+        addon = addon.with_setting(key, value);
+    }
+    record.add(addon);
     match tacet_web::addon::write(&record) {
         Ok(path) => {
             println!(
@@ -454,19 +890,21 @@ fn write_registry(color: &Color, address: &str) -> ExitCode {
             );
             println!(
                 "{}",
-                color.paint(BOLD, "the web search addon is installed and open.")
-            );
-            println!(
-                "{}",
-                color.paint(DIM, "the web_search/web_fetch tools are in the catalog now; they can be used in chat.")
-            );
-            println!(
-                "{}",
                 color.paint(
-                    DIM,
-                    "every call that takes data out still asks for approval in a tainted session.",
+                    BOLD,
+                    &format!("the {} addon is installed and open.", def.name)
                 )
             );
+            println!("{}", color.paint(DIM, def.effect));
+            if def.network {
+                println!(
+                    "{}",
+                    color.paint(
+                        DIM,
+                        "every call that takes data out still asks for approval in a tainted session.",
+                    )
+                );
+            }
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -1063,6 +1501,27 @@ pub fn set_state(name: &str, open: bool) -> ExitCode {
                     &format!("'{name}' was {}.", if open { "opened" } else { "closed" })
                 )
             );
+            // WHICH TOOLS MOVED. The state word alone does not tell the user
+            // what changed for the model, and that is the only thing the state
+            // does — the gate is read from the catalog (`addon::is_open`), so
+            // opening and closing is exactly "these tools appeared/vanished".
+            // WHAT MOVED. The state word alone does not tell the user what
+            // changed for the model, and that is the only thing the state does —
+            // the gate is read from the catalog (`addon::is_open`), so opening
+            // and closing is exactly "this appeared / this went away".
+            if let Some(def) = tacet_web::addon::definition(name) {
+                println!(
+                    "{}",
+                    color.paint(
+                        DIM,
+                        if open {
+                            def.effect
+                        } else {
+                            "what it adds is no longer available to the model."
+                        }
+                    )
+                );
+            }
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -1109,15 +1568,15 @@ pub fn try_addon(name: &str, json: bool) -> ExitCode {
         }
         return ExitCode::FAILURE;
     };
+    // EVERY KIND ANSWERS THIS COMMAND, but they do not all answer it the same
+    // way. Only web search has something to ask a server; the rest are measured
+    // against THIS MACHINE (is the command there, is the directory there) or
+    // have nothing that can be measured without doing the thing itself — and
+    // saying "no probe" out loud is the honest answer, not a failure. Refusing
+    // outright, which is what this did, told a user with a working `shell`
+    // addon that it "cannot be tried".
     if a.kind != WEB_SEARCH {
-        eprintln!(
-            "{}",
-            color.paint(
-                YELLOW,
-                &format!("'{}' cannot be tried: kind {}", a.name, a.kind)
-            )
-        );
-        return ExitCode::FAILURE;
+        return try_local(&color, a, json);
     }
     // THE ADDRESS IS RESOLVED THE SAME WAY AS IN PRODUCTION:
     // `WebSearchClient::new()` also looks at the environment variable first and
@@ -1170,6 +1629,128 @@ pub fn try_addon(name: &str, json: bool) -> ExitCode {
             }
             ExitCode::FAILURE
         }
+    }
+}
+
+/// `addon try` for the kinds that are NOT web search.
+///
+/// IT OPENS NO SOCKET AND STARTS NO PROCESS. What can be measured here is
+/// whether what the settings NAME is present on this machine; anything beyond
+/// that (running a command, connecting to the database, reading the clipboard)
+/// is the thing itself, and doing the thing to find out whether it can be done
+/// is how a "try" becomes an unapproved use of the addon.
+fn try_local(color: &Color, a: &tacet_web::addon::Addon, json: bool) -> ExitCode {
+    use tacet_web::addon::{COMMANDS_KEY, DIRECTORIES_KEY, SHELL, WORKSPACE};
+
+    // (what was checked, is it there, why)
+    let mut findings: Vec<(String, bool, String)> = Vec::new();
+    let probed = match a.kind.as_str() {
+        SHELL => {
+            for command in a.values(COMMANDS_KEY) {
+                let there = on_path(command);
+                findings.push((
+                    command.to_string(),
+                    there,
+                    if there { "on PATH" } else { "not on PATH" }.to_string(),
+                ));
+            }
+            true
+        }
+        WORKSPACE => {
+            for directory in a.values(DIRECTORIES_KEY) {
+                let p = Path::new(directory);
+                let there = p.is_dir();
+                findings.push((
+                    directory.to_string(),
+                    there,
+                    if there {
+                        "a directory"
+                    } else if p.exists() {
+                        "there, but not a directory"
+                    } else {
+                        "missing"
+                    }
+                    .to_string(),
+                ));
+            }
+            true
+        }
+        // `db` and `clipboard`: connecting to the database, or reading the
+        // clipboard, IS the addon's job — there is nothing in between to
+        // measure.
+        _ => false,
+    };
+
+    let working = probed && findings.iter().all(|(_, ok, _)| *ok);
+    if json {
+        let checks: Vec<serde_json::Value> = findings
+            .iter()
+            .map(|(what, ok, why)| serde_json::json!({ "value": what, "ok": ok, "note": why }))
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({
+                "name": a.name, "kind": a.kind, "installed": true, "open": a.open,
+                "probe": if probed { "local" } else { "none" },
+                "checks": checks,
+                // NOT `false` WHEN THERE IS NO PROBE. A "working: false" that
+                // only means "nobody looked" is a false red, and a script
+                // reading it would report a healthy addon as broken.
+                "working": if probed { serde_json::Value::Bool(working) } else { serde_json::Value::Null },
+            })
+        );
+        return if working || !probed {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
+    }
+
+    for (what, ok, why) in &findings {
+        let mark = if *ok { "✓" } else { "✗" };
+        let line = format!("{mark} {what} — {why}");
+        if *ok {
+            println!("{}", color.paint(DIM, &line));
+        } else {
+            eprintln!("{}", color.paint(YELLOW, &line));
+        }
+    }
+    if !probed {
+        println!(
+            "{}",
+            color.paint(
+                DIM,
+                "there is nothing to try without using the addon itself — only its state is shown."
+            )
+        );
+    }
+    println!(
+        "{}",
+        color.paint(
+            BOLD,
+            &format!(
+                "'{}' is installed and {}.",
+                a.name,
+                if a.open { "OPEN" } else { "CLOSED" }
+            )
+        )
+    );
+    if !a.open {
+        println!(
+            "{}",
+            color.paint(
+                YELLOW,
+                &format!(
+                    "its tools are not in the catalog (`tacet addon open {}`)",
+                    a.name
+                )
+            )
+        );
+    }
+    if working || !probed {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
     }
 }
 
@@ -1376,6 +1957,143 @@ mod tests {
                 SHELL_MISSING
             }
         );
+    }
+
+    /// THE POINT OF THE WHOLE CHANGE: a name that is not `web-search` reaches an
+    /// install flow instead of a rejection.
+    ///
+    /// It is measured through the definition table rather than by calling
+    /// `install`, because installing writes to the machine's real registry — a
+    /// test that did that would change the user's configuration and would make
+    /// every other test in this file depend on the order it ran in.
+    #[test]
+    fn five_more_addons_can_be_installed_not_just_web_search() {
+        for name in ["web-search", "shell", "workspace", "http", "db", "clipboard"] {
+            assert!(
+                tacet_web::addon::definition(name).is_some(),
+                "'{name}' cannot be installed: it is in no definition"
+            );
+        }
+        // And an unknown name is still refused — the table is a closed list, not
+        // an invitation to write anything into the registry.
+        assert!(tacet_web::addon::definition("web_search").is_none());
+        assert!(tacet_web::addon::definition("").is_none());
+    }
+
+    /// An unknown name must not write anything, and must say what CAN be
+    /// installed — a bare "unknown addon" leaves the user guessing at names.
+    #[test]
+    fn an_unknown_name_fails_without_writing() {
+        let before = tacet_web::addon::read().ok();
+        assert!(matches!(
+            install("no-such-addon", None, false, true),
+            code if format!("{code:?}") == format!("{:?}", ExitCode::FAILURE)
+        ));
+        // The registry is untouched.
+        let after = tacet_web::addon::read().ok();
+        assert_eq!(before, after, "a failed install changed the registry");
+    }
+
+    /// `--local` builds a container, and only one addon has one. Accepting the
+    /// flag elsewhere would let a user think they asked for something local.
+    /// A flag with nowhere to go is refused too, rather than ignored.
+    #[test]
+    fn a_flag_that_does_not_apply_is_refused_not_ignored() {
+        let before = tacet_web::addon::read().ok();
+        let fail = format!("{:?}", ExitCode::FAILURE);
+        assert_eq!(format!("{:?}", install("shell", None, true, true)), fail);
+        assert_eq!(
+            format!("{:?}", install("clipboard", Some("x".into()), false, true)),
+            fail,
+            "clipboard takes no settings, so a value has nowhere to go"
+        );
+        assert_eq!(
+            before,
+            tacet_web::addon::read().ok(),
+            "a refused install changed the registry"
+        );
+    }
+
+    /// The PATH probe answers about real programs and does not start any of
+    /// them. `sh` is on PATH everywhere this is built; the nonsense name is not.
+    #[test]
+    fn the_path_probe_finds_a_real_command_and_not_an_invented_one() {
+        #[cfg(unix)]
+        assert!(on_path("sh"), "sh was not found on PATH");
+        assert!(!on_path("tacet-no-such-command-9182"));
+        // A directory named like a command is not a command: `/usr` is not
+        // executable-as-a-file, and a directory on PATH must not answer yes.
+        assert!(!on_path("."));
+    }
+
+    /// A shape cannot know whether the thing is THERE. The machine check can —
+    /// and the two answers are deliberately different in kind.
+    ///
+    /// A DIRECTORY IS REFUSED, and by the FILE LAYER'S OWN RULE
+    /// (`tacet_tools::workspace::validate_root`), not by a second opinion held
+    /// here. The case that makes this matter is the home directory: it passes
+    /// every shape check — absolute, no `..` — and the file layer refuses it as
+    /// "see everything". Had this file kept its own is-it-a-directory check, the
+    /// install would have written a root the file layer then ignores, and the
+    /// user would be looking at a configured workspace that answers "no such
+    /// file".
+    ///
+    /// A COMMAND IS A WARNING: `PATH` differs between shells and a program
+    /// installed tomorrow is a legitimate entry.
+    #[test]
+    fn a_bad_root_is_refused_by_the_file_layers_rule_and_a_missing_command_only_warns() {
+        let directories = tacet_web::addon::definition("workspace")
+            .unwrap()
+            .setting(tacet_web::addon::DIRECTORIES_KEY)
+            .unwrap();
+        let missing = std::env::temp_dir().join("tacet-no-such-directory-9182");
+        std::fs::remove_dir_all(&missing).ok();
+        assert!(
+            machine_check(directories, &missing.display().to_string()).is_err(),
+            "a root that is not there was accepted"
+        );
+        assert_eq!(
+            machine_check(directories, &std::env::temp_dir().display().to_string()),
+            Ok(Vec::new())
+        );
+        // THE SHAPE CANNOT CATCH THIS ONE — only the file layer's rule does.
+        if let Some(home) = std::env::var_os("HOME") {
+            let home = home.to_string_lossy().to_string();
+            assert!(
+                tacet_web::addon::Shape::Directory.check(&home).is_ok(),
+                "the shape has no opinion about the home directory"
+            );
+            assert!(
+                machine_check(directories, &home).is_err(),
+                "the home directory was accepted as a workspace root"
+            );
+        }
+
+        let commands = tacet_web::addon::definition("shell")
+            .unwrap()
+            .setting(tacet_web::addon::COMMANDS_KEY)
+            .unwrap();
+        assert_eq!(
+            machine_check(commands, "tacet-no-such-command-9182")
+                .expect("a missing command must warn, not refuse")
+                .len(),
+            1
+        );
+        #[cfg(unix)]
+        assert_eq!(machine_check(commands, "sh"), Ok(Vec::new()));
+    }
+
+    /// THE MCP HINT must name the door and must NOT name a command that does not
+    /// exist. This file has already cost a user a turn by suggesting one (see
+    /// `SHELL_CLOSED`), and there is no `tacet mcp` subcommand in this build.
+    #[test]
+    fn the_third_party_hint_names_mcp_and_no_invented_command() {
+        assert!(MCP_NOTE.to_lowercase().contains("mcp"), "{MCP_NOTE}");
+        assert!(MCP_WHERE.contains("mcp.json"), "{MCP_WHERE}");
+        for hint in [MCP_NOTE, MCP_WHERE] {
+            assert!(!hint.contains("tacet mcp"), "invented command: {hint}");
+            assert!(!hint.contains("/mcp"), "invented shell verb: {hint}");
+        }
     }
 
     /// THE PRODUCTION HINT trigger: it wakes on a web question, not on a greeting.

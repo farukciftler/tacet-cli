@@ -15,14 +15,18 @@
 //! it.
 
 use crate::calc::CalcTool;
+use crate::clipboard::ClipboardTool;
 use crate::create_document::CreateDocumentTool;
 use crate::data_store::SharedStore;
+use crate::db::DbTool;
 use crate::edit_document::EditDocumentTool;
 use crate::find_file::FindFileTool;
 use crate::git::GitTool;
+use crate::http_call::HttpCallTool;
 use crate::memory::{MemoryTool, SharedMemory};
 use crate::read_document::ReadDocumentTool;
 use crate::run_code::{CodeState, RunCodeTool};
+use crate::shell::ShellTool;
 use crate::time::TimeTool;
 use crate::web_search::{WebFetchTool, WebSearchTool};
 use std::sync::Arc;
@@ -32,6 +36,84 @@ use tacet_kernel::ToolCatalog;
 /// given as a second value rather than a `Result` so the call site can inform the
 /// user.
 pub struct CodeDiagnosis(pub String);
+
+/// WHICH ADDON GATES ARE OPEN for one build of the catalog.
+///
+/// WHY A STRUCT AND NOT FIVE BOOLEANS: five positional `bool` arguments is a
+/// call site nobody can read and every mistake in it is silent — swapping `db`
+/// and `clipboard` compiles, and the failure surfaces as a tool the user never
+/// opened standing in the catalog. That is a fail-OPEN, the one direction this
+/// file exists to prevent.
+///
+/// `Default` IS "EVERYTHING CLOSED", and that is the load-bearing property: a
+/// gate added to this struct tomorrow starts CLOSED at every call site that was
+/// written before it existed. There is deliberately no `open()` constructor for
+/// production use — see `read`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AddonGates {
+    pub web_search: bool,
+    pub shell: bool,
+    pub db: bool,
+    pub clipboard: bool,
+    pub http: bool,
+}
+
+impl AddonGates {
+    /// Every gate closed — the state of a default install.
+    pub fn closed() -> Self {
+        Self::default()
+    }
+
+    /// Every gate open. FOR TESTS. Production never builds this: a gate is a
+    /// question about the user's registry, and a constant cannot answer it.
+    pub fn all_open() -> Self {
+        Self {
+            web_search: true,
+            shell: true,
+            db: true,
+            clipboard: true,
+            http: true,
+        }
+    }
+
+    /// Only the web gate — the shape `production_catalog_with` has always had.
+    pub fn web(open: bool) -> Self {
+        Self {
+            web_search: open,
+            ..Self::closed()
+        }
+    }
+
+    /// THE PRODUCTION READ. Every gate is asked THE SAME WAY, through
+    /// `tacet_web::addon::is_open` — the one function that owns the question
+    /// "is this addon installed and on". No gate is re-derived here from the
+    /// tool's own state (whether a `sqlite3` exists, whether the host list
+    /// parses): a tool that can answer "am I usable" is not the same as an
+    /// addon the user opened, and letting the tool answer for the gate is how
+    /// an addon nobody installed ends up in the catalog.
+    ///
+    /// THE ASK IS BY ADDON CONSTANT, NEVER BY TOOL NAME. `Definition::tools`
+    /// exists to explain the gate, not to enforce it: were the lookup done by
+    /// tool name, a name misspelled in that table would make the tool "belong
+    /// to no addon" and it would be added ungated — fail-open again.
+    ///
+    /// FIVE READS OF THE REGISTRY, not one. `is_open` reads the file itself and
+    /// that is accepted: the file is under a kilobyte and this runs once per
+    /// session. The cost is that an edit landing mid-read can be seen by some
+    /// questions and not others; the worst outcome is one tool's presence
+    /// disagreeing with another's for the length of one session, and a corrupt
+    /// read is CLOSED for all of them.
+    pub fn read() -> Self {
+        use tacet_web::addon;
+        Self {
+            web_search: addon::is_open(addon::WEB_SEARCH),
+            shell: addon::is_open(addon::SHELL),
+            db: addon::is_open(addon::DB),
+            clipboard: addon::is_open(addon::CLIPBOARD),
+            http: addon::is_open(addon::HTTP),
+        }
+    }
+}
 
 /// The production catalog.
 ///
@@ -56,16 +138,28 @@ pub struct CodeDiagnosis(pub String);
 /// already DRIED OUT on the eval side (see `tacet_eval::tool_selection::TO_BE_DRIED`)
 /// — they do not go on the network, they merely stand in the selection list as
 /// name/description/schema.
+///
+/// THE OTHER FOUR ADDON TOOLS ARE NOT IN MEASUREMENT MODE, and unlike the web
+/// pair they cannot be. `web_search`/`web_fetch` have a fixed name, description
+/// and schema, so they can stand in a selection list without a server behind
+/// them. `shell` does not: its description LISTS THE USER'S OWN COMMANDS, so
+/// two machines would measure two different prompts. `db` and `clipboard` do
+/// not exist at all unless a `sqlite3` or a clipboard helper is on the machine.
+/// Dried-out stand-ins for those would measure a catalog no user ever sees.
 pub fn production_catalog(
     store: &Arc<SharedStore>,
     memory: &SharedMemory,
     fixed_epoch: Option<i64>,
 ) -> (ToolCatalog, Option<Arc<CodeState>>, Option<CodeDiagnosis>) {
-    let web_enabled = fixed_epoch.is_some() || tacet_web::addon::web_search_is_open();
-    production_catalog_with(store, memory, fixed_epoch, web_enabled)
+    let gates = if fixed_epoch.is_some() {
+        AddonGates::web(true)
+    } else {
+        AddonGates::read()
+    };
+    production_catalog_gated(store, memory, fixed_epoch, gates)
 }
 
-/// The variant with the gate supplied FROM OUTSIDE — for tests, not the
+/// The variant with the WEB gate supplied from outside — for tests, not the
 /// production path.
 ///
 /// WHY A SEPARATE BRANCH: if the only way to measure the gate were
@@ -73,11 +167,26 @@ pub fn production_catalog(
 /// (a machine-dependent result) or move the process-wide `TACET_HOME` variable —
 /// a class of failure that steps on other tests running in parallel and has
 /// already happened in this repo.
+///
+/// IT LEAVES EVERY OTHER GATE CLOSED. That is what keeps this signature honest
+/// as the number of addons grows: a caller that names only the web gate gets
+/// only the web gate, and never a tool it did not ask about.
 pub fn production_catalog_with(
     store: &Arc<SharedStore>,
     memory: &SharedMemory,
     fixed_epoch: Option<i64>,
     web_enabled: bool,
+) -> (ToolCatalog, Option<Arc<CodeState>>, Option<CodeDiagnosis>) {
+    production_catalog_gated(store, memory, fixed_epoch, AddonGates::web(web_enabled))
+}
+
+/// The catalog with EVERY gate supplied from outside. The body; the two
+/// functions above are the two ways of answering the gate question.
+pub fn production_catalog_gated(
+    store: &Arc<SharedStore>,
+    memory: &SharedMemory,
+    fixed_epoch: Option<i64>,
+    gates: AddonGates,
 ) -> (ToolCatalog, Option<Arc<CodeState>>, Option<CodeDiagnosis>) {
     let mut c = ToolCatalog::new();
     // TIME ZONE: if a fixed epoch was given (eval/test) we stay in UTC —
@@ -97,30 +206,30 @@ pub fn production_catalog_with(
     // THE CATALOG ORDER IS A DECISION, not alphabetical and not the order things
     // were written.
     //
-    // The catalog holds AT MOST 12 tools (counted with `tacet tools`: calculate,
-    // time, read_document, create_document, edit_document, find_file, run_code,
-    // write_code, git, web_search, remember, web_fetch), and the router's budget
-    // is 8 (see `MAX_TOOLS`). When no trigger matches, the selection is ENTIRELY
-    // down to this order and the tools at the end are NEVER SHOWN to the model.
+    // The catalog is larger than the router's budget (`MAX_TOOLS`). When no
+    // trigger matches, the selection is ENTIRELY down to this order and the tools
+    // at the end are NEVER SHOWN to the model.
     //
-    // THE NUMBER IS NOT SINGLE, IT DEPENDS ON TWO CONDITIONS — whoever changes
-    // this line must account for both:
-    //   * `web_search`/`web_fetch` are added only while the addon gate is OPEN
-    //     (see the head of the function). The default install has NO ADDON.
+    // THE SIZE IS NOT A SINGLE NUMBER, it depends on four independent conditions
+    // — whoever changes this must account for all of them:
+    //   * `calendar` exists on macOS only.
     //   * `run_code`/`write_code` are added only if shield discovery succeeds.
-    // Four measured states: with addon + shield 12 tools / the last FOUR drop,
-    // without addon + shield 10 tools / the last TWO drop; on a machine with no
-    // shield, both lose two more tools.
+    //   * `web_search`/`web_fetch`, `shell`, `db`, `clipboard`, `http` are added
+    //     only while their OWN addon gate is open. The default install has NO
+    //     addon and none of them appear.
+    //   * even with the gate open, `shell`/`db`/`clipboard`/`http` may still fail
+    //     their own discovery (no allowlist, no `sqlite3`, no clipboard helper).
     //
-    // A NUMBER LIVING IN A COMMENT GOES STALE: when `write_code` was added this
-    // still said "10 tools / the last two" and the number of dropped tools had
-    // silently gone from two to three; when the addon gate arrived, "11 tools" was
-    // for a while taken as the only correct number. What actually protects is not
-    // the comment but the `the_catalog_is_larger_than_the_router_budget` test: it
-    // measures both states of the gate.
+    // A NUMBER LIVING IN A COMMENT GOES STALE: when `write_code` was added the
+    // note here still said "10 tools / the last two" and the number of dropped
+    // tools had silently gone from two to three; when the addon gate arrived,
+    // "11 tools" was for a while taken as the only correct number. NO COUNT IS
+    // WRITTEN HERE ANY MORE — what protects is the
+    // `the_catalog_is_larger_than_the_router_budget` test, which measures the
+    // states rather than describing them.
     //
-    // The order is therefore arranged by the question "which tool COULD BE the
-    // right answer when the message carries no hint at all":
+    // The order is arranged by the question "which tool COULD BE the right
+    // answer when the message carries no hint at all":
     //
     //   * calculate / time — the most frequent right answer to short, hintless
     //     questions.
@@ -129,10 +238,16 @@ pub fn production_catalog_with(
     //   * run_code — the GENERAL PURPOSE escape hatch; it has a high chance of
     //     being the right answer to a hintless request. It used to be LAST and in
     //     measurement it fell off the budget in cases like "list the primes".
+    //   * shell — run_code's OPTED-IN sibling and the same class of answer ("run
+    //     the tests", "build it"), so it sits with the code tools rather than
+    //     among the trigger-only tools. A user who went through the install and
+    //     the approval screen for it means to reach it.
     //   * web_search — a request needing the internet usually says so in words.
-    //   * remember / web_fetch — LAST, because neither is ever the right answer
-    //     without an explicit trigger: remember needs "remember/forget", web_fetch
-    //     needs a URL. With no hint, dropping them is correct.
+    //   * remember / web_fetch / db / clipboard / http — LAST, because none of
+    //     them is ever the right answer without an explicit trigger: remember
+    //     needs "remember/forget", web_fetch and http need an address, db needs a
+    //     query, clipboard needs the word. With no hint, dropping them is
+    //     correct, and all four are absent entirely on a default install.
     //
     // edit_document resolves in THREE STAGES (explicit path -> session watcher ->
     // most recently changed document); that order is defined in the tool itself,
@@ -143,6 +258,12 @@ pub fn production_catalog_with(
         .add(Arc::new(CreateDocumentTool::new()))
         .add(Arc::new(EditDocumentTool::new()))
         .add(Arc::new(FindFileTool::new()));
+    // The calendar bridge is macOS-ONLY today (it speaks through osascript to
+    // the Calendar/Reminders apps); on other systems the tool simply does not
+    // exist — absence over a tool that always errors, the same rule as the
+    // web addon gate.
+    #[cfg(target_os = "macos")]
+    c.add(Arc::new(crate::calendar::CalendarTool::new()));
 
     // run_code is added ONLY if it can be run safely: without an interpreter plus
     // a network shield measurement it becomes a trap for the model. `write_code`
@@ -165,6 +286,19 @@ pub fn production_catalog_with(
         None => (None, Some(CodeDiagnosis(RunCodeTool::diagnose()))),
     };
 
+    // THE `shell` GATE. Two conditions, and BOTH are required: the addon is open
+    // (asked here, by addon constant) and the tool can build itself from the
+    // allowlist in the registry (asked by `discover`, which refuses an empty or
+    // unusable list — see `with_commands`). Neither substitutes for the other:
+    // `discover` alone would be a gate a tool answers about itself, and the
+    // addon gate alone would put a process launcher with nothing to launch in
+    // front of the model.
+    if gates.shell
+        && let Some(tool) = ShellTool::discover()
+    {
+        c.add(Arc::new(tool));
+    }
+
     // `git` SITS AFTER THE CODE TOOLS AND BEFORE `web_search` — deliberately, by
     // the same rule as the order note above: it is never the right answer to a
     // message that carries no hint at all ("what is 12% of 40" does not want a
@@ -180,26 +314,86 @@ pub fn production_catalog_with(
     // for no gain.
     c.add(Arc::new(GitTool::new()));
 
-    // THE ADDON GATE. If the addon is not installed (the default state) these two
+    // THE ADDON GATE. If the addon is not installed (the default state) these
     // tools DO NOT APPEAR in the catalog at all: the model cannot call them, no
     // grammar is generated for them, they do not enter the router budget. The
     // "data never leaves the device" default is thus enforced not as a RUNTIME
     // check but as THE ABSENCE of the tool — if there is nothing to check there is
     // no check to forget.
     //
-    // THE ORDER IS PRESERVED: web_search stays BEFORE `remember`, web_fetch stays
-    // LAST (the reasoning is in the order note above). With the gate closed the
-    // catalog is two tools shorter and the number of tools dropping off the router
-    // budget (8) changes; the test below measures that.
-    if web_enabled {
+    // THE ORDER IS PRESERVED: web_search stays BEFORE `remember`, web_fetch right
+    // after it (the reasoning is in the order note above).
+    if gates.web_search {
         c.add(Arc::new(WebSearchTool::with_store(Arc::clone(store))));
     }
     c.add(Arc::new(MemoryTool::new(memory.clone())));
-    if web_enabled {
+    if gates.web_search {
         c.add(Arc::new(WebFetchTool::with_store(Arc::clone(store))));
     }
 
+    // THE THREE TRIGGER-ONLY ADDON TOOLS, each behind its OWN gate. The pattern
+    // is the same for all three and it is the point: the gate is asked by addon
+    // constant, and only then is the tool asked whether this machine can carry
+    // it. `db` needs a `sqlite3` whose read-only lock has been MEASURED (two real
+    // processes — see `DbTool::discover`), `clipboard` needs a helper binary,
+    // `http` needs a non-empty host allowlist. A gate that is open and a tool
+    // that cannot be built is NOT a silent absence: `addon_diagnoses` below turns
+    // it into a sentence the shell prints.
+    if gates.db
+        && let Some(tool) = DbTool::discover()
+    {
+        c.add(Arc::new(tool.with_store(Arc::clone(store))));
+    }
+    if gates.clipboard
+        && let Some(tool) = ClipboardTool::discover()
+    {
+        c.add(Arc::new(tool.with_store(Arc::clone(store))));
+    }
+    if gates.http
+        && let Some(tool) = HttpCallTool::discover()
+    {
+        c.add(Arc::new(tool.with_store(Arc::clone(store))));
+    }
+
     (c, state, diagnosis)
+}
+
+/// WHY AN OPEN ADDON STILL PUT NO TOOL IN THE CATALOG.
+///
+/// A closed gate is the user's own decision and needs no explanation. An OPEN
+/// gate with no tool behind it is the confusing state — "I installed db, where
+/// is it" — and every one of these tools has a machine-level reason it can fail
+/// (no `sqlite3`, no clipboard helper, an emptied host list). Without this the
+/// absence looks like a missing feature rather than a missing package.
+///
+/// IT TAKES THE CATALOG THAT WAS ACTUALLY BUILT rather than re-running
+/// discovery to decide whether a tool is there: `DbTool::discover` starts two
+/// processes, and asking the same question twice is how two answers appear. The
+/// tool's own `diagnose()` is called only on the failing branch.
+pub fn addon_diagnoses(catalog: &ToolCatalog, gates: AddonGates) -> Vec<String> {
+    let mut out = Vec::new();
+    if gates.db && catalog.find("db").is_none() {
+        out.push(DbTool::diagnose());
+    }
+    if gates.clipboard && catalog.find("clipboard").is_none() {
+        out.push(ClipboardTool::diagnose());
+    }
+    if gates.http && catalog.find("http").is_none() {
+        out.push(HttpCallTool::diagnose());
+    }
+    // `shell` has no `diagnose()` of its own: its only failure mode is an
+    // allowlist that holds nothing usable, and the sentence for that is written
+    // here rather than in the tool, which would otherwise need a second copy of
+    // the name rule to explain itself.
+    if gates.shell && catalog.find("shell").is_none() {
+        out.push(
+            "shell is off: the addon is open but its command list holds no usable program name. \
+             `tacet addon install shell` records one BARE name per line (git, ls, rg) — with no \
+             usable name the tool is not in the catalog at all."
+                .to_string(),
+        );
+    }
+    out
 }
 
 #[cfg(test)]
@@ -209,9 +403,13 @@ mod tests {
     /// A helper that builds the catalog with the gate set explicitly — the tests
     /// DO NOT READ the production gate (the user's real `addons.json`).
     fn catalog(web_enabled: bool) -> (ToolCatalog, Option<Arc<CodeState>>) {
+        gated(AddonGates::web(web_enabled))
+    }
+
+    fn gated(gates: AddonGates) -> (ToolCatalog, Option<Arc<CodeState>>) {
         let store = Arc::new(SharedStore::new());
         let memory = SharedMemory::in_memory();
-        let (c, s, _) = production_catalog_with(&store, &memory, None, web_enabled);
+        let (c, s, _) = production_catalog_gated(&store, &memory, None, gates);
         (c, s)
     }
 
@@ -272,6 +470,145 @@ mod tests {
         }
     }
 
+    /// The tools that exist ONLY because an addon was installed and opened.
+    ///
+    /// The names are the tool layer's own (`Tool::name`), and they are repeated
+    /// here ON PURPOSE: this test's whole job is to fail when a tool starts
+    /// answering to a name the gate does not know about.
+    const ADDON_TOOLS: [&str; 6] = [
+        "web_search",
+        "web_fetch",
+        "shell",
+        "db",
+        "clipboard",
+        "http",
+    ];
+
+    /// THE DEFAULT INSTALL CARRIES NO ADDON TOOL.
+    ///
+    /// This is the product's headline promise stated as a measurement: with
+    /// nothing installed, the model is not merely refused these tools — it is
+    /// never shown them, so there is no runtime check anyone can forget.
+    #[test]
+    fn a_closed_registry_puts_no_addon_tool_in_the_catalog() {
+        let (c, _) = gated(AddonGates::closed());
+        for name in ADDON_TOOLS {
+            assert!(
+                c.find(name).is_none(),
+                "{name} is in the catalog with every gate closed"
+            );
+        }
+    }
+
+    /// EACH TOOL IS BEHIND ITS OWN GATE, not a shared one.
+    ///
+    /// Opening one addon must not bring another's tool along. The check is
+    /// deliberately one-directional: it asserts that the OTHER tools are ABSENT,
+    /// never that the opened one is present. Presence also depends on the
+    /// machine (`db` wants a `sqlite3` whose lock measures clean, `clipboard` a
+    /// helper binary, `shell`/`http` a list in the user's registry), so an
+    /// assertion on presence would pass or fail with the machine and tell us
+    /// nothing about the gate. The direction that matters for a gate is the one
+    /// tested here anyway: a tool must never appear ungated.
+    #[test]
+    fn opening_one_gate_does_not_open_another() {
+        let cases: [(&str, AddonGates); 4] = [
+            (
+                "shell",
+                AddonGates {
+                    shell: true,
+                    ..AddonGates::closed()
+                },
+            ),
+            (
+                "db",
+                AddonGates {
+                    db: true,
+                    ..AddonGates::closed()
+                },
+            ),
+            (
+                "clipboard",
+                AddonGates {
+                    clipboard: true,
+                    ..AddonGates::closed()
+                },
+            ),
+            (
+                "http",
+                AddonGates {
+                    http: true,
+                    ..AddonGates::closed()
+                },
+            ),
+        ];
+        for (opened, gates) in cases {
+            let (c, _) = gated(gates);
+            for name in ADDON_TOOLS {
+                if name == opened {
+                    continue;
+                }
+                assert!(
+                    c.find(name).is_none(),
+                    "opening `{opened}` also brought `{name}` into the catalog"
+                );
+            }
+        }
+    }
+
+    /// AN OPEN GATE ONLY EVER ADDS.
+    ///
+    /// The failure this guards against is "I opened the shell addon and my
+    /// documents disappeared": every tool present with all gates closed must
+    /// still be present with all gates open.
+    #[test]
+    fn an_open_gate_never_removes_a_tool() {
+        let (closed, _) = gated(AddonGates::closed());
+        let (open, _) = gated(AddonGates::all_open());
+        for name in closed.names() {
+            assert!(
+                open.find(name).is_some(),
+                "a tool present with the gates closed and absent with them open: {name}"
+            );
+        }
+        assert!(open.names().len() >= closed.names().len());
+    }
+
+    /// `production_catalog_with` NAMES ONLY THE WEB GATE, so it must leave every
+    /// other one closed. Without this the old four-argument signature would
+    /// quietly become "the web gate plus whatever the machine happens to have".
+    #[test]
+    fn the_web_only_helper_leaves_the_other_gates_closed() {
+        let store = Arc::new(SharedStore::new());
+        let memory = SharedMemory::in_memory();
+        let (c, _, _) = production_catalog_with(&store, &memory, None, true);
+        for name in ["shell", "db", "clipboard", "http"] {
+            assert!(
+                c.find(name).is_none(),
+                "{name} appeared through the web-only helper"
+            );
+        }
+    }
+
+    /// A DIAGNOSIS IS PRODUCED EXACTLY WHEN A GATE IS OPEN AND THE TOOL IS
+    /// MISSING — never for a gate the user closed themselves.
+    #[test]
+    fn only_an_open_gate_with_no_tool_is_explained() {
+        let (c, _) = gated(AddonGates::closed());
+        assert!(
+            addon_diagnoses(&c, AddonGates::closed()).is_empty(),
+            "a closed gate produced an explanation nobody asked for"
+        );
+
+        // Every gate open, on THIS catalog (built with them closed, so every one
+        // of the four tools is missing): four sentences, one per tool.
+        let all = addon_diagnoses(&c, AddonGates::all_open());
+        assert_eq!(all.len(), 4, "one sentence per missing tool: {all:?}");
+        for text in &all {
+            assert!(!text.is_empty());
+        }
+    }
+
     /// THE PRODUCTION BRANCH REALLY READS THE GATE.
     ///
     /// If the gate were only measured in `production_catalog_with`, the fact that
@@ -291,6 +628,23 @@ mod tests {
         let enabled = tacet_web::addon::web_search_is_open();
         assert_eq!(production.find("web_search").is_some(), enabled);
         assert_eq!(production.find("web_fetch").is_some(), enabled);
+
+        // THE SAME CLAIM FOR THE OTHER FOUR, in the only direction that can be
+        // measured without knowing the machine: a CLOSED gate must mean an
+        // absent tool. (An open gate does not guarantee presence — the tool
+        // still has to find its `sqlite3`, its helper or its allowlist.)
+        let gates = AddonGates::read();
+        for (open, name) in [
+            (gates.shell, "shell"),
+            (gates.db, "db"),
+            (gates.clipboard, "clipboard"),
+            (gates.http, "http"),
+        ] {
+            assert!(
+                open || production.find(name).is_none(),
+                "{name} is in the production catalog with its gate closed"
+            );
+        }
     }
 
     /// MEASUREMENT MODE IS MACHINE-INDEPENDENT: given a `fixed_epoch`, the catalog
@@ -314,6 +668,18 @@ mod tests {
             c.find("web_fetch").is_some(),
             "web_fetch must be in the catalog in measurement mode"
         );
+        // AND THE OTHER FOUR ARE NOT THERE, whatever this machine has installed.
+        // They cannot be dried out the way the web pair can (see the note on
+        // `production_catalog`): `shell`'s description carries the user's own
+        // command list, and `db`/`clipboard` do not exist without a binary on
+        // the machine. Including them would make the same eval set measure two
+        // different catalogs on two laptops.
+        for name in ["shell", "db", "clipboard", "http"] {
+            assert!(
+                c.find(name).is_none(),
+                "{name} must not be in the catalog in measurement mode — the score stops being comparable"
+            );
+        }
     }
 
     /// THE CATALOG SIZE IS COMPARED AGAINST THE ROUTER BUDGET.
@@ -329,13 +695,16 @@ mod tests {
     /// measured is THE RANGE and the number of dropped tools being known.
     #[test]
     fn the_catalog_is_larger_than_the_router_budget() {
-        const BUDGET: usize = 8;
+        // 8 → 9 with the calendar bridge (the 13th tool) — see MAX_TOOLS.
+        const BUDGET: usize = crate::router::MAX_TOOLS;
         // Measured with the gate OPEN: with the web tools added the catalog is at
-        // its largest.
+        // its largest. The counts are one higher on macOS, where the calendar
+        // bridge exists in the catalog at all.
+        let mac = cfg!(target_os = "macos");
         let (c, state) = catalog(true);
         let n = c.names().len();
         // The two shielded tools either both arrive or neither does.
-        let expected = if state.is_some() { 12 } else { 10 };
+        let expected = (if state.is_some() { 12 } else { 10 }) + usize::from(mac);
         assert_eq!(
             n, expected,
             "the catalog size changed; the number in the comment and the dropped tool count must be updated"
@@ -346,7 +715,10 @@ mod tests {
         );
         // The number of tools dropped on a hintless message. The comment states
         // this; the test catches the comment going stale.
-        assert_eq!(n - BUDGET, if state.is_some() { 4 } else { 2 });
+        assert_eq!(
+            n - BUDGET,
+            (if state.is_some() { 3 } else { 1 }) + usize::from(mac)
+        );
 
         // WITH THE ADDON OFF (the default install) the catalog is TWO tools shorter
         // and the dropped count falls by two. That is the MEASURED side effect of
@@ -356,10 +728,13 @@ mod tests {
         // nothing drops.
         let (closed, closed_state) = catalog(false);
         let m = closed.names().len();
-        assert_eq!(m, if closed_state.is_some() { 10 } else { 8 });
+        assert_eq!(
+            m,
+            (if closed_state.is_some() { 10 } else { 8 }) + usize::from(mac)
+        );
         assert_eq!(
             m.saturating_sub(BUDGET),
-            if closed_state.is_some() { 2 } else { 0 }
+            (if closed_state.is_some() { 1 } else { 0 }) + usize::from(mac)
         );
     }
 

@@ -64,6 +64,7 @@ mod config;
 mod filter;
 mod format;
 mod input;
+mod receipt;
 mod session;
 mod ui;
 mod update;
@@ -107,7 +108,39 @@ const DEFAULT_THRESHOLD: f64 = 1.0;
 /// read". The names of MCP tools are learned from the catalog at runtime and
 /// cannot be written here as constants; they are bound separately with
 /// `mcp::bind_executor`.
-const EXTERNAL_TOOLS: &[&str] = &["web_search", "web_fetch"];
+///
+/// `http` IS HERE because it sends a request BODY the model wrote to a host off
+/// this device: that is data leaving, the exact thing this list gates.
+///
+/// `shell` IS HERE, AND IT WAS NOT UNTIL A TEST PUT THE DATA ON A SOCKET. The
+/// reasoning that left it out said "it opens no socket" — true of the tool and
+/// false of the tool's EFFECT, because what it opens is a program the user
+/// allowed, and `curl`, `git push`, `ssh` and `scp` all live in real allow-lists
+/// (`shell.rs` says so itself: allowing a program allows everything that program
+/// can do). Measured: a session that had read a personal file then ran
+/// `curl --data-binary @… http://…` and the bytes arrived at a listener with NO
+/// approval chip on screen — and off the network monopoly's three gates
+/// entirely, since none of tacet-web's checks are in that path. The cost is an
+/// approval question on every `shell` call in a tainted session. That is the
+/// correct price: the question is what the user has instead of a gate.
+///
+/// `db` stays out: it is SQLite-only, read-only, and reaches nothing the working
+/// directory does not already expose. `clipboard` is the argued case — writing
+/// hands text to every application on the machine, but this list matches on the
+/// TOOL NAME and not on the action, so listing it would put the question in
+/// front of READING too, and reading is what creates the taint in the first
+/// place. It stays out; its gates are the addon install and its own taint.
+const EXTERNAL_TOOLS: &[&str] = &["web_search", "web_fetch", "http", "shell"];
+
+/// The tools whose call is A CHECK BEFORE AN ACT — the indicator says "checking
+/// X" for these and "running X" for everything else (see `ui::Stage`).
+///
+/// Both of them RUN the model's code before they keep anything: `write_code`
+/// syntax-checks and then executes in the sandbox, saving the file only if it
+/// came back clean; `run_code` sets the sandbox up before the script starts.
+/// That step is the one that FAILS, and a failure reads very differently when
+/// the screen already named the step it happened in.
+const VERIFYING_TOOLS: &[&str] = &["run_code", "write_code"];
 
 /// The default model folder (under `~/models/`).
 ///
@@ -126,8 +159,8 @@ const EXTERNAL_TOOLS: &[&str] = &["web_search", "web_fetch"];
 /// in multi-turn and complex scenarios, while our turns are short and
 /// single-tool.
 ///
-/// Latency is not a comfort detail in this product: in a tool loop with a 4096
-/// window every turn re-prefills, and the user waits on every turn.
+/// Latency is not a comfort detail in this product: in a tool loop every turn
+/// re-prefills the whole window, and the user waits on every turn.
 ///
 /// Whoever wants to try the 8B types `--model qwen3-8b`; the choice is EXPLICIT,
 /// not silent. To repeat the measurement: scratchpad/tool-selection-test.sh (to
@@ -237,6 +270,10 @@ enum Command {
         /// minutes and 100% is not expected.
         #[arg(long)]
         tool_selection: bool,
+        /// With --tool-selection: run the TURKISH selection set instead of the
+        /// English one (a separate list — mixed languages would blur the number).
+        #[arg(long)]
+        turkish: bool,
         /// The local model folder the selection set will use (`~/models/<name>`).
         #[arg(long, default_value = DEFAULT_MODEL)]
         model: String,
@@ -294,9 +331,13 @@ enum Command {
     /// not exist at all. The first two determine what the assistant KNOWS, the
     /// third what it CAN DO.
     ///
-    /// CLOSED BY DEFAULT. Without an installed addon no web tool is in the
-    /// catalog; the "data does not leave the device" default is applied not as a
-    /// setting but as the ABSENCE of the tool.
+    /// CLOSED BY DEFAULT. On a fresh install NONE of the addon tools are in the
+    /// catalog — not `web_search`/`web_fetch`, not `shell`, `http`, `db` or
+    /// `clipboard`; the "data does not leave the device" default is applied not
+    /// as a setting but as the ABSENCE of the tool.
+    ///
+    /// THE SIX NAMES ARE THIS BUILD'S WHOLE LIST. Third-party extension is MCP
+    /// (`mcp.json` in the config directory), not this command.
     Addon {
         #[command(subcommand)]
         job: AddonJob,
@@ -310,6 +351,34 @@ enum Command {
     Config {
         #[command(subcommand)]
         job: ConfigJob,
+    },
+    /// Packages the LAST conversation into an anonymised, local report the
+    /// user can READ and then paste into a GitHub issue THEMSELVES.
+    ///
+    /// The privacy-compatible learning loop: Tacet has no telemetry, so the
+    /// only way "which prompts fail" can ever reach the project is the user
+    /// choosing to hand one over. This command sends NOTHING: it writes a
+    /// markdown file next to the user, scrubbed of the obvious identifiers,
+    /// for their own eyes first.
+    Feedback {
+        /// How many recent turns to include.
+        #[arg(long, default_value_t = 6)]
+        turns: usize,
+    },
+    /// Health check: hardware, engine features, models, config — and what
+    /// this machine can comfortably run.
+    Doctor,
+    /// The receipt chain: what ran, when, verified against tampering.
+    ///
+    /// The receipts are written by PURE CODE as tools execute (the model is
+    /// never in that loop) into an append-only, hash-chained file; this
+    /// command prints the tail and re-verifies the whole chain every run.
+    Log {
+        #[arg(long)]
+        json: bool,
+        /// How many recent receipts to show.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
     },
     /// Shows how to give Tacet its intended look (font + colours).
     ///
@@ -369,16 +438,19 @@ enum AddonJob {
         #[arg(long)]
         json: bool,
     },
-    /// Installs the addon. The only name installable today: `web-search`.
+    /// Installs an addon: web-search, shell, workspace, http, db, clipboard.
     ///
-    /// A FLAGLESS CALL ASKS (local docker, or my own address); the flags are for
-    /// scripts and skip the questions.
+    /// A FLAGLESS CALL ASKS its questions; the flags are for scripts and skip
+    /// them. `tacet addon list` prints the six names with a line each.
     Install {
-        /// The addon name (`web-search`).
+        /// The addon name (`tacet addon list` prints them).
         name: String,
-        /// Your own SearXNG address. https is mandatory; plain http only on a
-        /// local network.
-        #[arg(long)]
+        /// The addon's ONE setting, given on the command line — a SearXNG
+        /// address for web-search, the allowed commands for shell, the
+        /// directories for workspace. Only for a definition with exactly one
+        /// setting; with several the install stays interactive. `--address` is
+        /// the old name and still works.
+        #[arg(long = "value", alias = "address", value_name = "VALUE")]
         address: Option<String>,
         /// Set up a local SearXNG with docker.
         #[arg(long)]
@@ -564,11 +636,12 @@ fn main() -> ExitCode {
             json,
             threshold,
             tool_selection,
+            turkish,
             model,
             only,
         } => {
             if tool_selection {
-                eval_tool_selection(json, threshold, &model, only.as_deref())
+                eval_tool_selection(json, threshold, &model, only.as_deref(), turkish)
             } else {
                 eval(json, threshold)
             }
@@ -602,6 +675,9 @@ fn main() -> ExitCode {
             ConfigJob::Unset { key } => config::unset(&key),
             ConfigJob::Path => config::path(),
         },
+        Command::Doctor => doctor(),
+        Command::Feedback { turns } => feedback(turns),
+        Command::Log { json, limit } => receipt::log(json, limit),
         Command::Font => font(),
         Command::Update {
             install,
@@ -622,6 +698,186 @@ fn main() -> ExitCode {
             }
         }
     }
+}
+
+/// The scrub for `tacet feedback`. Deliberately simple and OVER-eager: the
+/// home path becomes `~`, and any word containing `@` becomes `[email]`. The
+/// user reviews the file before sharing — this is the first pass, their eyes
+/// are the second.
+fn scrub(text: &str, home: &str) -> String {
+    let mut out = if home.is_empty() { text.to_string() } else { text.replace(home, "~") };
+    if out.contains('@') {
+        out = out
+            .split(' ')
+            .map(|w| if w.contains('@') { "[email]" } else { w })
+            .collect::<Vec<_>>()
+            .join(" ");
+    }
+    out
+}
+
+/// `tacet feedback` — see the enum doc. Writes, prints, sends nothing.
+fn feedback(turns: usize) -> ExitCode {
+    let color = Color::setup();
+    let Some(stored) = session::Session::latest() else {
+        println!("{}", color.paint(DIM, "no stored session to report — talk to tacet first."));
+        return ExitCode::SUCCESS;
+    };
+    let home = std::env::var("HOME").unwrap_or_default();
+    let tail: Vec<&session::Turn> = stored.iter().rev().take(turns).collect();
+
+    let mut body = String::new();
+    body.push_str("## Tacet feedback package\n\n");
+    body.push_str("<!-- Review every line before sharing. Nothing was sent anywhere;\n");
+    body.push_str("     this file exists only on your machine until you paste it. -->\n\n");
+    body.push_str(&format!(
+        "- version: {} · os: {} · candle: {} · metal: {}\n",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        cfg!(feature = "candle"),
+        cfg!(feature = "metal"),
+    ));
+    // THE WINDOW IS READ, NOT ASSERTED. This line used to say a flat `4096` and
+    // that number stopped being true the day the window started coming out of
+    // the weight file — a bug report carrying a wrong window sends whoever reads
+    // it looking in the wrong place. `None` means no package was resolved (no
+    // weights on this machine), and saying so is the honest answer.
+    let model = config::get_str("model").unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    let window = match model_package::resolve_pair(&model) {
+        Some((gguf, _)) => tacet_engine::context_budget(
+            tacet_engine::gguf_context_length(std::path::Path::new(&gguf)),
+            tacet_engine::gguf_kv_bytes_per_token(std::path::Path::new(&gguf)),
+        )
+        .to_string(),
+        None => "unknown (no local weights)".to_string(),
+    };
+    body.push_str(&format!("- model: {model} · context: {window}\n\n"));
+    body.push_str("### What went wrong\n\n(describe it here)\n\n### Transcript (last turns, scrubbed)\n\n");
+    for t in tail.iter().rev() {
+        let who = t.role.as_str();
+        body.push_str(&format!("**{who}:** {}\n\n", scrub(&t.text, &home)));
+        if !t.tools.is_empty() {
+            body.push_str(&format!("_tools: {}_\n\n", t.tools.join(", ")));
+        }
+    }
+
+    let name = format!("tacet-feedback-{}.md", std::process::id());
+    match std::fs::write(&name, body) {
+        Ok(()) => {
+            println!("{}", color.paint(BOLD, &name));
+            println!("{}", color.paint(DIM, "  read it, edit anything you would rather keep, then paste it into a"));
+            println!("{}", color.paint(DIM, "  GitHub issue. nothing has been sent anywhere."));
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: the report could not be written: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Total physical memory, best effort. Diagnostic only: a `None` prints as
+/// "unknown", it never gates anything.
+fn total_ram_bytes() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        let out = std::process::Command::new("/usr/sbin/sysctl")
+            .args(["-n", "hw.memsize"])
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+        let kb: u64 = text
+            .lines()
+            .find(|l| l.starts_with("MemTotal:"))?
+            .split_whitespace()
+            .nth(1)?
+            .parse()
+            .ok()?;
+        Some(kb * 1024)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        None
+    }
+}
+
+/// `tacet doctor` — one screen that answers "is this machine set up right".
+///
+/// It DIAGNOSES AND SUGGESTS, it never changes anything: the fix commands are
+/// printed for the user to run, in the same spirit as `tacet font`.
+fn doctor() -> ExitCode {
+    let color = Color::setup();
+    println!("{}{}", color.paint(BOLD, "Tacet"), color.paint(BRASS, "."));
+    println!();
+
+    // The binary.
+    let candle = cfg!(feature = "candle");
+    let metal = cfg!(feature = "metal");
+    println!(
+        "  binary     candle: {} · metal: {}",
+        if candle { "yes" } else { "NO — the real engine is missing" },
+        if metal { "yes" } else { "no" }
+    );
+    if !candle {
+        println!(
+            "{}",
+            color.paint(YELLOW, "             reinstall with: cargo install tacet-cli --features candle (metal on Apple silicon)")
+        );
+    }
+
+    // The machine.
+    let ram = total_ram_bytes();
+    match ram {
+        Some(b) => println!("  machine    ram: {:.1} GiB · os: {}", b as f64 / (1u64 << 30) as f64, std::env::consts::OS),
+        None => println!("  machine    ram: unknown · os: {}", std::env::consts::OS),
+    }
+
+    // The models.
+    let roots = model_package::model_roots();
+    let packages = model_package::scan(&roots);
+    if packages.is_empty() {
+        println!("{}", color.paint(YELLOW, "  models     none — run: tacet models download qwen3-4b"));
+    } else {
+        for p in &packages {
+            println!(
+                "  model      {} · {}",
+                p.name,
+                color.paint(DIM, &byte_text(p.gguf_bytes))
+            );
+        }
+    }
+
+    // The config, in one line each.
+    for key in ["model", "engine", "theme", "update.check"] {
+        match config::get_str(key) {
+            Some(v) => println!("  config     {key} = {v}"),
+            None => println!("  config     {key} {}", color.paint(DIM, "(unset)")),
+        }
+    }
+    println!(
+        "  web        {}",
+        if tacet_web::addon::web_search_is_open() { "addon open" } else { "addon closed or not installed" }
+    );
+
+    // The suggestion — a rule of thumb, spelled out so it can be argued with:
+    // a Q4 model wants roughly 1.5x its file size in memory while running.
+    if let Some(b) = ram {
+        let gib = b as f64 / (1u64 << 30) as f64;
+        let (model, note) = if gib < 8.0 {
+            ("qwen2.5-3b", "under 8 GiB the 3B is the comfortable choice")
+        } else if gib < 16.0 {
+            ("qwen3-4b", "8-16 GiB runs the 4B comfortably; the 8B will swap")
+        } else {
+            ("qwen3-8b", "16+ GiB runs the 8B well — try: tacet config set model qwen3-8b")
+        };
+        println!();
+        println!("  suggestion {} {}", model, color.paint(DIM, &format!("· {note}")));
+    }
+    ExitCode::SUCCESS
 }
 
 /// `tacet font` — the appearance guide. See the enum doc for why this prints
@@ -1268,21 +1524,111 @@ fn byte_text(b: u64) -> String {
     }
 }
 
+/// The window to run in, derived from the weights that were ACTUALLY loaded.
+///
+/// TWO NUMBERS OUT OF THE SAME FILE and neither is optional: what the model
+/// DECLARES it can take (`<arch>.context_length`) and what one token of context
+/// COSTS in KV cache. A window is a memory decision as much as a model one —
+/// qwen3-4b declares 262144, and honouring that literally would ask for tens of
+/// gigabytes of cache. `context_budget` takes the smaller of "what the model
+/// allows" and "what the cache budget affords", and never goes below the 4096
+/// floor every path in this shell was measured against.
+///
+/// THE ENGINE IS ASKED FIRST. `EngineProvider::context_length` is the window read
+/// by the thing that really opened the weights; the file is only re-read when the
+/// engine does not declare one. Both are the same file today, but the engine's
+/// answer is the one that describes the model in memory, and that is the one the
+/// counter must match.
+///
+/// THERE IS NO PATH FROM HERE TO A FIXED 4096 for a real model: if the metadata
+/// is missing, `context_budget` returns the floor, and that is a MEASURED absence
+/// rather than a constant nobody re-examined. A guessed window is worse than a
+/// small one — positions past the model's rope table produce plausible nonsense,
+/// not an error.
+fn engine_window(engine: &Arc<dyn EngineProvider>, gguf: &str) -> usize {
+    let path = std::path::Path::new(gguf);
+    let declared = engine
+        .context_length()
+        .or_else(|| tacet_engine::gguf_context_length(path));
+    let per_token = tacet_engine::gguf_kv_bytes_per_token(path);
+    tacet_engine::context_budget(declared, per_token)
+}
+
+/// Loads the weights WITH THE LOADING INDICATOR UP.
+///
+/// THE LONGEST WAIT IN THE PRODUCT, and the only one that happens once per
+/// process. Before this the screen was blank for it, so the very first thing a
+/// new user saw was a shell that looked hung; the whole point of `Stage::Loading`
+/// is that this wait is NAMED and that the second turn will not repeat it.
+///
+/// IT FINISHES BEFORE ANYTHING IS PRINTED. The indicator draws on stderr without
+/// a newline, and every caller below writes its result with `eprintln!`; a live
+/// indicator would leave its own text sitting in front of the model line. The
+/// scope of this function is exactly the silent part.
+///
+/// WHAT CTRL-C DOES HERE, said plainly because it is a wart: the key thread is
+/// running (which is what keeps keys typed during the load out of the first
+/// prompt), so ctrl-c sets the cancel flag and prints "cancelling…" — but the
+/// GGUF loader has no cancellation point, so the load runs to the end. The flag
+/// is reset at the start of the first turn, so nothing is dropped either. Making
+/// this honest needs a cancellable loader, not a change here.
+fn load_weights(
+    screen: &Arc<Screen>,
+    human: bool,
+    model_name: &str,
+    gguf: &str,
+    tokenizer: Option<&str>,
+) -> Result<Arc<dyn EngineProvider>, String> {
+    let mut indicator = if human {
+        TurnIndicator::start(Arc::clone(screen), &CANCEL, "loading the model")
+    } else {
+        TurnIndicator::disabled(Arc::clone(screen))
+    };
+    indicator.stage(ui::Stage::Loading {
+        model: model_name.to_string(),
+    });
+    let loaded = candle_engine_from_path(gguf, tokenizer);
+    indicator.finish();
+    loaded
+}
+
 /// Sets up the engine according to the choice. `Auto`: candle if a model exists,
 /// fake otherwise (with a message).
+///
+/// IT RETURNS THE WINDOW ALONGSIDE THE ENGINE, because this is the only place
+/// that knows both which weights were chosen AND whether they were really
+/// loaded. Computing it again at the call site would mean resolving the model
+/// package a second time and, on the fallback path, deriving a window from a
+/// file no engine ever opened.
+///
+/// THE FAKE ENGINE KEEPS THE FLOOR. It answers from a script, so a window read
+/// out of a GGUF would describe a model that is not running — a true number
+/// about the wrong thing, which is how a status line starts lying.
+///
+/// `screen`/`human` ARE HERE ONLY FOR THE LOADING INDICATOR (see `load_weights`).
+/// Reading 2.5 GB off disk is the longest wait in the whole product and the one
+/// the user meets first; before this, the screen simply sat blank for it.
 fn setup_engine(
     choice: EngineChoice,
     script: Vec<String>,
     model_name: &str,
     color: &Color,
-) -> Result<Arc<dyn EngineProvider>, String> {
-    let fake = |s: Vec<String>| -> Arc<dyn EngineProvider> {
-        Arc::new(FakeEngine::script(s).with_default("Understood. (fake engine)"))
+    screen: &Arc<Screen>,
+    human: bool,
+) -> Result<(Arc<dyn EngineProvider>, usize), String> {
+    let fake = |s: Vec<String>| -> (Arc<dyn EngineProvider>, usize) {
+        (
+            Arc::new(FakeEngine::script(s).with_default("Understood. (fake engine)")),
+            CONTEXT_BUDGET,
+        )
     };
     match choice {
         EngineChoice::Fake => Ok(fake(script)),
         EngineChoice::Candle => match model_package::resolve_pair(model_name) {
-            Some((m, t)) => candle_engine_from_path(&m, t.as_deref()),
+            Some((m, t)) => load_weights(screen, human, model_name, &m, t.as_deref()).map(|e| {
+                let window = engine_window(&e, &m);
+                (e, window)
+            }),
             // `--engine candle` is an EXPLICIT request: with no model, erroring
             // out is right, not falling back to fake (see the `Auto` branch,
             // which does the opposite).
@@ -1296,10 +1642,17 @@ fn setup_engine(
             }
         },
         EngineChoice::Auto => match model_package::resolve_pair(model_name) {
-            Some((m, t)) => match candle_engine_from_path(&m, t.as_deref()) {
+            Some((m, t)) => match load_weights(screen, human, model_name, &m, t.as_deref()) {
                 Ok(engine) => {
-                    eprintln!("{}", color.paint(DIM, &format!("(model: {m})")));
-                    Ok(engine)
+                    let window = engine_window(&engine, &m);
+                    // THE WINDOW IS SAID OUT LOUD, next to the model it came
+                    // from. It is no longer a constant, so a user comparing two
+                    // models has to be able to see that it changed.
+                    eprintln!(
+                        "{}",
+                        color.paint(DIM, &format!("(model: {m} · context {window})"))
+                    );
+                    Ok((engine, window))
                 }
                 // If the candle feature is off or loading fails: falling back to
                 // fake SILENTLY would be wrong — the user expects a real model.
@@ -1488,12 +1841,131 @@ fn session_catalog(
     // shell and eval must see the same list: the tool SELECTION measurement
     // derives from the catalog the model sees; if two lists diverge, what is
     // measured is not the selection the application makes. The shell's only
-    // remaining job here is telling the user WHY when run_code is not found.
+    // remaining job here is telling the user WHY a tool is not found.
+    //
+    // THE WORKSPACE ADDON IS APPLIED HERE, not in the catalog builder, and the
+    // reason is that it is not a catalog change at all: it adds no tool, it
+    // widens the roots the EXISTING file tools may reach, and that reach is
+    // process-wide state (`tacet_tools::workspace`). A process-wide side effect
+    // inside `production_catalog` would fire in eval and in every unit test that
+    // builds a catalog. This function is the production-only path, and it is
+    // also the one that runs again on `refresh_session` — so closing the addon
+    // from inside the shell really does take the reach away.
+    apply_workspace_roots(color);
     let (c, code_state, diagnosis) = tacet_tools::catalog::production_catalog(store, memory, None);
     if let Some(d) = diagnosis {
         eprintln!("{}", color.paint(DIM, &format!("({})", d.0)));
     }
+    // An addon the user OPENED whose tool is still missing. A closed addon says
+    // nothing (that was their own decision); this is the confusing state — "I
+    // installed db, where is it" — and every one of these tools can fail for a
+    // machine-level reason the user can act on.
+    //
+    // THE GATES ARE READ A SECOND TIME here rather than carried out of the
+    // catalog builder, and the cost is bounded: if the registry changed between
+    // the two reads, the worst outcome is one explanation printed for a tool the
+    // user has just switched off (or one withheld). It cannot change WHICH TOOLS
+    // ARE IN THE CATALOG — that decision was already made and is in `c`.
+    // A REGISTRY THAT CANNOT BE READ IS SAID OUT LOUD. Every gate answers
+    // CLOSED on a broken file, which is the right direction — but it used to
+    // happen in complete silence, so a user whose `addons.json` got truncated
+    // saw yesterday's five tools simply gone and had no way to find out why:
+    // `tacet addon list` printed the parse error, `tacet chat` printed nothing.
+    // The diagnoses below cannot cover this, because from their side every
+    // addon is legitimately closed.
+    if let Err(e) = tacet_web::addon::read() {
+        eprintln!(
+            "{}",
+            color.paint(
+                YELLOW,
+                &format!("(no addon is active: {e} — `tacet addon list` shows the same error)")
+            )
+        );
+    }
+    for text in tacet_tools::catalog::addon_diagnoses(&c, tacet_tools::catalog::AddonGates::read())
+    {
+        eprintln!("{}", color.paint(YELLOW, &format!("({text})")));
+    }
     (c, code_state)
+}
+
+/// Applies the `workspace` addon's directory list to the file tools' reach.
+///
+/// FAIL-CLOSED IN EVERY DIRECTION. The addon closed, absent, unreadable, or
+/// carrying a directory that no longer validates all end the same way: the extra
+/// roots are CLEARED and the file tools see only the working directory — which
+/// is exactly the behaviour of a build that never had this feature.
+///
+/// THE CLEAR IS UNCONDITIONAL ON THE CLOSED PATH. Roots live in process-wide
+/// state, so `refresh_session` after a `/addon close workspace` has to take them
+/// away; leaving them would give the user a reach they can no longer see in the
+/// catalog and can no longer switch off.
+///
+/// THE DIRECTORIES ARE JUDGED BY THE TOOL LAYER'S OWN RULE
+/// (`workspace::validate_root`), not re-checked here. The installer already asks
+/// the same function; asking a second, slightly different question in this file
+/// is how an entry gets accepted at install time and refused at use time with
+/// nothing on screen to explain it.
+fn apply_workspace_roots(color: &Color) {
+    use tacet_web::addon;
+    if !addon::is_open(addon::WORKSPACE) {
+        tacet_tools::workspace::clear_roots();
+        return;
+    }
+    let dirs: Vec<String> = match addon::read() {
+        Ok(record) => match record.find(addon::WORKSPACE) {
+            Some(entry) => entry
+                .values(addon::DIRECTORIES_KEY)
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            None => Vec::new(),
+        },
+        Err(_) => Vec::new(),
+    };
+    if dirs.is_empty() {
+        tacet_tools::workspace::clear_roots();
+        return;
+    }
+    // ALL-OR-NOTHING (the function's own rule): one directory that has since
+    // been deleted or renamed refuses the whole call, and we then clear rather
+    // than leave the previous list standing. A half-applied scope is the one
+    // outcome nobody could reason about.
+    if let Err(e) = tacet_tools::workspace::install_roots(&dirs) {
+        tacet_tools::workspace::clear_roots();
+        eprintln!(
+            "{}",
+            color.paint(
+                YELLOW,
+                &format!(
+                    "(the workspace addon opened no directory: {e}. \
+                     the file tools see only the working directory)"
+                )
+            )
+        );
+    }
+}
+
+/// The thinking switch for Qwen3-family (ChatML) engines.
+///
+/// Thinking multiplies latency on a simple tool turn and buys little; on a
+/// genuine planning/summarising turn it buys real quality. `auto` (the
+/// default) decides per turn with a cheap heuristic; `tacet config set
+/// thinking on|off` overrides it. Non-ChatML engines get no suffix at all —
+/// the soft switch is a Qwen convention, not a standard.
+fn thinking_switch(message: &str) -> &'static str {
+    match config::get_str("thinking").as_deref() {
+        Some("on") => return " /think",
+        Some("off") => return " /no_think",
+        _ => {}
+    }
+    let plain = tacet_tools::router::simplify(message);
+    const HEAVY: [&str; 12] = [
+        "plan", "ozetle", "summar", "analiz", "analy", "karsilastir", "compare",
+        "strateji", "strategy", "neden", "why", "adim adim",
+    ];
+    let heavy = message.chars().count() > 220 || HEAVY.iter().any(|k| plain.contains(k));
+    if heavy { " /think" } else { " /no_think" }
 }
 
 /// Rebuilds everything that derives from the catalog, IN PLACE. The catalog is
@@ -1547,15 +2019,21 @@ fn refresh_session(
 
 /// The ceiling on piped input that becomes context.
 ///
-/// DERIVED FROM THE WINDOW, not chosen for looks. `TokenCounter::estimate`
+/// DERIVED FROM THE SMALLEST WINDOW, not chosen for looks. `TokenCounter::estimate`
 /// charges roughly one token per three bytes (biased high on purpose), and the
-/// prompt half of the 4096-token window is `prompt_cap()` ≈ 3072 tokens — of
-/// which the system block and the tool descriptions already eat ~2300 on a full
-/// catalog. 8 KiB of pasted text is ~2700 estimated tokens: still larger than
-/// the room actually left, which is deliberate. The point of the cap is not to
-/// make the paste fit (truncation handles that, and it is allowed to bite here)
-/// but to stop a `cat 10mb.log |` from making the shell allocate and hash
-/// megabytes before the counter ever sees them.
+/// prompt half of the FLOOR window (`CONTEXT_BUDGET`, 4096) is `prompt_cap()`
+/// ≈ 3072 tokens — of which the system block and the tool descriptions already
+/// eat ~2300 on a full catalog. 8 KiB of pasted text is ~2700 estimated tokens:
+/// still larger than the room actually left, which is deliberate. The point of
+/// the cap is not to make the paste fit (truncation handles that, and it is
+/// allowed to bite here) but to stop a `cat 10mb.log |` from making the shell
+/// allocate and hash megabytes before the counter ever sees them.
+///
+/// IT IS A CONSTANT EVEN THOUGH THE WINDOW NO LONGER IS. The real window is read
+/// from the weights and is four to eight times this floor, so on a real model
+/// this cap is conservative rather than binding — and that is the safe
+/// direction: the cap exists to bound WORK done before the counter runs, and
+/// that bound must not depend on which model happens to be installed.
 const STDIN_CONTEXT_LIMIT: usize = 8 * 1024;
 
 /// What arrived on a pipe, and whether we had to cut it.
@@ -1713,7 +2191,7 @@ const DIR_CONTEXT_BYTES: usize = 500;
 /// an adjective. Estimated with `TokenCounter::estimate` (the same counter the
 /// budget uses), on 28 Jul 2026:
 ///
-///     directory                       bytes   tokens   % of 4096
+///     directory                       bytes   tokens   % of the 4096 floor
 ///     tacet-rs/crates (11 entries)      165       66        1.6%
 ///     the ketum repo root (13)          240       96        2.3%
 ///     the cap (500 bytes + tail)       ~568     ~228        5.6%
@@ -1810,7 +2288,7 @@ fn system_text(dir_block: Option<&String>) -> String {
 /// This function is the seam.
 ///
 /// `Role::Tool` TURNS ARE CARRIED OVER. Dropping them is tempting — tool results
-/// are the bulkiest thing in a transcript and the 4096-token window is tight —
+/// are the bulkiest thing in a transcript and the context window is tight —
 /// but a resumed conversation without them reads as if the assistant knew the
 /// weather by magic, and the model, seeing its own past answer with no source,
 /// learns that inventing facts is what it does here. The truncation policy
@@ -2085,7 +2563,10 @@ fn chat(run: ChatRun) -> ExitCode {
         None
     };
 
-    let engine = match setup_engine(choice, script, model_name, &color) {
+    // THE WINDOW COMES OUT OF THE MODEL, not out of a constant. Everything that
+    // sizes itself to the window — truncation, the generation cap, the status
+    // line — takes it from the `TokenCounter` built below with this number.
+    let (engine, window) = match setup_engine(choice, script, model_name, &color, &screen, human) {
         Ok(e) => e,
         Err(e) => {
             eprintln!("error: {e}");
@@ -2223,7 +2704,19 @@ fn chat(run: ChatRun) -> ExitCode {
     );
 
     let router = Router::new();
-    let counter = TokenCounter::default();
+    // THE COUNTER CARRIES THE MODEL'S OWN WINDOW. `TokenCounter::default()` used
+    // to be built here, which hard-wired 4096 — a constant of a DIFFERENT
+    // architecture (iOS FoundationModels really does hand out 4096). Running our
+    // own weights through candle, the files declare four to eight times that,
+    // and the cost of the old default was measurable: with the tool catalog at
+    // ~1550 tokens, ~1100 were left for the conversation, so a user asking for a
+    // script watched two older turns leave the window on EVERY turn.
+    //
+    // `GENERATION_SHARE` is NOT scaled with the window: it is the MINIMUM room
+    // truncation reserves, and the real generation cap is derived from the
+    // length of the prompt (`TokenCounter::generation_cap`) — so a bigger window
+    // already gives generation more room without touching this number.
+    let counter = TokenCounter::new(window, tacet_engine::GENERATION_SHARE);
     let mut history: Vec<Turn> = resumed;
 
     // THE DIRECTORY CENSUS IS TAKEN ONCE, at session start, not per turn.
@@ -2239,7 +2732,7 @@ fn chat(run: ChatRun) -> ExitCode {
     // `TokenCounter`'s truncation report (`final_estimate` — the real prompt size
     // AFTER truncation), the generation side from the engine's reported
     // `Generation::token_count`. What the user needs to see is the room left in
-    // the 4096 window: when the budget filled, old turns dropped SILENTLY (see
+    // the window: when the budget filled, old turns dropped SILENTLY (see
     // `report.changed()`), i.e. the user only realised their context had been
     // truncated once the answer broke.
     let mut session_tokens = 0usize;
@@ -2325,7 +2818,7 @@ fn chat(run: ChatRun) -> ExitCode {
                     YELLOW,
                     &format!(
                         "(the piped input was CUT at {} — the model sees only the beginning; \
-                         the 4096-token window cannot hold more)",
+                         the context window cannot hold more)",
                         byte_text(STDIN_CONTEXT_LIMIT as u64)
                     )
                 )
@@ -2406,80 +2899,97 @@ fn chat(run: ChatRun) -> ExitCode {
                 );
                 return ExitCode::FAILURE;
             }
-            let cleared = message.trim() == "/clear";
-            // An /addon verb with arguments changes the registry; the running
-            // session must see the change (the transcript that forced this:
-            // `/addon on web-search` said "opened" while the session kept
-            // answering "the addon is CLOSED" until a restart).
-            let addon_touched = message.trim_start().starts_with("/addon ");
-            match slash(
-                &message,
-                &catalog,
-                &memory,
-                &mut history,
-                &engine,
-                &color,
-                &last_artifact,
-            ) {
-                SlashResult::Quit => break,
-                SlashResult::Handled => {
-                    // /clear must also clear the COUNTER LINE: leaving the old
-                    // "context 2842/4096" standing read as "clear did nothing".
-                    // The session total stays — it is a lifetime figure, not a
-                    // window figure.
-                    if cleared {
-                        last_turn_prompt = 0;
-                        last_turn_generation = 0;
-                        last_context = 0;
-                        // AND IT CLOSES THE TRANSCRIPT. `/clear` says "forget
-                        // this conversation"; a shell that kept appending to the
-                        // same file would leave the cleared turns sitting in the
-                        // record `--continue` reloads — the user would have said
-                        // forget and been remembered anyway. The file already
-                        // written is NOT deleted (that is `tacet sessions
-                        // --purge`, and deleting on a keystroke that reads as
-                        // "start fresh" would be a surprise); from here on the
-                        // new turns go to a NEW file.
-                        if let Some(s) = &mut chat_session {
-                            *s = session::Session::start();
+            // Menus REPLAY commands (see SlashResult::Replay): the loop feeds
+            // the produced command back through the same gate, so a menu pick
+            // and a typed command are literally the same code path. The depth
+            // guard is a backstop against a menu replaying a menu forever.
+            let mut command_text = message.clone();
+            let mut quit = false;
+            for _depth in 0..4 {
+                let cleared = command_text.trim() == "/clear";
+                // An /addon verb with arguments changes the registry; the running
+                // session must see the change (the transcript that forced this:
+                // `/addon on web-search` said "opened" while the session kept
+                // answering "the addon is CLOSED" until a restart).
+                let addon_touched = command_text.trim_start().starts_with("/addon ");
+                match slash(
+                    &command_text,
+                    &catalog,
+                    &memory,
+                    &mut history,
+                    &engine,
+                    &color,
+                    &last_artifact,
+                    &screen,
+                ) {
+                    SlashResult::Quit => {
+                        quit = true;
+                        break;
+                    }
+                    SlashResult::Replay(next) => {
+                        // The transcript keeps the outcome: the produced command
+                        // is echoed exactly like a typed one.
+                        println!("{} {}", color.paint(BRASS, "›"), next);
+                        command_text = next;
+                        continue;
+                    }
+                    SlashResult::Handled => {
+                        // /clear must also clear the COUNTER LINE: leaving the old
+                        // "context 2842/4096" standing read as "clear did nothing".
+                        // The session total stays — it is a lifetime figure, not a
+                        // window figure.
+                        if cleared {
+                            last_turn_prompt = 0;
+                            last_turn_generation = 0;
+                            last_context = 0;
+                            // AND IT CLOSES THE TRANSCRIPT. `/clear` says "forget
+                            // this conversation"; a shell that kept appending to the
+                            // same file would leave the cleared turns sitting in the
+                            // record `--continue` reloads — the user would have said
+                            // forget and been remembered anyway. The file already
+                            // written is NOT deleted (that is `tacet sessions
+                            // --purge`, and deleting on a keystroke that reads as
+                            // "start fresh" would be a surprise); from here on the
+                            // new turns go to a NEW file.
+                            if let Some(s) = &mut chat_session {
+                                *s = session::Session::start();
+                            }
                         }
-                    }
-                    if addon_touched {
-                        refresh_session(
-                            &store,
-                            &memory,
-                            &color,
-                            interactive,
-                            &mcp_load,
-                            &engine,
-                            &mut catalog,
-                            &mut executor,
-                            &mut constraint,
-                            &mut catalog_names,
-                            &mut web_addon_open,
-                            &mut code_state,
-                        );
-                        println!(
-                            "{}",
-                            color.paint(
-                                DIM,
-                                &format!("(catalog refreshed — {} tools)", catalog.tools().len())
-                            )
-                        );
-                    }
-                    if single_message.is_some() {
+                        if addon_touched {
+                            refresh_session(
+                                &store,
+                                &memory,
+                                &color,
+                                interactive,
+                                &mcp_load,
+                                &engine,
+                                &mut catalog,
+                                &mut executor,
+                                &mut constraint,
+                                &mut catalog_names,
+                                &mut web_addon_open,
+                                &mut code_state,
+                            );
+                            println!(
+                                "{}",
+                                color.paint(
+                                    DIM,
+                                    &format!("(catalog refreshed — {} tools)", catalog.tools().len())
+                                )
+                            );
+                        }
                         break;
                     }
-                    continue;
-                }
-                SlashResult::Unknown => {
-                    println!("{}", color.paint(DIM, "(unknown command; /help)"));
-                    if single_message.is_some() {
+                    SlashResult::Unknown => {
+                        println!("{}", color.paint(DIM, "(unknown command; /help)"));
                         break;
                     }
-                    continue;
                 }
             }
+            if quit || single_message.is_some() {
+                break;
+            }
+            continue;
         }
 
         // A WEB REQUEST WITH NO ADDON DOES NOT STAY SILENT.
@@ -2560,7 +3070,7 @@ fn chat(run: ChatRun) -> ExitCode {
         // start of the turn, but `Prompt::new(..., &message)` ALREADY takes it as
         // the `question` — the result was the message entering the prompt TWICE
         // (once inside `<history>`, once at the end). Seen and confirmed in the
-        // `--show-prompt` output. The double write eats room in the 4096 window
+        // `--show-prompt` output. The double write eats room in the window
         // and, by showing the small model the same question in two different
         // contexts, encouraged it to repeat the question.
         let mut turn_tools: Vec<Turn> = Vec::new();
@@ -2576,10 +3086,14 @@ fn chat(run: ChatRun) -> ExitCode {
         // memory store queries with it. Handing an 8 KiB log to a keyword router
         // would let the pasted text, not the question, decide which tools the
         // model is even shown.
-        let asked = match &piped {
+        let mut asked = match &piped {
             Some(p) => format!("{}\n\n{message}", stdin_fence(p)),
             None => message.clone(),
         };
+        // Selective thinking (Qwen soft switch) — see `thinking_switch`.
+        if engine.template() == tacet_engine::Template::ChatML {
+            asked.push_str(thinking_switch(&message));
+        }
 
         // The tool budget derives ONLY from the user message.
         let selected: ToolCatalog = router.select(&message, &catalog).into_iter().collect();
@@ -2746,8 +3260,23 @@ fn chat(run: ChatRun) -> ExitCode {
             // THE TOOL FINISHES. The lock lasting past generation is MANDATORY:
             // keys pressed while a tool runs (a web search takes seconds) must not
             // spill onto the screen either. With no tty `TurnIndicator` does
-            // nothing.
-            let mut indicator = TurnIndicator::start(Arc::clone(&screen), &CANCEL, "thinking");
+            // nothing; under `--json` it is asked for the same nothing on purpose
+            // (see `TurnIndicator::disabled` — a machine-readable run should not
+            // have stage words scribbled across its stderr).
+            let mut indicator = if human {
+                TurnIndicator::start(Arc::clone(&screen), &CANCEL, "thinking")
+            } else {
+                TurnIndicator::disabled(Arc::clone(&screen))
+            };
+            // PREFILL. The number is the prompt size AFTER truncation — the same
+            // figure `--show-prompt` and the status line report, and it is an
+            // ESTIMATE, which is why the line prints it with a `~`. Naming this
+            // wait separates "the machine is chewing on 3000 tokens of prompt"
+            // from "a tool went to the network"; they take similar amounts of
+            // time and, unnamed, both read as frozen.
+            indicator.stage(ui::Stage::Prefill {
+                tokens: report.final_estimate,
+            });
 
             // STREAMING GENERATION: as the model produces tokens they pour onto
             // the screen. The spinner fills the 5-15 seconds until the first
@@ -2793,7 +3322,25 @@ fn chat(run: ChatRun) -> ExitCode {
             // longer can: a `--json` run in a terminal is interactive by every
             // other measure and must still not stream a single byte onto stdout.
             let stream_to_screen = interactive && human;
+            // GENERATION PROGRESS. Counted from the callbacks, which is a TRUE
+            // LOWER BOUND rather than a guess: the engine fires this at most once
+            // per accepted token, so the count can lag reality but can never
+            // exceed it (it misses only steps whose decode added no new text —
+            // see `candle_engine::run_loop`). An invented "tokens/sec" or a
+            // percentage would be the kind of unmeasured figure this shell
+            // refuses to put on screen.
+            let streamed_tokens = std::sync::atomic::AtomicUsize::new(0);
             let listener = |chunk: &str| {
+                // COUNTED BEFORE THE EARLY RETURN. In single-message mode nothing
+                // streams to the screen, but the indicator is the only thing the
+                // user has to look at there — that is exactly where the count is
+                // worth the most.
+                let seen = streamed_tokens.fetch_add(1, Ordering::Relaxed) + 1;
+                // Once the answer is flowing this does NOT take the line back
+                // from the text (see `stage_wakes`); it only updates the words
+                // the drawing thread will use on its next 100 ms beat, so a
+                // per-token call costs a lock and nothing else.
+                indicator.stage(ui::Stage::Generating { tokens: seen });
                 if !stream_to_screen {
                     return;
                 }
@@ -2970,6 +3517,32 @@ fn chat(run: ChatRun) -> ExitCode {
                 break;
             }
 
+            // WHICH TOOL IS ABOUT TO RUN — for the indicator only.
+            //
+            // THE CALL IS PARSED A SECOND TIME and that is deliberate:
+            // `ToolCall::parse` is pure, it takes a string and returns a name,
+            // and the alternative was reading the name back out of the CHIP,
+            // which is a screen object carrying an icon and a human sentence.
+            // Deriving a fact from its own presentation is how the two drift.
+            // `None` here is not a failure — the executor has a recovery layer
+            // for nameless JSON that `parse` deliberately does not know about —
+            // and in that case the indicator simply keeps the words it had.
+            //
+            // "checking" vs "running": the two code tools RUN the model's code
+            // before they keep anything (write_code's syntax pass, run_code's
+            // sandbox setup), and that check is the step that FAILS. A failure is
+            // much easier to read when the screen already said which step was in
+            // progress. THE LIMIT IS HONEST: from here we cannot see the moment
+            // the check ends and the acting begins, so the word stands for the
+            // whole call — and for these two the call IS mostly the check. The
+            // tool's own chip is what announces the acting part.
+            if let Some(call) = tacet_tools::executor::ToolCall::parse(&generation.text) {
+                indicator.stage(if VERIFYING_TOOLS.contains(&call.name.as_str()) {
+                    ui::Stage::Verifying { name: call.name }
+                } else {
+                    ui::Stage::Tool { name: call.name }
+                });
+            }
             let Some(outcome) = wait(executor.execute_raw(&generation.text, ticket, &mut ctx))
             else {
                 indicator.finish();
@@ -3038,6 +3611,18 @@ fn chat(run: ChatRun) -> ExitCode {
             .find_map(|t| t.file_path.clone())
         {
             last_artifact = Some(p);
+        }
+
+        // THE RECEIPT CHAIN — every trace of this turn, witnessed by pure
+        // code (see receipt.rs; `tacet log` shows and verifies them).
+        {
+            let at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            for t in traces.traces() {
+                receipt::append(at, &t.icon, &t.text, &format!("{:?}", t.state));
+            }
         }
 
         // Chips: Tacet does not hide what it did. In interactive mode they were
@@ -3285,7 +3870,8 @@ fn config_menu(color: &Color) {
 ///   * `this turn` — the prompt + generation spent on the last question (tool
 ///     turns included),
 ///   * `session` — the total since the shell opened,
-///   * `context` — the LAST prompt's place in the 4096 window. This is the
+///   * `context` — the LAST prompt's place in the window the MODEL declared
+///     (see `engine_window`; it is no longer a constant). This is the
 ///     critical one: when the window fills, old turns drop SILENTLY (see
 ///     `TokenCounter::truncate`) and the user only noticed it when the model
 ///     "forgot" something.
@@ -3308,9 +3894,13 @@ fn status_line(
     } else {
         ""
     };
+    // THE DENOMINATOR IS THE COUNTER'S OWN BUDGET, never the constant. It used
+    // to print `CONTEXT_BUDGET` while truncation was already deciding against a
+    // different number — a status line that disagrees with the mechanism it
+    // reports on is worse than no status line, because it is believed.
     format!(
-        "this turn {}+{} · session {session} · context {context}/{CONTEXT_BUDGET} tokens{fullness}",
-        turn_prompt, turn_generation
+        "this turn {}+{} · session {session} · context {context}/{} tokens{fullness}",
+        turn_prompt, turn_generation, counter.budget
     )
 }
 
@@ -3322,8 +3912,19 @@ enum SlashResult {
     Quit,
     Handled,
     Unknown,
+    /// A menu choice turned into a COMMAND: run `0` as if the user had typed
+    /// it. Menus do not act by themselves — every action flows through the
+    /// same slash machinery (approval, catalog refresh, receipts) as a typed
+    /// command, so the two paths cannot behave differently.
+    Replay(String),
 }
 
+// THE ARGUMENT LIST IS THE SESSION, not a design smell. Every one of these is a
+// piece of live session state a slash command may have to read or replace
+// (`/clear` the history, `/addon` the catalog, `/preview` the last artifact);
+// bundling them into a struct would only move the same list one file away, and
+// `refresh_session` above carries the same allow for the same reason.
+#[allow(clippy::too_many_arguments)]
 fn slash(
     command: &str,
     catalog: &ToolCatalog,
@@ -3332,6 +3933,7 @@ fn slash(
     engine: &Arc<dyn EngineProvider>,
     color: &Color,
     last_artifact: &Option<std::path::PathBuf>,
+    screen: &Screen,
 ) -> SlashResult {
     let name = command.split_whitespace().next().unwrap_or("");
     match name {
@@ -3491,6 +4093,62 @@ fn slash(
         // subcommand — it can restart docker containers and asks questions,
         // neither belongs in the middle of a conversation.
         "/plugins" | "/addons" => {
+            // The MENU is the primary face; the printed list stays as the
+            // non-tty fallback. Every pick becomes a Replay so it runs through
+            // the exact command path a typed `/addon …` takes.
+            if screen.tty() {
+                let record = tacet_web::addon::read().ok();
+                let installed_open = |n: &str| {
+                    record.as_ref().map(|r| (r.find(n).is_some(), r.is_open(n))).unwrap_or((false, false))
+                };
+                let items: Vec<(String, String)> = tacet_web::addon::DEFINITIONS
+                    .iter()
+                    .map(|d| {
+                        let (inst, open) = installed_open(d.name);
+                        let state = if !inst { "not installed" } else if open { "installed · on" } else { "installed · off" };
+                        (format!("{} · {}", d.name, state), d.summary.to_string())
+                    })
+                    .collect();
+                let Some(i) = input::menu(screen, "addons — enter opens, esc closes", &items) else {
+                    return SlashResult::Handled;
+                };
+                let d = &tacet_web::addon::DEFINITIONS[i];
+                let (inst, open) = installed_open(d.name);
+                let actions: Vec<(String, String)> = if !inst {
+                    vec![
+                        (format!("install {}", d.name), "download nothing? it asks its own questions first".into()),
+                        ("back".into(), "".into()),
+                    ]
+                } else {
+                    vec![
+                        (
+                            if open { format!("turn {} off", d.name) } else { format!("turn {} on", d.name) },
+                            "takes effect immediately in this session".into(),
+                        ),
+                        (format!("remove {}", d.name), "uninstall; settings are forgotten".into()),
+                        ("back".into(), "".into()),
+                    ]
+                };
+                let title = format!("{} — {}", d.name, d.summary);
+                return match input::menu(screen, &title, &actions) {
+                    None => SlashResult::Handled,
+                    Some(a) => {
+                        let cmd = if !inst {
+                            match a { 0 => Some(format!("/addon install {}", d.name)), _ => None }
+                        } else {
+                            match a {
+                                0 => Some(format!("/addon {} {}", if open { "off" } else { "on" }, d.name)),
+                                1 => Some(format!("/addon remove {}", d.name)),
+                                _ => None,
+                            }
+                        };
+                        match cmd {
+                            Some(c) => SlashResult::Replay(c),
+                            None => SlashResult::Handled,
+                        }
+                    }
+                };
+            }
             let _ = addon::list(false);
             println!("{}", color.paint(DIM, "  (in here: /addon install <name> · /addon remove <name> · /addon on|off <name>)"));
             SlashResult::Handled
@@ -3530,6 +4188,20 @@ fn slash(
         // is persisted, so the next start opens the same way.
         "/themes" => {
             match command.split_whitespace().nth(1) {
+                None if screen.tty() => {
+                    let active = ui::active_theme().name;
+                    let items: Vec<(String, String)> = ui::THEMES
+                        .iter()
+                        .map(|t| {
+                            let mark = if t.name == active { " · active" } else { "" };
+                            (format!("{}{mark}", t.name), t.description.to_string())
+                        })
+                        .collect();
+                    return match input::menu(screen, "themes — enter applies, esc closes", &items) {
+                        Some(i) => SlashResult::Replay(format!("/themes {}", ui::THEMES[i].name)),
+                        None => SlashResult::Handled,
+                    };
+                }
                 None => {
                     let active = ui::active_theme().name;
                     for t in ui::THEMES {
@@ -3739,6 +4411,7 @@ fn eval_tool_selection(
     threshold: f64,
     model_name: &str,
     only: Option<&str>,
+    turkish: bool,
 ) -> ExitCode {
     let color = Color::setup();
     let engine = match model_package::resolve_pair(model_name) {
@@ -3761,7 +4434,11 @@ fn eval_tool_selection(
         }
     };
 
-    let mut cases = tacet_eval::selection_cases();
+    let mut cases = if turkish {
+        tacet_eval::turkish_selection_cases()
+    } else {
+        tacet_eval::selection_cases()
+    };
     if let Some(pattern) = only {
         cases.retain(|c| c.name.contains(pattern));
         if cases.is_empty() {
@@ -4636,6 +5313,27 @@ fn write_grammar(
 mod tests {
     use super::*;
 
+    /// `shell` MUST STAY IN THE APPROVAL LIST. It was left out on the grounds
+    /// that it opens no socket — true of the tool, false of its effect, because
+    /// the programs a user allows include `curl`, `git` and `ssh`. Measured with
+    /// an allow-list of exactly `curl`: a session that had read a personal file
+    /// posted that file's contents to a listener and NO approval question was
+    /// asked. This test is cheap and the property it guards is not: it is the
+    /// difference between "data can only leave through tacet-web's three gates"
+    /// and "data can leave".
+    #[test]
+    fn the_approval_gate_covers_every_tool_that_can_put_data_on_a_socket() {
+        for name in ["web_search", "web_fetch", "http", "shell"] {
+            assert!(EXTERNAL_TOOLS.contains(&name), "{name} is not gated");
+        }
+        // And it does NOT cover the ones whose gate is elsewhere — otherwise a
+        // tainted session asks a question on every clipboard READ, which is the
+        // act that created the taint.
+        for name in ["remember", "db", "clipboard", "read_document"] {
+            assert!(!EXTERNAL_TOOLS.contains(&name), "{name} is over-gated");
+        }
+    }
+
     // The logic that stops a raw tool call leaking onto the screen is NOW in
     // `filter.rs` and its tests are there (the old `is_call` made a one-shot
     // decision, the new filter follows the whole stream).
@@ -4841,6 +5539,34 @@ mod tests {
         assert!(!later.contains("window full"), "{later}");
     }
 
+    /// THE LINE REPORTS THE COUNTER'S WINDOW, NOT THE CONSTANT.
+    ///
+    /// The window now comes out of the weight file (see `engine_window`), and
+    /// the failure this guards against is the quiet one: truncation deciding
+    /// against 16954 while the line under the input field still says 4096. A
+    /// status line that disagrees with the mechanism it reports on is worse than
+    /// none, because the user acts on it.
+    ///
+    /// The number is one of the MEASURED ones (qwen3-4b/qwen3-8b, 16954), chosen
+    /// so that a regression to the floor is visible rather than arithmetically
+    /// close.
+    #[test]
+    fn the_status_line_reports_the_window_it_was_given() {
+        const MEASURED: usize = 16_954;
+        let c = TokenCounter::new(MEASURED, tacet_engine::GENERATION_SHARE);
+        let line = status_line(900, 120, 1020, 900, &c);
+        assert!(line.contains(&format!("900/{MEASURED}")), "{line}");
+        assert!(
+            !line.contains(&CONTEXT_BUDGET.to_string()),
+            "the fixed 4096 is still reaching the status line: {line}"
+        );
+        // A prompt that would have filled the old window is nowhere near full in
+        // this one — the whole point of reading the window off the model.
+        assert!(!line.contains("window full"));
+        let old_full = status_line(4000, 10, 4010, 3072, &c);
+        assert!(!old_full.contains("window full"), "{old_full}");
+    }
+
     /// When the window fills the user IS WARNED — the truncation must not stay
     /// silent.
     #[test]
@@ -4848,6 +5574,27 @@ mod tests {
         let c = TokenCounter::default();
         let s = status_line(4000, 10, 4010, c.prompt_cap(), &c);
         assert!(s.contains("window full"), "{s}");
+        // The same claim at a window that is not the constant: "full" has to be
+        // computed from the counter, not compared against 4096.
+        let wide = TokenCounter::new(16_954, tacet_engine::GENERATION_SHARE);
+        let s = status_line(16_000, 10, 16_010, wide.prompt_cap(), &wide);
+        assert!(s.contains("window full"), "{s}");
+    }
+
+    /// THE WINDOW IS DERIVED, AND A MISSING DECLARATION FALLS TO THE FLOOR.
+    ///
+    /// `engine_window` cannot be measured against a real 2.5 GB weight file in a
+    /// unit test, so what is measured here is the branch that matters for
+    /// safety: with no readable GGUF metadata the answer is the floor, never a
+    /// guess. A guessed window puts positions past the model's rope table and
+    /// produces plausible-looking nonsense instead of an error.
+    #[test]
+    fn a_model_that_declares_nothing_gets_the_floor() {
+        let fake: Arc<dyn EngineProvider> = Arc::new(FakeEngine::script(Vec::<String>::new()));
+        assert_eq!(
+            engine_window(&fake, "/definitely/not/here.gguf"),
+            CONTEXT_BUDGET
+        );
     }
 
     /// A SEAM TEST — memory, skills and MCP must point at THE SAME directory.

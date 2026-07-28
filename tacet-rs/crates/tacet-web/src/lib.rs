@@ -23,6 +23,11 @@
 //!   of the catalog gate.
 //! - `client`    — the network surface for search (`ureq`), URL construction,
 //!   timeout, the address gate.
+//! - `http`      — the network surface for the `http` tool: an https-only,
+//!   allowlisted request to a host the user named. A SEPARATE file from
+//!   `client` because what it carries is different — `client` fetches a page
+//!   for reading, this one sends the user's own request body — but the SSRF
+//!   decision is not duplicated: it calls `client::target_is_public`.
 //! - `download`  — downloading a large file (a model package): the approval
 //!   gate, resuming with Range, atomic completion, SHA-256. A SEPARATE file from
 //!   search because the timeout regimes are opposite (see the rationale there).
@@ -45,6 +50,7 @@ pub mod addon;
 pub mod client;
 pub mod download;
 pub mod error;
+pub mod http;
 pub mod outcome;
 pub mod release;
 pub mod relevance;

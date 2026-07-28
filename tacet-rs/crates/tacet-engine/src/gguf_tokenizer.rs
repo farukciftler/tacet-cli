@@ -34,6 +34,35 @@ const KEY_TOKENS: &str = "tokenizer.ggml.tokens";
 const KEY_TOKEN_TYPE: &str = "tokenizer.ggml.token_type";
 const KEY_MERGES: &str = "tokenizer.ggml.merges";
 
+/// The context window the model itself declares — `<arch>.context_length`.
+///
+/// THE ARCHITECTURE PREFIX IS NOT WRITTEN OUT. Every file spells this key with
+/// its own architecture name (`qwen3.context_length`, `qwen2.context_length`,
+/// `gemma3.context_length`), and a hard-coded prefix would mean the next
+/// architecture silently falls back to the default window instead of using the
+/// window it declares. The key is matched by SUFFIX, and the architecture name is
+/// whatever `general.architecture` says.
+const KEY_CONTEXT_SUFFIX: &str = ".context_length";
+
+/// Is this metadata key the model's own context window?
+///
+/// PUBLIC AND SHARED because two call sites ask the same question from different
+/// places: discovery walks the raw file (`gguf_context_length`), the loader
+/// already has the parsed metadata in hand (`candle_engine::read_context_length`).
+/// Written twice, the two would drift and the loader would end up using a window
+/// discovery never checked.
+///
+/// THE PREFIX MUST BE A SINGLE SEGMENT. The suffix alone would also match
+/// `<arch>.rope.scaling.original_context_length` — the window BEFORE rope
+/// scaling, a smaller and different number that would quietly shrink the budget
+/// on any file carrying it.
+pub fn is_context_length_key(key: &str) -> bool {
+    match key.strip_suffix(KEY_CONTEXT_SUFFIX) {
+        Some(prefix) => !prefix.is_empty() && !prefix.contains('.'),
+        None => false,
+    }
+}
+
 // --- GGUF value type tags (the on-disk numbering) ---------------------------
 
 const T_U8: u32 = 0;
@@ -107,6 +136,20 @@ struct RawTokenizer {
     has_tokens: bool,
     has_token_types: bool,
     has_merges: bool,
+    /// `<arch>.context_length`, when the file carries it. NOT tokenizer data —
+    /// it rides along here because the metadata block is walked exactly once and
+    /// a second full pass for one integer would be pure waste.
+    context_length: Option<u64>,
+    /// The four numbers the KV cache size is computed from, same reasoning as
+    /// `context_length`: one walk, not four.
+    block_count: Option<u64>,
+    kv_head_count: Option<u64>,
+    key_length: Option<u64>,
+    value_length: Option<u64>,
+    /// Only needed when the file omits `key_length`/`value_length`, which older
+    /// Qwen2 exports do — the head dimension is then `embedding / heads`.
+    embedding_length: Option<u64>,
+    head_count: Option<u64>,
 }
 
 impl RawTokenizer {
@@ -263,6 +306,29 @@ impl<R: Read> MetaReader<R> {
         }
     }
 
+    /// Reads a value that should be a non-negative integer, WHATEVER WIDTH it was
+    /// written at, and steps over it if it is anything else.
+    ///
+    /// WHY ALL FOUR WIDTHS: `context_length` is a u32 in every file on this
+    /// machine, but the GGUF format does not fix the width and converters differ.
+    /// Accepting only u32 would make one converter's output look like "the model
+    /// declares no window" — the same silent fallback the suffix match exists to
+    /// avoid. A negative or non-integer value yields `None` RATHER THAN AN ERROR:
+    /// the caller's question is "does this file declare a window", and a garbled
+    /// value has the same answer as a missing one.
+    fn unsigned_value(&mut self, kind: u32) -> EngineResult<Option<u64>> {
+        match kind {
+            T_U32 => Ok(Some(u64::from(self.u32()?))),
+            T_U64 => Ok(Some(self.u64()?)),
+            T_I32 => Ok(u64::try_from(self.i32()?).ok()),
+            T_I64 => Ok(u64::try_from(self.u64()? as i64).ok()),
+            other => {
+                self.skip_value(other)?;
+                Ok(None)
+            }
+        }
+    }
+
     fn string_array(&mut self) -> EngineResult<Vec<String>> {
         let element = self.u32()?;
         let count = self.u64()?;
@@ -358,6 +424,29 @@ fn read_metadata(path: &Path, with_arrays: bool) -> EngineResult<RawTokenizer> {
                     reader.skip_value(kind)?;
                 }
             }
+            other if ends_with_segment(other, ".block_count") => {
+                raw.block_count = reader.unsigned_value(kind)?;
+            }
+            other if other.ends_with(".attention.head_count_kv") => {
+                raw.kv_head_count = reader.unsigned_value(kind)?;
+            }
+            other if other.ends_with(".attention.key_length") => {
+                raw.key_length = reader.unsigned_value(kind)?;
+            }
+            other if other.ends_with(".attention.value_length") => {
+                raw.value_length = reader.unsigned_value(kind)?;
+            }
+            other if ends_with_segment(other, ".embedding_length") => {
+                raw.embedding_length = reader.unsigned_value(kind)?;
+            }
+            other if other.ends_with(".attention.head_count") => {
+                raw.head_count = reader.unsigned_value(kind)?;
+            }
+            // `<arch>.context_length` — the model's own window; the architecture
+            // name is not written out here (see `is_context_length_key`).
+            other if is_context_length_key(other) => {
+                raw.context_length = reader.unsigned_value(kind)?;
+            }
             // Everything else — including the chat template and the whole
             // architecture block — is stepped over without being kept.
             _ => reader.skip_value(kind)?,
@@ -380,6 +469,87 @@ pub fn gguf_has_tokenizer(path: &Path) -> bool {
     read_metadata(path, false)
         .map(|r| r.is_usable())
         .unwrap_or(false)
+}
+
+/// `<arch>.<name>` with exactly one segment before the suffix — the same guard
+/// `is_context_length_key` uses, for the same reason: a bare suffix match also
+/// catches nested keys that mean something else.
+fn ends_with_segment(key: &str, suffix: &str) -> bool {
+    match key.strip_suffix(suffix) {
+        Some(prefix) => !prefix.is_empty() && !prefix.contains('.'),
+        None => false,
+    }
+}
+
+/// Bytes of KV cache this model needs PER TOKEN of context.
+///
+/// `layers × kv_heads × (key_len + value_len) × 2` — two bytes because the cache
+/// is f16, and `kv_heads` rather than `heads` because grouped-query attention
+/// stores one K/V pair per GROUP. Measured against the files on disk: qwen3-4b
+/// (36 layers, 8 kv heads, 128+128) comes to 0.56 GB at 4096 tokens and 4.5 GB
+/// at 32768, which is why the window cannot simply be set to the 262144 the
+/// model declares.
+///
+/// ARITHMETIC, NOT A BENCHMARK. The alternative was running inference at each
+/// candidate size and watching memory, which on a 24 GB machine with a 4B model
+/// and parallel builds took the machine down twice. The cache size is a product
+/// of four integers the file states; measuring it is theatre.
+///
+/// `None` when any of the four is missing — the caller then keeps the default
+/// window rather than dividing by a number it invented.
+pub fn gguf_kv_bytes_per_token(path: &Path) -> Option<usize> {
+    let raw = read_metadata(path, false).ok()?;
+    let layers = usize::try_from(raw.block_count?).ok()?;
+    let kv_heads = usize::try_from(raw.kv_head_count?).ok()?;
+    // `key_length`/`value_length` when the file states them; otherwise the
+    // standard derivation `embedding / heads`. MEASURED: qwen2.5-3b carries
+    // neither key nor value length, so without this fallback it silently kept
+    // the 4096 floor while every other model on the same disk got four times
+    // that — the kind of gap that looks like the feature simply not working.
+    let head_dim = |stated: Option<u64>| -> Option<usize> {
+        match stated {
+            Some(v) => usize::try_from(v).ok(),
+            None => {
+                let embedding = usize::try_from(raw.embedding_length?).ok()?;
+                let heads = usize::try_from(raw.head_count?).ok()?;
+                (heads > 0).then(|| embedding / heads).filter(|d| *d > 0)
+            }
+        }
+    };
+    let key = head_dim(raw.key_length)?;
+    let value = head_dim(raw.value_length)?;
+    let per_token = layers
+        .checked_mul(kv_heads)?
+        .checked_mul(key.checked_add(value)?)?
+        .checked_mul(2)?;
+    (per_token > 0).then_some(per_token)
+}
+
+/// The context window THE MODEL ITSELF DECLARES, from its GGUF metadata.
+///
+/// WHY THIS EXISTS: until now the context budget was a fixed 4096 (see
+/// `token::CONTEXT_BUDGET`) — a number INHERITED FROM iOS, where Apple
+/// FoundationModels really does hand out a 4096-token window. Running its own
+/// weights through candle, this binary has no such limit, and the models on disk
+/// declare far more: qwen3-4b 262144, gemma3-4b 131072, qwen2.5-3b 32768,
+/// qwen3-8b 40960 (all read from the files with this reader). Keeping the iOS
+/// number cost real context: with an 11-tool catalog the `<tools>` block alone is
+/// 1559 tokens and the whole prompt 2586, leaving ~1100 for the actual
+/// conversation — the user saw "2 older turns left the window" every single turn.
+///
+/// SAME COST AS `gguf_has_tokenizer`: only the metadata block is walked, the big
+/// arrays are skipped, the tensor section is never addressed.
+///
+/// `None` means "the file does not say" — a missing key, an unreadable file, a
+/// value of a type we cannot read. The caller must then keep the default window
+/// (see `token::context_budget`); guessing a window a model may not have would
+/// produce positions past its rope table, i.e. plausible-looking nonsense.
+pub fn gguf_context_length(path: &Path) -> Option<usize> {
+    read_metadata(path, false)
+        .ok()?
+        .context_length
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value > 0)
 }
 
 // ---------------------------------------------------------------------------
@@ -675,6 +845,8 @@ mod tests {
         );
         b.string_array_kv(KEY_MERGES, &["a b"]);
         b.u32_kv("tokenizer.ggml.eos_token_id", 3);
+        // The real key from ~/models/qwen3-4b/model.gguf, value included.
+        b.u32_kv("qwen3.context_length", 262_144);
         b
     }
 
@@ -772,6 +944,58 @@ mod tests {
         assert!(error.contains("corrupt"), "{error}");
         assert!(!gguf_has_tokenizer(&path));
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// The window is read from the ARCHITECTURE-PREFIXED key, and the cheap
+    /// (arrays-skipped) scan finds it too — that is the mode discovery runs in.
+    #[test]
+    fn the_context_length_is_read_without_hard_coding_the_architecture() {
+        let path = write_temp("ctx", &tiny_gguf().finish(0));
+        assert_eq!(gguf_context_length(&path), Some(262_144));
+        let _ = std::fs::remove_file(&path);
+
+        // A DIFFERENT architecture name, same suffix: no code change needed.
+        let mut b = Builder::new();
+        b.string_kv("general.architecture", "gemma3");
+        b.u32_kv("gemma3.context_length", 131_072);
+        let path = write_temp("ctx-gemma", &b.finish(0));
+        assert_eq!(gguf_context_length(&path), Some(131_072));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `rope.scaling.original_context_length` is the window BEFORE rope scaling —
+    /// a smaller, different number. Matching on the suffix alone would pick it up
+    /// and quietly shrink the budget, so the prefix has to be one segment.
+    #[test]
+    fn the_pre_scaling_window_is_not_mistaken_for_the_real_one() {
+        let mut b = Builder::new();
+        b.string_kv("general.architecture", "phi3");
+        b.u32_kv("phi3.rope.scaling.original_context_length", 4096);
+        b.u32_kv("phi3.context_length", 131_072);
+        let path = write_temp("ctx-rope", &b.finish(0));
+        assert_eq!(gguf_context_length(&path), Some(131_072));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A file that does not declare a window answers "I do not know" rather than
+    /// a number — the caller keeps the default rather than inventing one.
+    #[test]
+    fn a_file_without_a_window_says_so_instead_of_guessing() {
+        let mut b = Builder::new();
+        b.string_kv("general.architecture", "qwen3");
+        let path = write_temp("ctx-none", &b.finish(0));
+        assert_eq!(gguf_context_length(&path), None);
+        let _ = std::fs::remove_file(&path);
+
+        // A value of the wrong TYPE is stepped over, not misread as bytes.
+        let mut b = Builder::new();
+        b.string_kv("qwen3.context_length", "not a number");
+        b.string_kv("general.architecture", "qwen3");
+        let path = write_temp("ctx-text", &b.finish(0));
+        assert_eq!(gguf_context_length(&path), None);
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(gguf_context_length(Path::new("/definitely/not/here.gguf")), None);
     }
 
     #[test]

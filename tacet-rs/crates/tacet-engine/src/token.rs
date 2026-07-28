@@ -14,9 +14,57 @@
 
 use crate::prompt::{Prompt, Turn};
 
-/// The context window of the on-device model. A constant of the architecture
-/// (see the 4096 channel).
+/// The FLOOR of the context window, and the value used when the model does not
+/// say what it can take.
+///
+/// IT USED TO BE THE WHOLE STORY, and the comment here called it "a constant of
+/// the architecture". It was a constant of a DIFFERENT architecture: iOS, where
+/// Apple's FoundationModels really does hand out 4096 tokens. This binary runs
+/// its own weights through candle and has no such ceiling — the files on disk
+/// declare 262144 (qwen3-4b), 131072 (gemma3-4b), 40960 (qwen3-8b).
+///
+/// Keeping it cost real context. With the tool catalog at 1559 tokens and the
+/// whole prompt at 2586, about 1100 were left for the conversation, so a user
+/// asking for a Python script saw "2 older turns left the window" on EVERY turn,
+/// watched the model forget what it had just done, and got an explanation of a
+/// tool error instead of a second attempt at the tool.
+///
+/// It stays as the floor because a model that declares less, or declares
+/// nothing, must not end up worse off than before.
 pub const CONTEXT_BUDGET: usize = 4096;
+
+/// How much memory the KV cache may take.
+///
+/// The cache grows LINEARLY with the window, so the window is really a memory
+/// decision. 2.5 GB on top of a 2.3 GB weight file leaves a 4-core laptop
+/// usable while the model is loaded; at 32768 tokens qwen3-4b alone would want
+/// 4.5 GB of cache, which is where a 16 GB machine starts swapping.
+///
+/// What it buys, computed from the geometry in the files themselves: qwen3-4b
+/// and qwen3-8b 16954 tokens, gemma3-4b 17951, qwen2.5-3b 32768 (that one is
+/// held by its own declared window, not by this budget — its two KV heads make
+/// the cache cheap). Four to eight times what the fixed 4096 gave.
+pub const KV_CACHE_BUDGET_BYTES: usize = 2_500_000_000;
+
+/// The window to actually use.
+///
+/// `declared` is what the model says it can take, `kv_bytes_per_token` what one
+/// token of context costs it. Either being `None` means the file did not say,
+/// and the answer is then the floor — a guessed window puts positions past the
+/// model's rope table and produces plausible-looking nonsense, which is worse
+/// than a small window.
+pub fn context_budget(declared: Option<usize>, kv_bytes_per_token: Option<usize>) -> usize {
+    let (Some(declared), Some(per_token)) = (declared, kv_bytes_per_token) else {
+        return CONTEXT_BUDGET;
+    };
+    if per_token == 0 {
+        return CONTEXT_BUDGET;
+    }
+    let affordable = KV_CACHE_BUDGET_BYTES / per_token;
+    // The floor wins over both: a model declaring 2048 still gets 4096, because
+    // that is what every path in this crate was built and measured against.
+    declared.min(affordable).max(CONTEXT_BUDGET)
+}
 
 /// The share reserved for generation; the prompt must fit in what is left.
 ///
@@ -231,4 +279,52 @@ fn from_last_bytes(text: &str, max_bytes: usize) -> String {
         start += 1;
     }
     text[start..].to_string()
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    /// The four models on the author's disk, with the geometry read from their
+    /// own files. These numbers are the reason the budget is a division rather
+    /// than a constant: the same 2.5 GB buys a different window per model.
+    #[test]
+    fn each_model_gets_the_window_its_cache_affords() {
+        // layers * kv_heads * (key + value) * 2 bytes
+        let qwen3_4b = 36 * 8 * (128 + 128) * 2;
+        let qwen3_8b = 36 * 8 * (128 + 128) * 2;
+        let gemma3_4b = 34 * 4 * (256 + 256) * 2;
+
+        assert_eq!(context_budget(Some(262_144), Some(qwen3_4b)), 16_954);
+        assert_eq!(context_budget(Some(40_960), Some(qwen3_8b)), 16_954);
+        assert_eq!(context_budget(Some(131_072), Some(gemma3_4b)), 17_951);
+    }
+
+    /// A model whose OWN declared window is smaller than what the memory budget
+    /// would allow keeps its own number — exceeding it puts positions past the
+    /// rope table.
+    #[test]
+    fn the_models_own_limit_wins_when_it_is_the_smaller_one() {
+        let small_cache = 36 * 2 * (128 + 128) * 2;
+        assert_eq!(context_budget(Some(32_768), Some(small_cache)), 32_768);
+    }
+
+    /// THE FLOOR HOLDS IN EVERY DIRECTION. Nothing may come out of this worse
+    /// off than the fixed 4096 it replaced.
+    #[test]
+    fn nothing_ends_up_below_the_old_fixed_window() {
+        assert_eq!(context_budget(Some(2048), Some(1_000)), CONTEXT_BUDGET);
+        assert_eq!(context_budget(None, Some(1_000)), CONTEXT_BUDGET);
+        assert_eq!(context_budget(Some(262_144), None), CONTEXT_BUDGET);
+        assert_eq!(context_budget(None, None), CONTEXT_BUDGET);
+        // A cache so large that the budget affords nothing.
+        assert_eq!(context_budget(Some(262_144), Some(usize::MAX)), CONTEXT_BUDGET);
+    }
+
+    /// Division by zero is a crash, and a zero here means the file said
+    /// something impossible rather than nothing.
+    #[test]
+    fn a_zero_cost_per_token_does_not_divide() {
+        assert_eq!(context_budget(Some(262_144), Some(0)), CONTEXT_BUDGET);
+    }
 }

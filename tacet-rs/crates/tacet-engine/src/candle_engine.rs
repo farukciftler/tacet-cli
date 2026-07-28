@@ -308,6 +308,10 @@ pub struct CandleEngine {
     tokenizer: Tokenizer,
     /// WHERE the tokenizer came from — see `TokenizerSource`.
     tokenizer_source: TokenizerSource,
+    /// The window the GGUF declares (`<arch>.context_length`), when it does.
+    /// READ ONCE at load: this is what turns the fixed 4096 into a number derived
+    /// from the model actually loaded.
+    context_length: Option<usize>,
     device: CandleDevice,
     stop_tokens: Vec<u32>,
     /// Token id -> SURFACE text. The prerequisite for setting up a constraint
@@ -335,6 +339,9 @@ impl CandleEngine {
         // memory; starting a 2.5 GB load with the wrong module and only erroring
         // at the end is pointless.
         let architecture = read_architecture(&content)?;
+        // READ BEFORE THE WEIGHTS, for the same reason: the metadata is in memory
+        // right now and `from_gguf` below consumes `content`.
+        let context_length = read_context_length(&content);
 
         // `from_gguf` HAS THE SAME SIGNATURE IN ALL THREE MODULES (ct, reader,
         // device) — verified from the source, not assumed.
@@ -374,6 +381,7 @@ impl CandleEngine {
             architecture,
             tokenizer,
             tokenizer_source,
+            context_length,
             device,
             stop_tokens,
             vocab,
@@ -383,6 +391,16 @@ impl CandleEngine {
     /// The architecture of the loaded GGUF — for diagnostics and shell output.
     pub fn architecture(&self) -> Architecture {
         self.architecture
+    }
+
+    /// The context window the loaded GGUF declares, in tokens.
+    ///
+    /// PUBLIC for the same reason as `stop_tokens` and `tokenizer_source`: a
+    /// window silently falling back to the default is invisible from the output —
+    /// the session just starts forgetting turns earlier than it should. The shell
+    /// prints this next to the architecture.
+    pub fn context_length(&self) -> Option<usize> {
+        self.context_length
     }
 
     /// Verifies the files exist BEFORE loading — the gguf load takes a long time
@@ -747,6 +765,11 @@ impl EngineProvider for CandleEngine {
         Some(self.vocab.clone())
     }
 
+    /// The window READ FROM the GGUF at load time — see `context_length`.
+    fn context_length(&self) -> Option<usize> {
+        self.context_length
+    }
+
     fn generate<'a>(
         &'a self,
         prompt: &'a Prompt,
@@ -791,6 +814,29 @@ fn read_architecture(content: &gguf_file::Content) -> EngineResult<Architecture>
         .to_string()
         .map_err(|e| EngineError::Inference(format!("'general.architecture' is not text: {e}")))?;
     Architecture::resolve(name)
+}
+
+/// Reads `<arch>.context_length` from the already-parsed GGUF metadata.
+///
+/// A MISSING KEY IS NOT AN ERROR, unlike `general.architecture`. The architecture
+/// is mandatory in the format and loading without it is impossible; the window is
+/// only an optimisation over the default 4096, and refusing to load a model
+/// because its converter left the key out would turn a smaller context into no
+/// context at all.
+///
+/// THE KEY IS NOT SPELLED OUT HERE either — the rule lives in
+/// `gguf_tokenizer::is_context_length_key`, so the loader and discovery cannot
+/// disagree about which key that is.
+fn read_context_length(content: &gguf_file::Content) -> Option<usize> {
+    content
+        .metadata
+        .iter()
+        .find(|(key, _)| crate::gguf_tokenizer::is_context_length_key(key))
+        // `to_u64` upcasts any narrower unsigned width, which is what the
+        // converters actually write (u32 in all four files on this machine).
+        .and_then(|(_, value)| value.to_u64().ok())
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value > 0)
 }
 
 /// THE TOKENIZER PRIORITY, in one place.

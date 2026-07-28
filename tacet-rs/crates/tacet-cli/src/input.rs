@@ -104,6 +104,62 @@ pub const COMMANDS: &[Command] = &[
 
 /// The most rows shown in the list.
 const LIST_CAP: usize = 8;
+
+/// How many preview rows a highlighted command may add under the list.
+const PREVIEW_CAP: usize = 6;
+
+/// The LIVE CONTENT behind a highlighted command, before Enter is pressed.
+///
+/// WHY: `/plugins` in the list read only "the installed addons and their
+/// state" — to learn WHICH addons and WHICH state you had to enter first
+/// (measured: the user asked to see the contents without clicking). The rows
+/// come from the same sources the real command reads (the addon registry on
+/// disk, the theme table, the config file), so the preview can never disagree
+/// with what Enter will show. Commands whose output is prose (/help, /tools…)
+/// return nothing — previewing a paragraph in three clipped rows misleads.
+fn preview(name: &str) -> Vec<String> {
+    match name {
+        "/plugins" | "/addons" => {
+            let record = tacet_web::addon::read().ok();
+            tacet_web::addon::DEFINITIONS
+                .iter()
+                .map(|d| {
+                    let (inst, open) = record
+                        .as_ref()
+                        .map(|r| (r.find(d.name).is_some(), r.is_open(d.name)))
+                        .unwrap_or((false, false));
+                    let state = if !inst {
+                        "not installed"
+                    } else if open {
+                        "installed · on"
+                    } else {
+                        "installed · off"
+                    };
+                    format!("{:<14} {state}", d.name)
+                })
+                .collect()
+        }
+        "/themes" => crate::ui::THEMES
+            .iter()
+            .map(|t| {
+                let mark = if t.name == crate::ui::active_theme().name {
+                    " · active"
+                } else {
+                    ""
+                };
+                format!("{:<14} {}{mark}", t.name, t.description)
+            })
+            .collect(),
+        "/config" => crate::config::known_keys()
+            .iter()
+            .map(|(k, _)| {
+                let v = crate::config::get_str(k).unwrap_or_else(|| "(unset)".into());
+                format!("{k} = {v}")
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
 /// The frame's maximum width. On a wide terminal, drawing the screen edge to
 /// edge makes the input field a "wall" rather than a "window".
 const MAX_WIDTH: usize = 78;
@@ -520,8 +576,20 @@ impl<'a> Editor<'a> {
             if hits.is_empty() {
                 lines.push(dim("  (no matching command — esc closes)"));
             }
-            for (i, c) in hits.iter().take(LIST_CAP).enumerate() {
-                let selected = i == self.selection.min(hits.len().saturating_sub(1));
+            // THE WINDOW FOLLOWS THE SELECTION. With a fixed `take(LIST_CAP)`
+            // the ninth row existed but was never drawn: arrowing past the
+            // eighth entry moved the selection onto an invisible row and the
+            // brass caret simply vanished (measured — "… 7 more" that could
+            // not be reached). The window is stateless: once the selection
+            // passes the cap it rides at the bottom edge, and the counts of
+            // the rows hidden above and below are said out loud.
+            let selection = self.selection.min(hits.len().saturating_sub(1));
+            let first = selection.saturating_sub(LIST_CAP.saturating_sub(1));
+            if first > 0 {
+                lines.push(dim(&format!("    … {first} above")));
+            }
+            for (i, c) in hits.iter().enumerate().skip(first).take(LIST_CAP) {
+                let selected = i == selection;
                 let name = format!("{:<10}", c.name);
                 // THE DESCRIPTION IS CLAMPED to the terminal width. A row that
                 // wraps adds a visual line the overwrite arithmetic knows
@@ -551,8 +619,25 @@ impl<'a> Editor<'a> {
                 };
                 lines.push(line);
             }
-            if hits.len() > LIST_CAP {
-                lines.push(dim(&format!("    … {} more", hits.len() - LIST_CAP)));
+            let below = hits.len().saturating_sub(first + LIST_CAP);
+            if below > 0 {
+                lines.push(dim(&format!("    … {below} more")));
+            }
+            // THE PREVIEW: the highlighted command's live content, shown before
+            // Enter. Every row is truncated to the terminal width — a wrapped
+            // row breaks the overwrite arithmetic (see the description clamp
+            // above) — and capped, with the hidden count said out loud.
+            if let Some(c) = hits.get(selection) {
+                let rows = preview(c.name);
+                for row in rows.iter().take(PREVIEW_CAP) {
+                    lines.push(dim(&truncate(&format!("      ┆ {row}"), width)));
+                }
+                if rows.len() > PREVIEW_CAP {
+                    lines.push(dim(&format!(
+                        "      ┆ … {} more inside",
+                        rows.len() - PREVIEW_CAP
+                    )));
+                }
             }
             lines.push(dim("  ↑↓ select · tab/enter complete · esc close"));
         }
@@ -608,6 +693,99 @@ impl<'a> Editor<'a> {
         let _ = stdout.write_all(out.as_bytes());
         let _ = stdout.flush();
     }
+}
+
+// ---------------------------------------------------------------------------
+// The menu — the arrow-key picker every submenu shares
+// ---------------------------------------------------------------------------
+
+/// An interactive list: ↑↓ moves, Enter returns `Some(index)`, Esc (and
+/// ctrl-c / ctrl-d) returns `None`. The drawing dialect is the slash list's —
+/// brass caret on the selected row, a window that FOLLOWS the selection, every
+/// row clamped to one terminal line — so the two cannot drift apart visually.
+///
+/// WITHOUT A TTY IT RETURNS `None` IMMEDIATELY; the caller must treat that as
+/// "fall back to the printed form", never as "the user said no" — piped
+/// sessions still get the old text output.
+///
+/// THE MENU ERASES ITSELF on the way out: what stays in the transcript is the
+/// OUTCOME (the command the choice produced), not the furniture. A transcript
+/// full of dead menus reads like a screenshot, not a conversation.
+pub fn menu(screen: &Screen, title: &str, items: &[(String, String)]) -> Option<usize> {
+    if !screen.tty() || items.is_empty() {
+        return None;
+    }
+    let _raw = RawMode::open();
+    let mut selection = 0usize;
+    let mut drawn = 0usize;
+    let wide = width();
+
+    let draw = |selection: usize, drawn: usize| -> usize {
+        let mut out = String::new();
+        if drawn > 0 {
+            out.push_str(&format!("\x1b[{drawn}A\r\x1b[J"));
+        }
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(dim(&format!("  {title}")));
+        let first = selection.saturating_sub(LIST_CAP.saturating_sub(1));
+        if first > 0 {
+            lines.push(dim(&format!("    … {first} above")));
+        }
+        let label_width = items.iter().map(|(l, _)| l.chars().count()).max().unwrap_or(0).min(24);
+        for (i, (label, hint)) in items.iter().enumerate().skip(first).take(LIST_CAP) {
+            let room = wide.saturating_sub(label_width + 9);
+            let hint: String = if hint.chars().count() > room {
+                let mut s: String = hint.chars().take(room.saturating_sub(1)).collect();
+                s.push('…');
+                s
+            } else {
+                hint.clone()
+            };
+            let padded = format!("{label:<label_width$}");
+            let (d, r, b) = (dim_code(), reset_code(), brass_code());
+            lines.push(if i == selection {
+                format!("  {b}›{r} {BOLD}{padded}{RESET} {d}{hint}{r}")
+            } else {
+                format!("    {d}{padded} {hint}{r}")
+            });
+        }
+        let below = items.len().saturating_sub(first + LIST_CAP);
+        if below > 0 {
+            lines.push(dim(&format!("    … {below} more")));
+        }
+        lines.push(dim("  ↑↓ move · enter select · esc back"));
+        out.push_str(&lines.join("\r\n"));
+        out.push_str("\r\n");
+        let mut so = std::io::stdout();
+        let _ = so.write_all(out.as_bytes());
+        let _ = so.flush();
+        lines.len()
+    };
+
+    drawn = draw(selection, drawn);
+    let result = loop {
+        let Ok(event) = event::read() else { break None };
+        let Event::Key(k) = event else { continue };
+        if k.kind != KeyEventKind::Press {
+            continue;
+        }
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        match k.code {
+            KeyCode::Up => selection = (selection + items.len() - 1) % items.len(),
+            KeyCode::Down => selection = (selection + 1) % items.len(),
+            KeyCode::Enter => break Some(selection),
+            KeyCode::Esc => break None,
+            KeyCode::Char('c') if ctrl => break None,
+            KeyCode::Char('d') if ctrl => break None,
+            _ => continue,
+        }
+        drawn = draw(selection, drawn);
+    };
+    // Erase the furniture; the caller narrates the outcome.
+    let mut so = std::io::stdout();
+    let _ = so.write_all(format!("\x1b[{drawn}A\r\x1b[J").as_bytes());
+    let _ = so.flush();
+    result
 }
 
 fn dim(text: &str) -> String {
