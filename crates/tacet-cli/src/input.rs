@@ -374,13 +374,20 @@ impl<'a> Editor<'a> {
                 }
             }
             KeyCode::Char('d') if ctrl => {
-                if self.buffer.is_empty() {
-                    return Some(Input::Done);
-                }
-                let new = next_boundary(&self.buffer, self.caret);
-                if new > self.caret {
-                    self.buffer.replace_range(self.caret..new, "");
-                }
+                // CTRL-D LEAVES, WHATEVER IS TYPED.
+                //
+                // readline's rule is that ctrl-d only means EOF on an empty
+                // line and deletes forward otherwise, and this followed it. The
+                // measured cost of that rule here: a user who wanted to leave
+                // had to clear the line first, and pressing ctrl-d with text in
+                // the field did nothing visible at the end of a line — a key
+                // that appears to be ignored reads as a hung program.
+                //
+                // The draft is the only thing lost, and it is the only thing
+                // that was never sent; the conversation itself is on disk (see
+                // `session.rs`). Forward-delete keeps working through the
+                // `delete` key, which is where people look for it anyway.
+                return Some(Input::Done);
             }
             KeyCode::Char('a') if ctrl => self.caret = 0,
             KeyCode::Char('e') if ctrl => self.caret = self.buffer.len(),
@@ -758,6 +765,47 @@ mod tests {
         assert!(!list_needed("/grammar "));
         assert!(!list_needed("hello"));
         assert!(!list_needed(""));
+    }
+
+    /// CTRL-D LEAVES EVEN WITH A DRAFT IN THE FIELD.
+    ///
+    /// The readline rule (EOF only on an empty line) was measured to be wrong
+    /// here: with text typed, ctrl-d at the end of a line did nothing visible,
+    /// and a key that appears to be ignored reads as a hung program.
+    #[test]
+    fn ctrl_d_exits_whether_or_not_something_is_typed() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let history = Vec::new();
+
+        let mut empty = Editor::new("", &history);
+        assert!(matches!(
+            empty.key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+            Some(Input::Done)
+        ));
+
+        let mut typed = Editor::new("", &history);
+        typed.add("half a sentence");
+        assert!(
+            matches!(
+                typed.key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+                Some(Input::Done)
+            ),
+            "ctrl-d must leave with a draft in the field, not delete a character"
+        );
+    }
+
+    /// Forward delete did not disappear with the rule above — it lives on the
+    /// key people reach for. Losing it silently would be trading one surprise
+    /// for another.
+    #[test]
+    fn the_delete_key_still_deletes_forward() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let history = Vec::new();
+        let mut e = Editor::new("", &history);
+        e.add("abc");
+        e.caret = 0;
+        e.key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        assert_eq!(e.buffer, "bc");
     }
 
     /// Matching DOES NOT CARE about capitalisation.
