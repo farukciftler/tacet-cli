@@ -40,16 +40,25 @@ clap = { version = "4", features = ["derive"] }
 tacet-kernel = { path = "crates/tacet-kernel", version = "0.1.0" }
 tacet-zip = { path = "crates/tacet-zip", version = "0.1.0" }
 tacet-grammar = { path = "crates/tacet-grammar", version = "0.1.0" }
-tacet-engine = { path = "crates/tacet-engine", version = "0.1.0" }
-tacet-tools = { path = "crates/tacet-tools", version = "0.1.0" }
+# EVERY NUMBER BELOW THAT IS NOT 0.1.0 IS A FLOOR, NOT A PREFERENCE, and each
+# one was put there by a fix that a `^0.1.0` install would have resolved away.
+# `cargo install tacet-cli` picks the newest match, but a machine with an older
+# copy already in its registry does not have to move — so a version that carries
+# a gate has to be the MINIMUM, or the install looks identical while missing the
+# thing it was published for. That has happened here once already (see tacet-web).
+tacet-engine = { path = "crates/tacet-engine", version = "0.1.2" }
+# 0.1.3: the addon gates and the five tools behind them live here. Below it,
+# `catalog.rs` has no gate to ask and `shell`/`http`/`db` do not exist at all.
+tacet-tools = { path = "crates/tacet-tools", version = "0.1.3" }
 tacet-skills = { path = "crates/tacet-skills", version = "0.1.0" }
 tacet-memory = { path = "crates/tacet-memory", version = "0.1.0" }
 # THE NETWORK MONOPOLY: a network call exists ONLY in these two crates. No
 # other crate opens a socket; so the rule can be audited by eye rather than by
 # an `audit` script, the HTTP dependency also stands only in these two manifests.
-# 0.1.2 IS A FLOOR, NOT A PREFERENCE. The SSRF gate landed there; `^0.1.0`
-# would happily resolve to 0.1.1, which does not have it, and the install
-# would look identical while missing the fix it was published for.
-tacet-web = { path = "crates/tacet-web", version = "0.1.2" }
+# 0.1.2 CARRIED THE SSRF GATE; `^0.1.0` would happily have resolved to 0.1.1,
+# which does not have it. 0.1.3 IS THE FLOOR NOW: below it the `http` addon's
+# host allow-list cannot read its own stored form, so a multi-host install
+# refuses every call it was configured to permit.
+tacet-web = { path = "crates/tacet-web", version = "0.1.3" }
 tacet-mcp = { path = "crates/tacet-mcp", version = "0.1.0" }
-tacet-eval = { path = "crates/tacet-eval", version = "0.1.0" }
+tacet-eval = { path = "crates/tacet-eval", version = "0.1.1" }
