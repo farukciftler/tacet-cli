@@ -274,7 +274,10 @@ pub fn list(json: bool) -> ExitCode {
                 // exactly what a user needs to be told about.
                 None => println!(
                     "    {}",
-                    color.paint(YELLOW, "this build does not know this addon; it opens no tool.")
+                    color.paint(
+                        YELLOW,
+                        "this build does not know this addon; it opens no tool."
+                    )
                 ),
             }
             for (key, value) in &a.settings {
@@ -310,7 +313,10 @@ pub fn list(json: bool) -> ExitCode {
             );
             println!(
                 "{}",
-                color.paint(DIM, &format!("              tacet addon install {}", d.name))
+                color.paint(
+                    DIM,
+                    &format!("              tacet addon install {}", d.name)
+                )
             );
         }
     }
@@ -436,7 +442,10 @@ fn install_generic(
     if def.network {
         println!(
             "{}",
-            color.paint(YELLOW, "THIS ONE GOES ON THE NETWORK: data leaves this machine.")
+            color.paint(
+                YELLOW,
+                "THIS ONE GOES ON THE NETWORK: data leaves this machine."
+            )
         );
     }
     println!("{}", color.paint(YELLOW, def.warning));
@@ -637,10 +646,7 @@ fn ask_setting(color: &Color, spec: &tacet_web::addon::Setting) -> Option<Vec<St
 /// * A COMMAND IS A WARNING. `PATH` is not the same in every shell and a program
 ///   installed tomorrow is a legitimate entry; refusing it would send the user
 ///   round a loop over a guess.
-fn machine_check(
-    spec: &tacet_web::addon::Setting,
-    value: &str,
-) -> Result<Vec<String>, String> {
+fn machine_check(spec: &tacet_web::addon::Setting, value: &str) -> Result<Vec<String>, String> {
     use tacet_web::addon::Shape;
     match spec.shape {
         Shape::Directory => tacet_tools::workspace::validate_root(value)
@@ -1968,7 +1974,14 @@ mod tests {
     /// every other test in this file depend on the order it ran in.
     #[test]
     fn five_more_addons_can_be_installed_not_just_web_search() {
-        for name in ["web-search", "shell", "workspace", "http", "db", "clipboard"] {
+        for name in [
+            "web-search",
+            "shell",
+            "workspace",
+            "http",
+            "db",
+            "clipboard",
+        ] {
             assert!(
                 tacet_web::addon::definition(name).is_some(),
                 "'{name}' cannot be installed: it is in no definition"

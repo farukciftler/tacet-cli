@@ -393,7 +393,8 @@ fn time_piece(s: &str) -> Option<(u32, u32, u32)> {
 /// (tuesday) of names like "salih" — a `contains` there resolves dates out of
 /// words that have nothing to do with time. Split on anything non-alphanumeric.
 fn has_word(text: &str, word: &str) -> bool {
-    text.split(|c: char| !c.is_alphanumeric()).any(|w| w == word)
+    text.split(|c: char| !c.is_alphanumeric())
+        .any(|w| w == word)
 }
 
 /// Relative day + an optional clock time. "today", "tomorrow", "day after

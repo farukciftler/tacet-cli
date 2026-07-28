@@ -359,18 +359,21 @@ fn context_sweep(engine: &tacet_engine::CandleEngine) {
     const STEPS: usize = 24;
 
     println!("\n== CONTEXT SWEEP ==");
+    println!("model declares : {:?} tokens", engine.context_length());
     println!(
-        "model declares : {:?} tokens",
-        engine.context_length()
+        "baseline RSS   : {:.2} GB (weights + rope table, before any KV cache)",
+        rss_mb() / 1024.0
     );
-    println!("baseline RSS   : {:.2} GB (weights + rope table, before any KV cache)", rss_mb() / 1024.0);
     println!(
         "\n{:>8}  {:>8}  {:>10}  {:>12}  {:>10}  {:>9}",
         "target", "real", "prefill s", "prefill tok/s", "decode t/s", "RSS GB"
     );
 
     let sizes: Vec<usize> = match std::env::var("TACET_CONTEXT_SIZES") {
-        Ok(list) => list.split(',').filter_map(|s| s.trim().parse().ok()).collect(),
+        Ok(list) => list
+            .split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect(),
         Err(_) => vec![4096, 8192, 16384, 32768],
     };
 

@@ -731,7 +731,12 @@ pub fn menu(screen: &Screen, title: &str, items: &[(String, String)]) -> Option<
         if first > 0 {
             lines.push(dim(&format!("    … {first} above")));
         }
-        let label_width = items.iter().map(|(l, _)| l.chars().count()).max().unwrap_or(0).min(24);
+        let label_width = items
+            .iter()
+            .map(|(l, _)| l.chars().count())
+            .max()
+            .unwrap_or(0)
+            .min(24);
         for (i, (label, hint)) in items.iter().enumerate().skip(first).take(LIST_CAP) {
             let room = wide.saturating_sub(label_width + 9);
             let hint: String = if hint.chars().count() > room {

@@ -54,7 +54,10 @@ pub fn append(at: u64, tool: &str, text: &str, state: &str) {
             tacet_kernel::fs::create_private_dir(parent)?;
         }
         let fresh = !p.exists();
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&p)?;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&p)?;
         if fresh {
             tacet_kernel::fs::narrow_file(&p);
         }
@@ -103,13 +106,19 @@ fn verify(raw: &str) -> Result<Vec<Entry>, usize> {
             (Some(a), Some(b), Some(c), Some(d), Some(e)) => (a, b, c, d, e),
             _ => return Err(i + 1),
         };
-        let expected =
-            tacet_web::download::sha256_hex(format!("{prev}{}", canonical(at, &tool, &text, &state)).as_bytes());
+        let expected = tacet_web::download::sha256_hex(
+            format!("{prev}{}", canonical(at, &tool, &text, &state)).as_bytes(),
+        );
         if line_prev != prev || line_hash != expected {
             return Err(i + 1);
         }
         prev = line_hash;
-        entries.push(Entry { at, tool, text, state });
+        entries.push(Entry {
+            at,
+            tool,
+            text,
+            state,
+        });
     }
     Ok(entries)
 }
@@ -123,7 +132,10 @@ pub fn log(json: bool, limit: usize) -> ExitCode {
     };
     let raw = std::fs::read_to_string(&p).unwrap_or_default();
     if raw.trim().is_empty() {
-        println!("{}", color.paint(DIM, "no receipts yet — they appear as tools run."));
+        println!(
+            "{}",
+            color.paint(DIM, "no receipts yet — they appear as tools run.")
+        );
         return ExitCode::SUCCESS;
     }
 
@@ -177,7 +189,11 @@ pub fn log(json: bool, limit: usize) -> ExitCode {
                 "{}",
                 color.paint(
                     DIM,
-                    &format!("  chain intact · {} receipts · {}", entries.len(), p.display())
+                    &format!(
+                        "  chain intact · {} receipts · {}",
+                        entries.len(),
+                        p.display()
+                    )
                 )
             );
             ExitCode::SUCCESS

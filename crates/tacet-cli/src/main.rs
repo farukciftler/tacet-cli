@@ -705,7 +705,11 @@ fn main() -> ExitCode {
 /// user reviews the file before sharing — this is the first pass, their eyes
 /// are the second.
 fn scrub(text: &str, home: &str) -> String {
-    let mut out = if home.is_empty() { text.to_string() } else { text.replace(home, "~") };
+    let mut out = if home.is_empty() {
+        text.to_string()
+    } else {
+        text.replace(home, "~")
+    };
     if out.contains('@') {
         out = out
             .split(' ')
@@ -720,7 +724,10 @@ fn scrub(text: &str, home: &str) -> String {
 fn feedback(turns: usize) -> ExitCode {
     let color = Color::setup();
     let Some(stored) = session::Session::latest() else {
-        println!("{}", color.paint(DIM, "no stored session to report — talk to tacet first."));
+        println!(
+            "{}",
+            color.paint(DIM, "no stored session to report — talk to tacet first.")
+        );
         return ExitCode::SUCCESS;
     };
     let home = std::env::var("HOME").unwrap_or_default();
@@ -752,7 +759,9 @@ fn feedback(turns: usize) -> ExitCode {
         None => "unknown (no local weights)".to_string(),
     };
     body.push_str(&format!("- model: {model} · context: {window}\n\n"));
-    body.push_str("### What went wrong\n\n(describe it here)\n\n### Transcript (last turns, scrubbed)\n\n");
+    body.push_str(
+        "### What went wrong\n\n(describe it here)\n\n### Transcript (last turns, scrubbed)\n\n",
+    );
     for t in tail.iter().rev() {
         let who = t.role.as_str();
         body.push_str(&format!("**{who}:** {}\n\n", scrub(&t.text, &home)));
@@ -765,8 +774,17 @@ fn feedback(turns: usize) -> ExitCode {
     match std::fs::write(&name, body) {
         Ok(()) => {
             println!("{}", color.paint(BOLD, &name));
-            println!("{}", color.paint(DIM, "  read it, edit anything you would rather keep, then paste it into a"));
-            println!("{}", color.paint(DIM, "  GitHub issue. nothing has been sent anywhere."));
+            println!(
+                "{}",
+                color.paint(
+                    DIM,
+                    "  read it, edit anything you would rather keep, then paste it into a"
+                )
+            );
+            println!(
+                "{}",
+                color.paint(DIM, "  GitHub issue. nothing has been sent anywhere.")
+            );
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -819,7 +837,11 @@ fn doctor() -> ExitCode {
     let metal = cfg!(feature = "metal");
     println!(
         "  binary     candle: {} · metal: {}",
-        if candle { "yes" } else { "NO — the real engine is missing" },
+        if candle {
+            "yes"
+        } else {
+            "NO — the real engine is missing"
+        },
         if metal { "yes" } else { "no" }
     );
     if !candle {
@@ -832,7 +854,11 @@ fn doctor() -> ExitCode {
     // The machine.
     let ram = total_ram_bytes();
     match ram {
-        Some(b) => println!("  machine    ram: {:.1} GiB · os: {}", b as f64 / (1u64 << 30) as f64, std::env::consts::OS),
+        Some(b) => println!(
+            "  machine    ram: {:.1} GiB · os: {}",
+            b as f64 / (1u64 << 30) as f64,
+            std::env::consts::OS
+        ),
         None => println!("  machine    ram: unknown · os: {}", std::env::consts::OS),
     }
 
@@ -840,7 +866,13 @@ fn doctor() -> ExitCode {
     let roots = model_package::model_roots();
     let packages = model_package::scan(&roots);
     if packages.is_empty() {
-        println!("{}", color.paint(YELLOW, "  models     none — run: tacet models download qwen3-4b"));
+        println!(
+            "{}",
+            color.paint(
+                YELLOW,
+                "  models     none — run: tacet models download qwen3-4b"
+            )
+        );
     } else {
         for p in &packages {
             println!(
@@ -860,7 +892,11 @@ fn doctor() -> ExitCode {
     }
     println!(
         "  web        {}",
-        if tacet_web::addon::web_search_is_open() { "addon open" } else { "addon closed or not installed" }
+        if tacet_web::addon::web_search_is_open() {
+            "addon open"
+        } else {
+            "addon closed or not installed"
+        }
     );
 
     // The suggestion — a rule of thumb, spelled out so it can be argued with:
@@ -870,12 +906,22 @@ fn doctor() -> ExitCode {
         let (model, note) = if gib < 8.0 {
             ("qwen2.5-3b", "under 8 GiB the 3B is the comfortable choice")
         } else if gib < 16.0 {
-            ("qwen3-4b", "8-16 GiB runs the 4B comfortably; the 8B will swap")
+            (
+                "qwen3-4b",
+                "8-16 GiB runs the 4B comfortably; the 8B will swap",
+            )
         } else {
-            ("qwen3-8b", "16+ GiB runs the 8B well — try: tacet config set model qwen3-8b")
+            (
+                "qwen3-8b",
+                "16+ GiB runs the 8B well — try: tacet config set model qwen3-8b",
+            )
         };
         println!();
-        println!("  suggestion {} {}", model, color.paint(DIM, &format!("· {note}")));
+        println!(
+            "  suggestion {} {}",
+            model,
+            color.paint(DIM, &format!("· {note}"))
+        );
     }
     ExitCode::SUCCESS
 }
@@ -1961,8 +2007,18 @@ fn thinking_switch(message: &str) -> &'static str {
     }
     let plain = tacet_tools::router::simplify(message);
     const HEAVY: [&str; 12] = [
-        "plan", "ozetle", "summar", "analiz", "analy", "karsilastir", "compare",
-        "strateji", "strategy", "neden", "why", "adim adim",
+        "plan",
+        "ozetle",
+        "summar",
+        "analiz",
+        "analy",
+        "karsilastir",
+        "compare",
+        "strateji",
+        "strategy",
+        "neden",
+        "why",
+        "adim adim",
     ];
     let heavy = message.chars().count() > 220 || HEAVY.iter().any(|k| plain.contains(k));
     if heavy { " /think" } else { " /no_think" }
@@ -2974,7 +3030,10 @@ fn chat(run: ChatRun) -> ExitCode {
                                 "{}",
                                 color.paint(
                                     DIM,
-                                    &format!("(catalog refreshed — {} tools)", catalog.tools().len())
+                                    &format!(
+                                        "(catalog refreshed — {} tools)",
+                                        catalog.tools().len()
+                                    )
                                 )
                             );
                         }
@@ -4099,33 +4158,53 @@ fn slash(
             if screen.tty() {
                 let record = tacet_web::addon::read().ok();
                 let installed_open = |n: &str| {
-                    record.as_ref().map(|r| (r.find(n).is_some(), r.is_open(n))).unwrap_or((false, false))
+                    record
+                        .as_ref()
+                        .map(|r| (r.find(n).is_some(), r.is_open(n)))
+                        .unwrap_or((false, false))
                 };
                 let items: Vec<(String, String)> = tacet_web::addon::DEFINITIONS
                     .iter()
                     .map(|d| {
                         let (inst, open) = installed_open(d.name);
-                        let state = if !inst { "not installed" } else if open { "installed · on" } else { "installed · off" };
+                        let state = if !inst {
+                            "not installed"
+                        } else if open {
+                            "installed · on"
+                        } else {
+                            "installed · off"
+                        };
                         (format!("{} · {}", d.name, state), d.summary.to_string())
                     })
                     .collect();
-                let Some(i) = input::menu(screen, "addons — enter opens, esc closes", &items) else {
+                let Some(i) = input::menu(screen, "addons — enter opens, esc closes", &items)
+                else {
                     return SlashResult::Handled;
                 };
                 let d = &tacet_web::addon::DEFINITIONS[i];
                 let (inst, open) = installed_open(d.name);
                 let actions: Vec<(String, String)> = if !inst {
                     vec![
-                        (format!("install {}", d.name), "download nothing? it asks its own questions first".into()),
+                        (
+                            format!("install {}", d.name),
+                            "download nothing? it asks its own questions first".into(),
+                        ),
                         ("back".into(), "".into()),
                     ]
                 } else {
                     vec![
                         (
-                            if open { format!("turn {} off", d.name) } else { format!("turn {} on", d.name) },
+                            if open {
+                                format!("turn {} off", d.name)
+                            } else {
+                                format!("turn {} on", d.name)
+                            },
                             "takes effect immediately in this session".into(),
                         ),
-                        (format!("remove {}", d.name), "uninstall; settings are forgotten".into()),
+                        (
+                            format!("remove {}", d.name),
+                            "uninstall; settings are forgotten".into(),
+                        ),
                         ("back".into(), "".into()),
                     ]
                 };
@@ -4134,10 +4213,17 @@ fn slash(
                     None => SlashResult::Handled,
                     Some(a) => {
                         let cmd = if !inst {
-                            match a { 0 => Some(format!("/addon install {}", d.name)), _ => None }
+                            match a {
+                                0 => Some(format!("/addon install {}", d.name)),
+                                _ => None,
+                            }
                         } else {
                             match a {
-                                0 => Some(format!("/addon {} {}", if open { "off" } else { "on" }, d.name)),
+                                0 => Some(format!(
+                                    "/addon {} {}",
+                                    if open { "off" } else { "on" },
+                                    d.name
+                                )),
                                 1 => Some(format!("/addon remove {}", d.name)),
                                 _ => None,
                             }
@@ -4197,7 +4283,8 @@ fn slash(
                             (format!("{}{mark}", t.name), t.description.to_string())
                         })
                         .collect();
-                    return match input::menu(screen, "themes — enter applies, esc closes", &items) {
+                    return match input::menu(screen, "themes — enter applies, esc closes", &items)
+                    {
                         Some(i) => SlashResult::Replay(format!("/themes {}", ui::THEMES[i].name)),
                         None => SlashResult::Handled,
                     };

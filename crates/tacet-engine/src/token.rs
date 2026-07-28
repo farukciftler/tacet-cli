@@ -318,7 +318,10 @@ mod budget_tests {
         assert_eq!(context_budget(Some(262_144), None), CONTEXT_BUDGET);
         assert_eq!(context_budget(None, None), CONTEXT_BUDGET);
         // A cache so large that the budget affords nothing.
-        assert_eq!(context_budget(Some(262_144), Some(usize::MAX)), CONTEXT_BUDGET);
+        assert_eq!(
+            context_budget(Some(262_144), Some(usize::MAX)),
+            CONTEXT_BUDGET
+        );
     }
 
     /// Division by zero is a crash, and a zero here means the file said

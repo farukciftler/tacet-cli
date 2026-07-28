@@ -41,11 +41,11 @@ pub use constraint::{Constrainer, ConstraintSession, FreeConstraint};
 pub use error::{EngineError, EngineResult};
 pub use executor::wait;
 pub use fake::{FakeEngine, FakeStep};
+#[cfg(feature = "candle")]
+pub use gguf_tokenizer::tokenizer_from_gguf;
 pub use gguf_tokenizer::{
     gguf_context_length, gguf_has_tokenizer, gguf_kv_bytes_per_token, is_context_length_key,
 };
-#[cfg(feature = "candle")]
-pub use gguf_tokenizer::tokenizer_from_gguf;
 pub use prompt::{GUIDE_LIMIT, Prompt, Role, Template, Turn};
 pub use provider::{
     EngineProvider, Generation, GenerationFuture, SamplingSetting, StopReason, boxed_generation,

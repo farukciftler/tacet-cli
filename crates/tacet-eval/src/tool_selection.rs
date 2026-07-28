@@ -58,7 +58,19 @@ const TO_DRY: &[&str] = &["web_search", "web_fetch"];
 /// platform — and the whole reason this list exists is to be able to tell the
 /// two apart: a tool that is NOT in this list dropping out of the catalog is
 /// still a regression and fails the test.
-const DISCOVERY_BOUND: &[&str] = &["run_code", "write_code"];
+///
+/// `calendar` JOINED THE LIST WHEN LINUX CI SAID SO, and it is worth writing
+/// down which of the two claims turned out to be wrong. The tool reaches the
+/// user's calendar through `/usr/bin/osascript`, so it is macOS-only by
+/// construction (`#[cfg(target_os = "macos")]` in `calendar.rs`) — but the
+/// comment above says the list is for tools bound to a DISCOVERY gate, and
+/// `calendar` is bound to a COMPILE-TIME one. The distinction does not matter to
+/// the test, which asks a single question: is this name absent for a reason the
+/// platform can explain, or is it a typo in a case? Both reasons are the
+/// platform. What DID matter is that nobody could answer it before the tool ran
+/// on something other than a Mac — this repository's own eval was red on Linux
+/// for a tool that was working exactly as designed.
+const DISCOVERY_BOUND: &[&str] = &["run_code", "write_code", "calendar"];
 
 // ---------------------------------------------------------------------------
 // The dry tool
@@ -201,7 +213,11 @@ pub fn turkish_selection_cases() -> Vec<SelectionCase> {
         // --- calculate ---
         SelectionCase::tool("tr-hesap-carpma", "125 çarpı 8 kaç eder?", "calculate"),
         SelectionCase::tool("tr-hesap-yuzde", "480'in yüzde 18'i ne kadar?", "calculate"),
-        SelectionCase::tool("tr-hesap-toplama", "347 ile 268'i toplar mısın?", "calculate"),
+        SelectionCase::tool(
+            "tr-hesap-toplama",
+            "347 ile 268'i toplar mısın?",
+            "calculate",
+        ),
         // --- time ---
         SelectionCase::tool("tr-saat", "Saat kaç şu an?", "time"),
         SelectionCase::tool("tr-tarih", "Bugün ayın kaçı?", "time"),
@@ -209,19 +225,51 @@ pub fn turkish_selection_cases() -> Vec<SelectionCase> {
         SelectionCase::tool("tr-hafta-gunu", "Bugün günlerden ne?", "time"),
         SelectionCase::tool("tr-dogal-tarih", "Önümüzdeki salıya kaç gün var?", "time"),
         // --- documents ---
-        SelectionCase::tool("tr-belge-olustur", "Alışveriş listemi bir excel tablosu yap", "create_document"),
-        SelectionCase::tool("tr-belge-oku", "notlar.md dosyasında ne yazıyor, özetler misin?", "read_document"),
-        SelectionCase::tool("tr-belge-duzenle", "Az önceki tabloya bir satır daha ekle", "edit_document"),
+        SelectionCase::tool(
+            "tr-belge-olustur",
+            "Alışveriş listemi bir excel tablosu yap",
+            "create_document",
+        ),
+        SelectionCase::tool(
+            "tr-belge-oku",
+            "notlar.md dosyasında ne yazıyor, özetler misin?",
+            "read_document",
+        ),
+        SelectionCase::tool(
+            "tr-belge-duzenle",
+            "Az önceki tabloya bir satır daha ekle",
+            "edit_document",
+        ),
         // --- files ---
-        SelectionCase::tool("tr-dosya-ara", "Bütçeyle ilgili notu hangi dosyaya yazmıştım?", "find_file"),
+        SelectionCase::tool(
+            "tr-dosya-ara",
+            "Bütçeyle ilgili notu hangi dosyaya yazmıştım?",
+            "find_file",
+        ),
         // --- code ---
-        SelectionCase::tool("tr-kod-calistir", "1'den 100'e kadar asal sayıları listeler misin?", "run_code"),
-        SelectionCase::tool("tr-kod-dosya", "Bana fibonacci hesaplayan bir python betiği yaz ve kaydet", "write_code"),
+        SelectionCase::tool(
+            "tr-kod-calistir",
+            "1'den 100'e kadar asal sayıları listeler misin?",
+            "run_code",
+        ),
+        SelectionCase::tool(
+            "tr-kod-dosya",
+            "Bana fibonacci hesaplayan bir python betiği yaz ve kaydet",
+            "write_code",
+        ),
         // --- web ---
-        SelectionCase::tool("tr-hava", "İstanbul'da yarın hava nasıl olacak?", "web_search"),
+        SelectionCase::tool(
+            "tr-hava",
+            "İstanbul'da yarın hava nasıl olacak?",
+            "web_search",
+        ),
         SelectionCase::tool("tr-haber", "Dolar kuru şu an ne durumda?", "web_search"),
         // --- memory ---
-        SelectionCase::tool("tr-hatirla", "Kardeşimin doğum günü 3 mayıs, bunu unutma", "remember"),
+        SelectionCase::tool(
+            "tr-hatirla",
+            "Kardeşimin doğum günü 3 mayıs, bunu unutma",
+            "remember",
+        ),
         SelectionCase::tool("tr-unut", "Kahve sevdiğimi unut artık", "remember"),
         // --- irrelevance: NOTHING must be selected ---
         SelectionCase::chat("tr-selam", "Selam, nasılsın?"),
@@ -234,7 +282,11 @@ pub fn turkish_selection_cases() -> Vec<SelectionCase> {
 pub fn selection_cases() -> Vec<SelectionCase> {
     vec![
         // --- calendar (macOS bridge; the tool is in the production catalog there) ---
-        SelectionCase::tool("calendar-day", "What is on my calendar tomorrow?", "calendar"),
+        SelectionCase::tool(
+            "calendar-day",
+            "What is on my calendar tomorrow?",
+            "calendar",
+        ),
         SelectionCase::tool(
             "calendar-remind",
             "Remind me to call the dentist tomorrow at 9",

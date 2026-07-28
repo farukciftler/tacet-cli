@@ -1142,7 +1142,12 @@ mod tests {
                 },
                 "loading qwen3-4b",
             ),
-            (Stage::Loading { model: String::new() }, "loading the model"),
+            (
+                Stage::Loading {
+                    model: String::new(),
+                },
+                "loading the model",
+            ),
             (Stage::Prefill { tokens: 2586 }, "prefill ~2586 tok"),
             (Stage::Generating { tokens: 0 }, "generating"),
             (Stage::Generating { tokens: 41 }, "generating 41 tok"),
@@ -1205,8 +1210,15 @@ mod tests {
         // The prompt size the CLI holds IS an estimate, and the line admits it
         // rather than presenting it as a count.
         assert!(
-            indicator_line("◜", &Stage::Prefill { tokens: 2586 }, "thinking", 3, 80, false)
-                .contains("~2586"),
+            indicator_line(
+                "◜",
+                &Stage::Prefill { tokens: 2586 },
+                "thinking",
+                3,
+                80,
+                false
+            )
+            .contains("~2586"),
         );
     }
 

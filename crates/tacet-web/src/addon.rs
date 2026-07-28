@@ -1113,7 +1113,10 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), count, "a duplicated addon name");
 
-        let mut tools: Vec<&str> = DEFINITIONS.iter().flat_map(|d| d.tools.iter().copied()).collect();
+        let mut tools: Vec<&str> = DEFINITIONS
+            .iter()
+            .flat_map(|d| d.tools.iter().copied())
+            .collect();
         let count = tools.len();
         tools.sort_unstable();
         tools.dedup();
@@ -1147,10 +1150,23 @@ mod tests {
         assert!(asks(DB).is_empty(), "db must ask nothing");
 
         // The three list-shaped ones take MANY values, the two single ones do not.
-        for (name, key) in [(SHELL, COMMANDS_KEY), (WORKSPACE, DIRECTORIES_KEY), (HTTP, HOSTS_KEY)] {
-            assert!(definition(name).unwrap().setting(key).unwrap().many, "{name}");
+        for (name, key) in [
+            (SHELL, COMMANDS_KEY),
+            (WORKSPACE, DIRECTORIES_KEY),
+            (HTTP, HOSTS_KEY),
+        ] {
+            assert!(
+                definition(name).unwrap().setting(key).unwrap().many,
+                "{name}"
+            );
         }
-        assert!(!definition(WEB_SEARCH).unwrap().setting(ADDRESS_KEY).unwrap().many);
+        assert!(
+            !definition(WEB_SEARCH)
+                .unwrap()
+                .setting(ADDRESS_KEY)
+                .unwrap()
+                .many
+        );
     }
 
     /// A CREDENTIAL IS NEVER ECHOED. The registry file is 0600 already; what
@@ -1264,7 +1280,10 @@ mod tests {
         let mut r = Record::empty();
         r.add(a.clone());
         let back = Record::parse(&r.json()).unwrap();
-        assert_eq!(back.find(SHELL).unwrap().values(COMMANDS_KEY), vec!["git", "ls"]);
+        assert_eq!(
+            back.find(SHELL).unwrap().values(COMMANDS_KEY),
+            vec!["git", "ls"]
+        );
     }
 
     /// THE ALLOW-LIST MATCHES AT THE DOT.
@@ -1278,14 +1297,29 @@ mod tests {
         assert!(host_is_allowed(&list, "example.com"));
         assert!(host_is_allowed(&list, "api.example.com"));
         assert!(host_is_allowed(&list, "a.b.example.com"));
-        assert!(host_is_allowed(&list, "EXAMPLE.COM"), "case must not matter");
-        assert!(host_is_allowed(&list, "example.com."), "a trailing root dot");
+        assert!(
+            host_is_allowed(&list, "EXAMPLE.COM"),
+            "case must not matter"
+        );
+        assert!(
+            host_is_allowed(&list, "example.com."),
+            "a trailing root dot"
+        );
 
-        assert!(!host_is_allowed(&list, "notexample.com"), "a suffix by letters");
-        assert!(!host_is_allowed(&list, "example.com.evil.net"), "a prefix by letters");
+        assert!(
+            !host_is_allowed(&list, "notexample.com"),
+            "a suffix by letters"
+        );
+        assert!(
+            !host_is_allowed(&list, "example.com.evil.net"),
+            "a prefix by letters"
+        );
         assert!(!host_is_allowed(&list, "evil.net"));
         assert!(!host_is_allowed(&list, ""));
-        assert!(!host_is_allowed("", "example.com"), "an empty list allows nothing");
+        assert!(
+            !host_is_allowed("", "example.com"),
+            "an empty list allows nothing"
+        );
     }
 
     /// The host of a URL is what comes after the LAST `@`.
@@ -1296,15 +1330,33 @@ mod tests {
     /// connection uses.
     #[test]
     fn the_host_of_a_url_is_the_one_that_would_be_connected_to() {
-        assert_eq!(url_host("https://api.example.com/v1?x=1").as_deref(), Some("api.example.com"));
-        assert_eq!(url_host("https://API.Example.COM").as_deref(), Some("api.example.com"));
-        assert_eq!(url_host("https://example.com:8443/a").as_deref(), Some("example.com"));
+        assert_eq!(
+            url_host("https://api.example.com/v1?x=1").as_deref(),
+            Some("api.example.com")
+        );
+        assert_eq!(
+            url_host("https://API.Example.COM").as_deref(),
+            Some("api.example.com")
+        );
+        assert_eq!(
+            url_host("https://example.com:8443/a").as_deref(),
+            Some("example.com")
+        );
         assert_eq!(url_host("https://[::1]:8443/a").as_deref(), Some("::1"));
-        assert_eq!(url_host("https://user:pass@example.com/a").as_deref(), Some("example.com"));
+        assert_eq!(
+            url_host("https://user:pass@example.com/a").as_deref(),
+            Some("example.com")
+        );
         // THE TRAP.
-        assert_eq!(url_host("https://api.example.com@evil.test/a").as_deref(), Some("evil.test"));
+        assert_eq!(
+            url_host("https://api.example.com@evil.test/a").as_deref(),
+            Some("evil.test")
+        );
         let list = join_values(&["example.com"]);
-        assert!(!host_is_allowed(&list, &url_host("https://api.example.com@evil.test/").unwrap()));
+        assert!(!host_is_allowed(
+            &list,
+            &url_host("https://api.example.com@evil.test/").unwrap()
+        ));
         // Not a fetchable scheme, no host at all.
         assert_eq!(url_host("file:///etc/passwd"), None);
         assert_eq!(url_host("example.com"), None);
@@ -1324,7 +1376,10 @@ mod tests {
         .unwrap();
         assert!(r.is_open(SHELL));
         assert!(!r.is_open(HTTP), "a closed record must not count as open");
-        assert!(!r.is_open(WORKSPACE), "an absent record must not count as open");
+        assert!(
+            !r.is_open(WORKSPACE),
+            "an absent record must not count as open"
+        );
         assert!(!r.is_open("no-such-addon"));
         // An unreadable registry is not an open one — the free function maps
         // `Err` onto false, and that is the whole reason it exists.

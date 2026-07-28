@@ -205,7 +205,13 @@ impl tacet_kernel::Tool for CalendarTool {
                 return ToolOutcome::failed(&e);
             }
             let kind = args.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-            let text_arg = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            let text_arg = |k: &str| {
+                args.get(k)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string()
+            };
 
             let trace = ctx.start_chip("calendar", "Looking at the calendar…");
             let outcome = match kind {
@@ -250,7 +256,9 @@ impl tacet_kernel::Tool for CalendarTool {
                                 "the moment '{when}' was not understood — pass it exactly as the user said it"
                             ))),
                             Some(r) => match run_osascript(&reminder_script(&title, &r.an)) {
-                                Err(e) => ToolOutcome::failed(&ToolError::Io(std::io::Error::other(e))),
+                                Err(e) => {
+                                    ToolOutcome::failed(&ToolError::Io(std::io::Error::other(e)))
+                                }
                                 Ok(_) => ToolOutcome::new(
                                     format!("reminder set · {:02}:{:02}", r.an.clock, r.an.minute),
                                     ToolState::Written,
@@ -296,8 +304,14 @@ mod tests {
         assert!(s.contains("set year of d1 to 2026"));
         assert!(s.contains("set month of d1 to 7"));
         assert!(s.contains("set day of d1 to 29"));
-        assert!(s.contains("set hours of d1 to 0"), "events start at midnight");
-        assert!(!s.contains("date \""), "no locale-parsed date literal anywhere");
+        assert!(
+            s.contains("set hours of d1 to 0"),
+            "events start at midnight"
+        );
+        assert!(
+            !s.contains("date \""),
+            "no locale-parsed date literal anywhere"
+        );
     }
 
     #[test]

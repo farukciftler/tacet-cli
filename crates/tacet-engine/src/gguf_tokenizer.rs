@@ -995,7 +995,10 @@ mod tests {
         assert_eq!(gguf_context_length(&path), None);
         let _ = std::fs::remove_file(&path);
 
-        assert_eq!(gguf_context_length(Path::new("/definitely/not/here.gguf")), None);
+        assert_eq!(
+            gguf_context_length(Path::new("/definitely/not/here.gguf")),
+            None
+        );
     }
 
     #[test]
