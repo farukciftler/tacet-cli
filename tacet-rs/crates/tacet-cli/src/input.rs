@@ -389,7 +389,38 @@ impl<'a> Editor<'a> {
         None
     }
 
+    /// Strips terminal control bytes from text that ENTERS THE BUFFER.
+    ///
+    /// WHY: pasted text is UNTRUSTED — the clipboard may come from a web page
+    /// that told the reader to "paste this to your assistant". Bracketed paste
+    /// hands the bytes over VERBATIM, and this buffer is BOTH drawn to the
+    /// terminal (`draw`) AND sent to the model as the user's own message. A raw
+    /// ESC therefore does two separate things at once: it EXECUTES as a
+    /// terminal escape (cursor motion, erase, colour, even turning bracketed
+    /// paste back off), and it makes WHAT IS ON SCREEN DIFFER FROM WHAT IS
+    /// SENT. `chars().count()` also counts it as one printable column, so the
+    /// caret arithmetic in `lines` drifts and the input frame comes apart.
+    ///
+    /// FILTERED AT `add`, THE SINGLE ENTRANCE, not in the paste branch:
+    /// cleaning it up only while drawing would leave the raw bytes in the
+    /// buffer, which is the half of the problem that actually reaches the
+    /// model. `\n` SURVIVES — alt+enter uses it; `\t` becomes a space so the
+    /// column arithmetic stays honest.
+    fn without_controls(text: &str) -> String {
+        text.chars()
+            .filter_map(|c| match c {
+                '\n' => Some('\n'),
+                '\t' => Some(' '),
+                // C0, DEL and C1 (U+009B is a one-character CSI). None of them
+                // has a printable width.
+                c if c.is_control() => None,
+                c => Some(c),
+            })
+            .collect()
+    }
+
     fn add(&mut self, text: &str) {
+        let text = &Self::without_controls(text);
         self.buffer.insert_str(self.caret, text);
         self.caret += text.len();
         self.selection = 0;
@@ -627,6 +658,65 @@ fn word_start(s: &str, i: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// PASTED TEXT IS UNTRUSTED AND MUST NOT REACH EITHER THE TERMINAL OR THE
+    /// MODEL WITH ITS ESCAPES INTACT.
+    ///
+    /// The attack: a page says "paste this to your assistant" and the clipboard
+    /// carries `ESC[2K` and a carriage return. Bracketed paste hands the bytes
+    /// over verbatim, the buffer is drawn straight to stdout (the escapes
+    /// EXECUTE — the frame is erased and repainted) and the same buffer is sent
+    /// to the model, so what the user reads on screen and what they send stop
+    /// being the same text.
+    ///
+    /// It goes through `Editor::add`, the single entrance, because that is
+    /// where the fix lives: a filter applied only while drawing would leave the
+    /// raw bytes in what gets sent.
+    #[test]
+    fn pasted_control_bytes_never_enter_the_buffer() {
+        let history: Vec<String> = Vec::new();
+
+        let mut e = Editor::new("", &history);
+        e.add("hi \u{1b}[2K\rthere\u{9b}2J\u{7}");
+        for bad in ['\u{1b}', '\r', '\u{9b}', '\u{7}'] {
+            assert!(
+                !e.buffer.contains(bad),
+                "{bad:?} entered the buffer: {:?}",
+                e.buffer
+            );
+        }
+        assert_eq!(e.buffer, "hi [2Kthere2J");
+        // The caret must count what is really there, or the frame arithmetic
+        // drifts by exactly the number of invisible bytes.
+        assert_eq!(e.caret, e.buffer.len());
+
+        // ALT+ENTER STILL WORKS: a newline is layout, not a command.
+        let mut n = Editor::new("", &history);
+        n.add("a\nb");
+        assert_eq!(n.buffer, "a\nb");
+
+        // A tab becomes a space so the column count stays honest.
+        let mut t = Editor::new("", &history);
+        t.add("a\tb");
+        assert_eq!(t.buffer, "a b");
+
+        // WHAT IS DRAWN CARRIES NO ESCAPE OF THE PASTE'S OWN. Colour codes from
+        // our own styling are expected; the payload's are not.
+        let mut d = Editor::new("", &history);
+        d.add("x\u{1b}[2Jy");
+        let drawn = d.lines().0.join("");
+        // The frame carries OUR OWN colour codes, so what is measured is that
+        // the PAYLOAD's escape is gone: the bare text `[2J` left behind is
+        // inert, an ESC in front of it would not be.
+        assert!(
+            !drawn.contains("\u{1b}[2J"),
+            "the payload was drawn as an escape: {drawn:?}"
+        );
+        assert!(
+            drawn.contains("x[2Jy"),
+            "the text itself was lost: {drawn:?}"
+        );
+    }
 
     /// The list opens ONLY while a command is being typed: a user typing
     /// `/grammar web_search` is entering an argument, not picking a command.

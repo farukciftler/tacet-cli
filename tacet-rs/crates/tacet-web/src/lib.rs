@@ -53,6 +53,7 @@ pub mod text;
 pub use addon::{Addon, Record as AddonRecord, WEB_SEARCH, web_search_is_open};
 pub use client::{
     ADDRESS_VARIABLE, DEFAULT_TIMEOUT, WebSearchClient, address_is_valid, is_fetchable,
+    target_is_public,
 };
 pub use download::{
     AlwaysDeny, DownloadApproval, DownloadError, DownloadOutcome, DownloadPlan, DownloadResult,

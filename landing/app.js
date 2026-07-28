@@ -8,7 +8,33 @@ document.addEventListener('DOMContentLoaded', () => {
     initEnso();
     initReveal();
     initDemo();
+    initInstallTabs();
 });
+
+// --- Installer OS tabs -------------------------------------------------------
+// ONE visible command line; the tabs only swap its text and its copy payload.
+// There are no hidden duplicate rows to leak out under stale CSS. Pre-selects
+// the visitor's own system.
+const INSTALL_COMMANDS = {
+    unix: 'curl -fsSL https://usetacet.com/install.sh | sh',
+    win: 'powershell -c "irm https://usetacet.com/install.ps1 | iex"',
+};
+
+function initInstallTabs() {
+    const tabs = document.querySelectorAll('.os-tab');
+    const cmd = document.getElementById('install-cmd');
+    const copy = document.getElementById('install-copy');
+    if (!tabs.length || !cmd || !copy) return;
+
+    function select(os) {
+        tabs.forEach(t => t.classList.toggle('active', t.dataset.os === os));
+        cmd.textContent = INSTALL_COMMANDS[os];
+        copy.setAttribute('data-copy', INSTALL_COMMANDS[os]);
+    }
+
+    tabs.forEach(t => t.addEventListener('click', () => select(t.dataset.os)));
+    select(/Windows/i.test(navigator.userAgent) ? 'win' : 'unix');
+}
 
 // --- Ensō: scroll draws the brush circle ------------------------------------
 // Hero: the ring starts as bare canvas and DRAWS itself over the first ~70vh

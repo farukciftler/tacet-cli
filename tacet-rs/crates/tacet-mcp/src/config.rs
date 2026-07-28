@@ -39,6 +39,21 @@
 //! the file must be created with 0600 permissions and why `key_env` can
 //! redirect it to an environment variable — so you do not have to keep the
 //! token in a file that ends up in a git repository.
+//!
+//! THE 0600 RULE IS NOW MEASURED, NOT MERELY WRITTEN DOWN. It used to be a
+//! sentence in this header and nothing else: nothing stamped the mode when the
+//! file was created and nothing looked at it when the file was read. A user who
+//! created `mcp.json` in an editor got 0644 from the default umask, and on
+//! macOS every local account is in the `staff` group, so a second account on
+//! the machine could simply `cat` the token and then connect to the user's
+//! server as the user — with the four gates of the tool layer bypassed
+//! entirely, because the far side never sees them. `key_file_is_exposed` is the
+//! measurement; it is deliberately quiet when the file holds NO plain key
+//! (`key_env` users must not be nagged).
+//!
+//! WHAT IT DOES NOT DO: it does not change the mode and it does not drop the
+//! key. Both are behaviour changes that would break a working setup silently,
+//! which is worse than the exposure. It reports; the shell shows the warning.
 
 use crate::error::{MCPError, MCPResult};
 use serde::{Deserialize, Serialize};
@@ -142,6 +157,54 @@ pub fn read(path: &Path) -> MCPResult<Config> {
     parse(&text)
 }
 
+/// Reads the file AND measures whether the plain-text key in it is readable by
+/// anybody else on this machine.
+///
+/// A SEPARATE FUNCTION FROM `read`, rather than a field on `Config`: `Config`
+/// is serialized back to disk, and a warning flag is not part of the disk
+/// format. Callers that do not care keep calling `read`.
+pub fn read_checked(path: &Path) -> MCPResult<(Config, bool)> {
+    let config = read(path)?;
+    let exposed = key_file_is_exposed(path, &config);
+    Ok((config, exposed))
+}
+
+/// Is there a plain-text key in this file that somebody else on the machine can
+/// read.
+///
+/// TWO CONDITIONS, BOTH REQUIRED. A permissive mode alone is not a finding: a
+/// config that only names environment variables carries no secret, and warning
+/// about it teaches the user to ignore warnings. A plain `key` alone is not one
+/// either: at 0600 it is as safe as a file on a desktop gets.
+///
+/// `& 0o077` — anything readable, writable or executable by GROUP or OTHER.
+/// On macOS the group half is the one that bites: home directories are
+/// `drwxr-x---` with group `staff`, and every local account is in `staff`.
+#[cfg(unix)]
+pub fn key_file_is_exposed(path: &Path, config: &Config) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let carries_a_plain_key = config
+        .connections
+        .iter()
+        .any(|c| c.key.as_deref().is_some_and(|k| !k.is_empty()));
+    if !carries_a_plain_key {
+        return false;
+    }
+    std::fs::metadata(path)
+        .map(|m| m.permissions().mode() & 0o077 != 0)
+        .unwrap_or(false)
+}
+
+/// ALWAYS FALSE ON WINDOWS. The permission model there is ACLs, not a mode
+/// word; `PermissionsExt` does not exist and translating "0600" into an ACL
+/// check is a different piece of work. Reporting a made-up answer would be
+/// worse than reporting none — the same platform split the memory layer
+/// already writes down.
+#[cfg(not(unix))]
+pub fn key_file_is_exposed(_path: &Path, _config: &Config) -> bool {
+    false
+}
+
 /// Parses from text — pure, no filesystem needed.
 pub fn parse(text: &str) -> MCPResult<Config> {
     if text.trim().is_empty() {
@@ -156,6 +219,24 @@ pub fn read_default() -> MCPResult<Config> {
     match default_path() {
         Some(p) => read(&p),
         None => Ok(Config::default()),
+    }
+}
+
+/// `read_default` PLUS the permission measurement.
+///
+/// WHY THIS EXISTS: `key_file_is_exposed` and `read_checked` were written and
+/// tested, but nothing on the live path called either of them — the shell loads
+/// through `read_default`, so the warning could never reach a user. A check that
+/// only runs from a test is not a fix; it is a closed door painted on a wall.
+/// This is the one entry point the shell actually uses, so the measurement is
+/// attached HERE rather than left for callers to remember.
+///
+/// `false` when the path cannot be resolved: there is no file, so there is no
+/// exposed key.
+pub fn read_default_checked() -> MCPResult<(Config, bool)> {
+    match default_path() {
+        Some(p) => read_checked(&p),
+        None => Ok((Config::default(), false)),
     }
 }
 
@@ -217,6 +298,63 @@ mod tests {
             parse("{this job note json").unwrap_err(),
             MCPError::Malformed
         );
+    }
+
+    /// THE 0600 RULE, MEASURED. The header of this module has promised it
+    /// since the beginning; until now nothing checked it, so a token sitting
+    /// in a world-readable file looked exactly like a token in a locked one.
+    #[cfg(unix)]
+    #[test]
+    fn a_plain_key_in_a_readable_file_is_reported_and_a_locked_one_is_not() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join("tacet-mcp-key-mode-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("directory");
+
+        let write = |name: &str, body: &str, mode: u32| {
+            let path = dir.join(name);
+            std::fs::write(&path, body).expect("write");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
+                .expect("permissions");
+            path
+        };
+
+        let with_key =
+            r#"{"connections":[{"name":"home","url":"https://a.test/mcp","key":"secret"}]}"#;
+        let with_env =
+            r#"{"connections":[{"name":"home","url":"https://a.test/mcp","key_env":"TOKEN"}]}"#;
+
+        // The finding: an editor's default umask gives 0644 and the token is
+        // readable by every other account on the machine.
+        let exposed = write("exposed.json", with_key, 0o644);
+        let (config, warned) = read_checked(&exposed).expect("reads");
+        assert!(warned, "a plain key at 0644 must be reported");
+        assert!(key_file_is_exposed(&exposed, &config));
+
+        // The documented state.
+        let locked = write("locked.json", with_key, 0o600);
+        assert!(!read_checked(&locked).expect("reads").1);
+
+        // NO NOISE: a file that names an environment variable holds no secret,
+        // and a warning nobody needs is a warning everybody learns to skip.
+        let env_only = write("env.json", with_env, 0o644);
+        assert!(!read_checked(&env_only).expect("reads").1);
+
+        // Group-only readability counts too — on macOS every local account is
+        // in `staff`, so 0640 is not private.
+        let group = write("group.json", with_key, 0o640);
+        assert!(read_checked(&group).expect("reads").1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_file_carries_no_warning() {
+        let missing = Path::new("/tmp/definitely-missing-tacet-mcp-file.json");
+        let (config, warned) = read_checked(missing).expect("must not error");
+        assert!(config.connections.is_empty());
+        assert!(!warned);
     }
 
     #[test]

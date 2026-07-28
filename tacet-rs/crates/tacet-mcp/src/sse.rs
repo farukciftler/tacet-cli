@@ -21,9 +21,13 @@ use std::io::BufRead;
 /// response (the output of a long build, for instance). If we took the first
 /// event and returned, every long-running call would say "malformed".
 ///
-/// There is no cap because the `time_limited` layer above (the client) cuts the
-/// duration; keeping a second counter here would create two separate truths
-/// about "how long do we wait".
+/// THERE IS NO CAP IN THIS FUNCTION, AND THAT IS NOT THE SAME AS THERE BEING
+/// NO CAP. This comment used to say the timeout above was enough; it was not —
+/// a timeout bounds the DURATION, and at local network speed a duration is
+/// gigabytes. The byte cap lives one layer up, on the reader handed to this
+/// function (`client::MAX_BODY`), so that ONE limit covers both this branch and
+/// the plain JSON branch. Do not add a second counter here: two truths about
+/// "how much is too much" drift apart.
 pub fn find_event<R: BufRead>(reader: R, id: u64) -> MCPResult<Value> {
     let mut buffer: Vec<String> = Vec::new();
 

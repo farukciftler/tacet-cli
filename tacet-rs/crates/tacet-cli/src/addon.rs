@@ -326,6 +326,42 @@ fn read_line() -> Option<String> {
 /// "installed".
 fn install_with_address(color: &Color, address: &str) -> ExitCode {
     let address = address.trim().trim_end_matches('/');
+    // THE BEST PROTECTION FOR A SECRET IS NOT TO CREATE IT.
+    //
+    // `https://user:password@host/searxng` is a perfectly ordinary thing to
+    // type for someone who put their SearXNG behind basic auth, and the address
+    // rule below does not look at it — it only checks the scheme. The password
+    // would then be written into `addons.json` in clear, printed by `addon
+    // list`, printed again by `addon try --json` (the output people paste into
+    // bug reports), and carried in the chip's raw request URL. Refusing it here
+    // means there is no plain-text credential on disk to protect in the first
+    // place.
+    if let Some(user_info) = userinfo(address) {
+        eprintln!(
+            "{}",
+            color.paint(
+                YELLOW,
+                "the address must not carry a user name or password ('user:pass@host')"
+            )
+        );
+        eprintln!(
+            "{}",
+            color.paint(
+                DIM,
+                &format!(
+                    "  '{user_info}@' was found in the address, and it would be stored IN CLEAR in addons.json",
+                )
+            )
+        );
+        eprintln!(
+            "{}",
+            color.paint(
+                DIM,
+                "  the addon registry is not a password store — put the credential in a proxy or a header instead."
+            )
+        );
+        return ExitCode::FAILURE;
+    }
     if let Err(e) = tacet_web::address_is_valid(address) {
         eprintln!(
             "{}",
@@ -373,6 +409,20 @@ fn install_with_address(color: &Color, address: &str) -> ExitCode {
     }
 
     write_registry(color, address)
+}
+
+/// The userinfo part of a URL — everything before the `@` in the authority.
+///
+/// ONLY THE AUTHORITY IS EXAMINED: an `@` in a path or a query is not a
+/// credential (`https://host/a@b`), and treating it as one would reject
+/// perfectly good addresses.
+fn userinfo(address: &str) -> Option<&str> {
+    let after_scheme = address.split_once("://").map(|(_, rest)| rest)?;
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme);
+    authority.rsplit_once('@').map(|(user, _)| user)
 }
 
 /// Verifies WITH A REAL QUERY. The network path WAS NOT MEASURED on this machine
@@ -721,7 +771,30 @@ fn write_config(dir: &Path) -> std::io::Result<()> {
     // SearXNG settings (engine choice, language) by hand and a reinstall must not
     // delete them. The secret key must not change on every install either.
     if !settings.is_file() {
-        std::fs::write(settings, settings_text(&secret_key()))?;
+        let (key, from_os) = secret_key();
+        if !from_os {
+            // NOT SILENT. What the user gets in that case is a key mixed from
+            // the clock, the pid and a couple of addresses; it is not
+            // cryptographic and they are entitled to know before they rely on
+            // it. Saying nothing is how a weak key gets mistaken for a strong
+            // one.
+            let color = Color::setup();
+            eprintln!(
+                "{}",
+                color.paint(
+                    YELLOW,
+                    "the OS entropy source could not be read — a NON-CRYPTOGRAPHIC secret_key was written."
+                )
+            );
+            eprintln!(
+                "{}",
+                color.paint(
+                    DIM,
+                    "  replace `secret_key` in settings.yml by hand if this instance is not single-user and loopback-only."
+                )
+            );
+        }
+        std::fs::write(settings, settings_text(&key))?;
     }
     Ok(())
 }
@@ -773,24 +846,27 @@ fn settings_text(secret: &str) -> String {
     )
 }
 
-/// A value for SearXNG's `secret_key` field.
+/// A value for SearXNG's `secret_key` field, and whether it came from the
+/// operating system's pool (`true`) or from the fallback (`false`).
 ///
 /// ZERO DEPENDENCY: `rand` WAS NOT ADDED. On Unix 32 bytes are read from
 /// `/dev/urandom` — the operating system's own pool, always better than a
-/// hand-written generator. If it cannot be read (Windows or a restricted
-/// environment) the clock + the process id + a stack address are mixed; THIS
-/// FALLBACK PATH IS NOT CRYPTOGRAPHIC and is not claimed to be. On a local,
-/// loopback-bound, single-user instance this key's job is to sign image-proxy
-/// links; it is not an authentication key.
+/// hand-written generator. If it cannot be read (Windows, or a restricted
+/// container) the fallback below runs; THAT PATH IS NOT CRYPTOGRAPHIC and is
+/// not claimed to be. On a local, loopback-bound, single-user instance this
+/// key's job is to sign image-proxy links; it is not an authentication key.
+///
+/// THE CALLER IS TOLD WHICH ONE IT GOT. On Windows the fallback runs EVERY
+/// time, so "there is a fallback" is not an edge case there, it is the norm.
 ///
 /// `read_exact`, NOT `fs::read` — and this line is a bug fix. The first version
 /// called `std::fs::read("/dev/urandom")`; that function reads UNTIL END OF FILE
 /// and `/dev/urandom` HAS NO END. The test suite therefore hung (measured:
 /// `cargo test -p tacet-cli` never finished). In production the same call would
 /// have frozen the local install forever.
-fn secret_key() -> String {
+fn secret_key() -> (String, bool) {
     if let Some(hex) = thirty_two_bytes_from_urandom() {
-        return hex;
+        return (hex, true);
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -798,12 +874,70 @@ fn secret_key() -> String {
         .unwrap_or(0);
     let pid = u128::from(std::process::id());
     let stack = &now as *const u128 as usize as u128;
-    format!(
-        "{:032x}{:032x}",
-        now ^ (pid << 64),
-        stack.wrapping_mul(0x9E37_79B9_7F4A_7C15)
-    )
+    // A second, independent address: the heap and the stack move under
+    // different allocators, so one does not give away the other.
+    let heap = Box::new(0u8);
+    let heap_addr = &*heap as *const u8 as usize as u128;
+    (fallback_key(now, pid, stack, heap_addr), false)
 }
+
+/// A 64-hex-digit key from non-random inputs — MIXED, not concatenated.
+///
+/// WHY THIS IS A SEPARATE, PURE FUNCTION: it is the path that always runs on
+/// Windows and it could not be tested at all while it was inlined behind a
+/// `/dev/urandom` read that never fails on this machine. Untestable is how it
+/// stayed wrong.
+///
+/// WHAT WAS WRONG. The old body wrote `now ^ (pid << 64)` and
+/// `stack * 0x9E3779B97F4A7C15` side by side. In 2026 a nanosecond timestamp is
+/// about 2^61, so it never reached the bits the pid was shifted into: the first
+/// 16 hex digits WERE the pid and the next 16 WERE the install nanosecond, in
+/// clear. The "secret" published the process id and the exact moment of
+/// installation, and the second half was reversible because an odd multiplier
+/// is invertible. The doc comment said the inputs were "mixed"; they were not.
+///
+/// WHAT IT DOES NOW. Each 64-bit word goes through the SplitMix64 finaliser,
+/// which is an avalanche function: one input bit changes about half the output
+/// bits, and the shift-xor steps are not invertible by an observer who does not
+/// already know the state. Chained, so every word depends on every input. This
+/// is still NOT a CSPRNG and is not offered as one — it removes a leak, it does
+/// not manufacture entropy.
+fn fallback_key(now: u128, pid: u128, stack: u128, heap: u128) -> String {
+    /// SplitMix64's finaliser. NEVER end on the multiply: multiplication by an
+    /// odd constant is invertible, which is exactly how the old form gave its
+    /// input back.
+    fn mix(mut x: u64) -> u64 {
+        x ^= x >> 30;
+        x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        x ^= x >> 27;
+        x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
+        x ^ (x >> 31)
+    }
+
+    let sources = [
+        now as u64,
+        (now >> 64) as u64,
+        pid as u64,
+        stack as u64,
+        heap as u64,
+        // The address of a `static`: moves with ASLR, and it is independent of
+        // both the stack and the heap.
+        &SECRET_KEY_ANCHOR as *const u8 as usize as u64,
+    ];
+
+    let mut state: u64 = 0x243F_6A88_85A3_08D3; // the digits of pi; any nonzero seed
+    let mut words = [0u64; 4];
+    for word in &mut words {
+        for source in sources {
+            state = mix(state ^ source);
+        }
+        *word = state;
+    }
+    words.iter().map(|w| format!("{w:016x}")).collect()
+}
+
+/// Only its ADDRESS is used — see `fallback_key`.
+static SECRET_KEY_ANCHOR: u8 = 0;
 
 /// EXACTLY 32 bytes from the operating system's pool. `None` = the source is
 /// missing/unreadable (Windows, a restricted container).
@@ -1107,14 +1241,97 @@ mod tests {
         assert!(tacet_web::address_is_valid(LOCAL_ADDRESS).is_ok());
     }
 
+    /// AN ADDRESS CARRYING A CREDENTIAL IS REFUSED BEFORE IT CAN BE STORED.
+    ///
+    /// A user who put their SearXNG behind basic auth would naturally type
+    /// `https://user:pass@host/searxng`; the scheme rule accepts it, and the
+    /// password then lands in `addons.json` in clear, in `addon list` output,
+    /// in the `--json` output people paste into bug reports, and in the chip's
+    /// request URL. What is measured here is the detector, in both directions:
+    /// an `@` in a PATH is not a credential and must not cost the user a
+    /// working address.
+    #[test]
+    fn an_address_with_a_credential_is_detected_and_a_plain_one_is_not() {
+        assert_eq!(
+            userinfo("https://user:pass@server.example/searxng"),
+            Some("user:pass")
+        );
+        assert_eq!(userinfo("https://user@server.example"), Some("user"));
+        // An `@` in the userinfo itself: the LAST one separates the authority.
+        assert_eq!(
+            userinfo("https://a@b:pass@server.example"),
+            Some("a@b:pass")
+        );
+
+        assert_eq!(userinfo("https://server.example/searxng"), None);
+        assert_eq!(userinfo("http://localhost:8888"), None);
+        // NOT A CREDENTIAL: the `@` is in the path, and in the query.
+        assert_eq!(userinfo("https://server.example/a@b"), None);
+        assert_eq!(userinfo("https://server.example/s?q=a@b"), None);
+        assert_eq!(userinfo("not-a-url"), None);
+    }
+
     /// The secret key must not be empty or constant.
     #[test]
     fn a_secret_key_is_generated() {
-        let a = secret_key();
-        let b = secret_key();
+        let (a, _) = secret_key();
+        let (b, _) = secret_key();
         assert!(a.len() >= 32, "short key: {a}");
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()), "{a}");
         assert_ne!(a, b, "the key is generated as a constant");
+    }
+
+    /// THE FALLBACK MUST NOT PUBLISH ITS INPUTS.
+    ///
+    /// This path runs on EVERY Windows install and in any container without
+    /// `/dev/urandom`, so it is not a corner. MEASURED on the old form: the
+    /// first 16 hex digits were the pid and the next 16 were the install
+    /// nanosecond, written out in clear — a "secret" that hands over the
+    /// process id and the exact moment of installation, with the second half
+    /// reversible on top (an odd multiplier is invertible). The test that
+    /// existed only checked "not empty, not constant", which the broken form
+    /// passed.
+    ///
+    /// The inputs are HANDED IN rather than sampled: a pure function is the
+    /// only way this path can be measured at all on a machine where
+    /// `/dev/urandom` always answers.
+    #[test]
+    fn the_fallback_key_does_not_publish_its_inputs() {
+        let now: u128 = 1_785_233_117_373_961_000;
+        let pid: u128 = 74_204;
+        let stack: u128 = 0x0000_0001_6f8a_23f0;
+        let heap: u128 = 0x0000_0001_2d40_5a80;
+
+        let k = fallback_key(now, pid, stack, heap);
+        assert_eq!(k.len(), 64, "{k}");
+        assert!(k.chars().all(|c| c.is_ascii_hexdigit()), "{k}");
+        for (name, value) in [("pid", pid), ("now", now), ("stack", stack), ("heap", heap)] {
+            let low = (value as u64) as u128;
+            assert!(
+                !k.contains(&format!("{low:016x}")),
+                "the {name} is written into the key: {k}"
+            );
+        }
+
+        // AVALANCHE: one nanosecond of difference must change the whole key,
+        // not a corner of it. Without this the install instant is recoverable
+        // by walking a second's worth of candidates.
+        let k2 = fallback_key(now + 1, pid, stack, heap);
+        let same = k.chars().zip(k2.chars()).filter(|(a, b)| a == b).count();
+        assert!(
+            same < 24,
+            "no avalanche: {same}/64 digits unchanged\n{k}\n{k2}"
+        );
+        // BOTH HALVES MUST MOVE. In the old form the second half did not depend
+        // on the clock at all.
+        assert_ne!(k[32..64], k2[32..64], "the second half ignores its input");
+        assert_ne!(k[0..32], k2[0..32], "the first half ignores its input");
+
+        // A different pid alone must change the key too.
+        assert_ne!(k, fallback_key(now, pid + 1, stack, heap));
+        // And it is deterministic, so this test measures the function rather
+        // than the weather.
+        assert_eq!(k, fallback_key(now, pid, stack, heap));
     }
 
     /// INSTALLED-BUT-CLOSED and NOT-INSTALLED-AT-ALL must get separate sentences,

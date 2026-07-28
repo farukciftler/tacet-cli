@@ -15,6 +15,14 @@
 //! and that module does not touch the file system — it only COMPUTES a path
 //! from environment variables.
 //!
+//! The `fs` module is the ONE EXCEPTION and it is stated rather than hidden: it
+//! does two `chmod`-sized things. WHO MAY READ THE CONFIG DIRECTORY is the same
+//! kind of clause as WHERE IT IS, and it has to hold for every layer that writes
+//! into it (memory, addons, MCP, the shell's own settings). Written as one copy
+//! per crate the copies drifted apart, and MEASURED that drift left everything
+//! but `memory.json` world-readable. No decision, no format and no setting is
+//! read there — only the mode a secret is allowed to sit at.
+//!
 //! NO NETWORK: nowhere in this crate, or below it, is there a network call.
 
 pub mod catalog;
@@ -22,6 +30,7 @@ pub mod context;
 pub mod data_store;
 pub mod env;
 pub mod error;
+pub mod fs;
 pub mod outcome;
 pub mod reporter;
 pub mod schema;
@@ -33,6 +42,7 @@ pub use context::ToolContext;
 pub use data_store::{DataStore, InMemoryDataStore, Record, SourceRef};
 pub use env::{config_dir, config_path, env_var};
 pub use error::{ERROR_MODEL_TEXT, ToolError, ToolResult};
+pub use fs::{create_private_dir, narrow_file, write_private};
 pub use outcome::{ToolOutcome, source_ref_suffix};
 pub use reporter::{Reporter, SilentReporter, ToolTrace, TraceCollector, TraceId, TraceUpdate};
 pub use schema::{ArgSchema, Field, SchemaKind};

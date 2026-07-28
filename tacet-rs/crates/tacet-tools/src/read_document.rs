@@ -177,13 +177,19 @@ impl ReadDocumentTool {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| ToolError::MissingField("path".into()))?;
 
-        let path = ctx.resolve_path(raw_path)?;
+        // SYMLINKS: `resolve_path` is LEXICAL, so a link planted in the sandbox
+        // (`run_code` is allowed to write there, and creating a link IS a write)
+        // passes it as an ordinary component and `metadata()`/`read()` FOLLOW it
+        // straight out of the working directory — the file's bytes would land in
+        // the model's window and could leave the device on a later web/mcp call.
+        // `resolve_existing_file` canonicalizes EVERY component and redoes the
+        // containment test on the real path. Do not replace it with a leaf-only
+        // `symlink_metadata`: in `gate/Library/credentials.json` the leaf is a
+        // real file and the escape happens at an intermediate component.
+        let path = crate::sandbox_path::resolve_existing_file(ctx, raw_path)?;
         let upper = path
             .metadata()
             .map_err(|_| ToolError::FileNotFound(path.clone()))?;
-        if !upper.is_file() {
-            return Err(ToolError::FileNotFound(path.clone()));
-        }
         if upper.len() > FILE_CAP {
             return Err(ToolError::Other(format!(
                 "file too large ({} bytes), cap {FILE_CAP}",
@@ -878,6 +884,66 @@ mod tests {
 
         // No failing path may taint the session.
         assert!(!ctx.session_tainted());
+    }
+
+    /// A SYMLINK PLANTED INSIDE THE SANDBOX IS NOT A DOOR OUT OF IT.
+    ///
+    /// `run_code` may legitimately write into the sandbox, and creating a
+    /// symlink IS a write — so a poisoned prompt can make the model plant
+    /// `gate -> /Users/<victim>` and then ask for
+    /// `gate/Library/.../credentials.json`. `resolve_path` is only lexical, so
+    /// `gate` looked like an ordinary component and `metadata()`/`read()`
+    /// followed it: measured before the fix, the model was handed
+    /// `{"api_key":"SK-TOPSECRET"}` verbatim. Once in the 4096-token window that
+    /// data can leave the device on the next web/mcp call.
+    ///
+    /// BOTH SHAPES ARE MEASURED: an INTERMEDIATE directory link (the one a
+    /// leaf-only `symlink_metadata` check would miss, because the leaf really is
+    /// a file) and a direct file link.
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_symlink_cannot_read_outside_the_sandbox() {
+        let dir = temp_dir("symlink");
+        let outside = temp_dir("symlink-victim");
+        std::fs::create_dir_all(outside.join("Library")).expect("victim tree");
+        std::fs::write(
+            outside.join("Library").join("credentials.json"),
+            "{\"api_key\":\"SK-TOPSECRET\"}",
+        )
+        .expect("victim file");
+        std::fs::write(outside.join("id.txt"), "PRIVATE KEY MATERIAL").expect("victim file");
+
+        std::os::unix::fs::symlink(&outside, dir.join("gate")).expect("plant the directory link");
+        std::os::unix::fs::symlink(outside.join("id.txt"), dir.join("notes.txt"))
+            .expect("plant the file link");
+
+        let tool = ReadDocumentTool::new();
+        let mut ctx = context(&dir);
+
+        for path in ["gate/Library/credentials.json", "notes.txt"] {
+            let outcome = no_futures(tool.run(serde_json::json!({ "path": path }), &mut ctx));
+            assert!(
+                matches!(outcome.state, ToolState::Failed(_)),
+                "the link was followed for {path}: {}",
+                outcome.to_model
+            );
+            assert_eq!(outcome.to_model, ERROR_MODEL_TEXT);
+            assert!(
+                !outcome.to_model.contains("SK-TOPSECRET")
+                    && !outcome.to_model.contains("PRIVATE KEY"),
+                "the secret reached the model: {}",
+                outcome.to_model
+            );
+        }
+        // A refused read touched nothing; it must not tighten the approval gate.
+        assert!(!ctx.session_tainted());
+
+        // REGRESSION GUARD: an ordinary file in the sandbox still reads fine.
+        std::fs::write(dir.join("plain.md"), "hello").expect("write");
+        let fine = no_futures(tool.run(serde_json::json!({ "path": "plain.md" }), &mut ctx));
+        assert_eq!(fine.state, ToolState::Read, "{}", fine.to_model);
+
+        let _ = std::fs::remove_dir_all(&outside);
     }
 
     #[test]

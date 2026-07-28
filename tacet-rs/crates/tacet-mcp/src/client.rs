@@ -22,8 +22,9 @@ use crate::error::{MCPError, MCPResult};
 use crate::jsonrpc;
 use crate::sse;
 use serde_json::{Value, json};
-use std::io::BufReader;
+use std::io::{BufReader, Read};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 /// The MCP version this client speaks. If the server proposes another one, the
@@ -40,6 +41,22 @@ const MAX_PAGES: usize = 20;
 /// The cap on the number of tools. Only 6-8 tools fit in the 4096 window
 /// anyway; loading thousands of tools into memory helps nobody.
 const MAX_TOOLS: usize = 200;
+
+/// The cap on a response body.
+///
+/// WHY THERE IS A CAP: `as_reader()` is unlimited BY UREQ'S OWN ADMISSION —
+/// its documentation says a malicious server could exhaust all available
+/// memory — and both consumers of that reader accumulate without a bound of
+/// their own (`serde_json::from_reader`, and the SSE parser, which used to say
+/// in a comment that the time limit was enough). The 120 second timeout only
+/// caps the DURATION; at local network speed that is gigabytes. Measured
+/// before this cap: a single 64 MB `tools/call` answer was swallowed whole and
+/// then written to the DataStore.
+///
+/// The twin of `tacet-web`'s `MAX_BODY`: the two network crates must not
+/// disagree about whether a remote server is an adversary. Larger than web's
+/// 2 MB because MCP output is bulk data headed for the store, but FINITE.
+const MAX_BODY: u64 = 8 * 1024 * 1024;
 
 /// A single tool definition coming from the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -253,17 +270,70 @@ impl MCPClient {
             .and_then(|v| v.to_str().ok())
             .is_some_and(|t| t.to_ascii_lowercase().contains("text/event-stream"));
 
-        let reader = BufReader::new(response.body_mut().as_reader());
+        // THE CAP IS PUT ON THE READER, NOT ON A BUFFERED STRING. Reading the
+        // whole body first would be simpler, but the SSE branch must be able
+        // to RETURN THE MOMENT its own event arrives — a server that keeps the
+        // stream open for progress events would otherwise hang until the
+        // timeout on every long call. One reader, one limit, two consumers.
+        let tripped = std::sync::Arc::new(AtomicBool::new(false));
+        let reader = BufReader::new(Limited {
+            inner: response.body_mut().as_reader(),
+            left: MAX_BODY,
+            tripped: std::sync::Arc::clone(&tripped),
+        });
         let body = if is_sse {
-            sse::find_event(reader, id)?
+            sse::find_event(reader, id)
         } else {
-            let parsed: Value = serde_json::from_reader(reader).map_err(|_| MCPError::Malformed)?;
-            jsonrpc::select_response(&parsed, id)
-                .cloned()
-                .ok_or(MCPError::Malformed)?
-        };
+            serde_json::from_reader(reader)
+                .map_err(|_| MCPError::Malformed)
+                .and_then(|parsed: Value| {
+                    jsonrpc::select_response(&parsed, id)
+                        .cloned()
+                        .ok_or(MCPError::Malformed)
+                })
+        }
+        // A body cut off at the cap produces broken JSON, so WITHOUT THIS the
+        // failure would be reported as "the server response was not
+        // understood" and the user would go hunting for a bug in a healthy
+        // server. The cause is carried out instead of being guessed at.
+        .map_err(|e| {
+            if tripped.load(Ordering::Relaxed) {
+                MCPError::TooLarge(MAX_BODY)
+            } else {
+                e
+            }
+        })?;
 
         jsonrpc::extract_result(&body)
+    }
+}
+
+/// A reader that stops at `left` bytes and REMEMBERS that it did.
+///
+/// `ureq` has a `limit()` of its own, but what it reports back is an ordinary
+/// read error, indistinguishable from a connection that broke — and the two
+/// need different sentences (see `MCPError::TooLarge`). The flag is the whole
+/// reason this type exists; it is set on the read that would have gone past
+/// the cap, so the caller can tell the two apart afterwards.
+struct Limited<R> {
+    inner: R,
+    left: u64,
+    tripped: std::sync::Arc<AtomicBool>,
+}
+
+impl<R: Read> Read for Limited<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if self.left == 0 {
+            self.tripped.store(true, Ordering::Relaxed);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "the MCP response body went past the cap",
+            ));
+        }
+        let take = buffer.len().min(self.left as usize);
+        let read = self.inner.read(&mut buffer[..take])?;
+        self.left -= read as u64;
+        Ok(read)
     }
 }
 

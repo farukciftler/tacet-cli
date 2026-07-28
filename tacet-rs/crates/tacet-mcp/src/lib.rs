@@ -44,8 +44,11 @@ pub mod jsonrpc;
 pub mod sse;
 
 pub use bridge::{
-    Conversion, ConversionNotes, UntranslatableReason, convert_schema, truncate_description,
+    Conversion, ConversionNotes, UntranslatableReason, choice_is_portable, convert_schema,
+    name_is_portable, truncate_description,
 };
 pub use client::{MCPClient, PROTOCOL_VERSION, TIMEOUT_S, ToolSpec};
-pub use config::{Config, ConnectionSetting};
-pub use error::{MCPError, MCPResult};
+pub use config::{
+    Config, ConnectionSetting, key_file_is_exposed, read_checked, read_default_checked,
+};
+pub use error::{MCPError, MCPResult, SCREEN_LIMIT, safe_for_screen};

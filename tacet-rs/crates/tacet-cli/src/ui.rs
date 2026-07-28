@@ -608,6 +608,34 @@ pub fn chip_line(trace: &ToolTrace, colored: bool) -> String {
     }
 }
 
+/// A copy of untrusted text that a terminal will DISPLAY rather than OBEY.
+///
+/// Newlines and tabs survive (a dump is meant to be readable); every other
+/// control character becomes a visible marker. `is_control()` covers C0, DEL
+/// and the C1 range — U+009B is a one-character CSI and is exactly as dangerous
+/// as `ESC [`.
+pub fn printable(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '\n' | '\t' => c,
+            c if c.is_control() => '\u{fffd}',
+            c => c,
+        })
+        .collect()
+}
+
+/// Like `printable`, but a newline is a control character too.
+///
+/// FOR PROMPT LINES. Where the reader is about to answer a question, an extra
+/// line is a weapon of its own: it can paint a second, fake prompt under the
+/// real one, or scroll the real one out of view. A line that asks for consent
+/// must be exactly one line.
+pub fn one_line(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { '·' } else { c })
+        .collect()
+}
+
 impl Reporter for LiveReporter {
     fn start(&self, icon: &str, text: &str) -> TraceId {
         let id = self.inner.start(icon, text);
@@ -638,11 +666,22 @@ impl Reporter for LiveReporter {
         if tacet_kernel::env_var("TACET_TRACE_DUMP").is_some()
             && let Some(trace) = self.inner.traces().into_iter().find(|t| t.id == id)
         {
+            // THE RECORD IS RAW, THE COPY ON SCREEN IS NOT. `raw_input` holds
+            // the model's bytes verbatim on purpose — a diagnostic that
+            // sanitises its own record is useless. But this is the one place
+            // that puts those bytes on a terminal, and a terminal EXECUTES
+            // escape sequences: a dump of a poisoned tool call would erase the
+            // very lines the developer opened the dump to read.
             if let Some(input) = &trace.raw_input {
-                eprintln!("\n--- trace {} input ({}) ---\n{input}", id.0, trace.icon);
+                eprintln!(
+                    "\n--- trace {} input ({}) ---\n{}",
+                    id.0,
+                    trace.icon,
+                    printable(input)
+                );
             }
             if let Some(output) = &trace.raw_output {
-                eprintln!("--- trace {} output ---\n{output}\n---", id.0);
+                eprintln!("--- trace {} output ---\n{}\n---", id.0, printable(output));
             }
         }
     }
@@ -761,6 +800,33 @@ pub fn menu(color: &Color, title: &str, rows: &[MenuRow], start: usize) -> MenuO
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// THE LINES THAT ASK FOR CONSENT, AND THE CHIP LINE, MUST NOT BE
+    /// REWRITABLE BY THE THING THEY DESCRIBE.
+    ///
+    /// `one_line` guards the approval prompt: a `\r` in the payload would let it
+    /// erase the sentence saying what is about to leave the machine and print a
+    /// harmless one in its place, and a `\n` would let it paint a second, fake
+    /// `[y/N]` prompt. `printable` guards the diagnostic dump, where newlines
+    /// are legitimate layout but everything else executes.
+    #[test]
+    fn consent_and_diagnostic_lines_carry_no_terminal_commands() {
+        let payload = "send secret\u{1b}[2K\rsend weather\nDo you allow it? [y/N] y";
+
+        let asked = one_line(payload);
+        for bad in ['\u{1b}', '\r', '\n', '\u{9b}', '\u{7}'] {
+            assert!(!asked.contains(bad), "{bad:?} survived: {asked:?}");
+        }
+        // WHAT IS BEING SENT IS STILL READABLE — hiding it would defeat the same
+        // gate from the other side.
+        assert!(asked.contains("secret"), "{asked:?}");
+
+        let dumped = printable(payload);
+        assert!(!dumped.contains('\u{1b}'), "{dumped:?}");
+        assert!(!dumped.contains('\r'), "{dumped:?}");
+        // A dump is meant to be read across lines, so those survive.
+        assert!(dumped.contains('\n'), "{dumped:?}");
+    }
 
     /// IT DOES NOT CRASH WITHOUT A TTY. The tests run in a piped environment; if
     /// `start` tried to turn on raw mode there, the whole shell would fall over.

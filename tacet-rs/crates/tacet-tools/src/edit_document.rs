@@ -136,19 +136,26 @@ fn workable_document(
     explicit_path: Option<&str>,
 ) -> ToolResult<(PathBuf, DocumentSource)> {
     // 1) The explicit path — it passes through the sandbox gate.
+    //
+    // `resolve_path` ALONE IS NOT THE GATE HERE: it is lexical, and `is_file()`
+    // follows links. With a `gate -> /Users/<victim>` link planted in the
+    // sandbox by `run_code`, `path="gate/victim/budget.xlsx"` used to pass and
+    // the file OUTSIDE was really read further down (`fs::read` at the xlsx
+    // column-count check), leaking its existence, size class and column count to
+    // the model. Note the trap: tier 3 below checks the leaf with
+    // `symlink_metadata` and that is correct THERE (it only scans direct
+    // children); here the escape is at an INTERMEDIATE component, so only a
+    // canonicalizing gate closes it.
     if let Some(raw) = explicit_path {
-        let path = ctx.resolve_path(raw)?;
-        if !path.is_file() {
-            return Err(ToolError::FileNotFound(path));
-        }
+        let path = crate::sandbox_path::resolve_existing_file(ctx, raw)?;
         return Ok((path, DocumentSource::Argument));
     }
 
     // 2) The session watcher. The watcher's path is ALSO PUT through the gate:
-    // if a path outside the sandbox somehow landed in the watcher, this is the last defence.
+    // if a path outside the sandbox somehow landed in the watcher, this is the
+    // last defence — and it is only really a defence with the canonical gate.
     if let Some(path) = watcher.and_then(DocumentWatcher::last)
-        && let Ok(resolved) = ctx.resolve_path(&path)
-        && resolved.is_file()
+        && let Ok(resolved) = crate::sandbox_path::resolve_existing_file(ctx, &path)
     {
         return Ok((resolved, DocumentSource::Watcher));
     }
@@ -558,6 +565,70 @@ mod tests {
             root,
         )
         .expect("md")
+    }
+
+    /// 0) A PLANTED SYMLINK IS NOT A DOOR OUT — the explicit-`path` tier.
+    ///
+    /// With `gate -> <outside>` planted in the sandbox (a write `run_code` is
+    /// allowed to make), `path="gate/victim/budget.xlsx"` used to pass tier 1:
+    /// `resolve_path` is lexical and `is_file()` follows links, so the file
+    /// OUTSIDE was really opened and its COLUMN COUNT came back to the model as
+    /// a warning — an existence-and-shape oracle for any file on the disk.
+    ///
+    /// THE TRAP THIS TEST GUARDS: tier 3 checks the leaf with
+    /// `symlink_metadata`, which is right THERE (it only scans direct children)
+    /// but would NOT catch this — here the leaf is a real file and the escape is
+    /// at an intermediate component. Only a canonicalizing gate closes it.
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_symlink_cannot_be_edited_through() {
+        let root = temp_dir("symlink");
+        let outside = temp_dir("symlink-victim");
+        fs::create_dir_all(outside.join("victim")).expect("victim tree");
+        xlsx_uret(
+            &outside.join("victim"),
+            "budget",
+            Table::new(
+                ["A", "B", "C", "D"],
+                vec![vec!["1".into(), "2".into(), "3".into(), "4".into()]],
+            ),
+        );
+        md_uret(&outside, "id", "PRIVATE KEY MATERIAL");
+        std::os::unix::fs::symlink(&outside, root.join("gate")).expect("plant the directory link");
+        std::os::unix::fs::symlink(outside.join("id.md"), root.join("notes.md"))
+            .expect("plant the file link");
+
+        let mut ctx = context(&root, Arc::new(SharedStore::new()));
+        for path in ["gate/victim/budget.xlsx", "notes.md"] {
+            let outcome = hold(EditDocumentTool::new().run(
+                json!({"path": path, "new_content": "| a |\n| --- |\n| 1 |"}),
+                &mut ctx,
+            ));
+            assert!(
+                matches!(outcome.state, ToolState::Failed(_)),
+                "the link was followed for {path}: {}",
+                outcome.to_model
+            );
+            assert_eq!(outcome.to_model, tacet_kernel::ERROR_MODEL_TEXT);
+            assert!(
+                !outcome.to_model.contains("the original had"),
+                "the column count of a file outside the sandbox leaked: {}",
+                outcome.to_model
+            );
+        }
+        // Nothing was read, so nothing may tighten the approval gate.
+        assert!(!ctx.session_tainted());
+
+        // REGRESSION GUARD: a normal edit inside the sandbox still works.
+        md_uret(&root, "plain", "hello");
+        let fine = hold(EditDocumentTool::new().run(
+            json!({"path": "plain.md", "new_content": "hello again"}),
+            &mut ctx,
+        ));
+        assert_eq!(fine.state, ToolState::Written, "{}", fine.to_model);
+
+        fs::remove_dir_all(&root).ok();
+        fs::remove_dir_all(&outside).ok();
     }
 
     /// 1) THE SWIFT LESSON ITSELF: the user gives no path and there is no

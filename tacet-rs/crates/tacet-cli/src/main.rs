@@ -233,6 +233,12 @@ enum Command {
         job: PackageJob,
     },
     /// Manages MODEL packages (weight files).
+    // `model` IS AN ALIAS, measured from the wild: every piece of prose
+    // (website, install script, a human sentence) naturally writes the
+    // singular — "tacet model download" — and the shell answered with a usage
+    // error. Accepting both costs nothing; the canonical name stays plural to
+    // match `packages`.
+    #[command(alias = "model")]
     Models {
         #[command(subcommand)]
         job: ModelJob,
@@ -599,7 +605,16 @@ impl ApprovalGate for TerminalApproval {
             "  ⚠ the '{}' tool will send data to the outside world:",
             request.tool_name
         );
-        eprintln!("    {}", request.content);
+        // THE CONSENT LINE IS SANITISED HERE, NOT SOMEWHERE UPSTREAM.
+        //
+        // Today `content` happens to arrive JSON-encoded, so control bytes are
+        // already escaped — but that is a property of the CALLER, and this is
+        // the line a user's "y" is answering. The day someone hands the raw
+        // `as_str()` of an argument to this gate, a `\r` would let the payload
+        // rewrite the very sentence describing what is about to be sent, and a
+        // `\n` would let it paint a second, friendlier-looking prompt. The
+        // defence belongs where the bytes meet the terminal.
+        eprintln!("    {}", crate::ui::one_line(&request.content));
         eprint!("  Do you allow it? [y/N] ");
         let _ = std::io::stderr().flush();
         let mut line = String::new();
@@ -726,11 +741,12 @@ mod model_package {
     /// A relative value IS IGNORED (the XDG rule): a relative root would tie the
     /// model search to the user's current working directory — opening `tacet`
     /// from another folder would make the model "disappear".
-    fn absolute_env(name: &str) -> Option<PathBuf> {
-        let v = std::env::var_os(name).filter(|v| !v.is_empty())?;
-        let p = PathBuf::from(v);
-        p.is_absolute().then_some(p)
-    }
+    ///
+    /// THE LOCAL COPY WAS DELETED. The same rule lived here and in
+    /// `tacet_kernel::env`, and the copies had already drifted: the version
+    /// there applied the rule to `XDG_CONFIG_HOME` but not to `TACET_HOME`, the
+    /// one variable a user actually types by hand. One home, one rule.
+    use tacet_kernel::env::absolute_env;
 
     /// Scans the packages in the given roots.
     ///
@@ -1011,6 +1027,36 @@ mod model_package {
         Ok(merged)
     }
 
+    /// A catalog name reduced to a SINGLE plain path component, or an error.
+    ///
+    /// WHY THIS GATE EXISTS: a catalog name BECOMES A PATH at download time —
+    /// `root.join(package.name).join(file.name)`. `PathBuf::join` DISCARDS
+    /// everything to its left when the joined component is absolute, so a name
+    /// of `/Users/u/.zshenv` makes the download target exactly that file, and a
+    /// name of `../../x` walks out of the model root (the downloader creates the
+    /// target's parent, so the escape does not even need the directory to
+    /// exist). `packages.json` is written by hand and gets pasted around, which
+    /// makes it the lowest-privilege-looking file that can write anywhere on the
+    /// disk. This is the same rule `ToolContext::resolve_path` enforces for
+    /// tools; it has to hold here too.
+    ///
+    /// A BROKEN CATALOG IS AN ERROR, NOT A SKIPPED ENTRY: this file already
+    /// refuses to swallow a malformed catalog silently, and a name that was
+    /// quietly rewritten would be worse — the user would not learn that their
+    /// override does not do what it says.
+    fn plain_name(field: &str, value: &str) -> Result<String, String> {
+        use std::path::{Component, Path};
+        let mut components = Path::new(value).components();
+        match (components.next(), components.next()) {
+            (Some(Component::Normal(p)), None) if !value.is_empty() => {
+                Ok(p.to_string_lossy().into_owned())
+            }
+            _ => Err(format!(
+                "'{value}': the {field} must be a plain name — no '/', no '\\', no '..' and no absolute path"
+            )),
+        }
+    }
+
     /// SEPARATE AND PUBLIC: so it can be tested without touching the file system.
     pub fn parse_remote_catalog(raw: &str) -> Result<Vec<RemotePackage>, String> {
         let root: serde_json::Value =
@@ -1025,6 +1071,9 @@ mod model_package {
                 .get("name")
                 .and_then(|n| n.as_str())
                 .ok_or_else(|| "the package has no `name` field".to_string())?;
+            // THE PACKAGE NAME IS A DIRECTORY NAME (`root.join(name)`), so it
+            // goes through the same gate as the file names below.
+            let name = &plain_name("package name", name)?;
             let file_array = p
                 .get("files")
                 .and_then(|f| f.as_array())
@@ -1035,6 +1084,11 @@ mod model_package {
                     .get("name")
                     .and_then(|n| n.as_str())
                     .ok_or_else(|| format!("'{name}': the file has no `name` field"))?;
+                // THE FILE NAME IS THE DOWNLOAD TARGET (`dir.join(&f.name)`):
+                // an absolute name would make `join` throw away the model root
+                // entirely and write anywhere the user can write.
+                let fname =
+                    &plain_name("file name", fname).map_err(|e| format!("'{name}': {e}"))?;
                 let url = f
                     .get("url")
                     .and_then(|u| u.as_str())
@@ -2966,7 +3020,27 @@ struct TerminalDownloadApproval {
     /// `--no-approval`: no question is asked. WHAT IS BEING DOWNLOADED IS STILL
     /// PRINTED — even in script mode the record has to land in the log.
     no_approval: bool,
+    /// What is said when the plan carries NO expected digest.
+    ///
+    /// WHY THIS IS A FIELD AND NOT ONE FIXED SENTENCE: two callers share this
+    /// gate and the truth differs between them. On the MODEL path there is a
+    /// catalog with a `sha256` field, so "first trust" is real — the user can
+    /// paste the computed digest into `packages.json` and the next download is
+    /// verified. On the UPDATE path there is no catalog, no field to fill, and
+    /// every release has a different digest, so verification NEVER happens.
+    /// Printing the model sentence there told the user a TOFU chain existed
+    /// when none did, which is exactly the belief that makes an unverified
+    /// binary look checked.
+    no_digest_note: &'static str,
 }
+
+/// The model path: the catalog HAS a digest field, so first trust is real.
+const TOFU_NOTE_CATALOG: &str = "no sha256 in the catalog — the downloaded file's digest will be COMPUTED and shown (first trust)";
+
+/// The update path: there is no catalog and no digest to compare against, now
+/// or later. SAID PLAINLY, because the closing `sha256:` line looks identical
+/// to the output of a verified download.
+const TOFU_NOTE_NO_PUBLISHER: &str = "no published digest for this binary — its digest will be COMPUTED and SHOWN, NOT COMPARED. Nothing is remembered for next time either: a new version has a new digest, so this download rests on TLS alone";
 
 impl tacet_web::DownloadApproval for TerminalDownloadApproval {
     fn approve(&self, plan: &tacet_web::DownloadPlan, existing_bytes: u64) -> bool {
@@ -3000,10 +3074,7 @@ impl tacet_web::DownloadApproval for TerminalDownloadApproval {
         if plan.expected_sha256.is_none() {
             // TOFU IS SAID PLAINLY. Giving the impression that "the digest was
             // verified" would hide that the first download is unprotected.
-            eprintln!(
-                "    {}",
-                self.color.paint(YELLOW, "no sha256 in the catalog — the downloaded file's digest will be COMPUTED and shown (first trust)")
-            );
+            eprintln!("    {}", self.color.paint(YELLOW, self.no_digest_note));
         }
         if self.no_approval {
             eprintln!(
@@ -3196,6 +3267,7 @@ fn model_download(name: &str, no_approval: bool) -> ExitCode {
     let approval = TerminalDownloadApproval {
         color: Color::setup(),
         no_approval,
+        no_digest_note: TOFU_NOTE_CATALOG,
     };
     let progress = TerminalDownloadProgress {
         color: Color::setup(),
@@ -3213,6 +3285,27 @@ fn model_download(name: &str, no_approval: bool) -> ExitCode {
             expected_bytes: f.bytes,
             expected_sha256: f.sha256.clone(),
         };
+        // DEFENCE IN DEPTH, AND IT IS THE LAST GATE THAT SEES A REAL PATH.
+        // `parse_remote_catalog` already refuses a name that is not a plain
+        // component, but THIS is the value that reaches the file system, and a
+        // download that escapes the model root writes an executable file
+        // wherever the user can write (`~/.zshenv` runs at the next shell). The
+        // check is cheap and it survives any future edit that builds `target`
+        // some other way.
+        if !plan.target.starts_with(&dir) {
+            eprintln!();
+            eprintln!(
+                "{}",
+                color.paint(
+                    YELLOW,
+                    &format!(
+                        "'{}': the download target falls outside the model directory — refused",
+                        f.name
+                    )
+                )
+            );
+            return ExitCode::FAILURE;
+        }
         match tacet_web::download(&plan, &approval, &progress) {
             Ok(o) => {
                 let note = if o.already_present {
@@ -3814,6 +3907,19 @@ mod tests {
             r#"{"packages":[{"name":"a"}]}"#,                        // no `files`
             r#"{"packages":[{"name":"a","files":[{"name":"m"}]}]}"#, // no url
             "this is not json",
+            // A NAME BECOMES A PATH. An absolute file name makes
+            // `PathBuf::join` discard the model root, so the catalog would
+            // write straight into the user's home; `..` walks out the same way.
+            // A user's `packages.json` overrides the embedded catalog BY NAME,
+            // so a poisoned file turns the documented
+            // `tacet models download qwen3-4b` into arbitrary file writing.
+            r#"{"packages":[{"name":"a","files":[{"name":"/etc/x","url":"https://e.test/x"}]}]}"#,
+            r#"{"packages":[{"name":"a","files":[{"name":"../../x","url":"https://e.test/x"}]}]}"#,
+            r#"{"packages":[{"name":"a","files":[{"name":"sub/x","url":"https://e.test/x"}]}]}"#,
+            r#"{"packages":[{"name":"a","files":[{"name":"","url":"https://e.test/x"}]}]}"#,
+            // The package name is a DIRECTORY name and carries the same risk.
+            r#"{"packages":[{"name":"../../a","files":[{"name":"m","url":"https://e.test/x"}]}]}"#,
+            r#"{"packages":[{"name":"/tmp/a","files":[{"name":"m","url":"https://e.test/x"}]}]}"#,
         ] {
             assert!(
                 model_package::parse_remote_catalog(raw).is_err(),
@@ -3961,6 +4067,7 @@ mod tests {
         let unattended = TerminalDownloadApproval {
             color: Color::setup(),
             no_approval: true,
+            no_digest_note: TOFU_NOTE_CATALOG,
         };
         is_gate(&unattended);
 
@@ -3983,6 +4090,7 @@ mod tests {
         let silent = TerminalDownloadApproval {
             color: Color::setup(),
             no_approval: false,
+            no_digest_note: TOFU_NOTE_CATALOG,
         };
         assert!(!silent.no_approval);
     }

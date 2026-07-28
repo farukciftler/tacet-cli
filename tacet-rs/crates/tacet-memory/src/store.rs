@@ -388,7 +388,10 @@ impl MemoryStore {
             return Ok(());
         };
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
+            // 0700: the file's own 0600 is worth little if the directory around
+            // it is 0755 — the temp file below has a FIXED, predictable name,
+            // and a directory anyone can list is what makes it worth racing.
+            tacet_kernel::fs::create_private_dir(dir)?;
         }
         let disk = DiskFormat {
             version: DISK_VERSION,
@@ -399,9 +402,29 @@ impl MemoryStore {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
         let temp = path.with_extension("json.new");
-        std::fs::write(&temp, text)?;
-        narrow_permissions(&temp);
-        std::fs::rename(&temp, path)
+        // THE MODE HAS TO BE RIGHT BEFORE THE NOTES LAND, NOT AFTER.
+        //
+        // This used to be `fs::write` followed by a chmod, and that order was
+        // the bug: `fs::write` creates at `0666 & ~umask` (measured: 0644), so
+        // for the length of one write every personal note in the store sat in a
+        // world-readable file at a FIXED, GUESSABLE path. A chmod cannot take
+        // back a descriptor a second local account already opened in that
+        // window, and it never runs at all if the process is killed between the
+        // two lines — which leaves a complete 0644 copy of the memory on disk
+        // FOREVER, because later runs overwrite `memory.json.new` but nobody
+        // ever deletes it or looks at its mode. `write_private` opens with 0600
+        // and narrows an existing inode through its own descriptor first.
+        tacet_kernel::fs::write_private(&temp, text.as_bytes()).inspect_err(|_| {
+            // A half-written temp file is not left behind to be mistaken for a
+            // real one. It is 0600 now, so even a leftover is harmless.
+            let _ = std::fs::remove_file(&temp);
+        })?;
+        std::fs::rename(&temp, path)?;
+        // The rename carries the temp file's mode, so the target is already
+        // 0600 — stamped anyway for the case where `memory.json` was created by
+        // an older version and something later widens it.
+        narrow_permissions(path);
+        Ok(())
     }
 
     pub fn path(&self) -> Option<&Path> {
@@ -699,6 +722,58 @@ mod tests {
         );
         w.reset();
         assert_eq!(w.filter(s.matching("restaurant")).len(), 1);
+    }
+
+    /// THE TEMP FILE AND THE DIRECTORY ARE PART OF THE 0600 PROMISE.
+    ///
+    /// The old code wrote `memory.json.new` with `fs::write` (0644 under the
+    /// default umask) and only then chmodded it, inside a 0755 directory. Two
+    /// separate leaks came out of that: a second local account could open the
+    /// temp file inside the window, and a process killed between the write and
+    /// the chmod left a full 0644 copy of the memory on disk permanently. A
+    /// LEFTOVER 0644 temp file from an earlier run is set up on purpose here,
+    /// because `O_CREAT`'s mode does not apply to a file that already exists —
+    /// that is the case the fix has to survive.
+    #[cfg(unix)]
+    #[test]
+    fn the_temp_file_and_the_directory_are_never_world_readable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join("tacet-memory-test-modes");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("memory.json");
+        let temp = path.with_extension("json.new");
+
+        // An open directory from an earlier install, and a leftover temp file
+        // from a run that died mid-save.
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(&temp, "stale").unwrap();
+        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let mut s = MemoryStore::from_file(&path);
+        s.add(
+            "The user takes lithium.",
+            MemoryKind::Fact,
+            &keys(&["health"]),
+        )
+        .unwrap();
+        s.save().unwrap();
+
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700, "the memory directory is walkable");
+        assert_eq!(mode(&path), 0o600, "memory is personal data");
+        // The rename consumed the temp path; if anything is still there it must
+        // not be the world-readable leftover we planted.
+        if temp.exists() {
+            assert_eq!(mode(&temp), 0o600, "a 0644 temp file survived the save");
+        }
+
+        // The same save run twice must not widen anything.
+        s.save().unwrap();
+        assert_eq!(mode(&path), 0o600);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

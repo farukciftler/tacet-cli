@@ -186,9 +186,20 @@ pub fn install(color: &Color, no_approval: bool) -> Result<(), String> {
         expected_sha256: None,
     };
 
+    // A LEFTOVER `.new` FROM AN EARLIER RUN MUST NOT BE INSTALLED. The
+    // downloader treats a file that is already the expected size as "already
+    // present" and returns WITHOUT asking the approval gate and WITHOUT
+    // touching the network — which would silently swap in bytes nobody in this
+    // run approved (a failed or interrupted earlier update, or a file another
+    // local account dropped next to the binary).
+    let _ = std::fs::remove_file(&staged);
+
     let approval = crate::TerminalDownloadApproval {
         color: Color::setup(),
         no_approval,
+        // NOT the catalog sentence: see `TOFU_NOTE_NO_PUBLISHER`. There is no
+        // catalog on this path and no digest is ever compared.
+        no_digest_note: crate::TOFU_NOTE_NO_PUBLISHER,
     };
     let progress = crate::TerminalDownloadProgress {
         color: Color::setup(),
@@ -206,7 +217,21 @@ pub fn install(color: &Color, no_approval: bool) -> Result<(), String> {
         current_version(),
         release.tag.trim_start_matches('v')
     );
-    eprintln!("  sha256: {}", outcome.sha256);
+    // THE DIGEST IS NOT A RECEIPT. On its own this line is indistinguishable
+    // from the output of a verified download, and a user who reads it as one
+    // stops looking for the verification that never happened. There is nothing
+    // to compare against: GitHub publishes no per-asset digest here, and every
+    // release has a different digest anyway, so no stored value could ever
+    // match. The warning travels WITH the number, because the approval screen
+    // that also says this has long scrolled off.
+    eprintln!(
+        "  sha256: {}  {}",
+        outcome.sha256,
+        color.paint(
+            crate::ui::YELLOW,
+            "(computed, NOT verified — no published digest to compare against)"
+        )
+    );
     eprintln!("  path:   {}", current.display());
     Ok(())
 }
@@ -421,6 +446,39 @@ pub fn maybe_offer(color: &Color, turns: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// THE UPDATE PATH MUST NOT CLAIM A TRUST-ON-FIRST-USE CHAIN IT DOES NOT
+    /// HAVE.
+    ///
+    /// The binary download shares its approval gate with the model download,
+    /// and the model sentence ("no sha256 in the catalog … first trust") is
+    /// false twice over here: there is no catalog to write a digest into, and
+    /// every release has a different digest, so the comparison never happens on
+    /// any later run either. The `sha256:` line printed after the install is
+    /// indistinguishable from a verified one, so the words have to carry the
+    /// difference.
+    #[test]
+    fn the_update_gate_does_not_promise_a_later_verification() {
+        let note = crate::TOFU_NOTE_NO_PUBLISHER;
+        assert_ne!(
+            note,
+            crate::TOFU_NOTE_CATALOG,
+            "the update path reuses the catalog sentence"
+        );
+        let lowered = note.to_lowercase();
+        assert!(
+            !lowered.contains("catalog"),
+            "there is no catalog on this path: {note}"
+        );
+        assert!(
+            !lowered.contains("first trust"),
+            "no later download is verified, so nothing is 'trusted first': {note}"
+        );
+        assert!(
+            lowered.contains("not compared") || lowered.contains("not verified"),
+            "the note has to say the digest is not checked: {note}"
+        );
+    }
 
     #[test]
     fn the_asset_name_carries_no_version() {

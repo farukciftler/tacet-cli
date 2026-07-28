@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@0,6..72,400;1,6..72,400&family=Plus+Jakarta+Sans:wght@400;500;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=enso-3">
+    <link rel="stylesheet" href="style.css?v=enso-7">
 </head>
 <body>
 
@@ -24,6 +24,7 @@
                 <a href="#demo">See it work</a>
                 <a href="#features">What it does</a>
                 <a href="#private">Why private</a>
+                <a href="#compare">vs Ollama</a>
                 <a href="#install">Get started</a>
             </nav>
             <div class="nav-actions">
@@ -140,31 +141,59 @@
         </div>
     </section>
 
+    <!-- How it differs from model runners -->
+    <section id="compare" class="section">
+        <div class="section-container">
+            <div class="section-header">
+                <span class="section-label">ALREADY RUNNING LOCAL MODELS?</span>
+                <h2>Ollama runs models. Tacet runs your day.</h2>
+                <p>Ollama, LM Studio and llama.cpp are excellent model runners: pick a model, get a chat window. Tacet sits one level up — a finished assistant, built on the same kind of local models.</p>
+            </div>
+
+            <div class="vs-wrap">
+                <table class="vs-table">
+                    <thead>
+                        <tr><th></th><th>Model runners</th><th>Tacet</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Chat with a local model</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+                        <tr><td>No account, no telemetry</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+                        <tr><td>Reads your calendar, sets reminders</td><td class="no">—</td><td class="yes">✓</td></tr>
+                        <tr><td>Turns notes into Word and Excel files</td><td class="no">—</td><td class="yes">✓</td></tr>
+                        <tr><td>A memory you can see and edit</td><td class="no">—</td><td class="yes">✓</td></tr>
+                        <tr><td>A receipt on screen for every action</td><td class="no">—</td><td class="yes">✓</td></tr>
+                        <tr><td>Asks before ever touching the web</td><td class="no">—</td><td class="yes">✓</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <p class="vs-note">No shade meant — model runners are great at what they do, and Tacet gladly runs the same open models. The difference is everything wrapped around the model.</p>
+        </div>
+    </section>
+
     <!-- Quickstart Installation -->
-    <section id="install" class="section">
+    <section id="install" class="section alt-bg">
         <div class="section-container">
             <div class="section-header text-center">
                 <span class="section-label">GET STARTED</span>
-                <h2>Three steps, five minutes</h2>
-                <p>Works on macOS and Linux. The assistant's brain is a one-time download that lives on your disk.</p>
+                <h2>One line does everything</h2>
+                <p>Copy it, paste it, come back in five minutes: the installer sets up Tacet, fetches the model (one-time, ~2&nbsp;GB) and starts your first chat.</p>
             </div>
 
             <div class="install-box">
-                <div class="install-line">
-                    <span class="step-num">1</span>
-                    <code>cargo install tacet-cli</code>
-                    <button class="copy-btn copy-code-btn" data-copy="cargo install tacet-cli">Copy</button>
+                <div class="os-tabs" role="tablist" aria-label="Choose your system">
+                    <button class="os-tab" data-os="unix" role="tab">macOS · Linux</button>
+                    <button class="os-tab" data-os="win" role="tab">Windows</button>
                 </div>
+
+                <!-- ONE visible line; the tabs only swap its content. No hidden
+                     duplicates: with stale CSS or no JS this still renders as
+                     exactly one sensible command. -->
                 <div class="install-line">
-                    <span class="step-num">2</span>
-                    <code>tacet model download qwen3-4b</code>
-                    <button class="copy-btn copy-code-btn" data-copy="tacet model download qwen3-4b">Copy</button>
+                    <code id="install-cmd">curl -fsSL https://usetacet.com/install.sh | sh</code>
+                    <button id="install-copy" class="copy-btn copy-code-btn" data-copy="curl -fsSL https://usetacet.com/install.sh | sh">Copy</button>
                 </div>
-                <div class="install-line">
-                    <span class="step-num">3</span>
-                    <code>tacet chat</code>
-                    <button class="copy-btn copy-code-btn" data-copy="tacet chat">Copy</button>
-                </div>
+
+                <p class="install-alt">Already have Rust? <code>cargo install tacet-cli</code> works everywhere, then <code>tacet chat</code>. The model download stays on your disk; nothing else is fetched, ever.</p>
             </div>
         </div>
     </section>
@@ -185,6 +214,6 @@
     <!-- Toast Notification -->
     <div id="toast" class="toast">Command copied to clipboard</div>
 
-    <script src="app.js?v=enso-3"></script>
+    <script src="app.js?v=enso-7"></script>
 </body>
 </html>

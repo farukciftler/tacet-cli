@@ -193,6 +193,14 @@ pub enum DownloadError {
     /// A SEPARATE VARIANT, because for a package whose digest is unknown
     /// (before TOFU) this is the only check that catches a TRUNCATED download.
     SizeMismatch { expected: u64, found: u64 },
+    /// The half file could not be continued: the server answered the `Range`
+    /// with a `206` we cannot trust.
+    ///
+    /// A SEPARATE VARIANT FROM `SizeMismatch`, because the diagnosis differs.
+    /// "The size did not match" sends the user looking for a broken mirror;
+    /// this one says the LEFTOVER is no longer valid, and the half file has
+    /// already been dropped so the next run starts clean.
+    RangeMismatch { asked: u64, detail: String },
 }
 
 impl fmt::Display for DownloadError {
@@ -215,6 +223,10 @@ impl fmt::Display for DownloadError {
                     "The size did not match (expected {expected} bytes, downloaded {found} bytes)."
                 )
             }
+            DownloadError::RangeMismatch { asked, detail } => write!(
+                f,
+                "The half-finished file could not be continued from byte {asked} ({detail}); it has been discarded, run the command again."
+            ),
         }
     }
 }
@@ -318,32 +330,66 @@ pub fn download(
         return Err(DownloadError::NotApproved);
     }
 
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        // A global cap is DELIBERATELY ABSENT (see the top of the file). The
-        // connection and header caps stay: on a dead server we do not wait
-        // forever.
-        .timeout_connect(Some(CONNECT_TIMEOUT))
-        .timeout_recv_response(Some(RESPONSE_TIMEOUT))
-        .max_redirects(5)
-        .build()
-        .into();
+    let agent = download_agent();
 
     let mut request = agent.get(&plan.url);
     if existing > 0 {
         // RESUME: ask to continue from the byte where the half file ended.
         request = request.header("Range", format!("bytes={existing}-"));
     }
-    let mut response = request
-        .call()
-        .map_err(|e| DownloadError::Network(network_error(&e)))?;
+    // A 416 ON A RESUME MEANS THE HALF FILE IS AT LEAST AS LONG AS THE OBJECT.
+    // It can only have come from a stale or an overlong leftover (an older,
+    // LARGER release under the same `<exe>.new.downloading` name, or a source
+    // that sent more bytes than the catalog declared). Resuming can NEVER
+    // succeed from there: every future run asks for the same unsatisfiable
+    // range and the user sees nothing but "the source returned an error (416)"
+    // forever, with no hint that a file has to be deleted by hand. The
+    // leftover is dropped and the download restarts from zero ONCE.
+    let (mut response, existing) = match request.call() {
+        Ok(response) => (response, existing),
+        Err(ureq::Error::StatusCode(416)) if existing > 0 => {
+            let _ = fs::remove_file(&temp);
+            let response = agent
+                .get(&plan.url)
+                .call()
+                .map_err(|e| DownloadError::Network(network_error(&e)))?;
+            (response, 0)
+        }
+        Err(e) => return Err(DownloadError::Network(network_error(&e))),
+    };
 
     // 206 = the server accepted the Range, the body is the REMAINING part.
     // 200 = the server ignored the Range (or does not know it at all), the body
     //       is the WHOLE thing; the half file is then thrown away and rewritten
     //       from scratch. Not telling those apart meant appending the whole
     //       body AFTER the half file and silently producing a corrupt file.
-    let resumed = existing > 0 && response.status().as_u16() == 206;
-    let start = if resumed { existing } else { 0 };
+    //
+    // AND THE STATUS CODE ALONE IS NOT ENOUGH — see `resume_verdict`.
+    let content_range = response
+        .headers()
+        .get("content-range")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let (resumed, start) = match resume_verdict(
+        response.status().as_u16(),
+        content_range.as_deref(),
+        existing,
+        plan.expected_bytes,
+    ) {
+        Resume::From(offset) => (true, offset),
+        Resume::Restart => (false, 0),
+        Resume::Untrusted(detail) => {
+            // THE LEFTOVER IS DROPPED. Keeping it would repeat the same
+            // untrusted answer on every run, and this is the one case where
+            // the half file is KNOWN not to belong to the object being
+            // downloaded.
+            let _ = fs::remove_file(&temp);
+            return Err(DownloadError::RangeMismatch {
+                asked: existing,
+                detail,
+            });
+        }
+    };
     let remaining = body_length(&response);
     let total = remaining.map(|r| start + r).or(plan.expected_bytes);
 
@@ -392,13 +438,24 @@ pub fn download(
     // download is not "SHA did not match" but "the file is half there";
     // describing both with the same sentence would send the user looking for a
     // broken mirror.
-    if let Some(b) = plan.expected_bytes
-        && b != downloaded
-    {
-        return Err(DownloadError::SizeMismatch {
-            expected: b,
-            found: downloaded,
-        });
+    if let Some(expected) = plan.expected_bytes {
+        let verdict = size_verdict(Some(expected), downloaded);
+        if verdict != SizeVerdict::Exact {
+            // AN OVERSIZED LEFTOVER IS DELETED, A SHORT ONE IS KEPT. A short
+            // file is what resume is for. A file LONGER than the object is a
+            // dead end: the next run sends `Range: bytes=<len>-`, the server
+            // answers 416, and without this the user would be stuck on an
+            // error code that says nothing about the real cause. (The 416
+            // branch above rescues that case too; this deletion stops it from
+            // ever arising.)
+            if verdict == SizeVerdict::TooLong {
+                let _ = fs::remove_file(&temp);
+            }
+            return Err(DownloadError::SizeMismatch {
+                expected,
+                found: downloaded,
+            });
+        }
     }
 
     // THE DIGEST IS OVER THE WHOLE FILE, not over the stream. In a resumed
@@ -447,6 +504,131 @@ fn check_digest(plan: &DownloadPlan, found: &str) -> DownloadResult<bool> {
             found: found.to_string(),
         }),
     }
+}
+
+/// The agent the download uses. SPLIT OUT SO IT CAN BE ASSERTED ON: the
+/// `https_only` flag below is invisible in behaviour until the day a mirror
+/// answers with a redirect, and a silently dropped flag would be found by the
+/// user, not by us.
+fn download_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        // A global cap is DELIBERATELY ABSENT (see the top of the file). The
+        // connection and header caps stay: on a dead server we do not wait
+        // forever.
+        .timeout_connect(Some(CONNECT_TIMEOUT))
+        .timeout_recv_response(Some(RESPONSE_TIMEOUT))
+        .max_redirects(5)
+        // THE SCHEME GATE MUST SURVIVE THE REDIRECT. `validate_address` only
+        // sees hop 0; `ureq` enforces the scheme in exactly one place and only
+        // when this flag is on, and its default is FALSE. Without it a `302
+        // Location: http://…` silently downgrades the weight transfer to plain
+        // text — exactly the case the header of this file forbids, and the one
+        // TOFU cannot catch, because TOFU accepts whatever arrives first.
+        .https_only(true)
+        .build()
+        .into()
+}
+
+/// What to do with the half-finished file, given the server's answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Resume {
+    /// Append to the leftover, continuing from this offset.
+    From(u64),
+    /// Truncate and download the whole object.
+    Restart,
+    /// The `206` cannot be trusted; the leftover is dropped and the run fails
+    /// with the reason.
+    Untrusted(String),
+}
+
+/// Whether the server's answer really agrees to continue OUR half file.
+///
+/// A PURE FUNCTION, so the decision can be measured without a socket — and it
+/// is the decision that used to be wrong. The old code asked ONE question,
+/// "is the status 206", and that is not the same as "these bytes belong after
+/// mine". A concrete failure that needed no attacker: a `--install` is
+/// interrupted at 3 MB of a 8 MB v0.2.0 asset, v0.3.0 (9 MB) is published, the
+/// next run asks for `bytes=3145728-`, and the source happily serves the tail
+/// of the NEW object. 3 MB of v0.2.0 + 5.86 MB of v0.3.0 = 9 MB, the size check
+/// passes, `expected_sha256` is `None` so nothing else looks, and a spliced
+/// binary is made executable and moved over the running one.
+///
+/// So the `Content-Range` is read and three things have to hold: the header
+/// EXISTS, its start offset is exactly what we asked for, and — when the server
+/// declares one — the total length matches what the catalog declared. The
+/// attacker's variant (a `206` whose body starts at 0) fails on the second
+/// check.
+fn resume_verdict(
+    status: u16,
+    content_range: Option<&str>,
+    asked: u64,
+    expected_total: Option<u64>,
+) -> Resume {
+    if asked == 0 || status != 206 {
+        // 200 means the server ignored the Range. Anything else that got this
+        // far is not a partial answer either (ureq turns 4xx/5xx into errors).
+        return Resume::Restart;
+    }
+    let Some(raw) = content_range else {
+        return Resume::Untrusted("the server sent a 206 with no Content-Range header".into());
+    };
+    let Some((start, _end, total)) = parse_content_range(raw) else {
+        return Resume::Untrusted(format!(
+            "the Content-Range header was not understood: {raw}"
+        ));
+    };
+    if start != asked {
+        return Resume::Untrusted(format!(
+            "the server continued from byte {start}, not from {asked}"
+        ));
+    }
+    if let (Some(total), Some(expected)) = (total, expected_total)
+        && total != expected
+    {
+        return Resume::Untrusted(format!(
+            "the object at the source is {total} bytes, the catalog declares {expected}"
+        ));
+    }
+    Resume::From(start)
+}
+
+/// What the downloaded length says about the file on disk.
+///
+/// A SEPARATE, PURE FUNCTION because the two failing directions call for
+/// OPPOSITE handling of the leftover, and that difference is exactly what the
+/// old single `!=` comparison hid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SizeVerdict {
+    /// The size matches, or the catalog declared none to compare against.
+    Exact,
+    /// Fewer bytes than declared: a truncated transfer, which resume fixes.
+    TooShort,
+    /// MORE bytes than declared: the leftover can never be continued.
+    TooLong,
+}
+
+fn size_verdict(expected: Option<u64>, downloaded: u64) -> SizeVerdict {
+    match expected {
+        None => SizeVerdict::Exact,
+        Some(expected) if downloaded > expected => SizeVerdict::TooLong,
+        Some(expected) if downloaded < expected => SizeVerdict::TooShort,
+        Some(_) => SizeVerdict::Exact,
+    }
+}
+
+/// `bytes 3145728-9437183/9437184` -> `(3145728, 9437183, Some(9437184))`.
+/// A `*` total (the server does not know the length) comes back as `None`.
+fn parse_content_range(raw: &str) -> Option<(u64, u64, Option<u64>)> {
+    let rest = raw.trim().strip_prefix("bytes")?.trim_start();
+    let (range, total) = rest.split_once('/')?;
+    let (start, end) = range.trim().split_once('-')?;
+    let start = start.trim().parse().ok()?;
+    let end = end.trim().parse().ok()?;
+    let total = match total.trim() {
+        "*" => None,
+        value => Some(value.parse().ok()?),
+    };
+    Some((start, end, total))
 }
 
 /// `<target>` -> `<target>.downloading`. The extension is ADDED, not replaced:
@@ -862,6 +1044,139 @@ mod tests {
         assert_ne!(
             DownloadError::Network(WebError::ServerCode(404)).to_string(),
             DownloadError::Network(WebError::ServerCode(403)).to_string()
+        );
+    }
+
+    /// THE SCHEME GATE SURVIVES THE REDIRECT.
+    ///
+    /// `validate_address` only ever sees the first address, so the invariant
+    /// that closes a `302 Location: http://…` is the agent's `https_only`
+    /// flag — and a flag has no behaviour to observe until a mirror actually
+    /// redirects. This asserts the configuration itself, which is what a
+    /// silent removal would change.
+    #[test]
+    fn the_download_agent_refuses_to_leave_https() {
+        assert!(
+            download_agent().config().https_only(),
+            "a redirect could downgrade the weight transfer to plain text"
+        );
+    }
+
+    /// THE RESUME DECISION. A 206 is not a promise that the bytes belong after
+    /// ours; each case here is a way that promise can be false.
+    #[test]
+    fn a_206_is_only_trusted_when_the_content_range_agrees() {
+        // The honest case.
+        assert_eq!(
+            resume_verdict(
+                206,
+                Some("bytes 3145728-9437183/9437184"),
+                3_145_728,
+                Some(9_437_184)
+            ),
+            Resume::From(3_145_728)
+        );
+        // The server does not declare a total: the offset alone still decides.
+        assert_eq!(
+            resume_verdict(206, Some("bytes 100-199/*"), 100, Some(200)),
+            Resume::From(100)
+        );
+
+        // THE MEASURED FAILURE: a leftover from v0.2.0 (8 MB) and a v0.3.0
+        // (9 MB) at the source. The tail arrives from the WRONG object and the
+        // total gives it away — without this check the sizes add up to exactly
+        // the expected 9 MB and every later check passes.
+        assert!(matches!(
+            resume_verdict(
+                206,
+                Some("bytes 3145728-9437183/9437184"),
+                3_145_728,
+                Some(8_388_608)
+            ),
+            Resume::Untrusted(_)
+        ));
+        // The attacker's variant: a 206 whose body starts somewhere else.
+        assert!(matches!(
+            resume_verdict(
+                206,
+                Some("bytes 0-9437183/9437184"),
+                3_145_728,
+                Some(9_437_184)
+            ),
+            Resume::Untrusted(_)
+        ));
+        // A 206 that says nothing about what it is sending.
+        assert!(matches!(
+            resume_verdict(206, None, 3_145_728, Some(9_437_184)),
+            Resume::Untrusted(_)
+        ));
+        assert!(matches!(
+            resume_verdict(206, Some("pages 1-2/9"), 3_145_728, None),
+            Resume::Untrusted(_)
+        ));
+
+        // 200 = the Range was ignored: start over, do NOT append.
+        assert_eq!(
+            resume_verdict(200, None, 3_145_728, Some(9_437_184)),
+            Resume::Restart
+        );
+        // Nothing to continue: the header is irrelevant.
+        assert_eq!(
+            resume_verdict(206, Some("bytes 5-9/10"), 0, None),
+            Resume::Restart
+        );
+    }
+
+    #[test]
+    fn the_content_range_header_is_read_the_way_the_rfc_writes_it() {
+        assert_eq!(
+            parse_content_range("bytes 0-499/1234"),
+            Some((0, 499, Some(1234)))
+        );
+        assert_eq!(
+            parse_content_range("bytes 500-999/*"),
+            Some((500, 999, None))
+        );
+        assert_eq!(parse_content_range("bytes */1234"), None);
+        assert_eq!(parse_content_range(""), None);
+        assert_eq!(parse_content_range("bytes 0-1"), None);
+    }
+
+    /// A DEAD END MUST NOT BE LEFT ON DISK. The leftover is only useful if the
+    /// next run can continue it; when it is LONGER than the object it can only
+    /// produce a 416 forever.
+    #[test]
+    fn an_oversized_leftover_is_a_dead_end_and_a_short_one_is_not() {
+        // TOO LONG is the case that locks the user out: the next run asks for
+        // a range past the end of the object and every source answers 416.
+        assert_eq!(size_verdict(Some(10), 20), SizeVerdict::TooLong);
+        // TOO SHORT is the ordinary interrupted download — the leftover is the
+        // whole point of resuming.
+        assert_eq!(size_verdict(Some(10), 5), SizeVerdict::TooShort);
+        assert_eq!(size_verdict(Some(10), 10), SizeVerdict::Exact);
+        // No declared size: there is nothing to contradict.
+        assert_eq!(size_verdict(None, 10), SizeVerdict::Exact);
+    }
+
+    /// The new error says WHICH problem it is: "the leftover is stale" is not
+    /// "the size did not match", and the two send the user to different places.
+    #[test]
+    fn a_range_mismatch_is_told_apart_from_a_size_mismatch() {
+        let range = DownloadError::RangeMismatch {
+            asked: 3_145_728,
+            detail: "the server continued from byte 0, not from 3145728".into(),
+        }
+        .to_string();
+        let size = DownloadError::SizeMismatch {
+            expected: 10,
+            found: 20,
+        }
+        .to_string();
+        assert_ne!(range, size);
+        assert!(range.contains("3145728"), "{range}");
+        assert!(
+            range.contains("again"),
+            "the user must be told the next run will work: {range}"
         );
     }
 

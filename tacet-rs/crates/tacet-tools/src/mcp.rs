@@ -403,8 +403,27 @@ pub fn load_from_config(config: &Config) -> LoadOutcome {
 /// empty. **GOES ON THE NETWORK.**
 pub fn load_from_default() -> LoadOutcome {
     let mut outcome = LoadOutcome::default();
-    match tacet_mcp::config::read_default() {
-        Ok(c) => outcome.merge(load_from_config(&c)),
+    // `read_default_checked`, NOT `read_default`: the permission measurement has
+    // to sit on the path the shell actually takes. The note is pushed BEFORE the
+    // connections are loaded so the warning is on screen even when every
+    // connection then fails — a token readable by other local accounts is a
+    // finding regardless of whether the server answered.
+    match tacet_mcp::config::read_default_checked() {
+        Ok((c, exposed)) => {
+            if exposed {
+                let where_it_is = tacet_mcp::config::default_path()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "mcp.json".to_string());
+                // The remedy is spelled out: a warning a user cannot act on is
+                // noise, and noise teaches people to skip warnings.
+                outcome.notes.push(format!(
+                    "{where_it_is} holds a plain-text key and is readable by other accounts on \
+                     this machine — run `chmod 600 {where_it_is}`, or move the key into the \
+                     environment with `key_env`"
+                ));
+            }
+            outcome.merge(load_from_config(&c));
+        }
         Err(e) => outcome
             .connection_errors
             .push(("configuration".into(), e.short_error())),
@@ -821,6 +840,67 @@ mod tests {
         let ctx = context();
         let outcome = sample_tool().process_output(&ctx, "   ".into(), false);
         assert_eq!(outcome.to_model, "tool returned no output");
+    }
+
+    /// THE LIVE PATH, NOT THE HELPER. `key_file_is_exposed` and `read_checked`
+    /// were both written and both tested, and neither was reachable from the
+    /// shell: `load_from_default` called plain `read_default`, so no user could
+    /// ever see the warning. This test drives the SAME function the shell drives
+    /// and demands the note come out of it — reverting `read_default_checked`
+    /// back to `read_default` turns it red.
+    ///
+    /// IT GOES NOWHERE NEAR THE NETWORK: the connection is `enabled: false`, so
+    /// `Config::valid()` is empty and nothing is dialled — while
+    /// `key_file_is_exposed` still sees the plain key, because it reads every
+    /// connection, not just the usable ones.
+    #[cfg(unix)]
+    #[test]
+    fn a_world_readable_key_is_reported_on_the_path_the_shell_uses() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "tacet-mcp-exposure-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mcp.json");
+        std::fs::write(
+            &path,
+            r#"{"connections":[{"name":"home","url":"https://example.test/mcp",
+               "key":"secret-token","enabled":false}]}"#,
+        )
+        .unwrap();
+
+        // SAFETY: single-threaded intent — this variable is read only by
+        // `config::default_path`, and this is the one test in the crate that
+        // touches it.
+        unsafe { std::env::set_var(tacet_mcp::config::PATH_VARIABLE, &path) };
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let loud = load_from_default();
+        assert!(
+            loud.notes.iter().any(|n| n.contains("plain-text key")),
+            "a 0644 file with a plain key produced no note: {:?}",
+            loud.notes
+        );
+        // The remedy has to be in the text; a warning nobody can act on is noise.
+        assert!(loud.notes.iter().any(|n| n.contains("chmod 600")));
+        // The token itself MUST NOT be echoed to the screen while we complain
+        // that other accounts can read it.
+        assert!(!loud.notes.iter().any(|n| n.contains("secret-token")));
+
+        // 0600 is the quiet case: the same file, narrowed, must say nothing.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let quiet = load_from_default();
+        assert!(
+            quiet.notes.is_empty(),
+            "a 0600 file still warned: {:?}",
+            quiet.notes
+        );
+
+        unsafe { std::env::remove_var(tacet_mcp::config::PATH_VARIABLE) };
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

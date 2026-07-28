@@ -34,9 +34,17 @@
 //! opposite of the request.
 //!
 //! IF IT IS NOT A TTY NONE OF THIS HAPPENS. A formatter built with
-//! `colored=false` is TRANSPARENT: it hands the input back byte for byte.
-//! Piped output staying parseable (and today's scripts not breaking) matters
-//! more than decoration.
+//! `colored=false` adds nothing of its own: no markdown is interpreted and no
+//! escape is emitted. Piped output staying parseable (and today's scripts not
+//! breaking) matters more than decoration.
+//!
+//! ONE THING HAPPENS ON BOTH PATHS — `defang`. TERMINAL CONTROL CHARACTERS ARE
+//! REMOVED FROM THE MODEL'S TEXT, tty or not. The model's output is
+//! attacker-reachable (a fetched page, a read file) and a terminal EXECUTES
+//! escape sequences, so passing them through hands an injected page control of
+//! the screen the user reads to check what the assistant did. The pipe is not
+//! exempt: redirected output becomes a file, and the escapes fire when someone
+//! `cat`s it.
 
 use crate::ui::{BOLD, REVERSE, dim_code, reset_code};
 
@@ -50,6 +58,38 @@ const PREFIX_CAP: usize = 16;
 /// buffer — past a certain point, saying "that was not a marker" and printing
 /// raw is better than holding the answer hostage.
 const MARKER_CAP: usize = 200;
+
+/// Neutralises one character of MODEL TEXT before it can reach the terminal.
+///
+/// WHY THIS EXISTS: a terminal does not display escape sequences, it EXECUTES
+/// them, and the text flowing through this formatter is attacker-reachable —
+/// `web_fetch` hands the model a page someone else wrote, `read_file` hands it
+/// a file someone else sent. Qwen2.5's tokenizer is byte-level BPE, so the
+/// model can emit a bare `0x1b` when a fetched page tells it to; the call
+/// filter upstream only strips tool calls and everything else is copied
+/// through to `write_all`. With the escapes intact an injected page can clear
+/// the screen, move the cursor over what was already printed, turn the text
+/// invisible (`ESC[8m`), rewrite the window title, or write the user's
+/// clipboard (`OSC 52`) — i.e. it controls the surface the user reads to check
+/// what the assistant actually did.
+///
+/// THE PLACE MATTERS. It is done HERE, on the way in, BEFORE any of our own
+/// styling is added, so the shell's own escapes stay safe by construction; a
+/// filter at `Screen::write` would have to tell our escapes from the model's,
+/// and it cannot.
+///
+/// `char::is_control()` covers C0, DEL **and** the C1 range — U+009B is a
+/// single-character CSI and is just as good as `ESC [` on a UTF-8 terminal, so
+/// all three are needed. `\n` and `\t` survive: they are layout, not commands.
+/// The replacement character is used rather than deletion so a hostile payload
+/// leaves a visible mark instead of vanishing.
+fn defang(c: char) -> char {
+    match c {
+        '\n' | '\t' => c,
+        c if c.is_control() => '\u{fffd}',
+        c => c,
+    }
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
@@ -139,11 +179,15 @@ impl Formatter {
     /// Feeds a chunk; returns the part that IS PRINTABLE to the screen.
     pub fn feed(&mut self, chunk: &str) -> String {
         if !self.colored {
-            return chunk.to_string();
+            // NOT A LOOPHOLE. This branch used to hand the input back byte for
+            // byte, and "it is only a pipe" is not a defence: the output is
+            // redirected into a file and the same escapes execute the moment
+            // someone `cat`s it. Same attack, delayed.
+            return chunk.chars().map(defang).collect();
         }
         self.output.clear();
         for c in chunk.chars() {
-            self.char(c);
+            self.char(defang(c));
         }
         std::mem::take(&mut self.output)
     }
@@ -574,6 +618,85 @@ mod tests {
         }
         output.push_str(&f.finish());
         output
+    }
+
+    /// Removes the `ESC[..m` colour codes THIS formatter emits, then asserts
+    /// that nothing executable is left — i.e. that every escape on screen is
+    /// one we put there ourselves.
+    fn assert_no_escapes_of_its_own(what: &str, output: &str) {
+        let mut rest = output;
+        let mut plain = String::new();
+        while let Some(i) = rest.find('\u{1b}') {
+            plain.push_str(&rest[..i]);
+            let tail = &rest[i + 1..];
+            // Our own codes are exactly `[` + digits/`;` + `m`.
+            let end = tail.find('m');
+            let is_ours = tail.starts_with('[')
+                && end.is_some_and(|e| tail[1..e].chars().all(|c| c.is_ascii_digit() || c == ';'));
+            if is_ours {
+                rest = &tail[end.unwrap() + 1..];
+            } else {
+                panic!("{what}: an escape we did not write reached the screen: {output:?}");
+            }
+        }
+        plain.push_str(rest);
+        for bad in ['\u{1b}', '\u{9b}', '\u{7}', '\u{7f}', '\r'] {
+            assert!(!plain.contains(bad), "{what}: {bad:?} survived: {output:?}");
+        }
+    }
+
+    /// A TERMINAL EXECUTES WHAT IT IS HANDED; MODEL TEXT MUST NOT REACH IT WITH
+    /// ESCAPES INTACT.
+    ///
+    /// The attack this closes: a fetched page carries an injected instruction
+    /// ("start your answer with these bytes"), the byte-level tokenizer lets
+    /// the model emit a bare `0x1b`, and from there the page owns the screen —
+    /// `ESC[2J` wipes it, `ESC[8m` hides text, `OSC 52` writes the clipboard,
+    /// `OSC 0` renames the window. What the user reads to check the assistant
+    /// would then be written by the attacker.
+    ///
+    /// Every route the text can take out of this formatter is measured: the
+    /// plain path, the chunked stream, a table cell, a code block, and the
+    /// non-tty pipe.
+    #[test]
+    fn escape_sequences_from_the_model_are_neutralised() {
+        let out = Formatter::all(true, "hi \u{1b}[2J\u{1b}]0;x\u{7}\u{9b}2J\u{7f}bye");
+        assert!(!out.contains('\u{1b}'), "ESC reached the screen: {out:?}");
+        // U+009B is a SINGLE-CHARACTER CSI: as good as `ESC [` on a UTF-8
+        // terminal, and `is_control()` is what catches it.
+        assert!(
+            !out.contains('\u{9b}'),
+            "C1 CSI reached the screen: {out:?}"
+        );
+        assert!(!out.contains('\u{7}'), "BEL reached the screen: {out:?}");
+        assert!(!out.contains('\u{7f}'), "DEL reached the screen: {out:?}");
+        assert!(out.contains("hi") && out.contains("bye"), "{out:?}");
+
+        // The real stream shape: a chunk boundary must not become a hole.
+        for size in [1, 2, 3, 7] {
+            let s = chunked("a\u{1b}[2Jb", size);
+            assert!(!s.contains('\u{1b}'), "chunk size {size}: {s:?}");
+        }
+
+        // A table cell and a code block are separate code paths inside this
+        // file (buffered rows, raw lines) and both end up on the screen. These
+        // two DO carry escapes — OUR OWN styling — so the assertion strips the
+        // `ESC[..m` colour codes this formatter emits and then insists nothing
+        // escape-shaped is left. Asserting "no ESC at all" would be a weaker
+        // test that happens to pass on the unstyled paths above.
+        let table = Formatter::all(true, "| \u{1b}[2Jx | b |\n| - | - |\n| c | d |\n");
+        assert_no_escapes_of_its_own("table cell", &table);
+        let code = Formatter::all(true, "```\n\u{1b}[2Jx\n```\n");
+        assert_no_escapes_of_its_own("code block", &code);
+
+        // THE PIPE IS NOT A LOOPHOLE: redirected output is a file, and the
+        // escapes fire when it is `cat`ed later.
+        let piped = Formatter::all(false, "x\u{1b}[2J\u{9b}2Jy");
+        assert!(!piped.contains('\u{1b}'), "piped: {piped:?}");
+        assert!(!piped.contains('\u{9b}'), "piped: {piped:?}");
+
+        // Layout survives — the fix must not eat newlines or tabs.
+        assert_eq!(Formatter::all(false, "a\nb\tc"), "a\nb\tc");
     }
 
     /// It must give the same result REGARDLESS OF CHUNK SIZE. This test breaking

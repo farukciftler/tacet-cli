@@ -97,12 +97,33 @@ pub fn get_str(key: &str) -> Option<String> {
 
 fn save(map: &Map<String, Value>) -> Result<(), String> {
     let p = file_path().ok_or_else(|| "the config directory cannot be resolved".to_string())?;
+    save_to(&p, map)
+}
+
+/// The write itself, with the path handed in.
+///
+/// SPLIT OUT SO THE PERMISSIONS CAN BE MEASURED. `file_path()` reads a
+/// PROCESS-WIDE environment variable, and a test that sets it fights every
+/// other test in this binary; the mode of the directory and the file is exactly
+/// the kind of thing that must be measured on the REAL write path rather than
+/// on a hand-rolled copy of it.
+fn save_to(p: &std::path::Path, map: &Map<String, Value>) -> Result<(), String> {
     if let Some(parent) = p.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        // 0700, NOT THE UMASK. This is very often the FIRST command that
+        // creates the config directory (`tacet config set theme night`), and
+        // whatever mode it is born with is the mode `memory.json` (personal
+        // notes), `mcp.json` (a plain-text bearer token) and `addons.json` (an
+        // address that may carry a credential) live under afterwards. Measured:
+        // with umask 022 it was born 0755 and every second local account could
+        // walk in.
+        tacet_kernel::fs::create_private_dir(parent).map_err(|e| e.to_string())?;
     }
     let text =
         serde_json::to_string_pretty(&Value::Object(map.clone())).map_err(|e| e.to_string())?;
-    fs::write(&p, text + "\n").map_err(|e| e.to_string())
+    // config.json itself is not a secret today, but it sits in the same
+    // directory and is written by the same gate; a file that starts life 0644
+    // is one added setting away from leaking one.
+    tacet_kernel::fs::write_private(p, (text + "\n").as_bytes()).map_err(|e| e.to_string())
 }
 
 fn validate(key: &str, value: &str) -> Result<(), String> {
@@ -154,7 +175,40 @@ pub fn list(json: bool) -> ExitCode {
             color.paint(DIM, "  file: (config directory unresolved)")
         ),
     }
+    warn_if_home_var_ignored(&color);
     ExitCode::SUCCESS
+}
+
+/// Says out loud that `TACET_HOME` was dropped.
+///
+/// THE DROP ITSELF IS RIGHT (a relative value would put `memory.json` and the
+/// plain-text MCP token in whatever folder `tacet` was started from, i.e. very
+/// often a git repository). DOING IT QUIETLY IS NOT: this is the one variable
+/// the user typed by hand and it outranks everything else, so a silent drop
+/// leaves them believing their token lives somewhere it does not. Printed next
+/// to the resolved path, where the reader is already looking.
+pub fn warn_if_home_var_ignored(color: &Color) {
+    if !tacet_kernel::env::home_var_ignored() {
+        return;
+    }
+    eprintln!(
+        "{}",
+        color.paint(
+            crate::ui::YELLOW,
+            "TACET_HOME is not an absolute path — it was IGNORED."
+        )
+    );
+    eprintln!(
+        "{}",
+        color.paint(
+            DIM,
+            "  a relative value would put memory.json and the MCP token in the folder you started tacet from.",
+        )
+    );
+    eprintln!(
+        "{}",
+        color.paint(DIM, "  use an absolute path, e.g. TACET_HOME=$HOME/.tacet")
+    );
 }
 
 pub fn get(key: &str) -> ExitCode {
@@ -208,6 +262,8 @@ pub fn unset(key: &str) -> ExitCode {
 }
 
 pub fn path() -> ExitCode {
+    // On stderr, so the path on stdout stays pipeable.
+    warn_if_home_var_ignored(&Color::setup());
     match file_path() {
         Some(p) => {
             println!("{}", p.display());
@@ -282,6 +338,42 @@ pub fn shown_value(key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// THE CONFIG DIRECTORY IS WHERE THE SECRETS LIVE, AND ITS MODE IS NOT THE
+    /// UMASK'S TO CHOOSE.
+    ///
+    /// `tacet config set theme night` is very often the FIRST command that
+    /// creates `~/.tacet`, and whatever mode it lands with is the mode
+    /// `memory.json` (personal notes), `mcp.json` (a plain-text bearer token)
+    /// and `addons.json` (an address that may carry a credential) live under
+    /// afterwards. Measured against the old `create_dir_all` + `fs::write`
+    /// pair under umask 022: 0755 and 0644 — any second local account on the
+    /// machine could read all of it. This test is RED on that code.
+    ///
+    /// A DIRECTORY LEFT OVER FROM AN OLDER INSTALL IS SET UP ON PURPOSE: fixing
+    /// only fresh installs would protect nobody who already runs the tool.
+    #[cfg(unix)]
+    #[test]
+    fn the_config_directory_and_its_file_exclude_other_local_accounts() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join("tacet-config-mode-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let file = dir.join("config.json");
+        let mut map = Map::new();
+        map.insert("theme".into(), Value::String("night".into()));
+        save_to(&file, &map).unwrap();
+
+        let mode = |p: &std::path::Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700, "the config directory is walkable");
+        assert_eq!(mode(&file), 0o600, "the config file is world-readable");
+        assert!(fs::read_to_string(&file).unwrap().contains("night"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn unknown_key_is_rejected() {
