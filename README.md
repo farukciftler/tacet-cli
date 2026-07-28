@@ -185,6 +185,15 @@ cargo run -p tacet-cli -- eval
 
 The eval suite scores *tool usage*, not answer correctness — a case can pass with wrong arithmetic if the model called the right tool with the right arguments. That is intentional (the arithmetic is the tool's job, and the tool has its own tests), but it means eval is not a substitute for reading the output.
 
+## Contributing
+
+Small changes welcome; the shape of the project is written down in
+[CONTRIBUTING.md](CONTRIBUTING.md) and takes five minutes to read.
+
+The most useful thing anyone can do right now: **run it on Linux or Windows and
+say what broke.** CI compiles and tests there, but no human has used the
+interactive shell on either — see the platform table above.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
