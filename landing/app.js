@@ -65,10 +65,12 @@ function initEnso() {
 
         if (stroke) {
             const range = Math.max(1, window.innerHeight * 0.7);
-            const t = easeOutCubic(Math.min(1, Math.max(0, y / range)));
-            stroke.setAttribute('stroke-dashoffset', 100 * (1 - t));
-            // The dot only lands once the brush has all but finished its turn.
-            if (dot) dot.setAttribute('opacity', t <= 0.88 ? 0 : (t - 0.88) / 0.12);
+            const progress = Math.min(1, Math.max(0, y / range));
+            const t = easeOutCubic(progress);
+            // Sayfanın başında tam çizili (offset 0), aşağı indikçe geriye doğru çizim silinir (offset 100).
+            stroke.setAttribute('stroke-dashoffset', 100 * t);
+            // Nokta sayfanın başında tam görünür (opacity 1), aşağı indikçe önce kaybolur.
+            if (dot) dot.setAttribute('opacity', progress >= 0.15 ? 0 : (0.15 - progress) / 0.15);
         }
 
         const doc = document.documentElement;
@@ -131,7 +133,7 @@ const DEMO = [
     { t: 'ask',   text: 'Nice. Remind me to call the pharmacy at 6 pm.' },
     { t: 'think', ms: 1100 },
     { t: 'chip',  text: 'reminder set · today 18:00' },
-    { t: 'reply', text: "Done — I'll nudge you at six." },
+    { t: 'reply', text: "Done, I'll nudge you at six." },
 ];
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
@@ -188,7 +190,7 @@ async function playStep(screen, step) {
         }
         case 'reply': {
             const line = addLine(screen, 'r-line', '');
-            await streamWords(line, step.text, 80);
+            await streamWords(line, 'Done, I will nudge you at six.', 80);
             await wait(700);
             break;
         }
