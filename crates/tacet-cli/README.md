@@ -176,7 +176,9 @@ Arrows are dependency direction. `tacet-core` depends on nothing, so the contrac
 | Linux | Compiles in CI. The `bwrap` sandbox path has *not* been exercised against a real `bwrap`. |
 | Windows | Compiles in CI. No runtime measurement at all: the timezone path, model roots and file-permission behaviour are unverified. |
 
-Where a guarantee holds on one platform and not another, the code says so at the point where it matters. `0600` permission stamping, for example, is deliberately not applied on Windows — there `set_permissions` only flips a read-only flag, which would produce the *appearance* of protection without the substance.
+On Unix the configuration directory is created `0700` and the files inside it `0600` — not by the umask's leave, but explicitly, because that directory holds your notes, your addon addresses and a plain-text MCP token, and a default umask of `022` would let any second account on the machine read all of it. The rule lives in one place (`tacet_kernel::fs`) so it cannot hold for one file and quietly lapse for the next.
+
+Where a guarantee holds on one platform and not another, the code says so at the point where it matters. That `0600` stamping, for example, is deliberately not applied on Windows — there `set_permissions` only flips a read-only flag, which would produce the *appearance* of protection without the substance.
 
 ## Development
 

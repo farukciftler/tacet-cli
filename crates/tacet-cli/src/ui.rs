@@ -26,6 +26,15 @@
 //! turn on raw mode; trying to would also error. `Screen::setup` measures the tty
 //! once, and with no tty the whole module falls back to plain text — the shell
 //! DOES NOT CRASH, it merely runs without the decoration.
+//!
+//! THE INDICATOR IS DRAWN ON STDERR — the same choice the download progress line
+//! made, and for the same reason. STDOUT IS THE ANSWER'S CHANNEL: under `--json`
+//! it carries one machine-readable document and a `\r\x1b[2K` written into it is
+//! corruption, whether or not a human happens to be watching. Writing the
+//! decoration to stderr makes that leak IMPOSSIBLE BY CONSTRUCTION rather than by
+//! remembering to pass a flag — this repo's recurring failure is a mechanism that
+//! is built and then not wired up, and a rule that needs no wiring cannot fail
+//! that way.
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
@@ -287,6 +296,14 @@ struct ScreenInner {
 /// spinner gets mixed into the answer.
 pub struct Screen {
     tty: bool,
+    /// May the indicator be drawn at all — BOTH streams must be terminals.
+    ///
+    /// stdout, because a redirected stdout means somebody is reading the bytes
+    /// and the erase sequences would land in their file. stderr, because that is
+    /// where the indicator is actually written: with `2>log` the line would fill
+    /// a log file with carriage returns. Requiring both keeps the decoration on
+    /// the screen and only on the screen.
+    indicator_tty: bool,
     inner: Mutex<ScreenInner>,
 }
 
@@ -294,6 +311,7 @@ impl Screen {
     pub fn setup() -> Arc<Self> {
         Arc::new(Self {
             tty: std::io::stdout().is_terminal(),
+            indicator_tty: std::io::stdout().is_terminal() && std::io::stderr().is_terminal(),
             inner: Mutex::new(ScreenInner {
                 raw: false,
                 has_indicator: false,
@@ -317,16 +335,29 @@ impl Screen {
         }
     }
 
+    /// Erases the indicator line, IN THE STREAM IT WAS DRAWN IN.
+    ///
+    /// The erase has to travel with the drawing: the cursor belongs to the
+    /// terminal, not to a stream, but the BYTES belong to a stream, and sending
+    /// `\r\x1b[2K` down stdout to clean up something stderr drew is exactly the
+    /// leak the module header forbids. Idempotent — nothing is written when no
+    /// indicator is standing.
+    fn wipe_indicator(inner: &mut ScreenInner) {
+        if inner.has_indicator {
+            let mut err = std::io::stderr().lock();
+            let _ = err.write_all(CLEAR_LINE.as_bytes());
+            let _ = err.flush();
+            inner.has_indicator = false;
+        }
+    }
+
     /// Prints free text. If an indicator is waiting on the screen it clears it
     /// FIRST — so "remove the indicator when the first token arrives" does not
     /// have to be coded separately, the act of writing removes it.
     pub fn write(&self, text: &str) {
         let mut inner = self.inner.lock().expect("screen lock");
+        Self::wipe_indicator(&mut inner);
         let mut out = std::io::stdout().lock();
-        if inner.has_indicator {
-            let _ = out.write_all(CLEAR_LINE.as_bytes());
-            inner.has_indicator = false;
-        }
         inner.last_chip = None;
         let _ = out.write_all(Self::translate(inner.raw, text).as_bytes());
         let _ = out.flush();
@@ -336,16 +367,16 @@ impl Screen {
         self.write(&format!("{text}\n"));
     }
 
-    /// Draws the indicator on the last line (overwritable).
+    /// Draws the indicator on the last line (overwritable, ON STDERR).
     fn indicator(&self, text: &str) {
-        if !self.tty {
+        if !self.indicator_tty {
             return;
         }
         let mut inner = self.inner.lock().expect("screen lock");
-        let mut out = std::io::stdout().lock();
-        let _ = out.write_all(CLEAR_LINE.as_bytes());
-        let _ = out.write_all(text.as_bytes());
-        let _ = out.flush();
+        let mut err = std::io::stderr().lock();
+        let _ = err.write_all(CLEAR_LINE.as_bytes());
+        let _ = err.write_all(text.as_bytes());
+        let _ = err.flush();
         inner.has_indicator = true;
         inner.last_chip = None;
     }
@@ -353,21 +384,14 @@ impl Screen {
     /// Clears a waiting indicator. Called at the end of a turn.
     pub fn clear_indicator(&self) {
         let mut inner = self.inner.lock().expect("screen lock");
-        if inner.has_indicator {
-            let _ = std::io::stdout().write_all(CLEAR_LINE.as_bytes());
-            let _ = std::io::stdout().flush();
-            inner.has_indicator = false;
-        }
+        Self::wipe_indicator(&mut inner);
     }
 
     /// A new chip line.
     fn print_chip(&self, id: u64, line: &str) {
         let mut inner = self.inner.lock().expect("screen lock");
+        Self::wipe_indicator(&mut inner);
         let mut out = std::io::stdout().lock();
-        if inner.has_indicator {
-            let _ = out.write_all(CLEAR_LINE.as_bytes());
-            inner.has_indicator = false;
-        }
         let _ = out.write_all(Self::translate(inner.raw, &format!("{line}\n")).as_bytes());
         let _ = out.flush();
         inner.last_chip = Some(id);
@@ -403,6 +427,149 @@ impl Screen {
 const STATE_THINKING: u8 = 0;
 const STATE_QUIET: u8 = 1;
 
+/// WHAT THE SHELL IS DOING RIGHT NOW — the word that stands next to the ensō.
+///
+/// WHY IT EXISTS: between pressing enter and seeing an answer the screen showed a
+/// spinning mark and nothing else, for anywhere up to half a minute. Three
+/// different waits hide in there and they need three different amounts of
+/// patience: reading 2.3 GB of weights off disk (once per process), pushing a few
+/// thousand prompt tokens through the model, and a tool that went to the network.
+/// A user who cannot tell them apart reads all three as "frozen".
+///
+/// EVERY NUMBER HERE IS ONE THE CALLER ALREADY HAS. There is deliberately no
+/// percentage and no "time remaining": the same rule the download progress line
+/// follows (see `progress_text` in main.rs) — an unmeasured figure on the
+/// interface is worse than no figure, because it will be believed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Stage {
+    /// Weights are being read off disk. THE LONGEST WAIT and the only one that
+    /// happens once per process, which is why it is worth naming: the second
+    /// turn will not do it again. `model` may be empty when the name is not
+    /// known at the call site.
+    Loading { model: String },
+    /// The prompt is being built/consumed. `tokens` is the CLI's own prompt size,
+    /// which is `TokenCounter::estimate` — an estimate, and the line says so with
+    /// a `~` exactly as `--show-prompt` does. If an exact count ever reaches this
+    /// layer, the tilde is the thing to drop.
+    Prefill { tokens: usize },
+    /// Tokens are coming out. `tokens` MUST BE A COUNT THE CALLER KEPT, not a
+    /// guess: the engine's streaming callback fires at most once per accepted
+    /// token, so counting callbacks is a true lower bound (it misses only the
+    /// steps whose decode added no new text — see `candle_engine::run_loop`).
+    Generating { tokens: usize },
+    /// A tool is running. THE NAME IS THE POINT: "working…" for eight seconds
+    /// says nothing, "running web_search…" says the machine went to the network.
+    Tool { name: String },
+    /// A tool's own check before it acts — write_code's syntax pass, run_code's
+    /// sandbox setup. Separated from `Tool` because it is the step that fails,
+    /// and a failure is much easier to read when the screen already said which
+    /// step was in progress.
+    Verifying { name: String },
+    /// Nothing more specific is known; the indicator falls back to the label it
+    /// was started with.
+    Thinking,
+}
+
+/// The words for a stage. PURE — this is the part worth testing, and testing it
+/// must not need a terminal.
+fn stage_words(stage: &Stage, fallback: &str) -> String {
+    match stage {
+        Stage::Loading { model } if model.is_empty() => "loading the model".to_string(),
+        Stage::Loading { model } => format!("loading {model}"),
+        Stage::Prefill { tokens } => format!("prefill ~{tokens} tok"),
+        // A zero here is the first instant of generation, before anything has
+        // been counted. Printing "0 tok" would be a true number that reads as a
+        // stall, so the count joins the line only once there is one.
+        Stage::Generating { tokens } if *tokens == 0 => "generating".to_string(),
+        Stage::Generating { tokens } => format!("generating {tokens} tok"),
+        Stage::Tool { name } => format!("running {name}"),
+        Stage::Verifying { name } => format!("checking {name}"),
+        Stage::Thinking => fallback.to_string(),
+    }
+}
+
+/// The hint at the end of the line. First thing dropped when the terminal is
+/// narrow: it is a reminder, the stage is the news.
+const STOP_HINT: &str = " · ctrl-c to stop";
+
+/// Builds the whole indicator line. PURE: no clock, no terminal, no shared
+/// state — everything it needs is an argument, so the layout can be measured in
+/// a test that never opens a tty.
+///
+/// IT NEVER RETURNS MORE THAN `width - 1` VISIBLE COLUMNS. That last column is
+/// not caution, it is the rule this line lives by: at exactly `width` characters
+/// terminals wrap, the next `\r` then lands on the WRONG line, and the indicator
+/// starts leaving a trail of half-erased lines behind it — the same failure the
+/// download progress line was written to avoid.
+fn indicator_line(
+    frame: &str,
+    stage: &Stage,
+    fallback: &str,
+    elapsed_secs: u64,
+    width: usize,
+    colored: bool,
+) -> String {
+    let clock = format!("{elapsed_secs}s");
+    let words = stage_words(stage, fallback);
+    // The ensō and the space after it are outside `rest`, because they are
+    // painted in a different ink; every truncation below works on `rest` alone.
+    let head_cols = frame.chars().count() + 1;
+    let budget = width.saturating_sub(1).saturating_sub(head_cols);
+
+    let full = format!("{words}… {clock}{STOP_HINT}");
+    let rest = if full.chars().count() <= budget {
+        full
+    } else {
+        // Step 1: drop the hint.
+        let short = format!("{words}… {clock}");
+        if short.chars().count() <= budget {
+            short
+        } else {
+            // Step 2: cut the words, keeping the clock — a wait with no elapsed
+            // time is the frozen screen this whole thing exists to fix.
+            let tail = format!("… {clock}");
+            let room = budget.saturating_sub(tail.chars().count());
+            let cut: String = words.chars().take(room).collect();
+            let line = format!("{cut}{tail}");
+            // Step 3: a terminal too narrow even for the clock. Whatever fits.
+            line.chars().take(budget).collect()
+        }
+    };
+    if colored {
+        format!(
+            "{}{frame}{} {}{rest}{}",
+            brass_code(),
+            reset_code(),
+            dim_code(),
+            reset_code()
+        )
+    } else {
+        format!("{frame} {rest}")
+    }
+}
+
+/// How wide the terminal is right now. Asked EVERY DRAW rather than once: a
+/// window resized mid-answer would otherwise keep wrapping until the turn ended.
+/// 80 is the fallback when the size cannot be read (not a terminal, a platform
+/// that does not answer) — it is the conventional width, not a measurement, and
+/// it only ever makes the line shorter than it could be.
+fn terminal_width() -> usize {
+    crossterm::terminal::size()
+        .map(|(w, _)| w as usize)
+        .unwrap_or(80)
+}
+
+/// Does a new stage take the line back from a running answer?
+///
+/// THE ONE CASE THAT MUST NOT: the token counter. Once the answer is flowing,
+/// the last line belongs to the text; an indicator redrawing itself there would
+/// erase the words being written. Every OTHER stage marks a phase that is
+/// genuinely silent — a tool that went to the network, the next round's prefill —
+/// and taking the line back is precisely the point of naming it.
+fn stage_wakes(quiet: bool, stage: &Stage) -> bool {
+    !quiet || !matches!(stage, Stage::Generating { .. })
+}
+
 /// The watcher that owns the screen and the keyboard for the duration of one
 /// user turn.
 ///
@@ -414,6 +581,11 @@ const STATE_QUIET: u8 = 1;
 pub struct TurnIndicator {
     stop: Arc<AtomicBool>,
     state: Arc<AtomicU8>,
+    /// The phase the drawing thread reads on every frame. A mutex and not an
+    /// atomic because two of the stages carry a name; the lock is taken ten times
+    /// a second by the drawing thread and once per phase change by the caller,
+    /// so there is nothing to contend for.
+    stage: Arc<Mutex<Stage>>,
     handle: Option<std::thread::JoinHandle<()>>,
     screen: Arc<Screen>,
     raw_on: bool,
@@ -428,13 +600,7 @@ impl TurnIndicator {
         label: &'static str,
     ) -> TurnIndicator {
         if !screen.tty() {
-            return TurnIndicator {
-                stop: Arc::new(AtomicBool::new(true)),
-                state: Arc::new(AtomicU8::new(STATE_QUIET)),
-                handle: None,
-                screen,
-                raw_on: false,
-            };
+            return Self::disabled(screen);
         }
         // If raw mode cannot be turned on (an odd terminal, a restricted
         // environment) THE PROGRAM DOES NOT CRASH: the spinner still turns, only
@@ -445,9 +611,14 @@ impl TurnIndicator {
 
         let stop = Arc::new(AtomicBool::new(false));
         let state = Arc::new(AtomicU8::new(STATE_THINKING));
+        let stage = Arc::new(Mutex::new(Stage::Thinking));
         let handle = {
-            let (stop, state, screen) =
-                (Arc::clone(&stop), Arc::clone(&state), Arc::clone(&screen));
+            let (stop, state, screen, stage) = (
+                Arc::clone(&stop),
+                Arc::clone(&state),
+                Arc::clone(&screen),
+                Arc::clone(&stage),
+            );
             std::thread::spawn(move || {
                 let started = Instant::now();
                 let mut frame = 0usize;
@@ -461,17 +632,23 @@ impl TurnIndicator {
                         swallow_key(&home, cancel, &screen);
                     }
                     if state.load(Ordering::Relaxed) == STATE_THINKING {
-                        let elapsed = started.elapsed().as_secs();
+                        // The stage is CLONED and the lock released before
+                        // drawing: `screen.indicator` takes a lock of its own,
+                        // and holding two while writing to a terminal is how a
+                        // shell ends up deadlocked against its own spinner.
+                        let now = stage.lock().expect("stage lock").clone();
                         // The ensō turns in brass, the words stay dim. Two
                         // ticks per quadrant: a full turn takes 800 ms — calm,
-                        // not frantic.
-                        screen.indicator(&format!(
-                            "{}{}{} {}{label}… {elapsed}s · ctrl-c to stop{}",
-                            brass_code(),
+                        // not frantic. A PHASE CHANGE LEAVES NO TRACE: the line
+                        // is erased and rewritten in place, so a turn that went
+                        // through five stages still occupies one line.
+                        screen.indicator(&indicator_line(
                             FRAMES[(frame / 2) % FRAMES.len()],
-                            reset_code(),
-                            dim_code(),
-                            reset_code()
+                            &now,
+                            label,
+                            started.elapsed().as_secs(),
+                            terminal_width(),
+                            true,
                         ));
                         frame += 1;
                     }
@@ -481,15 +658,66 @@ impl TurnIndicator {
         TurnIndicator {
             stop,
             state,
+            stage,
             handle: Some(handle),
             screen,
             raw_on,
         }
     }
 
+    /// AN INDICATOR THAT DOES NOTHING: no raw mode, no thread, no drawing, and
+    /// every method on it is a no-op the caller does not have to guard.
+    ///
+    /// TWO CALLERS, TWO DIFFERENT REASONS. `start` returns this when there is no
+    /// tty — there is nothing to draw on. `main.rs` asks for it directly under
+    /// `--json`, and that reason is not the same: a `--json` run in a terminal
+    /// HAS a tty, but the user asked for a machine-readable run, and a spinner
+    /// scribbling stage words over their stderr is decoration they did not ask
+    /// for. The cost of the second case is the input lock going too; that is
+    /// accepted, because the thing on the other end of a `--json` run is a
+    /// program, not a pair of hands.
+    ///
+    /// WHY THE SAME TYPE and not an `Option`: `finish`/`quiet`/`stage` are
+    /// called from a dozen places in the turn loop, several of them on error
+    /// paths. An `Option` would put a `if let Some` at every one of them, and
+    /// the one that got forgotten would be on the path nobody exercises.
+    pub fn disabled(screen: Arc<Screen>) -> TurnIndicator {
+        TurnIndicator {
+            stop: Arc::new(AtomicBool::new(true)),
+            state: Arc::new(AtomicU8::new(STATE_QUIET)),
+            stage: Arc::new(Mutex::new(Stage::Thinking)),
+            handle: None,
+            screen,
+            raw_on: false,
+        }
+    }
+
+    /// Says which phase the turn is in. The whole caller-facing API is this one
+    /// method plus `quiet`/`finish`: the flow lives in `main.rs` and the screen
+    /// lives here, so anything wider would drag terminal knowledge back into the
+    /// turn loop.
+    ///
+    /// SAFE TO CALL WITHOUT A TTY and safe to call at any rate — with no
+    /// terminal there is no thread reading it, and the drawing thread reads
+    /// whatever the latest stage is on its own 100 ms beat rather than once per
+    /// call. So a per-token `Generating` update costs a lock and nothing else; it
+    /// does not paint the screen a thousand times.
+    pub fn stage(&self, stage: Stage) {
+        let quiet = self.state.load(Ordering::Relaxed) == STATE_QUIET;
+        let wakes = stage_wakes(quiet, &stage);
+        *self.stage.lock().expect("stage lock") = stage;
+        if wakes {
+            self.state.store(STATE_THINKING, Ordering::Relaxed);
+        }
+    }
+
     /// The first token arrived: the indicator GOES QUIET but the input lock
     /// stays. Generation is still running, and what the user types would still
     /// get into the output.
+    ///
+    /// The line now belongs to the answer. A later `stage` call takes it back
+    /// for a phase that is silent again (a tool running) but NOT for a token
+    /// count — see `stage_wakes`.
     pub fn quiet(&self) {
         self.state.store(STATE_QUIET, Ordering::Relaxed);
         self.screen.clear_indicator();
@@ -828,17 +1056,222 @@ mod tests {
         assert!(dumped.contains('\n'), "{dumped:?}");
     }
 
+    /// A screen that is NOT a terminal, built by hand.
+    ///
+    /// `Screen::setup` cannot be used for this: `cargo test` in a terminal
+    /// inherits fd 1, so `is_terminal()` there answers TRUE and the test would
+    /// measure the developer's shell instead of the code. Constructing the state
+    /// directly is the only way to ask the question the test is asking.
+    fn headless_screen() -> Arc<Screen> {
+        Arc::new(Screen {
+            tty: false,
+            indicator_tty: false,
+            inner: Mutex::new(ScreenInner {
+                raw: false,
+                has_indicator: false,
+                last_chip: None,
+            }),
+        })
+    }
+
     /// IT DOES NOT CRASH WITHOUT A TTY. The tests run in a piped environment; if
     /// `start` tried to turn on raw mode there, the whole shell would fall over.
     #[test]
     fn the_indicator_runs_silently_without_a_tty() {
         static CANCEL: AtomicBool = AtomicBool::new(false);
-        let screen = Screen::setup();
+        let screen = headless_screen();
         let mut indicator = TurnIndicator::start(Arc::clone(&screen), &CANCEL, "thinking");
+        indicator.stage(Stage::Prefill { tokens: 2586 });
         indicator.quiet();
         indicator.finish();
         // A second `finish` (it also arrives through Drop) must not panic.
         indicator.finish();
+    }
+
+    /// WITHOUT A TERMINAL NOTHING IS DRAWN — measured, not assumed.
+    ///
+    /// `has_indicator` is the honest witness: it is set ONLY on the line that
+    /// actually writes bytes, so a false flag after a full round of stage changes
+    /// means no byte left the process. This is the guarantee `--json` rests on
+    /// from the other side (the bytes go to stderr, never stdout — see the module
+    /// header); together they say a piped run stays parseable.
+    #[test]
+    fn no_terminal_means_not_one_byte_of_indicator() {
+        static CANCEL: AtomicBool = AtomicBool::new(false);
+        let screen = headless_screen();
+        screen.indicator("◜ loading the model… 4s");
+        assert!(
+            !screen.inner.lock().expect("lock").has_indicator,
+            "the indicator drew itself with no terminal"
+        );
+
+        let indicator = TurnIndicator::start(Arc::clone(&screen), &CANCEL, "thinking");
+        for stage in [
+            Stage::Loading {
+                model: "qwen3-4b".into(),
+            },
+            Stage::Prefill { tokens: 2586 },
+            Stage::Generating { tokens: 41 },
+            Stage::Tool {
+                name: "run_code".into(),
+            },
+        ] {
+            indicator.stage(stage);
+        }
+        assert!(
+            !screen.inner.lock().expect("lock").has_indicator,
+            "a stage change drew itself with no terminal"
+        );
+        // Writing through the screen must not try to erase a line that was never
+        // painted either.
+        screen.clear_indicator();
+        assert!(!screen.inner.lock().expect("lock").has_indicator);
+    }
+
+    /// EACH PHASE SAYS SOMETHING DIFFERENT, and says the number it was given.
+    ///
+    /// This is the whole point of the stage line: the six seconds spent reading
+    /// weights and the six seconds spent inside a web search must not look
+    /// identical on screen.
+    #[test]
+    fn every_stage_names_itself_and_carries_its_number() {
+        let cases = [
+            (
+                Stage::Loading {
+                    model: "qwen3-4b".into(),
+                },
+                "loading qwen3-4b",
+            ),
+            (Stage::Loading { model: String::new() }, "loading the model"),
+            (Stage::Prefill { tokens: 2586 }, "prefill ~2586 tok"),
+            (Stage::Generating { tokens: 0 }, "generating"),
+            (Stage::Generating { tokens: 41 }, "generating 41 tok"),
+            (
+                Stage::Tool {
+                    name: "run_code".into(),
+                },
+                "running run_code",
+            ),
+            (
+                Stage::Verifying {
+                    name: "write_code".into(),
+                },
+                "checking write_code",
+            ),
+            (Stage::Thinking, "thinking"),
+        ];
+        let mut seen: Vec<String> = Vec::new();
+        for (stage, expected) in cases {
+            let words = stage_words(&stage, "thinking");
+            assert_eq!(words, expected, "{stage:?}");
+            let line = indicator_line("◜", &stage, "thinking", 6, 80, false);
+            assert!(line.contains(expected), "{line}");
+            // The elapsed clock rides along on every phase: it is the number that
+            // separates "slow" from "hung".
+            assert!(line.contains("6s"), "{line}");
+            seen.push(words);
+        }
+        // A zero-token generation and a started generation are the only pair
+        // allowed to share a prefix; no two phases may read the same.
+        seen.sort();
+        let before = seen.len();
+        seen.dedup();
+        assert_eq!(before, seen.len(), "two stages produced the same words");
+    }
+
+    /// NO PHASE INVENTS A NUMBER. Only what the caller measured may appear: no
+    /// percentage, no "time left". The same rule the download progress line
+    /// follows, applied to the other long wait in this shell.
+    #[test]
+    fn the_stage_line_predicts_nothing() {
+        for stage in [
+            Stage::Loading {
+                model: "qwen3-8b".into(),
+            },
+            Stage::Prefill { tokens: 2586 },
+            Stage::Generating { tokens: 512 },
+            Stage::Tool {
+                name: "web_search".into(),
+            },
+        ] {
+            let line = indicator_line("◜", &stage, "thinking", 12, 80, false);
+            for forbidden in ["%", "left", "remaining", "eta", "min", "estimated"] {
+                assert!(
+                    !line.to_lowercase().contains(forbidden),
+                    "{line:?} promises something it did not measure: {forbidden}"
+                );
+            }
+        }
+        // The prompt size the CLI holds IS an estimate, and the line admits it
+        // rather than presenting it as a count.
+        assert!(
+            indicator_line("◜", &Stage::Prefill { tokens: 2586 }, "thinking", 3, 80, false)
+                .contains("~2586"),
+        );
+    }
+
+    /// ONE LINE, ALWAYS — a narrow terminal must not make the indicator wrap.
+    ///
+    /// A wrapped indicator is not a cosmetic fault: the next `\r` lands on the
+    /// wrong line, the erase misses, and every frame leaves a corpse behind until
+    /// the answer is buried in spinner debris.
+    #[test]
+    fn the_line_never_reaches_the_terminals_edge() {
+        let stage = Stage::Tool {
+            name: "web_search".into(),
+        };
+        for width in [8usize, 12, 20, 24, 30, 40, 60, 80, 120] {
+            let line = indicator_line("◜", &stage, "thinking", 137, width, false);
+            assert!(
+                line.chars().count() < width,
+                "width {width}: {} columns — {line:?}",
+                line.chars().count()
+            );
+        }
+        // Wide enough: the hint is there. Too narrow: the hint is the first
+        // thing to go, and the elapsed clock is the last.
+        let wide = indicator_line("◜", &stage, "thinking", 9, 80, false);
+        assert!(wide.contains("ctrl-c"), "{wide}");
+        let narrow = indicator_line("◜", &stage, "thinking", 9, 30, false);
+        assert!(!narrow.contains("ctrl-c"), "{narrow}");
+        assert!(narrow.contains("9s"), "{narrow}");
+        assert!(narrow.contains("web_search"), "{narrow}");
+
+        // Colour is a PARAMETER, exactly as in `chip_line`: the uncoloured form
+        // is the one the tests can reason about, and the one a pipe would get.
+        assert!(!indicator_line("◜", &stage, "thinking", 1, 80, false).contains('\x1b'));
+    }
+
+    /// A TOKEN COUNT MUST NOT STEAL THE LINE BACK FROM THE ANSWER.
+    ///
+    /// Once text is flowing, the last line is the answer's. Only a phase that is
+    /// silent again — a tool that went to the network, the next round's prefill —
+    /// may draw there.
+    #[test]
+    fn only_a_silent_phase_takes_the_line_back() {
+        let generating = Stage::Generating { tokens: 240 };
+        assert!(
+            !stage_wakes(true, &generating),
+            "the token count redrew itself over a streaming answer"
+        );
+        assert!(stage_wakes(false, &generating));
+        for silent in [
+            Stage::Tool {
+                name: "web_search".into(),
+            },
+            Stage::Verifying {
+                name: "write_code".into(),
+            },
+            Stage::Prefill { tokens: 900 },
+            Stage::Loading {
+                model: String::new(),
+            },
+        ] {
+            assert!(
+                stage_wakes(true, &silent),
+                "{silent:?} stayed invisible after the answer streamed"
+            );
+        }
     }
 
     /// In raw mode line endings are translated; otherwise the text is untouched.

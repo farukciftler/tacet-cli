@@ -388,18 +388,28 @@ fn time_piece(s: &str) -> Option<(u32, u32, u32)> {
     Some((p[0].parse().ok()?, p[1].parse().ok()?, second))
 }
 
+/// Whole-word containment on the SIMPLIFIED text. The Turkish shorthands need
+/// it: "dun" (yesterday) is a substring of "dunya" (world) and "sali"
+/// (tuesday) of names like "salih" — a `contains` there resolves dates out of
+/// words that have nothing to do with time. Split on anything non-alphanumeric.
+fn has_word(text: &str, word: &str) -> bool {
+    text.split(|c: char| !c.is_alphanumeric()).any(|w| w == word)
+}
+
 /// Relative day + an optional clock time. "today", "tomorrow", "day after
-/// tomorrow", "yesterday", and weekday names ("tuesday", "next week friday").
+/// tomorrow", "yesterday", weekday names ("tuesday", "next week friday") — and
+/// their Turkish counterparts in the simplified (diacritic-folded) form:
+/// "yarin", "obur gun", "bugun", "dun", "onumuzdeki sali", "haftaya cuma".
 fn relative_day_shorthand(raw: &str, now: DateTime) -> Option<Resolution> {
     let text = simplify(raw);
 
-    let day_offset = if text.contains("day after tomorrow") {
+    let day_offset = if text.contains("day after tomorrow") || text.contains("obur gun") {
         Some(2)
-    } else if text.contains("tomorrow") {
+    } else if text.contains("tomorrow") || has_word(&text, "yarin") {
         Some(1)
-    } else if text.contains("today") {
+    } else if text.contains("today") || has_word(&text, "bugun") {
         Some(0)
-    } else if text.contains("yesterday") {
+    } else if text.contains("yesterday") || has_word(&text, "dun") {
         Some(-1)
     } else {
         weekday_offset(&text, now)
@@ -441,25 +451,43 @@ fn relative_day_shorthand(raw: &str, now: DateTime) -> Option<Resolution> {
 /// Turkish table this used to matter ("pazartesi" contains "pazar") — the order
 /// is kept so a longer name is never silently swallowed by a shorter one.
 fn weekday_offset(plain: &str, now: DateTime) -> Option<i64> {
-    const WEEKDAYS: [(&str, u32); 7] = [
-        ("saturday", 6),
-        ("monday", 1),
-        ("thursday", 4),
+    // English and Turkish (simplified form) in one table, longest first.
+    // Matching is WHOLE-WORD (see `has_word`), so "cumartesi" no longer
+    // depends on ordering to beat "cuma" — but the order is kept as
+    // documentation of the old failure all the same.
+    const WEEKDAYS: [(&str, u32); 14] = [
+        ("cumartesi", 6),
+        ("pazartesi", 1),
         ("wednesday", 3),
+        ("carsamba", 3),
+        ("persembe", 4),
+        ("saturday", 6),
+        ("thursday", 4),
+        ("tuesday", 2),
+        ("monday", 1),
         ("friday", 5),
         ("sunday", 0),
-        ("tuesday", 2),
+        ("pazar", 0),
+        ("cuma", 5),
+        ("sali", 2),
     ];
     let target = WEEKDAYS
         .iter()
-        .find(|(name, _)| plain.contains(name))
+        .find(|(name, _)| has_word(plain, name))
         .map(|(_, n)| *n)?;
     let today = now.weekday() as i64;
     let mut offset = (target as i64 - today).rem_euclid(7);
     if offset == 0 {
         offset = 7;
     }
-    if plain.contains("next week") || plain.contains("next") {
+    // "next tuesday" adds a week; Turkish differs by PHRASE, not by habit:
+    // "onumuzdeki sali" means the COMING Tuesday (the base rule already gives
+    // that), while "haftaya" / "gelecek hafta" mean next week's.
+    if plain.contains("next week")
+        || plain.contains("next")
+        || plain.contains("haftaya")
+        || plain.contains("gelecek hafta")
+    {
         offset += 7;
     }
     Some(offset)
@@ -483,7 +511,7 @@ fn weekday_offset(plain: &str, now: DateTime) -> Option<i64> {
 /// asks. If today is 1 January then today itself (0 days) is the right answer.
 fn named_weekday(raw: &str, now: DateTime) -> Option<Resolution> {
     let plain = simplify(raw);
-    if !(plain.contains("new year")) {
+    if !(plain.contains("new year") || has_word(&plain, "yilbasi")) {
         return None;
     }
     let year = if now.month == 1 && now.day == 1 {
@@ -1101,6 +1129,31 @@ mod tests {
 
     fn an(year: i64, month: u32, day: u32, clock: u32, minute: u32) -> DateTime {
         DateTime::new(year, month, day, clock, minute, 0).expect("a valid instant")
+    }
+
+    /// The Turkish shorthands resolve like their English twins. NOW is a
+    /// Monday: "onumuzdeki sali" (the coming tuesday) is +1 day, "haftaya
+    /// sali" (next week's) is +8, and short tokens only fire as WHOLE WORDS —
+    /// "dunya" (world) must not read as "dun" (yesterday).
+    #[test]
+    fn turkish_shorthands_resolve() {
+        let r = TimeResolver::resolve("yarin 9", now()).expect("yarin");
+        assert_eq!((r.an.day, r.an.clock, r.has_clock), (21, 9, true));
+
+        let r = TimeResolver::resolve("onumuzdeki sali 15:00", now()).expect("sali");
+        assert_eq!((r.an.day, r.an.clock, r.has_clock), (21, 15, true));
+
+        let r = TimeResolver::resolve("haftaya sali", now()).expect("haftaya");
+        assert_eq!(r.an.day, 28);
+
+        let r = TimeResolver::resolve("obur gun", now()).expect("obur gun");
+        assert_eq!(r.an.day, 22);
+
+        let r = TimeResolver::resolve("cumartesi", now()).expect("cumartesi");
+        assert_eq!(r.an.day, 25);
+
+        assert!(TimeResolver::resolve("dunya haritasi", now()).is_none());
+        assert!(TimeResolver::resolve("yılbaşı", now()).is_some());
     }
 
     fn now() -> DateTime {

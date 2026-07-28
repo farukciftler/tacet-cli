@@ -165,6 +165,22 @@ pub trait EngineProvider: Send + Sync {
         Template::Plain
     }
 
+    /// The context window THE MODEL DECLARES, in tokens.
+    ///
+    /// WHY ON THE ENGINE: only the thing that opened the weight file knows this
+    /// number; it is in the GGUF metadata (`<arch>.context_length`). The call site
+    /// feeds it to `token::context_budget`, which clamps it into the range we have
+    /// actually measured.
+    ///
+    /// `None` = "this engine does not declare a window", and the caller MUST then
+    /// keep the default 4096 rather than assume something larger. Default `None`
+    /// for the same reason as `vocab`: an engine that says nothing must not have a
+    /// window invented for it — feeding a model positions past its rope table
+    /// produces plausible-looking nonsense, not an error.
+    fn context_length(&self) -> Option<usize> {
+        None
+    }
+
     /// Token id -> text table; REQUIRED in order to set up a constraint.
     ///
     /// WHY ON THE ENGINE: the mask speaks in token ids, and only the tokenizer

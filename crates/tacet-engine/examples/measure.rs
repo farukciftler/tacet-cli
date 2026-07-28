@@ -252,6 +252,15 @@ fn main() {
         chatml_real <= counter.prompt_cap()
     );
 
+    // --- 6. THE CONTEXT SWEEP — what a bigger window actually costs -----------
+    //
+    // GATED BY AN ENVIRONMENT VARIABLE, not on by default: each step prefills a
+    // prompt of that many tokens and at 32768 that alone is tens of seconds. The
+    // rest of this example is a quick sanity run and must stay quick.
+    if std::env::var("TACET_CONTEXT_SWEEP").is_ok() {
+        context_sweep(&engine);
+    }
+
     let (duration, generation) = measure(160);
     println!("\n== GENERATION ==");
     println!("tokens        : {}", generation.token_count);
@@ -262,4 +271,141 @@ fn main() {
     );
     println!("stop          : {:?}", generation.stop);
     println!("--- TEXT ---\n{}", generation.text);
+}
+
+// ---------------------------------------------------------------------------
+// The context sweep
+// ---------------------------------------------------------------------------
+
+/// The process's resident set size in MEGABYTES.
+///
+/// WHY `ps` AND NOT A CRATE: reading RSS needs either a platform crate (libc,
+/// sysinfo) or the OS's own tool. This project does not add a dependency for a
+/// measurement, and `ps -o rss=` is in POSIX. It reports KILOBYTES on macOS.
+///
+/// RSS IS NOT PEAK AND DOES NOT SHRINK back to the OS when the KV cache is
+/// dropped, so the sweep prints it after every step and reads the numbers as a
+/// high-water mark, not as "what this step alone costs".
+fn rss_mb() -> f64 {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+        .output();
+    match output {
+        Ok(o) => String::from_utf8_lossy(&o.stdout)
+            .trim()
+            .parse::<f64>()
+            .map(|kb| kb / 1024.0)
+            .unwrap_or(f64::NAN),
+        Err(_) => f64::NAN,
+    }
+}
+
+/// Builds a prompt whose TEMPLATED form tokenizes to roughly `target` tokens.
+///
+/// The filler is grown by doubling and then trimmed back sentence by sentence;
+/// the number reported is the REAL tokenized length, never the target. Reporting
+/// the target would make the table a table of intentions.
+fn prompt_of_size(engine: &tacet_engine::CandleEngine, target: usize) -> (Prompt, usize) {
+    // The same Turkish-density filler the truncation section uses, so the sweep
+    // measures the kind of text this assistant actually carries.
+    let sentence = "turn: a fairly long sentence written to fill the context window of an \
+                    assistant running on the device. ";
+    let count = |p: &Prompt| {
+        engine
+            .tokenizer()
+            .encode(p.text_with_template(engine.template()), true)
+            .map(|e| e.get_ids().len())
+            .unwrap_or(0)
+    };
+    let build = |turns: usize| {
+        Prompt::new(
+            tacet_engine::SYSTEM_INSTRUCTIONS,
+            "Summarise what was said above in one sentence.",
+        )
+        .with_history((0..turns).map(|i| Turn::user(format!("{i} {sentence}"))))
+    };
+
+    let mut turns = 8usize;
+    while count(&build(turns)) < target && turns < 1 << 20 {
+        turns *= 2;
+    }
+    // Walk back down: overshooting by a doubling would put a "4096" row 3000
+    // tokens above its label.
+    let mut step = turns / 2;
+    while step > 0 {
+        if count(&build(turns - step)) >= target {
+            turns -= step;
+        }
+        step /= 2;
+    }
+    let prompt = build(turns);
+    let real = count(&prompt);
+    (prompt, real)
+}
+
+/// Measures prefill and decode SEPARATELY at increasing context lengths.
+///
+/// THE METHOD: two runs from the same prompt, `max_tokens = 1` and
+/// `max_tokens = 1 + STEPS`. Greedy sampling is deterministic, so the longer run
+/// reproduces the shorter one's token exactly and the difference in wall time is
+/// pure decode. `prefill = t_one - (1 / decode)`.
+///
+/// WHY NOT THE 32/64 DIFFERENCE the section above uses: that one needs BOTH runs
+/// to hit the cap, and on a 32k-token junk prompt the model often stops after a
+/// few tokens. Anchoring on `max_tokens = 1` cannot stop early — one token is
+/// always produced — and the longer run's own `token_count` is used, so an early
+/// stop only shortens the baseline, it does not corrupt the arithmetic.
+fn context_sweep(engine: &tacet_engine::CandleEngine) {
+    const STEPS: usize = 24;
+
+    println!("\n== CONTEXT SWEEP ==");
+    println!(
+        "model declares : {:?} tokens",
+        engine.context_length()
+    );
+    println!("baseline RSS   : {:.2} GB (weights + rope table, before any KV cache)", rss_mb() / 1024.0);
+    println!(
+        "\n{:>8}  {:>8}  {:>10}  {:>12}  {:>10}  {:>9}",
+        "target", "real", "prefill s", "prefill tok/s", "decode t/s", "RSS GB"
+    );
+
+    let sizes: Vec<usize> = match std::env::var("TACET_CONTEXT_SIZES") {
+        Ok(list) => list.split(',').filter_map(|s| s.trim().parse().ok()).collect(),
+        Err(_) => vec![4096, 8192, 16384, 32768],
+    };
+
+    for target in sizes {
+        // The prompt has to leave room for the tokens we are about to generate;
+        // otherwise the "4096" row would really be running at 4096 + 25.
+        let (prompt, real) = prompt_of_size(engine, target.saturating_sub(STEPS + 8));
+        let run = |n: usize| -> (f64, Generation) {
+            let t = Instant::now();
+            let g = wait(engine.generate(
+                &prompt,
+                None,
+                SamplingSetting {
+                    max_tokens: n,
+                    ..Default::default()
+                },
+            ))
+            .expect("generation");
+            (t.elapsed().as_secs_f64(), g)
+        };
+
+        let (t_one, g_one) = run(1);
+        let (t_many, g_many) = run(1 + STEPS);
+        let extra = g_many.token_count.saturating_sub(g_one.token_count);
+        let decode = if extra > 0 && t_many > t_one {
+            extra as f64 / (t_many - t_one)
+        } else {
+            f64::NAN
+        };
+        // One decode step is inside `t_one`; subtract it to leave the prefill.
+        let prefill = t_one - 1.0 / decode;
+        println!(
+            "{target:>8}  {real:>8}  {prefill:>10.2}  {:>12.1}  {decode:>10.1}  {:>9.2}",
+            real as f64 / prefill,
+            rss_mb() / 1024.0
+        );
+    }
 }

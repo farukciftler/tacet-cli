@@ -23,7 +23,7 @@ Done — countdown.xlsx, one row, with a live =DATEDIF() formula.
 
 ## Why this exists
 
-Most "local AI" tools are a thin shell around a model file. The hard part isn't running the model — it's everything around it: deciding when a tool is needed, forcing the model to produce a *valid* call, executing it safely, and keeping bulk data out of a 4096-token context window.
+Most "local AI" tools are a thin shell around a model file. The hard part isn't running the model — it's everything around it: deciding when a tool is needed, forcing the model to produce a *valid* call, executing it safely, and keeping bulk data out of a context window that is measured in thousands of tokens, not millions.
 
 Tacet is that layer, written to be read. Every non-obvious decision has a comment explaining **why**, and several of them record a measurement that proved the obvious approach wrong.
 
@@ -31,9 +31,9 @@ Tacet is that layer, written to be read. Every non-obvious decision has a commen
 
 **Invalid tool calls are impossible, not unlikely.** Once the model emits `calculate(`, a pushdown automaton masks the logits at every step. Malformed JSON, a field that isn't in the schema, an out-of-range number, a missing required key — none of them can be *generated*. Not validated after the fact: unrepresentable. Sampling runs after masking, so no sampling strategy can escape it.
 
-**The network monopoly is checkable by eye.** Exactly two crates may open a socket, and the HTTP dependency appears in exactly those two manifests. You do not have to trust a privacy claim you cannot audit — `grep ureq crates/*/Cargo.toml` is the audit.
+**The network monopoly is checkable by eye.** Exactly two crates may open a socket, and the HTTP dependency appears in exactly those two manifests. You do not have to trust a privacy claim you cannot audit — `grep ureq crates/*/Cargo.toml` is the audit. (One honest asterisk: if you install the `shell` addon and put `curl` on its allow-list, you have handed a program the network. That is why `shell` sits behind the approval gate — see [Addons](#addons).)
 
-**Nothing leaves the device by default.** Web search is an *addon* you install deliberately, pointed at a SearXNG instance you run. Until you do, the search tools are not merely disabled — they are absent from the catalog the model can see.
+**Nothing leaves the device by default.** Everything with outside reach is an *addon* you install deliberately: web search against your own SearXNG, HTTP against hosts you name, a shell against programs you list. Until you install one, its tools are not merely disabled — they are **absent from the catalog the model is shown**, so it cannot call them or claim it did.
 
 **Four gates on every tool call**, none of which work by matching text:
 
@@ -54,6 +54,14 @@ Tacet is that layer, written to be read. Every non-obvious decision has a commen
 cargo install tacet-cli --features metal   # Apple GPU
 cargo install tacet-cli --features candle  # CPU
 cargo install tacet-cli                    # no inference; still runs eval, tools and the addon flow
+```
+
+⚠️ **`cargo install` does not remember `--features`.** Upgrade without the flag
+and you get a binary that cannot run a model — it still starts, still answers,
+and the answers are canned. `tacet --version` prints the build it actually is:
+
+```bash
+tacet --version        # tacet 0.1.11 (metal)  ← the part in brackets is the engine
 ```
 
 Or grab a prebuilt binary from [Releases](../../releases) — macOS (Apple Silicon
@@ -84,21 +92,25 @@ Tacet needs a model. It never downloads one behind your back:
 
 ```bash
 tacet models list                 # what's on disk, which roots were searched
-tacet models download qwen3-4b    # from your own packages.json, https only, sha256 verified
+tacet models download qwen3-4b    # ~2 GB, https only, sha256 checked before it lands
 ```
 
-**There is no built-in catalog, and that is deliberate.** `tacet models download`
-reads `~/.tacet/packages.json`, a file you write; on a fresh install it is empty
-and the command prints the shape to fill in. Shipping a default mirror would mean
-sending you to an address this project invented and cannot vouch for. Point it at
-weights you already trust:
+Two models are in the built-in catalog — `qwen3-4b` (the default) and
+`qwen2.5-3b` (smaller, for machines with less to spare). Every download is over
+HTTPS to an address printed on screen first, and the file is rejected unless its
+sha256 matches the one compiled into the binary. Nothing is fetched until you
+ask; add your own entries in `~/.tacet/packages.json`.
 
-Point it at weights you already have instead:
+**Already have weights?** Point at them and skip the download entirely:
 
 ```bash
 export TACET_MODEL=/path/to/model.gguf
-export TACET_TOKENIZER=/path/to/tokenizer.json
 ```
+
+**No separate tokenizer file needed.** Tacet reads the tokenizer *out of the
+GGUF* — vocabulary, merges and token types — so a file from Ollama or LM Studio
+works as it is. `TACET_TOKENIZER=/path/to/tokenizer.json` still overrides, for a
+GGUF that carries no tokenizer inside it.
 
 Then:
 
@@ -111,19 +123,42 @@ tacet eval                             # 21-case behavioural suite
 
 ## Tools
 
-`calculate` · `time` · `read_document` · `create_document` · `edit_document` · `find_file` · `run_code` · `write_code` · `remember` · `web_search` · `web_fetch` · `mcp`
+Out of the box, with nothing installed:
+
+`calculate` · `time` · `calendar` · `read_document` · `create_document` · `edit_document` · `find_file` · `run_code` · `write_code` · `git` · `remember`
 
 Documents are real OOXML — an `.xlsx` produced by Tacet contains a working `=SUM()`, not a pre-computed number.
+
+`git` is **read-only**: status, log, diff, show. It reads a diff so the model can write a commit message; it does not commit, push, or change a branch.
 
 `run_code` executes behind a sandbox that blocks the network. On macOS that is `sandbox-exec`; on Linux, `bwrap`. **If no sandbox is available, the tool is removed from the catalog rather than run unprotected** — the model is never handed an unguarded interpreter.
 
 ## Addons
 
+Everything with reach beyond the working directory is an addon, and every addon is **off until you install it**. Not disabled — absent. A closed addon's tools are not in the catalog the model is shown, so it cannot call them, mention them, or fail at them.
+
 ```bash
-tacet addon install web-search
+tacet addon list                 # what exists, what is installed
+tacet addon install shell        # asks before it writes anything
+tacet addon close shell          # keep the config, take the tool away
 ```
 
-Choose a local SearXNG (started with Docker under `~/.tacet/`, after showing you the image and asking) or enter the address of an instance you already run. Until an addon is installed and enabled, its tools do not exist as far as the model is concerned.
+| Addon | What it opens | Where the line is |
+|---|---|---|
+| `web-search` | `web_search`, `web_fetch` | your own SearXNG — local under Docker, or an address you already run |
+| `shell` | `shell` | only the programs you list, and **no shell interpretation** |
+| `workspace` | *(no new tool)* | named directories the file tools may also reach |
+| `http` | `http` | only the exact hosts you list, HTTPS only, no redirects |
+| `db` | `db` | read-only SQLite, over the `sqlite3` binary already on your machine |
+| `clipboard` | `clipboard` | reads and writes the system clipboard |
+
+Two things worth knowing before you install `shell`:
+
+**There is no shell.** The command runs as `program` + a list of arguments, never through `sh -c`, so `; rm -rf /` arrives as an *argument* — nothing parses it. And the allow-list is not checked after the fact: it **is** the argument's schema, so the constrained decoder cannot generate a program name outside it.
+
+**Allowing a program allows everything that program can do.** `curl` is network access; `git` can push. So `shell` sits behind the same approval question as `web_search` and `http`: once a turn has touched personal data, every call that could carry it off the machine stops and asks you first.
+
+Third-party tools do not plug in here — they plug in through [MCP](#mcp).
 
 ## Skills
 
@@ -157,12 +192,17 @@ tacet-cli ──────────► terminal shell; drives the turn loop
    │                  MockEngine (default) / CandleEngine (--features candle)
    │
    ├── tacet-tools ─► concrete tools + ToolExecutor + Router
-   │        └── tacet-zip ──► hand-written zip/deflate/crc32 → OOXML
+   │        ├── tacet-zip ──► hand-written zip/deflate/crc32 → OOXML
+   │        └── tacet-web ──► THE ONLY CRATE WITH A SOCKET (with tacet-mcp):
+   │                          search, page fetch, the SSRF gate, the addon registry
    │
-   └── tacet-core ──► the CONTRACT: Tool, ArgSchema, ToolOutcome, DataStore, Catalog
+   ├── tacet-skills ► trigger-matched guidance, fenced into one turn
+   ├── tacet-memory ► notes on disk, injected only when relevant
+   │
+   └── tacet-kernel► the CONTRACT: Tool, ArgSchema, ToolOutcome, DataStore, Catalog
 ```
 
-Arrows are dependency direction. `tacet-core` depends on nothing, so the contract never bends under pressure from an implementation. `tacet-engine` deliberately does not know `tacet-grammar`: the `Constrainer` contract lives in the engine, its implementation in the grammar, so a run without constraints doesn't compile grammar code it never uses.
+Arrows are dependency direction. `tacet-kernel` depends on nothing, so the contract never bends under pressure from an implementation. `tacet-engine` deliberately does not know `tacet-grammar`: the `Constrainer` contract lives in the engine, its implementation in the grammar, so a run without constraints doesn't compile grammar code it never uses.
 
 ## Platform support — honestly
 

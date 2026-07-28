@@ -18,7 +18,11 @@ use std::sync::Arc;
 use tacet_kernel::{Tool, ToolCatalog};
 
 /// The most tools shown to the model in one session.
-pub const MAX_TOOLS: usize = 8;
+// 8 → 9 THE DAY THE 13TH TOOL (calendar) JOINED: with 13 tools and a budget
+// of 8, `find_file` fell off its own "find the file" message purely on the
+// hint-length tie — the eval invariant caught it. One more slot restores every
+// tool's home turf; the count is still small enough for a 4B's selection.
+pub const MAX_TOOLS: usize = 9;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IntentProfile {
@@ -90,6 +94,18 @@ impl IntentProfile {
                 "table",
                 "as a table",
                 "in table form",
+                // CAME FROM MEASUREMENT (the eval invariant, the day the 13th
+                // tool joined the catalog): "summarize the file budget-2026.md"
+                // touched NO Document trigger — the profile scored zero and
+                // read_document fell off the budget purely by tie order.
+                // "file" ALONE was tried and REVERTED in the same change: it
+                // boosted the document trio on "find the FILE about X" and
+                // pushed find_file itself off the budget. The narrower pair
+                // below carries the original failing case without the side
+                // effect.
+                "summar",
+                ".md",
+                "ozetle",
                 "add to the document",
                 "create a document",
                 "write to a file",
@@ -133,6 +149,22 @@ impl IntentProfile {
                 "what time is it",
                 "day of the month",
                 "which day",
+                // TURKISH RESTORED (simplified forms — the matcher folds
+                // diacritics): the English pass translated these away, but they
+                // are DATA matched against what the user actually types, and
+                // Turkish users type Turkish. Every entry mirrors a measured
+                // English twin above.
+                "takvim",
+                "toplanti",
+                "etkinlik",
+                "hatirlat",
+                "randevu",
+                "ajanda",
+                "yarin",
+                "bugun",
+                "saat kac",
+                "ayin kaci",
+                "kac gun",
                 "what day",
                 "how many days left",
                 "how many days until",
