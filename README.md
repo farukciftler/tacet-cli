@@ -18,9 +18,11 @@ The Rust workspace is mirrored to a public repository and released from there:
 **https://github.com/farukciftler/tacet-cli**
 
 ```bash
-cargo install tacet-cli --features metal   # Apple GPU
-cargo install tacet-cli --features candle  # CPU
+cargo install --git https://github.com/farukciftler/tacet-cli tacet-cli --features metal
 ```
+
+A crates.io release is prepared but not yet published: publishing needs a
+verified email address on the crates.io account.
 
 Publishing it costs nothing commercially — the CLI is the logic layer, not the product — and it buys two things the private repo cannot: the privacy claim becomes auditable by anyone who wants to read it, and CI compiles and tests Linux and Windows on every push, which no machine here can do.
 
