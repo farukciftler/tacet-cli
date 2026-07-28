@@ -235,13 +235,12 @@ say what broke.** CI compiles and tests there, but no human has used the
 interactive shell on either — see the platform table above.
 
 ## Star History
-
-<a href="https://www.star-history.com/#farukciftler/tacet-cli&Date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=farukciftler/tacet-cli&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=farukciftler/tacet-cli&type=Date" />
-    <img alt="Star history chart for farukciftler/tacet-cli" src="https://api.star-history.com/svg?repos=farukciftler/tacet-cli&type=Date" />
-  </picture>
+<a href="https://www.star-history.com/?type=date&repos=farukciftler%2Ftacet-cli">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=farukciftler/tacet-cli&type=date&theme=dark&legend=top-left&sealed_token=MfNE7RG_L6_LbXQ9Ssr9OP8hVvTFPtMdejwZ3kb_UV2-BR3alnRZ2kEpfPvfdn0yWyA9HhkF1HxCb3zW2daO2gnU1CznfjOIu68cC0j8fjGncTK8ydx1WCbcB1-2j1NRKTZ_woaKLZ3-aK60EqY8RpIifIjijA" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=farukciftler/tacet-cli&type=date&legend=top-left&sealed_token=MfNE7RG_L6_LbXQ9Ssr9OP8hVvTFPtMdejwZ3kb_UV2-BR3alnRZ2kEpfPvfdn0yWyA9HhkF1HxCb3zW2daO2gnU1CznfjOIu68cC0j8fjGncTK8ydx1WCbcB1-2j1NRKTZ_woaKLZ3-aK60EqY8RpIifIjijA" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=farukciftler/tacet-cli&type=date&legend=top-left&sealed_token=MfNE7RG_L6_LbXQ9Ssr9OP8hVvTFPtMdejwZ3kb_UV2-BR3alnRZ2kEpfPvfdn0yWyA9HhkF1HxCb3zW2daO2gnU1CznfjOIu68cC0j8fjGncTK8ydx1WCbcB1-2j1NRKTZ_woaKLZ3-aK60EqY8RpIifIjijA" />
+ </picture>
 </a>
 
 ## License
