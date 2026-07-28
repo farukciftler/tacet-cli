@@ -30,7 +30,42 @@ const KNOWN: &[(&str, &str)] = &[
         "theme",
         "colour theme — see /themes inside the shell (mono, night, sage, graphite, violet)",
     ),
+    // The only key that is not a shortcut for a flag, and the reason is that it
+    // decides whether this program contacts a server on its own. That is a
+    // question the user has to answer, so it is stored rather than assumed.
+    // `ask` (the default) means it has not been answered yet.
+    (
+        "update.check",
+        "look for a newer release once a day: on | off | ask (default: ask, once, in the shell)",
+    ),
 ];
+
+/// How `update.check` is set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdatePolicy {
+    /// The user said yes: one check a day, at most.
+    On,
+    /// The user said no. Nothing is asked again.
+    Off,
+    /// Not decided yet. The shell offers once, after a few turns.
+    Ask,
+}
+
+/// Reads the policy. An unreadable or nonsense value is treated as `Ask`, never
+/// as `On`: a broken config file must not be the thing that turns network
+/// access on.
+pub fn update_policy() -> UpdatePolicy {
+    match get_str("update.check").as_deref() {
+        Some("on") => UpdatePolicy::On,
+        Some("off") => UpdatePolicy::Off,
+        _ => UpdatePolicy::Ask,
+    }
+}
+
+/// Writes the answer down so the question is asked exactly once.
+pub fn set_update_policy(on: bool) -> Result<(), String> {
+    set_value("update.check", if on { "on" } else { "off" })
+}
 
 fn file_path() -> Option<PathBuf> {
     tacet_kernel::config_path(FILE)
@@ -81,6 +116,11 @@ fn validate(key: &str, value: &str) -> Result<(), String> {
     if key == "engine" && !matches!(value, "auto" | "candle" | "fake") {
         return Err(format!(
             "'{value}' is not an engine — expected: auto | candle | fake"
+        ));
+    }
+    if key == "update.check" && !matches!(value, "on" | "off" | "ask") {
+        return Err(format!(
+            "'{value}' is not an update policy — expected: on | off | ask"
         ));
     }
     if key == "theme" && !crate::ui::THEMES.iter().any(|t| t.name == value) {
