@@ -220,13 +220,37 @@ impl ArchitectureModel {
     }
 }
 
+/// Where the tokenizer of a loaded engine actually came from.
+///
+/// PUBLIC AND RECORDED because the two sources are indistinguishable from the
+/// output: a tokenizer built from the wrong place does not error, it produces
+/// text that looks like a broken model. The user has to be able to see which one
+/// was used before spending an hour blaming the weights.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenizerSource {
+    /// A `tokenizer.json` the user put there (or discovery found).
+    File,
+    /// The tokenizer carried inside the GGUF's own metadata.
+    Gguf,
+}
+
+impl TokenizerSource {
+    pub fn name(self) -> &'static str {
+        match self {
+            TokenizerSource::File => "tokenizer.json",
+            TokenizerSource::Gguf => "gguf metadata",
+        }
+    }
+}
+
 /// Model loading settings.
 #[derive(Debug, Clone)]
 pub struct ModelSetting {
     /// The GGUF weight file (local).
     pub model_path: PathBuf,
-    /// `tokenizer.json` (local).
-    pub tokenizer_path: PathBuf,
+    /// `tokenizer.json` (local). `None` means "use the tokenizer inside the
+    /// GGUF" — see `ModelSetting::from_gguf`.
+    pub tokenizer_path: Option<PathBuf>,
     pub device: Device,
     /// The token ids that stop generation. Left empty, common names are looked up
     /// in the tokenizer's vocabulary.
@@ -234,10 +258,31 @@ pub struct ModelSetting {
 }
 
 impl ModelSetting {
+    /// Weights + an EXPLICIT `tokenizer.json`.
+    ///
+    /// THE FILE GIVEN HERE WINS over the one inside the GGUF, and if it is
+    /// missing the load FAILS rather than quietly falling back: the user named a
+    /// path, and silently using something else would turn a typo into an
+    /// unexplainable difference in output.
     pub fn new(model_path: impl Into<PathBuf>, tokenizer_path: impl Into<PathBuf>) -> Self {
         Self {
             model_path: model_path.into(),
-            tokenizer_path: tokenizer_path.into(),
+            tokenizer_path: Some(tokenizer_path.into()),
+            device: Device::default(),
+            stop_tokens: Vec::new(),
+        }
+    }
+
+    /// Weights ALONE — the tokenizer is read out of the GGUF's own metadata.
+    ///
+    /// This is what makes a single downloaded `.gguf` a complete package: the
+    /// vocabulary, the merges and the special tokens are already in the file (see
+    /// `gguf_tokenizer`), and demanding a separate `tokenizer.json` next to it
+    /// was us not reading data we already had.
+    pub fn from_gguf(model_path: impl Into<PathBuf>) -> Self {
+        Self {
+            model_path: model_path.into(),
+            tokenizer_path: None,
             device: Device::default(),
             stop_tokens: Vec::new(),
         }
@@ -261,6 +306,8 @@ pub struct CandleEngine {
     /// was loaded.
     architecture: Architecture,
     tokenizer: Tokenizer,
+    /// WHERE the tokenizer came from — see `TokenizerSource`.
+    tokenizer_source: TokenizerSource,
     device: CandleDevice,
     stop_tokens: Vec<u32>,
     /// Token id -> SURFACE text. The prerequisite for setting up a constraint
@@ -312,8 +359,7 @@ impl CandleEngine {
             ))
         })?;
 
-        let tokenizer = Tokenizer::from_file(&setting.tokenizer_path)
-            .map_err(|e| EngineError::Tokenization(e.to_string()))?;
+        let (tokenizer, tokenizer_source) = resolve_tokenizer(setting)?;
 
         let stop_tokens = if setting.stop_tokens.is_empty() {
             find_stop_tokens(&tokenizer)
@@ -327,6 +373,7 @@ impl CandleEngine {
             model: Mutex::new(model),
             architecture,
             tokenizer,
+            tokenizer_source,
             device,
             stop_tokens,
             vocab,
@@ -340,10 +387,30 @@ impl CandleEngine {
 
     /// Verifies the files exist BEFORE loading — the gguf load takes a long time
     /// and learning about a missing file at the end of it is a pointless wait.
+    ///
+    /// IT ASKS THE SAME QUESTION `load` WILL. When no `tokenizer.json` is given,
+    /// the check that has to pass is "does the GGUF carry a tokenizer we can
+    /// rebuild" — if this function and `load` disagreed, the pre-check would
+    /// reject exactly the packages the loader can handle (or wave through ones it
+    /// cannot), which is worse than having no pre-check at all.
     pub fn files_exist(setting: &ModelSetting) -> EngineResult<()> {
-        for path in [&setting.model_path, &setting.tokenizer_path] {
-            if !Path::new(path).is_file() {
-                return Err(EngineError::ModelNotLoaded(path.clone()));
+        if !Path::new(&setting.model_path).is_file() {
+            return Err(EngineError::ModelNotLoaded(setting.model_path.clone()));
+        }
+        match &setting.tokenizer_path {
+            Some(path) => {
+                if !Path::new(path).is_file() {
+                    return Err(EngineError::ModelNotLoaded(path.clone()));
+                }
+            }
+            None => {
+                if !crate::gguf_tokenizer::gguf_has_tokenizer(&setting.model_path) {
+                    return Err(EngineError::Tokenization(format!(
+                        "no tokenizer.json was given and '{}' does not carry a tokenizer we can \
+                         rebuild",
+                        setting.model_path.display()
+                    )));
+                }
             }
         }
         Ok(())
@@ -361,6 +428,14 @@ impl CandleEngine {
     /// The loaded tokenizer — for measurement and probing.
     pub fn tokenizer(&self) -> &Tokenizer {
         &self.tokenizer
+    }
+
+    /// Which of the two sources the tokenizer was actually built from.
+    ///
+    /// PUBLIC for the same reason as `stop_tokens`: the failure mode is silent.
+    /// The shell prints this next to the architecture.
+    pub fn tokenizer_source(&self) -> TokenizerSource {
+        self.tokenizer_source
     }
 
     fn tokenize(&self, text: &str) -> EngineResult<Vec<u32>> {
@@ -716,6 +791,31 @@ fn read_architecture(content: &gguf_file::Content) -> EngineResult<Architecture>
         .to_string()
         .map_err(|e| EngineError::Inference(format!("'general.architecture' is not text: {e}")))?;
     Architecture::resolve(name)
+}
+
+/// THE TOKENIZER PRIORITY, in one place.
+///
+/// 1. A `tokenizer.json` given explicitly. THE USER'S OWN FILE WINS — someone who
+///    names a path has usually named it because the one in the weights is wrong
+///    or older, and overruling that would make the override useless. If the path
+///    is given but not there, this is an ERROR and NOT a fallback: a typo must
+///    not turn into "it silently used a different vocabulary".
+/// 2. Otherwise the tokenizer inside the GGUF (`gguf_tokenizer`).
+///
+/// The order lives here rather than at the call sites so `files_exist` and the
+/// load path cannot drift apart.
+fn resolve_tokenizer(setting: &ModelSetting) -> EngineResult<(Tokenizer, TokenizerSource)> {
+    match &setting.tokenizer_path {
+        Some(path) => {
+            let tokenizer = Tokenizer::from_file(path)
+                .map_err(|e| EngineError::Tokenization(format!("{}: {e}", path.display())))?;
+            Ok((tokenizer, TokenizerSource::File))
+        }
+        None => {
+            let tokenizer = crate::gguf_tokenizer::tokenizer_from_gguf(&setting.model_path)?;
+            Ok((tokenizer, TokenizerSource::Gguf))
+        }
+    }
 }
 
 /// Collects the common stop tokens from the tokenizer's vocabulary.

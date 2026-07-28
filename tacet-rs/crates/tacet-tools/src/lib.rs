@@ -8,6 +8,7 @@ pub mod data_store;
 pub mod edit_document;
 pub mod executor;
 pub mod find_file;
+pub mod git;
 pub mod mcp;
 pub mod memory;
 pub mod read_document;

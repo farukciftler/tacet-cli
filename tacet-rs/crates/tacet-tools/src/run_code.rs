@@ -736,6 +736,29 @@ pub fn run_program(
             output.trim()
         ));
     }
+    // THE INTERNAL FILE NAME DOES NOT LEAK. Interpreter errors quote the
+    // script's own path ('File "/tmp/.../verify-26379-...py", line 1') and the
+    // model treats whatever name it sees as THE name of the user's file —
+    // measured: asked to "save this as a file" one turn later, it saved the
+    // user's script under verify-26379-…-0.py. Every argument that lives under
+    // the runtime is scrubbed from the error text: the full path goes, the
+    // bare temp name becomes a neutral `script.<ext>`.
+    for arg in args {
+        let p = Path::new(arg);
+        if !p.starts_with(runtime) {
+            continue;
+        }
+        let neutral = match p.extension().and_then(|e| e.to_str()) {
+            Some(ext) => format!("script.{ext}"),
+            None => "script".to_string(),
+        };
+        if let Some(full) = p.to_str() {
+            text = text.replace(full, &neutral);
+        }
+        if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+            text = text.replace(name, &neutral);
+        }
+    }
     Ok(CodeOutcome::Error(text))
 }
 
@@ -1160,8 +1183,10 @@ impl Tool for RunCodeTool {
         // it can be written. The last sentences close two failures measured in
         // Swift: the model was calling the tool to inspect a server/container,
         // and it took scripts that printed nothing for a success.
-        "Runs a short script in an isolated sandbox with NO network access, NO access to your \
-         files outside the working folder and NO access to this device or any server. Call this \
+        "Runs a short script in an isolated sandbox with NO network access and NO access to ANY \
+         file on this device — not even a file that was just saved with write_code: the sandbox \
+         is an empty folder, so open('file') always fails. To run logic from a saved file, put \
+         the CODE ITSELF into this call instead of trying to execute the file. Call this \
          for any calculation or transformation too complex for the calculate tool (loops, dates, \
          text processing, simulations), and whenever the user asks you to PRODUCE A LIST OR A \
          SEQUENCE - prime numbers, Fibonacci terms, sorting, filtering, counting - instead of \

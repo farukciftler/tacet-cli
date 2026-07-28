@@ -70,7 +70,15 @@ pub const COMMANDS: &[Command] = &[
     },
     Command {
         name: "/clear",
-        description: "delete the conversation history (memory stays)",
+        description: "delete the conversation history and start a new transcript",
+    },
+    Command {
+        name: "/sessions",
+        description: "the conversations kept on disk, and where they live",
+    },
+    Command {
+        name: "/preview",
+        description: "show the last file Tacet saved (ctrl-o)",
     },
     Command {
         name: "/plugins",
@@ -357,6 +365,14 @@ impl<'a> Editor<'a> {
                     self.dismissed = false;
                 }
             }
+            // ctrl-o: peek at the last saved file without typing anything. It
+            // SUBMITS /preview — the slash path owns the actual printing, so
+            // the key and the command can never drift apart.
+            KeyCode::Char('o') if ctrl => {
+                if self.buffer.is_empty() {
+                    return Some(Input::Line("/preview".to_string()));
+                }
+            }
             KeyCode::Char('d') if ctrl => {
                 if self.buffer.is_empty() {
                     return Some(Input::Done);
@@ -500,6 +516,21 @@ impl<'a> Editor<'a> {
             for (i, c) in hits.iter().take(LIST_CAP).enumerate() {
                 let selected = i == self.selection.min(hits.len().saturating_sub(1));
                 let name = format!("{:<10}", c.name);
+                // THE DESCRIPTION IS CLAMPED to the terminal width. A row that
+                // wraps adds a visual line the overwrite arithmetic knows
+                // nothing about; measured, walking the list then ate the line
+                // ABOVE the frame on every keypress and Enter appeared to
+                // scroll. The prefix is 15 visible columns ("  › " + padded
+                // name + space); everything must fit in ONE terminal row.
+                let room = width.saturating_sub(17);
+                let description: String = if c.description.chars().count() > room {
+                    let mut s: String =
+                        c.description.chars().take(room.saturating_sub(1)).collect();
+                    s.push('…');
+                    s
+                } else {
+                    c.description.to_string()
+                };
                 let (d, r, b) = (dim_code(), reset_code(), brass_code());
                 // The caret on the selected row is BRASS, the same accent the
                 // prompt marker uses. The selected row was marked only by being
@@ -507,9 +538,9 @@ impl<'a> Editor<'a> {
                 // for; the accent is the one colour this interface spends, and
                 // "where am I in this list" is exactly what it is for.
                 let line = if selected {
-                    format!("  {b}›{r} {BOLD}{name}{RESET} {d}{}{r}", c.description)
+                    format!("  {b}›{r} {BOLD}{name}{RESET} {d}{description}{r}")
                 } else {
-                    format!("    {d}{name} {}{r}", c.description)
+                    format!("    {d}{name} {description}{r}")
                 };
                 lines.push(line);
             }

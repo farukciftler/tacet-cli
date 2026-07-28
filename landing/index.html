@@ -60,7 +60,7 @@
                 <span class="brand-mark">Tacet</span>
             </a>
             <div class="nav-actions">
-                <button class="copy-btn nav-code-btn" data-copy="cargo install tacet-cli">
+                <button class="copy-btn nav-code-btn" data-copy="cargo install tacet-cli --features candle">
                     <code>cargo install tacet-cli</code>
                 </button>
             </div>
@@ -134,7 +134,7 @@
                     <button id="install-copy" class="copy-btn copy-code-btn" data-copy="curl -fsSL https://usetacet.com/install.sh | sh">Copy</button>
                 </div>
 
-                <p class="install-alt">Already have Rust? <code>cargo install tacet-cli</code> works everywhere, then <code>tacet chat</code>. The model download stays on your disk; nothing else is fetched, ever.</p>
+                <p class="install-alt">Already have Rust? <code>cargo install tacet-cli --features candle</code> works everywhere (<code>metal</code> instead of <code>candle</code> on Apple silicon, for twice the speed), then <code>tacet chat</code>. The model download stays on your disk; nothing else is fetched, ever.</p>
             </div>
         </div>
     </section>
@@ -268,6 +268,6 @@
     <!-- Toast Notification -->
     <div id="toast" class="toast">Command copied to clipboard</div>
 
-    <script src="app.js?v=enso-7"></script>
+    <script src="app.js?v=enso-8"></script>
 </body>
 </html>

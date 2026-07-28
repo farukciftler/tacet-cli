@@ -19,6 +19,7 @@ use crate::create_document::CreateDocumentTool;
 use crate::data_store::SharedStore;
 use crate::edit_document::EditDocumentTool;
 use crate::find_file::FindFileTool;
+use crate::git::GitTool;
 use crate::memory::{MemoryTool, SharedMemory};
 use crate::read_document::ReadDocumentTool;
 use crate::run_code::{CodeState, RunCodeTool};
@@ -96,19 +97,19 @@ pub fn production_catalog_with(
     // THE CATALOG ORDER IS A DECISION, not alphabetical and not the order things
     // were written.
     //
-    // The catalog holds AT MOST 11 tools (counted with `tacet tools`: calculate,
+    // The catalog holds AT MOST 12 tools (counted with `tacet tools`: calculate,
     // time, read_document, create_document, edit_document, find_file, run_code,
-    // write_code, web_search, remember, web_fetch), and the router's budget is 8
-    // (see `MAX_TOOLS`). When no trigger matches, the selection is ENTIRELY down
-    // to this order and the tools at the end are NEVER SHOWN to the model.
+    // write_code, git, web_search, remember, web_fetch), and the router's budget
+    // is 8 (see `MAX_TOOLS`). When no trigger matches, the selection is ENTIRELY
+    // down to this order and the tools at the end are NEVER SHOWN to the model.
     //
     // THE NUMBER IS NOT SINGLE, IT DEPENDS ON TWO CONDITIONS — whoever changes
     // this line must account for both:
     //   * `web_search`/`web_fetch` are added only while the addon gate is OPEN
     //     (see the head of the function). The default install has NO ADDON.
     //   * `run_code`/`write_code` are added only if shield discovery succeeds.
-    // Four measured states: with addon + shield 11 tools / the last THREE drop,
-    // without addon + shield 9 tools / the last ONE drops; on a machine with no
+    // Four measured states: with addon + shield 12 tools / the last FOUR drop,
+    // without addon + shield 10 tools / the last TWO drop; on a machine with no
     // shield, both lose two more tools.
     //
     // A NUMBER LIVING IN A COMMENT GOES STALE: when `write_code` was added this
@@ -164,6 +165,21 @@ pub fn production_catalog_with(
         None => (None, Some(CodeDiagnosis(RunCodeTool::diagnose()))),
     };
 
+    // `git` SITS AFTER THE CODE TOOLS AND BEFORE `web_search` — deliberately, by
+    // the same rule as the order note above: it is never the right answer to a
+    // message that carries no hint at all ("what is 12% of 40" does not want a
+    // repository). Placed earlier it would push `run_code`/`write_code` off the
+    // budget of 8, and that regression was measured once already. It climbs when
+    // the message earns it: "summarize my changes" scores under the General
+    // profile and the tool's name and description carry that profile's hints.
+    //
+    // UNCONDITIONAL, unlike the two above it: `git` needs no interpreter and no
+    // network shield. If the binary is missing the tool says so as an ordinary
+    // result, so a machine without git loses an answer, not a catalog entry —
+    // making the catalog depend on it would make the tool list machine-dependent
+    // for no gain.
+    c.add(Arc::new(GitTool::new()));
+
     // THE ADDON GATE. If the addon is not installed (the default state) these two
     // tools DO NOT APPEAR in the catalog at all: the model cannot call them, no
     // grammar is generated for them, they do not enter the router budget. The
@@ -209,6 +225,7 @@ mod tests {
             "create_document",
             "edit_document",
             "find_file",
+            "git",
             "web_search",
             "web_fetch",
             "remember",
@@ -318,7 +335,7 @@ mod tests {
         let (c, state) = catalog(true);
         let n = c.names().len();
         // The two shielded tools either both arrive or neither does.
-        let expected = if state.is_some() { 11 } else { 9 };
+        let expected = if state.is_some() { 12 } else { 10 };
         assert_eq!(
             n, expected,
             "the catalog size changed; the number in the comment and the dropped tool count must be updated"
@@ -329,19 +346,20 @@ mod tests {
         );
         // The number of tools dropped on a hintless message. The comment states
         // this; the test catches the comment going stale.
-        assert_eq!(n - BUDGET, if state.is_some() { 3 } else { 1 });
+        assert_eq!(n - BUDGET, if state.is_some() { 4 } else { 2 });
 
         // WITH THE ADDON OFF (the default install) the catalog is TWO tools shorter
-        // and the dropped count falls to one. That is the MEASURED side effect of
-        // the gate: on a shielded machine 9 tools / budget 8 → only `remember`
-        // drops (and without an explicit trigger it is not the right answer anyway,
-        // see the order note); on an unshielded machine 7 tools → nothing drops.
+        // and the dropped count falls by two. That is the MEASURED side effect of
+        // the gate: on a shielded machine 10 tools / budget 8 → `git` and
+        // `remember` drop (and without an explicit trigger neither is the right
+        // answer anyway, see the order note); on an unshielded machine 8 tools →
+        // nothing drops.
         let (closed, closed_state) = catalog(false);
         let m = closed.names().len();
-        assert_eq!(m, if closed_state.is_some() { 9 } else { 7 });
+        assert_eq!(m, if closed_state.is_some() { 10 } else { 8 });
         assert_eq!(
             m.saturating_sub(BUDGET),
-            if closed_state.is_some() { 1 } else { 0 }
+            if closed_state.is_some() { 2 } else { 0 }
         );
     }
 

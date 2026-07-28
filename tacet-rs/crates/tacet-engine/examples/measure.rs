@@ -24,10 +24,11 @@ fn main() {
         eprintln!("TACET_MODEL must be set");
         std::process::exit(2);
     };
-    let Ok(tokenizer) = std::env::var("TACET_TOKENIZER") else {
-        eprintln!("TACET_TOKENIZER must be set");
-        std::process::exit(2);
-    };
+    // TACET_TOKENIZER IS NOW OPTIONAL. Unset, the tokenizer inside the GGUF is
+    // used (see `gguf_tokenizer`) — and that is the point of measuring it here:
+    // the path a single downloaded `.gguf` takes has to be RUN, not just
+    // compiled. Set, the user's file wins, exactly as `resolve_tokenizer` says.
+    let tokenizer = std::env::var("TACET_TOKENIZER").ok();
 
     // The device is chosen FROM THE ENVIRONMENT; the default is the CPU. When
     // `metal` is asked for, the crate's `metal` feature must be on as well —
@@ -37,7 +38,11 @@ fn main() {
         Ok("metal") => tacet_engine::candle_engine::Device::Metal,
         _ => tacet_engine::candle_engine::Device::Cpu,
     };
-    let setting = tacet_engine::ModelSetting::new(&model, &tokenizer).with_device(device);
+    let setting = match &tokenizer {
+        Some(path) => tacet_engine::ModelSetting::new(&model, path),
+        None => tacet_engine::ModelSetting::from_gguf(&model),
+    }
+    .with_device(device);
     println!("device requested : {device:?}");
 
     // --- 1. Load time ---
@@ -53,6 +58,10 @@ fn main() {
     println!("== LOAD ==");
     println!("duration      : {:.2} s", load.as_secs_f64());
     println!("template      : {:?}", engine.template());
+    // WHICH tokenizer was used. Two sources that cannot be told apart from the
+    // output is exactly how a measurement ends up describing a run nobody
+    // intended.
+    println!("tokenizer     : {}", engine.tokenizer_source().name());
 
     // --- 2. Vocabulary: `build_vocab` measured with the real tokenizer ---
     // The COST of `build_vocab` is measured separately: `decode`ing 32k tokens
