@@ -1,0 +1,15 @@
+# Tacet Documentation (Full)
+
+## Overview
+Tacet is an open-source, private, terminal-native AI personal assistant written in Rust. It provides human-like assistant capabilities directly inside your terminal without sending prompt data or personal information to third-party cloud APIs.
+
+## Architecture & Privacy Model
+- **Local Model Engine**: Uses high-efficiency GGML/GGUF local models quantized for consumer hardware.
+- **Local Database & Vector Memory**: SQLite/embedded storage on user's disk for persistent notes and memory.
+- **Sandboxed Tool Execution**: File and document generation restricted to local workspace directories with interactive receipt prompts.
+
+## Command Reference
+- `tacet chat`: Start an interactive conversational session.
+- `tacet model list`: List locally downloaded models.
+- `tacet model download <name>`: Fetch supported GGUF model weights.
+- `tacet config`: Interactive configuration menu.

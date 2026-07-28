@@ -1,0 +1,44 @@
+# Tacet
+
+> Tacet is a private personal assistant that lives in your terminal and runs 100% locally on your computer.
+
+Calendar, reminders, documents, and notes: nothing you say ever leaves your machine. Tacet is designed from the ground up for absolute privacy with zero cloud dependencies, zero account requirement, and zero telemetry.
+
+## Key Features
+
+- **100% Local Execution**: Runs locally on macOS and Linux using local LLMs (e.g. Qwen 3 4B).
+- **Calendar & Reminders**: Checks calendar events, sets local reminders, and nudges you at specified times.
+- **Document Generation**: Generates Word documents (.docx) and Excel spreadsheets (.xlsx) directly on your disk.
+- **Notes & Memory**: Takes notes and recalls them when relevant in context.
+- **Offline First**: Works completely offline. If a prompt requires web search, Tacet asks for explicit confirmation.
+- **Transparent Execution**: Every tool invocation (calendar check, file write) shows an explicit receipt on screen.
+
+## Getting Started
+
+1. **Install CLI**:
+   ```bash
+   cargo install tacet-cli
+   ```
+   Or via install script:
+   ```bash
+   curl -fsSL https://usetacet.com/install.sh | sh
+   ```
+
+2. **Download Model**:
+   ```bash
+   tacet model download qwen3-4b
+   ```
+
+3. **Start Chat**:
+   ```bash
+   tacet chat
+   ```
+
+## Comparison with Ollama
+
+While Ollama is a general-purpose local LLM runner and server, Tacet is a specialized terminal personal assistant with built-in tool execution (calendar, files, notes, reminders) and zero setup required for everyday tasks.
+
+## Links
+
+- Website: https://usetacet.com
+- Repository: https://github.com/farukciftler/ketum
