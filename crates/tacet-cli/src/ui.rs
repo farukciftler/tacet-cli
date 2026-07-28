@@ -648,6 +648,116 @@ impl Reporter for LiveReporter {
     }
 }
 
+// ── The interactive menu ──────────────────────────────────────────────────
+
+/// One row of a menu: a label, the value sitting on it right now, and a hint.
+pub struct MenuRow {
+    pub label: String,
+    /// What the setting currently is. Drawn in the accent colour, because it is
+    /// the thing the reader is looking for.
+    pub value: String,
+    pub hint: String,
+}
+
+/// What the reader did.
+pub enum MenuOutcome {
+    /// Enter on this row.
+    Chose(usize),
+    /// Esc, q, or ctrl-c.
+    Cancelled,
+}
+
+/// Draws a list, moves through it with the arrows, and returns on Enter.
+///
+/// WHY THIS EXISTS: settings used to be `get`/`set` with a key and a value typed
+/// by hand, which means the reader has to know the key, the spelling, and the
+/// legal values before they can change anything — three chances to be wrong
+/// before the first success. A list shows all three at once and Enter is the
+/// only verb.
+///
+/// It draws with RELATIVE cursor motion and erases what it drew, exactly like
+/// the input field: the terminal may scroll between frames, so an absolute
+/// position would point at the wrong row.
+pub fn menu(color: &Color, title: &str, rows: &[MenuRow], start: usize) -> MenuOutcome {
+    if rows.is_empty() {
+        return MenuOutcome::Cancelled;
+    }
+    // NO TTY, NO MENU. Drawing it into a pipe writes cursor motion and colour
+    // codes into output someone is parsing, and then blocks on a key that will
+    // never arrive. The caller falls back to printing a plain list.
+    if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        return MenuOutcome::Cancelled;
+    }
+    let mut selected = start.min(rows.len() - 1);
+    let mut drawn = 0usize;
+    let mut out = std::io::stdout();
+
+    let raw = enable_raw_mode().is_ok();
+    let outcome = loop {
+        let mut frame = String::new();
+        if drawn > 0 {
+            frame.push_str(&format!("\x1b[{drawn}A"));
+        }
+        frame.push_str("\r\x1b[J");
+
+        let (d, r, b) = (dim_code(), reset_code(), brass_code());
+        frame.push_str(&format!("  {d}{title}{r}\r\n"));
+        for (i, row) in rows.iter().enumerate() {
+            if i == selected {
+                frame.push_str(&format!(
+                    "  {b}›{r} {BOLD}{}{RESET}  {b}{}{r}\r\n     {d}{}{r}\r\n",
+                    row.label, row.value, row.hint
+                ));
+            } else {
+                frame.push_str(&format!("    {d}{}  {}{r}\r\n", row.label, row.value));
+            }
+        }
+        frame.push_str(&format!("  {d}↑↓ move · enter change · esc close{r}"));
+        let _ = out.write_all(frame.as_bytes());
+        let _ = out.flush();
+        // Two lines for the selected row (label + hint), one for every other,
+        // plus the title and the footer.
+        drawn = rows.len() + 3;
+
+        match event::read() {
+            Ok(Event::Key(k)) if k.kind != KeyEventKind::Release => match k.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    selected = if selected == 0 {
+                        rows.len() - 1
+                    } else {
+                        selected - 1
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1) % rows.len(),
+                KeyCode::Enter | KeyCode::Char(' ') => break MenuOutcome::Chose(selected),
+                KeyCode::Esc | KeyCode::Char('q') => break MenuOutcome::Cancelled,
+                // ctrl-c has to leave too: a menu that swallows it looks hung.
+                KeyCode::Char('c') if k.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                    break MenuOutcome::Cancelled;
+                }
+                _ => {}
+            },
+            Ok(_) => {}
+            Err(_) => break MenuOutcome::Cancelled,
+        }
+    };
+    if raw {
+        let _ = disable_raw_mode();
+    }
+    // Erase the menu: it was a control surface, not a message. Leaving it in the
+    // transcript would push the conversation off the screen every time someone
+    // looked at their settings.
+    let mut tail = String::new();
+    if drawn > 0 {
+        tail.push_str(&format!("\x1b[{drawn}A"));
+    }
+    tail.push_str("\r\x1b[J");
+    let _ = out.write_all(tail.as_bytes());
+    let _ = out.flush();
+    let _ = color;
+    outcome
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

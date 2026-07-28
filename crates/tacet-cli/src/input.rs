@@ -469,9 +469,14 @@ impl<'a> Editor<'a> {
             for (i, c) in hits.iter().take(LIST_CAP).enumerate() {
                 let selected = i == self.selection.min(hits.len().saturating_sub(1));
                 let name = format!("{:<10}", c.name);
-                let (d, r) = (dim_code(), reset_code());
+                let (d, r, b) = (dim_code(), reset_code(), brass_code());
+                // The caret on the selected row is BRASS, the same accent the
+                // prompt marker uses. The selected row was marked only by being
+                // bold, which on a dim palette is a difference you have to look
+                // for; the accent is the one colour this interface spends, and
+                // "where am I in this list" is exactly what it is for.
                 let line = if selected {
-                    format!("  {d}›{r} {BOLD}{name}{RESET} {d}{}{r}", c.description)
+                    format!("  {b}›{r} {BOLD}{name}{RESET} {d}{}{r}", c.description)
                 } else {
                     format!("    {d}{name} {}{r}", c.description)
                 };

@@ -2063,6 +2063,83 @@ fn chat(
     ExitCode::SUCCESS
 }
 
+/// The interactive settings menu behind a bare `/config`.
+///
+/// Enter CYCLES the value and writes it immediately, and the menu STAYS OPEN —
+/// the row redrawing with its new value is the confirmation, so there is no save
+/// step and no "did that take?" line to read. A settings screen with a confirm
+/// button invites that question; the file is one line of JSON either way.
+fn config_menu(color: &Color) {
+    // Piped: print the list and leave. `/config` in a script must produce text,
+    // not a control surface.
+    if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        let _ = config::list(false);
+        return;
+    }
+    let mut selected = 0usize;
+    let mut restart_needed = false;
+
+    loop {
+        let rows: Vec<ui::MenuRow> = config::keys()
+            .into_iter()
+            .map(|(key, help)| ui::MenuRow {
+                label: format!("{key:<14}"),
+                value: config::shown_value(key),
+                hint: help.to_string(),
+            })
+            .collect();
+
+        match ui::menu(color, "settings · enter cycles the value", &rows, selected) {
+            ui::MenuOutcome::Cancelled => break,
+            ui::MenuOutcome::Chose(index) => {
+                selected = index;
+                let (key, _) = config::keys()[index];
+                let Some(next) = config::next_value(key) else {
+                    // `model` with nothing on disk is the only key with no list.
+                    // Saying so beats a keypress that appears to do nothing.
+                    println!(
+                        "{}",
+                        color.paint(
+                            DIM,
+                            &format!(
+                                "  ({key}: nothing to choose from — `/config set {key} <value>`)"
+                            )
+                        )
+                    );
+                    break;
+                };
+                match config::set_value(key, &next) {
+                    Ok(()) => {
+                        // The theme is the one setting that can land NOW; every
+                        // other one is read at start-up.
+                        if key == "theme" {
+                            ui::set_theme(&next);
+                        } else {
+                            restart_needed = true;
+                        }
+                    }
+                    Err(e) => {
+                        println!("{}", color.paint(YELLOW, &format!("  {e}")));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Said ONCE, on the way out, rather than after every keypress: a line that
+    // repeats on every cycle turns into noise and stops being read.
+    if restart_needed {
+        println!(
+            "{}",
+            color.paint(
+                DIM,
+                "  (changes other than the theme apply the next time tacet starts)"
+            )
+        );
+    }
+}
+
 /// The counter line sitting under the input field.
 ///
 /// THREE NUMBERS, EACH ANSWERING A DIFFERENT QUESTION:
@@ -2307,9 +2384,12 @@ fn slash(
         "/config" => {
             let mut parts = command.split_whitespace().skip(1);
             match (parts.next(), parts.next(), parts.next()) {
-                (None, _, _) => {
-                    let _ = config::list(false);
-                }
+                // BARE `/config` IS A MENU, not a listing. Typing a key, its
+                // spelling and one of its legal values is three chances to be
+                // wrong before the first success; a list shows all three and
+                // Enter is the only verb. `get`/`set`/`unset` still work — they
+                // are what a script uses, and what the CLI subcommand shares.
+                (None, _, _) => config_menu(color),
                 (Some("get"), Some(key), _) => match config::get_str(key) {
                     Some(v) => println!("  {key} = {v}"),
                     None => println!("{}", color.paint(DIM, &format!("  ({key} is unset)"))),
