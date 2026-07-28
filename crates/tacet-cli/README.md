@@ -55,15 +55,13 @@ Tacet is that layer, written to be read. Every non-obvious decision has a commen
 ## Install
 
 ```bash
-cargo install --git https://github.com/farukciftler/tacet-cli tacet-cli --features metal   # Apple GPU
-cargo install --git https://github.com/farukciftler/tacet-cli tacet-cli --features candle  # CPU
+cargo install tacet-cli --features metal   # Apple GPU
+cargo install tacet-cli --features candle  # CPU
+cargo install tacet-cli                    # no inference; still runs eval, tools and the addon flow
 ```
 
 Or grab a prebuilt binary from [Releases](../../releases) — macOS (Apple Silicon
 and Intel), Linux and Windows.
-
-A crates.io release is prepared; until it is published, `cargo install tacet-cli`
-does not resolve.
 
 Check for a newer version at any time — this is the only command that talks to GitHub, and only when you run it:
 
@@ -77,9 +75,15 @@ tacet update --install  # downloads and replaces the binary, with your confirmat
 Tacet needs a model. It never downloads one behind your back:
 
 ```bash
-tacet model list                 # what's on disk, which roots were searched
-tacet model download qwen3-4b    # from your own packages.json, https only, sha256 verified
+tacet models list                 # what's on disk, which roots were searched
+tacet models download qwen3-4b    # from your own packages.json, https only, sha256 verified
 ```
+
+**There is no built-in catalog, and that is deliberate.** `tacet models download`
+reads `~/.tacet/packages.json`, a file you write; on a fresh install it is empty
+and the command prints the shape to fill in. Shipping a default mirror would mean
+sending you to an address this project invented and cannot vouch for. Point it at
+weights you already trust:
 
 Point it at weights you already have instead:
 
