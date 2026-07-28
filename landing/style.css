@@ -731,5 +731,8 @@ code {
     .trust-grid { grid-template-columns: 1fr; }
     .specs-grid { grid-template-columns: 1fr; }
     .bench-grid { grid-template-columns: 1fr; }
-    .nav-links { display: none; }
+    .nav-container { padding: 0 1rem; flex-wrap: wrap; gap: 0.75rem; }
+    .nav-links { display: flex; overflow-x: auto; max-width: 100%; gap: 1rem; padding-bottom: 0.2rem; -webkit-overflow-scrolling: touch; }
+    .nav-links a { white-space: nowrap; font-size: 0.82rem; }
+    .nav-code-btn { font-size: 0.75rem; padding: 0.3rem 0.5rem; }
 }
