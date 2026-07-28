@@ -70,6 +70,18 @@ tacet update            # tells you what's available
 tacet update --install  # downloads and replaces the binary, with your confirmation
 ```
 
+Nothing checks on its own until you say so. A few turns into your first session
+the shell asks once whether it may look for a new version daily, and writes the
+answer down:
+
+```bash
+tacet config set update.check on    # one request a day, at the end of a session
+tacet config set update.check off   # never
+```
+
+The check is throttled to once every 24 hours, prints a single line when a newer
+version exists, stays silent when it fails, and never runs when output is piped.
+
 ## Quickstart
 
 Tacet needs a model. It never downloads one behind your back:

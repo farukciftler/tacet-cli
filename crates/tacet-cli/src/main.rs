@@ -1496,6 +1496,10 @@ fn chat(
     }
     println!();
 
+    // Counts COMPLETED turns, for the one-time update offer below. Not a
+    // metric and not persisted: it exists so the question lands after the
+    // user has actually used the shell rather than on the first line.
+    let mut completed_turns: usize = 0;
     loop {
         let message = match single_message.clone() {
             Some(m) => m,
@@ -2040,6 +2044,20 @@ fn chat(
         if single_message.is_some() {
             break;
         }
+
+        // ONE-SHOT RUNS NEVER REACH HERE — the branch above leaves first. A
+        // script piping `--message` must not be stopped by a question.
+        completed_turns += 1;
+        update::maybe_offer(&color, completed_turns);
+    }
+
+    // The session is over: this is the one place a notice costs the user
+    // nothing. At start-up it would delay the first paint and block on the
+    // network; mid-session it would interrupt. It prints only if the user
+    // turned the check on, and stays silent when the check fails.
+    if let Some(line) = update::daily_notice(&color) {
+        eprintln!();
+        eprintln!("{line}");
     }
 
     ExitCode::SUCCESS

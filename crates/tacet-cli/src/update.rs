@@ -1,10 +1,17 @@
 //! `tacet update` — asks GitHub whether a newer release exists, and on request
 //! replaces this binary with it.
 //!
-//! IT NEVER RUNS BY ITSELF. No check at start-up, no daily timer, no background
-//! ping. This program's entire claim is that it does not reach the network
-//! unless asked; a silent version check would be the first thing to make that
-//! claim false, and it would be invisible in exactly the way that matters.
+//! NOTHING HERE RUNS UNTIL THE USER SAYS SO. There is no check at start-up and
+//! no background ping. A daily check exists, and it is off until the shell has
+//! asked — once, after a few turns — and the answer has been written to
+//! `config.update.check`.
+//!
+//! This paragraph used to read "no daily timer", and that sentence was kept true
+//! by there being no timer at all. The timer now exists, so the claim narrowed
+//! rather than stayed put: what protects the promise is no longer the absence of
+//! the feature but the fact that a person turned it on. A silent version check
+//! would still be the first thing to make the promise false, and it would be
+//! invisible in exactly the way that matters.
 //!
 //! The network call itself lives in `tacet_web::release` — the monopoly rule.
 //! This module asks the question and writes the file; it opens no socket.
@@ -267,6 +274,148 @@ pub fn sweep_previous() {
     if let Ok(current) = std::env::current_exe() {
         let _ = std::fs::remove_file(current.with_extension("old"));
     }
+}
+
+// ── The daily check and the one-time offer ────────────────────────────────
+//
+// Everything below is off unless the user turned it on. `config.update.check`
+// starts as `ask`, the shell offers once after a few turns, and the answer is
+// written down so the question is never repeated.
+
+/// The turn the offer appears on.
+///
+/// Not the first: someone who just typed `tacet` for the first time is trying to
+/// see whether this thing works, and a question about update policy is noise
+/// before the answer to that. By the third turn they have used it and can decide
+/// with context.
+const OFFER_AFTER_TURNS: usize = 3;
+
+const CACHE_FILE: &str = "update.json";
+/// A day. Short enough to be useful, long enough that a shell opened twenty
+/// times in a morning still makes one request.
+const CHECK_EVERY_SECS: u64 = 24 * 60 * 60;
+
+fn cache_path() -> Option<PathBuf> {
+    tacet_kernel::config_path(CACHE_FILE)
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// `(checked_at, latest_tag)` from the cache; zeros when absent or unreadable.
+fn read_cache() -> (u64, String) {
+    let Some(path) = cache_path() else {
+        return (0, String::new());
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return (0, String::new());
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return (0, String::new());
+    };
+    (
+        value
+            .get("checked_at")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        value
+            .get("latest")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+    )
+}
+
+fn write_cache(latest: &str) {
+    let Some(path) = cache_path() else { return };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let body = serde_json::json!({ "checked_at": now_secs(), "latest": latest });
+    let _ = std::fs::write(path, body.to_string() + "\n");
+}
+
+/// The line to print at the end of a session, or `None`.
+///
+/// THE CHECK IS THROTTLED BY THE CACHE, not by the print. Without that, a shell
+/// opened twenty times would make twenty requests and the "once a day" in the
+/// setting's description would be a lie.
+///
+/// A failed check returns `None` and says nothing. This is a courtesy, not a
+/// task: printing "the update check failed" would send the user to investigate a
+/// problem they do not have.
+pub fn daily_notice(color: &Color) -> Option<String> {
+    if crate::config::update_policy() != crate::config::UpdatePolicy::On {
+        return None;
+    }
+    let (checked_at, cached) = read_cache();
+    let latest = if now_secs().saturating_sub(checked_at) < CHECK_EVERY_SECS {
+        cached
+    } else {
+        let fetched = tacet_web::release::latest(REPO, TIMEOUT).ok()?.tag;
+        write_cache(&fetched);
+        fetched
+    };
+    if latest.is_empty() || !tacet_web::release::is_newer(&latest, current_version()) {
+        return None;
+    }
+    Some(format!(
+        "  {} {} → {} · {}",
+        color.paint(crate::ui::DIM, "update available:"),
+        current_version(),
+        latest.trim_start_matches('v'),
+        color.paint(crate::ui::DIM, "tacet update --install")
+    ))
+}
+
+/// Offers the check once, on the `OFFER_AFTER_TURNS`th turn. Returns `true` when
+/// a question was actually asked, so the caller can redraw its prompt.
+///
+/// Asked, not assumed, in either direction. Defaulting to on would make the
+/// promise that this program stays off the network false in a way nobody would
+/// see; defaulting to off silently means the feature does not exist for the
+/// people who would want it.
+pub fn maybe_offer(color: &Color, turns: usize) -> bool {
+    if turns != OFFER_AFTER_TURNS
+        || crate::config::update_policy() != crate::config::UpdatePolicy::Ask
+        || !std::io::IsTerminal::is_terminal(&std::io::stdin())
+    {
+        return false;
+    }
+    eprintln!();
+    eprintln!(
+        "  {}",
+        color.paint(
+            crate::ui::DIM,
+            "Tacet does not contact any server on its own. It can look for a new\n  \
+             version once a day — that is one request to GitHub, and nothing else."
+        )
+    );
+    let yes = crate::ui::ask_yes_no(color, "  Check for updates daily?");
+    match crate::config::set_update_policy(yes) {
+        Ok(()) => eprintln!(
+            "  {}",
+            color.paint(
+                crate::ui::DIM,
+                if yes {
+                    "on — change it with: tacet config set update.check off"
+                } else {
+                    "off — change it with: tacet config set update.check on"
+                }
+            )
+        ),
+        // The setting could not be stored, so the question would come back every
+        // session. Saying so beats asking again tomorrow with no explanation.
+        Err(e) => eprintln!(
+            "  {}",
+            color.paint(crate::ui::YELLOW, &format!("not saved: {e}"))
+        ),
+    }
+    true
 }
 
 #[cfg(test)]
