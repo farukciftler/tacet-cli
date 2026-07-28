@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Tacet: Private Terminal AI Assistant & Local LLM</title>
-    <meta name="description" content="Tacet is a private personal assistant that runs entirely on your computer via terminal. Manage calendar, set reminders, write notes and documents with zero cloud or data tracking.">
+    <meta name="description" content="Tacet is a private personal assistant that runs entirely on your computer via terminal. Write documents, read your git diff, run code in a sandbox and keep notes — with zero cloud, no account and no telemetry.">
     <meta name="keywords" content="tacet, local ai, terminal assistant, private ai, local llm, privacy first assistant, cargo tacet-cli, offline ai assistant">
     <meta name="author" content="Tacet Project">
     <meta name="robots" content="index, follow">
@@ -79,7 +79,7 @@
                     </h1>
 
                     <p class="hero-subtitle">
-                        Ask about your day, set reminders, turn notes into documents. Tacet lives in your terminal and runs entirely on your computer. No account, no cloud, and nothing you say ever leaves your machine.
+                        Turn notes into documents, read what changed in your repository, run a quick script. Tacet lives in your terminal and runs entirely on your computer. No account, no cloud, and nothing you say ever leaves your machine.
                     </p>
 
                     <p class="hero-hint" aria-hidden="true">Scroll, the dot completes the circle<span class="hint-arrow">↓</span></p>
@@ -134,7 +134,8 @@
                     <button id="install-copy" class="copy-btn copy-code-btn" data-copy="curl -fsSL https://usetacet.com/install.sh | sh">Copy</button>
                 </div>
 
-                <p class="install-alt">Already have Rust? <code>cargo install tacet-cli --features candle</code> works everywhere (<code>metal</code> instead of <code>candle</code> on Apple silicon, for twice the speed), then <code>tacet chat</code>. The model download stays on your disk; nothing else is fetched, ever.</p>
+                <p class="install-alt">Already have Rust? <code>cargo install tacet-cli --features candle</code> works everywhere (<code>metal</code> instead of <code>candle</code> on Apple silicon, for twice the speed), then <code>tacet chat</code>. Keep the feature flag on every upgrade — cargo does not remember it, and without it you get a build that cannot run a model. <code>tacet --v</code> tells you which one you have.</p>
+                <p class="install-alt">Weights you already have work as they are: point <code>TACET_MODEL</code> at any GGUF file, or drop it in <code>~/models/</code>. No separate tokenizer file is needed — Tacet reads the one inside the GGUF.</p>
             </div>
         </div>
     </section>
@@ -150,23 +151,23 @@
 
             <div class="gates-grid">
                 <div class="gate-card">
-                    <h3>Your day, at a glance</h3>
-                    <p>"What's on tomorrow?" Tacet reads your calendar, sets reminders and never lets you miss a call.</p>
+                    <h3>Notes into documents</h3>
+                    <p>Ask for a Word document or an Excel sheet and it lands in your folder, ready to send — with real formulas, not pasted numbers.</p>
                 </div>
 
                 <div class="gate-card">
-                    <h3>Notes into documents</h3>
-                    <p>Ask for a Word document or an Excel sheet and it lands in your folder, ready to send.</p>
+                    <h3>It reads your repository</h3>
+                    <p>"What changed?" Tacet reads the diff and writes the commit message. Read-only: it never commits or pushes for you.</p>
                 </div>
 
                 <div class="gate-card">
                     <h3>It remembers for you</h3>
-                    <p>Tell it things worth keeping — it takes notes and brings them back exactly when they matter.</p>
+                    <p>Tell it things worth keeping — it takes notes and brings them back when they matter. Conversations are kept too, so <code>tacet --continue</code> picks up where you left off.</p>
                 </div>
 
                 <div class="gate-card">
                     <h3>Web only when you ask</h3>
-                    <p>Tacet works offline. If a question needs the internet, it asks you first every single time.</p>
+                    <p>Tacet works offline. Web search is an add-on you install deliberately, pointed at a search server you run — until then those tools do not exist as far as the model is concerned.</p>
                 </div>
             </div>
         </div>
@@ -192,7 +193,7 @@
                 </div>
                 <div class="trust-card">
                     <h3>You see every step</h3>
-                    <p>Whenever Tacet checks your calendar or writes a file, it shows a small receipt on screen. Nothing happens behind your back.</p>
+                    <p>Whenever Tacet writes a file, runs a script or reads your repository, it shows a small receipt on screen. Nothing happens behind your back.</p>
                 </div>
             </div>
         </div>
@@ -215,7 +216,8 @@
                     <tbody>
                         <tr><td>Chat with a local model</td><td class="yes">✓</td><td class="yes">✓</td></tr>
                         <tr><td>No account, no telemetry</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-                        <tr><td>Reads your calendar, sets reminders</td><td class="no">—</td><td class="yes">✓</td></tr>
+                        <tr><td>Reads your git diff, writes the commit message</td><td class="no">—</td><td class="yes">✓</td></tr>
+                        <tr><td>Runs your code in a sandbox with no network</td><td class="no">—</td><td class="yes">✓</td></tr>
                         <tr><td>Turns notes into Word and Excel files</td><td class="no">—</td><td class="yes">✓</td></tr>
                         <tr><td>A memory you can see and edit</td><td class="no">—</td><td class="yes">✓</td></tr>
                         <tr><td>A receipt on screen for every action</td><td class="no">—</td><td class="yes">✓</td></tr>

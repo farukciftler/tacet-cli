@@ -2,22 +2,23 @@
 
 > Tacet is a private personal assistant that lives in your terminal and runs 100% locally on your computer.
 
-Calendar, reminders, documents, and notes: nothing you say ever leaves your machine. Tacet is designed from the ground up for absolute privacy with zero cloud dependencies, zero account requirement, and zero telemetry.
+Documents, code, git and notes: nothing you say ever leaves your machine. Tacet is designed from the ground up for absolute privacy with zero cloud dependencies, zero account requirement, and zero telemetry.
 
 ## Key Features
 
 - **100% Local Execution**: Runs locally on macOS and Linux using local LLMs (e.g. Qwen 3 4B).
-- **Calendar & Reminders**: Checks calendar events, sets local reminders, and nudges you at specified times.
+- **Git Awareness**: Reads `git status` and `git diff` so it can summarise changes or write a commit message. Read-only by construction — it never commits or pushes.
+- **Sandboxed Code Execution**: Runs short scripts in an isolated sandbox with no network and no file access; `tacet --continue` resumes the previous conversation.
 - **Document Generation**: Generates Word documents (.docx) and Excel spreadsheets (.xlsx) directly on your disk.
 - **Notes & Memory**: Takes notes and recalls them when relevant in context.
 - **Offline First**: Works completely offline. If a prompt requires web search, Tacet asks for explicit confirmation.
-- **Transparent Execution**: Every tool invocation (calendar check, file write) shows an explicit receipt on screen.
+- **Transparent Execution**: Every tool invocation (file write, code run, git read) shows an explicit receipt on screen.
 
 ## Getting Started
 
 1. **Install CLI**:
    ```bash
-   cargo install tacet-cli
+   cargo install tacet-cli --features candle
    ```
    Or via install script:
    ```bash
@@ -36,7 +37,7 @@ Calendar, reminders, documents, and notes: nothing you say ever leaves your mach
 
 ## Comparison with Ollama
 
-While Ollama is a general-purpose local LLM runner and server, Tacet is a specialized terminal personal assistant with built-in tool execution (calendar, files, notes, reminders) and zero setup required for everyday tasks.
+While Ollama is a general-purpose local LLM runner and server, Tacet is a specialized terminal personal assistant with built-in tool execution (documents, files, git, code, notes) and zero setup required for everyday tasks.
 
 ## Links
 
