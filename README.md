@@ -234,6 +234,16 @@ The most useful thing anyone can do right now: **run it on Linux or Windows and
 say what broke.** CI compiles and tests there, but no human has used the
 interactive shell on either — see the platform table above.
 
+## Star History
+
+<a href="https://www.star-history.com/#farukciftler/tacet-cli&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=farukciftler/tacet-cli&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=farukciftler/tacet-cli&type=Date" />
+    <img alt="Star history chart for farukciftler/tacet-cli" src="https://api.star-history.com/svg?repos=farukciftler/tacet-cli&type=Date" />
+  </picture>
+</a>
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
