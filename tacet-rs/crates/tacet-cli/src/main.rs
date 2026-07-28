@@ -1654,7 +1654,7 @@ fn chat(
             } else {
                 println!(
                     "{}",
-                    color.paint(YELLOW, &format!("({})", addon::closed_gate_message()))
+                    color.paint(YELLOW, &format!("({})", addon::closed_gate_message(true)))
                 );
             }
         }
@@ -2558,7 +2558,7 @@ fn tools(print_schema: bool) -> ExitCode {
     if !tacet_web::addon::web_search_is_open() {
         println!(
             "{}",
-            color.paint(DIM, &format!("({})", addon::closed_gate_message()))
+            color.paint(DIM, &format!("({})", addon::closed_gate_message(false)))
         );
     }
     ExitCode::SUCCESS
