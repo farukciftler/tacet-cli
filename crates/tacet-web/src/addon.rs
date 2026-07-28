@@ -1229,10 +1229,26 @@ mod tests {
         for bad in ["notes", "~/notes", "/home/me/..", "/a/../../etc", ""] {
             assert!(Shape::Directory.check(bad).is_err(), "{bad:?}");
         }
-        assert!(Shape::Directory.check("/Users/me/notes").is_ok());
+        // WHAT COUNTS AS ABSOLUTE IS THE PLATFORM'S ANSWER, NOT A STRING RULE.
+        // `check_directory` asks `Path::is_absolute`, and on Windows that is
+        // false for `/Users/me/notes` — a rooted path with no drive letter is
+        // not absolute there, it is relative to the current drive. The check is
+        // right; this test was written on a Mac and asserted the Mac's shape,
+        // which is how it turned up red on Windows CI while the product was
+        // behaving correctly.
+        let absolute = if cfg!(windows) {
+            r"C:\Users\me\notes"
+        } else {
+            "/Users/me/notes"
+        };
+        assert!(Shape::Directory.check(absolute).is_ok(), "{absolute}");
         // A comma is a legal character in a directory name — the separator is a
         // newline precisely so this can be stored.
-        assert!(Shape::Directory.check("/Users/me/notes,drafts").is_ok());
+        assert!(
+            Shape::Directory
+                .check(&format!("{absolute},drafts"))
+                .is_ok()
+        );
 
         // A host entry is a host and nothing else.
         for bad in [
