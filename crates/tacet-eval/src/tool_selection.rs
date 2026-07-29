@@ -498,6 +498,19 @@ pub struct SelectionOutcome {
 #[derive(Debug, Clone, Serialize)]
 pub struct SelectionReport {
     pub engine: String,
+    /// WHAT produced these numbers — model file, quantization, device.
+    ///
+    /// Without it the report said `"candle"` and nothing else, so four
+    /// different weight files gave four indistinguishable reports and a
+    /// comparison matrix could silently measure one model in every cell.
+    pub identity: tacet_engine::EngineIdentity,
+    /// How long the whole suite took. Every latency guard anybody writes needs
+    /// a number to compare against, and there was none.
+    pub wall_ms: u128,
+    /// The catalog the router chose from, by name. It is NOT constant across
+    /// machines — three tools are platform-gated — so a score is only
+    /// comparable against a score with the same list.
+    pub catalog: Vec<String>,
     pub cases: Vec<SelectionOutcome>,
     /// The hit rate of the tool + multi-turn cases.
     pub tool_passed: usize,
@@ -512,9 +525,17 @@ pub struct SelectionReport {
 }
 
 impl SelectionReport {
-    fn new(engine: &str, cases: Vec<SelectionOutcome>) -> Self {
+    fn new(
+        identity: tacet_engine::EngineIdentity,
+        wall_ms: u128,
+        catalog: Vec<String>,
+        cases: Vec<SelectionOutcome>,
+    ) -> Self {
         let mut r = Self {
-            engine: engine.into(),
+            engine: identity.engine.clone(),
+            identity,
+            wall_ms,
+            catalog,
             tool_passed: 0,
             tool_total: 0,
             irrelevance_passed: 0,
@@ -559,9 +580,16 @@ impl SelectionReport {
             .unwrap_or(4)
             .max(4);
         let mut s = String::new();
+        // THE HEADER NAMES THE SUBJECT. A table that says only "candle" is a
+        // table whose subject is unknown the moment a second model exists.
         s.push_str(&format!(
-            "engine: {}  (tool selection set)\n\n",
-            self.engine
+            "engine: {}  (tool selection set)\n",
+            self.identity.line()
+        ));
+        s.push_str(&format!(
+            "catalog: {} tools · {} ms\n\n",
+            self.catalog.len(),
+            self.wall_ms
         ));
         s.push_str(&format!(
             "{:<width$}  {:<6}  {}\n",
@@ -675,11 +703,36 @@ fn announce_missing_tools(catalog: &ToolCatalog) {
 /// Runs all the cases. The engine must be REAL; it is not meaningful with the
 /// fake engine.
 pub fn run_selection(cases: &[SelectionCase], engine: &Arc<dyn EngineProvider>) -> SelectionReport {
-    let outcomes = cases
+    let started = std::time::Instant::now();
+    let outcomes: Vec<SelectionOutcome> = cases
         .iter()
         .map(|c| run_selection_case(c, engine))
         .collect();
-    SelectionReport::new(engine.name(), outcomes)
+    // The catalog is recorded, not assumed: `calendar` is macOS-only and
+    // run_code/write_code depend on a sandbox being discoverable, so the same
+    // suite scores against a different tool set on a different machine. A
+    // number without its catalog cannot be compared with another number.
+    let catalog = production_catalog_names();
+    SelectionReport::new(
+        engine.identity(),
+        started.elapsed().as_millis(),
+        catalog,
+        outcomes,
+    )
+}
+
+/// The names the router chose from, in catalog order — built exactly the way
+/// the cases build it, so the list in the report is the list that ran.
+fn production_catalog_names() -> Vec<String> {
+    let Ok(env) = Env::setup() else {
+        return Vec::new();
+    };
+    let memory = SharedMemory::in_memory();
+    selection_catalog(&env, &memory)
+        .names()
+        .into_iter()
+        .map(String::from)
+        .collect()
 }
 
 /// Runs one case. In a multi-turn case the environment, the history and the
@@ -1047,12 +1100,29 @@ mod tests {
     /// skip IS PRINTED; if it is not, the test fails right there.
     #[test]
     fn the_expected_tool_does_not_drop_out_of_the_routers_budget() {
+        budget_guard("english", &selection_cases());
+    }
+
+    /// THE SAME GUARD, IN TURKISH — and it is not a formality.
+    ///
+    /// Until the router had a Turkish trigger table, three cases here failed:
+    /// "Dolar kuru şu an ne durumda?" and both `remember` cases touched no
+    /// trigger at all, scored zero on every profile, and the nine-slot budget
+    /// filled with the head of the catalog. The model was then marked wrong for
+    /// not calling a tool it had never been shown. Running the guard over one
+    /// locale only measured the locale it was written in.
+    #[test]
+    fn the_expected_tool_survives_the_budget_in_turkish_too() {
+        budget_guard("turkish", &turkish_selection_cases());
+    }
+
+    fn budget_guard(suite: &str, cases: &[SelectionCase]) {
         let env = Env::setup().unwrap();
         let memory = SharedMemory::in_memory();
         let catalog = selection_catalog(&env, &memory);
         let router = Router::new();
         let (mut measured, mut skipped) = (0usize, 0usize);
-        for c in selection_cases() {
+        for c in cases {
             for s in &c.steps {
                 let Some(expected) = s.expected.as_deref() else {
                     continue;
@@ -1092,7 +1162,7 @@ mod tests {
         // that is a failure too, and it shows up here.
         assert!(
             measured > skipped,
-            "most of the cases were skipped ({skipped} skipped / {measured} measured) — \
+            "{suite}: most of the cases were skipped ({skipped} skipped / {measured} measured) — \
              the catalog setup may be broken"
         );
     }
@@ -1125,7 +1195,15 @@ mod tests {
                 }],
             },
         ];
-        let r = SelectionReport::new("test", outcomes);
+        let r = SelectionReport::new(
+            tacet_engine::EngineIdentity {
+                engine: "test".into(),
+                ..Default::default()
+            },
+            0,
+            Vec::new(),
+            outcomes,
+        );
         assert_eq!((r.tool_passed, r.tool_total), (0, 1));
         assert_eq!((r.irrelevance_passed, r.irrelevance_total), (1, 1));
         // A single "success rate" would melt these two into 1/2; they must stay

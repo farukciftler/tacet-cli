@@ -381,6 +381,18 @@ enum Command {
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
+    /// Why a message reaches — or does not reach — a tool. NO MODEL RUNS.
+    ///
+    /// WHY IT EXISTS: the three Turkish defects fixed this week were found by
+    /// dumping a prompt and looking at which tools were in it. That took a
+    /// minute and told us more than an hour of model runs, because the score
+    /// says WHICH case failed while this says WHY. The most useful diagnostic
+    /// in the project should be a command, not something you have to know to
+    /// improvise.
+    Why {
+        /// The message, exactly as a user would type it.
+        message: String,
+    },
     /// The MCP connections in `mcp.json` — list them, or try one for real.
     ///
     /// `try` is the ONE command in this program that deliberately opens a
@@ -723,6 +735,7 @@ fn main() -> ExitCode {
             ConfigJob::Unset { key } => config::unset(&key),
             ConfigJob::Path => config::path(),
         },
+        Command::Why { message } => why(&message),
         Command::Mcp { job } => match job {
             McpJob::List { json } => mcp_list(json),
             McpJob::Try { name, call, args } => mcp_try(&name, call, &args),
@@ -875,6 +888,89 @@ fn total_ram_bytes() -> Option<u64> {
     {
         None
     }
+}
+
+/// `tacet why "<message>"` — the router's reasoning, in the order it happens.
+///
+/// It runs NO MODEL and opens NO socket: this is the layer BEFORE the model,
+/// and the whole point is that it answers in milliseconds.
+fn why(message: &str) -> ExitCode {
+    let color = Color::setup();
+    let store = Arc::new(SharedStore::new());
+    let memory = SharedMemory::in_memory();
+    let (mut catalog, _) = session_catalog(&store, &memory, &color);
+    // The remote tools count too — they are the ones most likely to be missing
+    // from a budget, since no profile knows their names.
+    let mcp_load = mcp::load_from_default();
+    let mcp_names = mcp::feed_catalog(&mut catalog, &mcp_load);
+    let router = Router::new().reserving(mcp_names);
+    let explanation = router.explain(message, &catalog);
+
+    println!();
+    println!("  {} {message}", color.paint(BRASS, "›"));
+    println!();
+
+    println!("  {}", color.paint(BOLD, "what the message scored"));
+    let mut any = false;
+    for (profile, score, fired) in &explanation.profiles {
+        if *score == 0 {
+            continue;
+        }
+        any = true;
+        println!(
+            "    {:<9} {:>4}   {}",
+            profile.name(),
+            score,
+            color.paint(DIM, &fired.join(", "))
+        );
+    }
+    if !any {
+        // THE FAILURE MODE THIS COMMAND WAS BUILT FOR.
+        println!(
+            "    {}",
+            color.paint(
+                YELLOW,
+                "nothing matched — every tool scores zero and the budget fills with the \
+                 head of the catalog, whatever the message was about"
+            )
+        );
+    }
+
+    println!();
+    println!(
+        "  {} ({} of {})",
+        color.paint(BOLD, "tools the model will see"),
+        explanation.selected.len(),
+        explanation.selected.len() + explanation.dropped.len()
+    );
+    for (i, (name, score, overlap)) in explanation.selected.iter().enumerate() {
+        let reason = match (score, overlap) {
+            (0, 0) => "catalog order".to_string(),
+            (0, o) => format!("shares {o} with the message"),
+            (s, 0) => format!("profile {s}"),
+            (s, o) => format!("profile {s} · shares {o}"),
+        };
+        println!("    {}. {:<26} {}", i + 1, name, color.paint(DIM, &reason));
+    }
+
+    if !explanation.dropped.is_empty() {
+        println!();
+        println!("  {}", color.paint(BOLD, "left out"));
+        println!(
+            "    {}",
+            color.paint(DIM, &crate::ui::one_line(&explanation.dropped.join(", ")))
+        );
+        println!(
+            "    {}",
+            color.paint(
+                DIM,
+                "a tool that is not on the list above cannot be called, however well the \
+                 model reasons"
+            )
+        );
+    }
+    println!();
+    ExitCode::SUCCESS
 }
 
 // ---------------------------------------------------------------------------
@@ -4854,6 +4950,23 @@ fn eval_tool_selection(
     let engine = match model_package::resolve_pair(model_name) {
         Some((m, t)) => match candle_engine_from_path(&m, t.as_deref()) {
             Ok(engine) => {
+                // THE SILENT-OVERRIDE WARNING. `resolve_pair` consults
+                // `TACET_MODEL` BEFORE the catalog, so a variable left over in a
+                // shell overrides `--model` for every cell of a comparison and
+                // the whole matrix measures one model. Nothing said so; now it
+                // does, and it names both the flag and the file that won.
+                if model_package::pair_from_env().is_some() {
+                    eprintln!(
+                        "{}",
+                        color.paint(
+                            YELLOW,
+                            &format!(
+                                "warning: TACET_MODEL is set, so --model {model_name} was \
+                                 IGNORED — this run measures {m}"
+                            )
+                        )
+                    );
+                }
                 eprintln!("{}", color.paint(DIM, &format!("(model: {m})")));
                 engine
             }

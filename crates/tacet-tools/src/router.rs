@@ -109,7 +109,6 @@ impl IntentProfile {
                 // effect.
                 "summar",
                 ".md",
-                "ozetle",
                 "add to the document",
                 "create a document",
                 "write to a file",
@@ -158,17 +157,6 @@ impl IntentProfile {
                 // are DATA matched against what the user actually types, and
                 // Turkish users type Turkish. Every entry mirrors a measured
                 // English twin above.
-                "takvim",
-                "toplanti",
-                "etkinlik",
-                "hatirlat",
-                "randevu",
-                "ajanda",
-                "yarin",
-                "bugun",
-                "saat kac",
-                "ayin kaci",
-                "kac gun",
                 "what day",
                 "how many days left",
                 "how many days until",
@@ -298,6 +286,125 @@ impl IntentProfile {
         }
     }
 
+    /// THE TURKISH HALF OF THE TABLE — the follow-up the header above promised.
+    ///
+    /// WHY A SECOND LIST AND NOT MORE ENTRIES IN THE FIRST: the English list is
+    /// matched against tool names and descriptions elsewhere in this file, and
+    /// mixing languages there was already producing questions like "is `ozetle`
+    /// an English word we forgot to translate". Two lists, one score: the total
+    /// is the sum over both, so moving a string from one to the other cannot
+    /// change any measurement — which is how the Turkish entries that used to
+    /// sit inline above were moved down here safely.
+    ///
+    /// WRITTEN WITHOUT DIACRITICS on purpose. The message is put through
+    /// `simplify` before matching, which folds ş→s, ı→i, ğ→g and friends; a
+    /// trigger spelled "döviz" would then match nothing at all. The folded
+    /// spelling is not a typo, it is the only spelling that can match.
+    ///
+    /// MEASURED, this is not speculation: with these absent, "Dolar kuru şu an
+    /// ne durumda?" and "Kahve sevdiğimi unut artık" scored zero on every
+    /// profile, so `web_search` and `remember` never entered the nine-tool
+    /// budget and the model was asked to answer without ever being shown the
+    /// tool it needed. Three of the Turkish suite's five failures were this.
+    fn locale_triggers(&self) -> &'static [&'static str] {
+        match self {
+            IntentProfile::Document => &[
+                "belge",
+                "rapor",
+                "tablo",
+                "ozetle",
+                "ozet cikar",
+                "duzenle",
+                "dosyaya yaz",
+                "word dosyasi",
+                "excel dosyasi",
+                "sunum",
+                "baslik ekle",
+            ],
+            IntentProfile::Time => &[
+                "takvim",
+                "toplanti",
+                "etkinlik",
+                "hatirlat",
+                "randevu",
+                "ajanda",
+                "yarin",
+                "bugun",
+                "saat kac",
+                "ayin kaci",
+                "kac gun",
+                "hangi gun",
+                "gelecek hafta",
+                "yilbasi",
+            ],
+            IntentProfile::Calc => &[
+                "hesapla",
+                "kac eder",
+                "yuzde",
+                "carp",
+                "topla",
+                "ortalama",
+                "kod calistir",
+                "betik",
+                "program yaz",
+            ],
+            IntentProfile::Web => &[
+                // THE CURRENT-INFORMATION MARKERS, in Turkish.
+                //
+                // "kuru", NOT "kur" — AND THE REASON IS THE INTERESTING PART.
+                // The term-boundary rule that keeps "url" out of
+                // "tesekkurler" is length-based: a root under four characters
+                // must match as a WHOLE term. But Turkish glues its suffixes on
+                // the end, so the exchange rate is written "dolar kuru", never
+                // bare "kur" — the rule that protects against a false positive
+                // also blocks a legitimate inflection. Four characters and up
+                // keep prefix matching, so "kuru" matches "kuru" and "kurunu"
+                // while "kurulum" and "kurabiye" stay out by their own
+                // spelling. Write Turkish triggers at four characters where the
+                // language allows it; this is not a workaround, it is the rule
+                // working as designed.
+                "doviz",
+                "kuru",
+                "dolar",
+                "euro",
+                "altin",
+                "haber",
+                "guncel",
+                "son durum",
+                "borsa",
+                "hava durumu",
+                "kac tl",
+                "kac dolar",
+                "internette",
+                "sitesi",
+                "adresi",
+                "sefer saatleri",
+                "canli",
+            ],
+            IntentProfile::General => &[
+                // MEMORY, the way it is asked: "unutma" (do not forget) and
+                // "unut" (forget) point at the SAME tool — one writes a note,
+                // the other removes it, and both are `remember`.
+                "hatirla",
+                "unutma",
+                "unut",
+                "aklinda tut",
+                "not al",
+                "kaydet",
+                // FILES.
+                "dosya",
+                "klasor",
+                "listele",
+                // "ara" and "bul" are three letters: the term-boundary rule is
+                // what stops "ara" from catching "aralik" (December) — the
+                // measured failure the rule was born from, one crate over.
+                "ara",
+                "bul",
+                "oku",
+            ],
+        }
+    }
+
     /// The hints looked for in a tool's name and description to decide whether the
     /// tool belongs to this profile.
     ///
@@ -413,13 +520,86 @@ pub fn score_intent(message: &str) -> IntentScores {
             let total = p
                 .message_triggers()
                 .iter()
-                .filter(|t| simple.contains(**t))
+                .chain(p.locale_triggers().iter())
+                // TERM BOUNDARIES, NOT BARE `contains`. Measured: "Çok
+                // teşekkürler" folds to "cok tesekkurler", which contains the
+                // three-letter Web trigger "url" — so a thank-you pulled
+                // `web_fetch` and `web_search` to the front of the budget, on
+                // the one metric this project ties its exit code to. The rule
+                // is not reinvented here: it is `tacet_skills::matching`, the
+                // same function the skill and memory layers match with, so the
+                // three cannot drift apart.
+                .filter(|t| tacet_skills::matching::contains(&simple, t))
                 .map(|t| t.len())
                 .sum();
             (*p, total)
         })
         .collect();
     IntentScores { scores }
+}
+
+/// WHY a tool did or did not reach the model, for one message.
+///
+/// WHY IT EXISTS: the three defects fixed in this file were found by dumping a
+/// prompt and looking at which tools were in it — sixty seconds of work that
+/// told us more than an hour of model runs. A diagnostic that valuable should
+/// not be a thing somebody has to know to improvise; it should be a command.
+/// The shell renders it as `tacet why "<message>"`.
+#[derive(Debug, Clone)]
+pub struct Explanation {
+    /// Profile, score, and the triggers that fired — in scoring order.
+    pub profiles: Vec<(IntentProfile, usize, Vec<&'static str>)>,
+    /// The tools that reached the model, in the order it sees them, each with
+    /// the two numbers that put it there: its profile score and its word
+    /// overlap with the message. A tool at position four with `0 / 0` is there
+    /// by catalog order and nothing else — which is worth being able to see.
+    pub selected: Vec<(String, usize, usize)>,
+    /// The ones that did not, with the reason as far as the router knows it.
+    pub dropped: Vec<String>,
+}
+
+impl Router {
+    /// Explains a selection instead of just making one.
+    pub fn explain(&self, message: &str, catalog: &ToolCatalog) -> Explanation {
+        let simple = simplify(message);
+        let scores = score_intent(message);
+        let profiles = IntentProfile::ALL
+            .iter()
+            .map(|p| {
+                let fired: Vec<&'static str> = p
+                    .message_triggers()
+                    .iter()
+                    .chain(p.locale_triggers().iter())
+                    .filter(|t| tacet_skills::matching::contains(&simple, t))
+                    .copied()
+                    .collect();
+                (*p, scores.score(*p), fired)
+            })
+            .collect();
+        let message_stems = stems(&simple);
+        let selected: Vec<(String, usize, usize)> = self
+            .select(message, catalog)
+            .iter()
+            .map(|t| {
+                (
+                    t.name().to_string(),
+                    self.tool_score(t.as_ref(), &scores),
+                    overlap(t.as_ref(), &message_stems),
+                )
+            })
+            .collect();
+        let dropped = catalog
+            .names()
+            .into_iter()
+            .map(String::from)
+            .filter(|n| !selected.iter().any(|(s, _, _)| s == n))
+            .collect();
+        Explanation {
+            profiles,
+            selected,
+            dropped,
+        }
+    }
 }
 
 /// The router that applies the tool budget.
@@ -492,6 +672,14 @@ impl Router {
                 .then(a.1.cmp(&b.1))
         });
         let budget = self.budget();
+        // THE RESERVATION IS FOR SILENCE, NOT FOR COMPETITION. It exists so a
+        // question in a language the trigger table has never seen can still
+        // reach a connected server. When a profile DID fire, the message has
+        // said what it is about and speculative remote tools should not be
+        // pushing scoring ones out of the budget — measured on the same
+        // exchange-rate question, where five of nine slots had gone to the
+        // server.
+        let nothing_matched = scores.score(scores.dominant()) == 0;
         let mut chosen: Vec<Arc<dyn Tool>> = ordered
             .iter()
             .take(budget)
@@ -503,7 +691,7 @@ impl Router {
         // give way to the best-ranked reserved ones. `RESERVED_SLOTS` is small
         // on purpose — this is "the model must know the connection exists", not
         // "remote tools win".
-        if !self.reserved.is_empty() && budget > RESERVED_SLOTS {
+        if nothing_matched && !self.reserved.is_empty() && budget > RESERVED_SLOTS {
             let already = chosen
                 .iter()
                 .filter(|t| self.reserved.iter().any(|n| n == t.name()))
@@ -541,10 +729,17 @@ impl Router {
                 if message_score == 0 {
                     return 0;
                 }
+                // TERM BOUNDARIES ON THIS SIDE TOO. The message side was fixed
+                // first ("url" inside "tesekkurler"); the tool side had the
+                // same hole and it was found by `tacet why` on a live catalog:
+                // the Turkish word "türleri" (types) folds to "turleri", which
+                // CONTAINS "url", so a directory-listing tool scored as a WEB
+                // tool and took a slot in an exchange-rate question. Same root
+                // cause, third instance — and the last place it can hide.
                 let hint: usize = p
                     .tool_hints()
                     .iter()
-                    .filter(|t| text.contains(**t))
+                    .filter(|t| tacet_skills::matching::contains(&text, t))
                     .map(|t| t.len())
                     .sum();
                 message_score * hint
@@ -573,11 +768,20 @@ fn overlap(tool: &dyn Tool, message_stems: &[String]) -> usize {
     }
     let text = simplify(&format!("{} {}", tool.name(), tool.description()));
     let tool_stems = stems(&text);
-    message_stems
+    let matched: Vec<&String> = message_stems
         .iter()
         .filter(|stem| tool_stems.iter().any(|t| t == *stem))
-        .map(|stem| stem.len())
-        .sum()
+        .collect();
+    // TWO STEMS, NOT ONE. Measured with `tacet why` on "Dolar kuru şu an ne
+    // durumda?": the single stem "duru" (from "durumda", an everyday word for
+    // "state") matched `disk_durumu`, `servis_durumu` and `ag_durumu`, and
+    // three server tools took slots in a question about an exchange rate. One
+    // shared everyday word is a coincidence; two are a subject. "serverdeki
+    // disk durumu" shares three ("serv", "disk", "duru") and is unaffected.
+    if matched.len() < 2 {
+        return 0;
+    }
+    matched.iter().map(|stem| stem.len()).sum()
 }
 
 /// The distinctive words of a piece of text, cut to a stem.
@@ -681,6 +885,155 @@ mod tests {
         assert_eq!(c.tools().len(), 10);
         let selection = Router::new().select("prepare a document for me", &c);
         assert_eq!(selection.len(), MAX_TOOLS);
+    }
+
+    /// THE THREE TURKISH FAILURES, as a test that needs no model.
+    ///
+    /// Measured before this: "Dolar kuru şu an ne durumda?" and "Kahve
+    /// sevdiğimi unut artık" scored zero on every profile, so the nine-slot
+    /// budget filled with the head of the catalog and the model was never shown
+    /// `web_search` or `remember`. Three of the Turkish suite's five failures
+    /// were this, and none of them was the model's fault.
+    #[test]
+    fn a_turkish_message_reaches_the_tool_it_needs() {
+        let rate = score_intent("Dolar kuru şu an ne durumda?");
+        assert!(
+            rate.score(IntentProfile::Web) > 0,
+            "an exchange-rate question must point at the web"
+        );
+        let forget = score_intent("Kahve sevdiğimi unut artık");
+        assert!(
+            forget.score(IntentProfile::General) > 0,
+            "'unut' must point at the memory tool"
+        );
+        let news = score_intent("Bugün haberlerde ne var?");
+        assert!(news.score(IntentProfile::Web) > 0);
+    }
+
+    /// AND THE FALSE POSITIVE THAT CAME WITH THE SAME CODE.
+    ///
+    /// "Çok teşekkürler, harikaydı!" folds to "cok tesekkurler, harikaydi!",
+    /// which CONTAINS the three-letter Web trigger "url". With a bare substring
+    /// search a thank-you pulled `web_fetch` and `web_search` to the front of
+    /// the budget — on an irrelevance case, which is the metric the CLI ties
+    /// its exit code to. The term-boundary rule is what stops it.
+    #[test]
+    fn a_thank_you_does_not_look_like_a_web_request() {
+        let thanks = score_intent("Çok teşekkürler, harikaydı!");
+        assert_eq!(
+            thanks.score(IntentProfile::Web),
+            0,
+            "'tesekkurler' contains 'url' and must not score as a web request"
+        );
+        for greeting in ["Selam, nasılsın?", "İyi akşamlar", "Günaydın"] {
+            let s = score_intent(greeting);
+            assert_eq!(
+                s.score(IntentProfile::Web),
+                0,
+                "{greeting} must not touch the web profile"
+            );
+        }
+        // The rule the limit exists for, in its original shape: "ara" must not
+        // catch "aralık".
+        let december = score_intent("20 aralık için toplantı koy");
+        assert!(
+            december.score(IntentProfile::Time) > 0,
+            "a December meeting is calendar work"
+        );
+    }
+
+    /// WHAT `tacet why` FOUND THE DAY IT WAS WRITTEN.
+    ///
+    /// A remote catalog of twenty server tools was connected. For "Dolar kuru
+    /// şu an ne durumda?" five of the nine slots went to the server: three
+    /// because the everyday word "durumda" shares a four-character stem with
+    /// `disk_durumu` / `servis_durumu` / `ag_durumu`, and two because the
+    /// reservation fired even though the message had said plainly what it was
+    /// about. One shared everyday word is a coincidence; and the reservation is
+    /// for silence, not for competition.
+    #[test]
+    fn a_remote_catalog_does_not_crowd_a_message_that_said_what_it_wants() {
+        let mut catalog = ToolCatalog::new();
+        catalog.add(Arc::new(FakeTool {
+            name: "web_search",
+            description: "Searches the web.",
+        }));
+        for name in [
+            "serverim_disk_durumu",
+            "serverim_servis_durumu",
+            "serverim_ag_durumu",
+            "serverim_dizin_listele",
+        ] {
+            catalog.add(Arc::new(FakeTool {
+                name,
+                description: "Sunucudaki durumu gosterir.",
+            }));
+        }
+        let remote: Vec<String> = catalog
+            .names()
+            .into_iter()
+            .filter(|n| n.starts_with("serverim_"))
+            .map(String::from)
+            .collect();
+        let router = Router::new().max(3).reserving(remote);
+
+        // The message named its subject: the web tool leads and the server
+        // tools do not take the rest of the budget on a shared "durum".
+        let picked: Vec<String> = router
+            .select("Dolar kuru şu an ne durumda?", &catalog)
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        assert_eq!(picked.first().map(String::as_str), Some("web_search"));
+
+        // And the case the reservation exists for is untouched: a question in a
+        // language the table has never seen still reaches the server.
+        let silent: Vec<String> = router
+            .select("サーバーのディスク使用状況を教えて", &catalog)
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        assert!(
+            silent.iter().any(|n| n.starts_with("serverim_")),
+            "nothing scored, so the connection must still be visible: {silent:?}"
+        );
+    }
+
+    /// THE SAME BUG, ON THE TOOL SIDE.
+    ///
+    /// Found by `tacet why` against a live remote catalog: a tool described in
+    /// Turkish as listing "türleri" (types) folds to "turleri", which contains
+    /// the three-letter web hint "url" — so a directory listing scored as a web
+    /// tool and took a slot in a question about an exchange rate. The message
+    /// side had already been fixed; this is the other half of the same hole.
+    #[test]
+    fn a_turkish_word_in_a_tool_description_is_not_a_web_hint() {
+        struct Remote;
+        impl Tool for Remote {
+            fn name(&self) -> &str {
+                "serverim_dizin_listele"
+            }
+            fn description(&self) -> &str {
+                "Belirtilen klasörün içeriğini listeler (dosya adları, türleri)."
+            }
+            fn schema(&self) -> ArgSchema {
+                ArgSchema::empty()
+            }
+            fn run<'a>(&'a self, _a: Value, _c: &'a mut ToolContext) -> ToolFuture<'a> {
+                boxed(async { ToolOutcome::read_ok("ok", "ok") })
+            }
+        }
+        let router = Router::new();
+        let scores = score_intent("Dolar kuru şu an ne durumda?");
+        assert!(
+            scores.score(IntentProfile::Web) > 0,
+            "the message is a web one"
+        );
+        assert_eq!(
+            router.tool_score(&Remote, &scores),
+            0,
+            "'turleri' contains 'url' and must not make a directory listing a web tool"
+        );
     }
 
     #[test]

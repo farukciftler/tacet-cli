@@ -48,7 +48,8 @@ pub use gguf_tokenizer::{
 };
 pub use prompt::{GUIDE_LIMIT, Prompt, Role, Template, Turn};
 pub use provider::{
-    EngineProvider, Generation, GenerationFuture, SamplingSetting, StopReason, boxed_generation,
+    EngineIdentity, EngineProvider, Generation, GenerationFuture, SamplingSetting, StopReason,
+    boxed_generation,
 };
 pub use session::{MAX_TURNS, SYSTEM_INSTRUCTIONS};
 pub use thinking::extract as extract_thinking;

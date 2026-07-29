@@ -149,9 +149,66 @@ where
     Box::pin(future)
 }
 
+/// WHO produced a number.
+///
+/// WHY IT EXISTS: `name()` returns the literal string "candle" for every model,
+/// every quantization and every device, and that string was the only identity a
+/// report carried. Four different GGUFs therefore produced four
+/// indistinguishable reports — and since `TACET_MODEL` is consulted BEFORE the
+/// `--model` flag, a leftover environment variable could make an entire
+/// comparison matrix measure one model without anything on screen saying so.
+/// A measurement whose subject is unrecorded is not a measurement.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct EngineIdentity {
+    /// "candle", "fake".
+    pub engine: String,
+    /// Empty for engines with no weights.
+    pub model_path: String,
+    /// A CHEAP FINGERPRINT, NOT A FULL DIGEST: sha256 over the file's size, its
+    /// first mebibyte and its last mebibyte. It answers "is this the same file
+    /// as the last cell of the matrix" in milliseconds; it is not a guarantee
+    /// against a crafted file, and the name says so rather than implying more.
+    /// A full digest over 2.3 GB on every eval load would cost more than the
+    /// eval.
+    pub model_fingerprint: String,
+    pub model_bytes: u64,
+    /// The dominant tensor type in the GGUF ("Q4K", "Q8_0", …) — the thing a
+    /// quantization sweep varies, read from the file rather than from its name.
+    pub quant: String,
+    /// "qwen3", "gemma3", …
+    pub architecture: String,
+    /// "metal", "cpu".
+    pub device: String,
+}
+
+impl EngineIdentity {
+    /// One line for a human: what ran.
+    pub fn line(&self) -> String {
+        if self.model_path.is_empty() {
+            return self.engine.clone();
+        }
+        format!(
+            "{} · {} · {} · {} · {}",
+            self.engine, self.model_path, self.quant, self.device, &self.model_fingerprint
+        )
+    }
+}
+
 pub trait EngineProvider: Send + Sync {
     /// Diagnostics/log name ("fake", "candle").
     fn name(&self) -> &str;
+
+    /// WHAT produced the numbers — model file, quantization, device.
+    ///
+    /// Defaulted so an engine without weights (the fake one, a test double) is
+    /// not forced to invent fields; it still reports its own name, which is the
+    /// truthful answer for it.
+    fn identity(&self) -> EngineIdentity {
+        EngineIdentity {
+            engine: self.name().to_string(),
+            ..Default::default()
+        }
+    }
 
     /// Which wire format this engine expects the prompt in.
     ///

@@ -14,7 +14,8 @@ use crate::constraint::Constrainer;
 use crate::error::{EngineError, EngineResult};
 use crate::prompt::{Prompt, Template};
 use crate::provider::{
-    EngineProvider, Generation, GenerationFuture, SamplingSetting, StopReason, boxed_generation,
+    EngineIdentity, EngineProvider, Generation, GenerationFuture, SamplingSetting, StopReason,
+    boxed_generation,
 };
 
 // `candle_core::Device` is imported under an alias because our own `Device`
@@ -319,6 +320,9 @@ pub struct CandleEngine {
     /// not cheap, but it is invisible next to the gguf load and repeating it per
     /// generation would be pointless.
     vocab: Vec<String>,
+    /// WHAT this engine is, recorded at load. Built once: hashing and metadata
+    /// reading happen while the file is open anyway.
+    identity: EngineIdentity,
 }
 
 impl CandleEngine {
@@ -339,6 +343,10 @@ impl CandleEngine {
         // memory; starting a 2.5 GB load with the wrong module and only erroring
         // at the end is pointless.
         let architecture = read_architecture(&content)?;
+        // THE QUANTIZATION, read from the FILE rather than from its name. A
+        // matrix cell labelled by a folder name is labelled by whatever somebody
+        // typed; this is what is actually in the tensors.
+        let quant = Self::dominant_quant(&content);
         // READ BEFORE THE WEIGHTS, for the same reason: the metadata is in memory
         // right now and `from_gguf` below consumes `content`.
         let context_length = read_context_length(&content);
@@ -376,6 +384,21 @@ impl CandleEngine {
 
         let vocab = build_vocab(&tokenizer);
 
+        let identity = EngineIdentity {
+            engine: "candle".into(),
+            model_path: setting.model_path.display().to_string(),
+            model_fingerprint: Self::file_fingerprint(&setting.model_path),
+            model_bytes: std::fs::metadata(&setting.model_path)
+                .map(|m| m.len())
+                .unwrap_or(0),
+            quant,
+            architecture: architecture.name().to_string(),
+            device: match setting.device {
+                Device::Cpu => "cpu".into(),
+                Device::Metal => "metal".into(),
+            },
+        };
+
         Ok(Self {
             model: Mutex::new(model),
             architecture,
@@ -385,7 +408,69 @@ impl CandleEngine {
             device,
             stop_tokens,
             vocab,
+            identity,
         })
+    }
+
+    /// The tensor type most of the weights are in.
+    ///
+    /// A GGUF mixes types on purpose (the embedding and the output head are often
+    /// kept at higher precision than the body), so "the quantization" is the MODE,
+    /// not a single value — and that is exactly the thing a mixed-precision recipe
+    /// would change, which is why the count is taken over tensors rather than read
+    /// off the file name.
+    fn dominant_quant(content: &gguf_file::Content) -> String {
+        let mut counts: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        for info in content.tensor_infos.values() {
+            *counts.entry(format!("{:?}", info.ggml_dtype)).or_default() += 1;
+        }
+        counts
+            .into_iter()
+            .max_by_key(|(_, n)| *n)
+            .map(|(name, _)| name)
+            .unwrap_or_else(|| "unknown".into())
+    }
+
+    /// A CHEAP FINGERPRINT of a weight file: sha256 over its size, its first
+    /// mebibyte and its last mebibyte.
+    ///
+    /// WHY NOT THE WHOLE FILE: a full digest of 2.3 GB costs more than the eval it
+    /// is meant to label, and it would be paid on every single load. What this has
+    /// to answer is "is this the same file as the previous cell of the matrix",
+    /// and for that the size plus both ends is decisive in practice — two quants of
+    /// the same weights differ in size, and two builds of the same quant differ in
+    /// their header. It is NOT a guarantee against a file crafted to collide, and
+    /// the field is named `fingerprint` rather than `sha256` so nobody reads more
+    /// into it than it carries.
+    fn file_fingerprint(path: &Path) -> String {
+        use std::io::{Read, Seek, SeekFrom};
+        const EDGE: u64 = 1024 * 1024;
+        let Ok(mut file) = std::fs::File::open(path) else {
+            return String::new();
+        };
+        let Ok(size) = file.metadata().map(|m| m.len()) else {
+            return String::new();
+        };
+        let mut hasher = tacet_kernel::Sha256::new();
+        hasher.feed(&size.to_le_bytes());
+        let mut head = vec![0u8; EDGE.min(size) as usize];
+        if file.read_exact(&mut head).is_err() {
+            return String::new();
+        }
+        hasher.feed(&head);
+        if size > EDGE {
+            let tail_len = EDGE.min(size - EDGE);
+            if file.seek(SeekFrom::End(-(tail_len as i64))).is_err() {
+                return String::new();
+            }
+            let mut tail = vec![0u8; tail_len as usize];
+            if file.read_exact(&mut tail).is_err() {
+                return String::new();
+            }
+            hasher.feed(&tail);
+        }
+        tacet_kernel::hash::hex(&hasher.finish())
     }
 
     /// The architecture of the loaded GGUF — for diagnostics and shell output.
@@ -745,6 +830,10 @@ impl CandleEngine {
 impl EngineProvider for CandleEngine {
     fn name(&self) -> &str {
         "candle"
+    }
+
+    fn identity(&self) -> EngineIdentity {
+        self.identity.clone()
     }
 
     /// The template is DERIVED FROM THE LOADED ARCHITECTURE, it is not fixed.

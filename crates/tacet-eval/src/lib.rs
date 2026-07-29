@@ -15,6 +15,7 @@
 //! NO NETWORK, NO PERSISTENT WRITES: every case runs in its own temporary
 //! directory and the directory is deleted on drop.
 
+pub mod analysis;
 pub mod case;
 pub mod env;
 pub mod report;

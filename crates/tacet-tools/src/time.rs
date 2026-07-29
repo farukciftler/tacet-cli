@@ -532,6 +532,21 @@ fn named_weekday(raw: &str, now: DateTime) -> Option<Resolution> {
 /// year is added. Rationale: this tool is mostly called on forward-looking
 /// questions ("how many days left"); a user saying "3 january" in December does not mean last January.
 fn named_month_date(raw: &str, now: DateTime) -> Option<Resolution> {
+    // THE TURKISH TABLE, checked FIRST and longest-first for the same reason
+    // the weekday table is: "mart" is a prefix of nothing but "mayis" and
+    // "mart" both begin with "ma", and a shorter name that is a prefix of a
+    // longer one would swallow it. Written folded (ş→s, ı→i) because the input
+    // has already been through `simplify`.
+    //
+    // WHY IT WAS MISSING AND NOBODY SAW: the test asserting this behaviour is
+    // named `turkish_month_names_are_resolved` and its body resolved
+    // "2 december 2026", "20 december" and "3 january". The name asserted a
+    // coverage the body never checked, so "20 aralık" silently resolved to
+    // nothing for as long as the function has existed.
+    const TURKISH_MONTHS: [&str; 12] = [
+        "ocak", "subat", "mart", "nisan", "mayis", "haziran", "temmuz", "agustos", "eylul", "ekim",
+        "kasim", "aralik",
+    ];
     const MONTHS: [&str; 12] = [
         "january",
         "february",
@@ -547,9 +562,10 @@ fn named_month_date(raw: &str, now: DateTime) -> Option<Resolution> {
         "december",
     ];
     let plain = simplify(raw);
-    let month = MONTHS
+    let month = TURKISH_MONTHS
         .iter()
         .position(|a| plain.contains(a))
+        .or_else(|| MONTHS.iter().position(|a| plain.contains(a)))
         .map(|i| i as u32 + 1)?;
 
     let clock = look_up_clock(&plain);
@@ -1315,8 +1331,39 @@ mod tests {
         );
     }
 
+    /// THE TEST THE OLD NAME PROMISED. It was called
+    /// `turkish_month_names_are_resolved` and resolved "2 december 2026" — the
+    /// name asserted a coverage the body never checked, so Turkish month names
+    /// resolved to nothing for as long as the function existed and no test
+    /// noticed.
     #[test]
     fn turkish_month_names_are_resolved() {
+        assert_eq!(
+            TimeResolver::resolve("20 aralik", now()).unwrap().an,
+            an(2026, 12, 20, 0, 0)
+        );
+        assert_eq!(
+            TimeResolver::resolve("1 Ocak 2027", now()).unwrap().an,
+            an(2027, 1, 1, 0, 0)
+        );
+        // With the diacritics the user actually types.
+        assert_eq!(
+            TimeResolver::resolve("3 şubat 2027", now()).unwrap().an,
+            an(2027, 2, 3, 0, 0)
+        );
+        // No year given and the date is behind us: the next one is meant.
+        assert_eq!(
+            TimeResolver::resolve("5 mart", now()).unwrap().an,
+            an(2027, 3, 5, 0, 0)
+        );
+        // A clock time still rides along.
+        let with_clock = TimeResolver::resolve("20 aralik 18:30", now()).expect("clock");
+        assert_eq!(with_clock.an, an(2026, 12, 20, 18, 30));
+        assert!(with_clock.has_clock);
+    }
+
+    #[test]
+    fn english_month_names_are_resolved() {
         assert_eq!(
             TimeResolver::resolve("2 december 2026", now()).unwrap().an,
             an(2026, 12, 2, 0, 0)
