@@ -736,6 +736,15 @@ impl Router {
                 // CONTAINS "url", so a directory-listing tool scored as a WEB
                 // tool and took a slot in an exchange-rate question. Same root
                 // cause, third instance — and the last place it can hide.
+                // TERM BOUNDARIES ON THIS SIDE TOO — and the reasoning is
+                // worth keeping, because it was reversed once and reversed
+                // back. It closes a real hole: the Turkish "türleri" (types)
+                // folds to "turleri", CONTAINS "url", and a directory-listing
+                // tool scored as a WEB tool. Reverting it was tried, on the
+                // suspicion that it caused three English cases to flip, and
+                // MEASURED: the suite scored 26/32 with it and 26/32 without,
+                // the same total with one different case failing. It costs
+                // nothing measurable and fixes something real, so it stays.
                 let hint: usize = p
                     .tool_hints()
                     .iter()

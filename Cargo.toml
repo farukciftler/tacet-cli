@@ -22,7 +22,8 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/farukciftler/tacet-cli"
-homepage = "https://github.com/farukciftler/tacet-cli"
+homepage = "https://usetacet.com"
+documentation = "https://usetacet.com"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

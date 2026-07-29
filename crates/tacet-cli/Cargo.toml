@@ -4,6 +4,8 @@ version = "0.1.14"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
 description = "A private AI assistant that lives in your terminal. Fully on-device, no account, no telemetry."
 # Five is the crates.io maximum.
 keywords = ["ai", "assistant", "llm", "offline", "privacy"]

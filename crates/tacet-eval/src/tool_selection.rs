@@ -1213,3 +1213,43 @@ mod tests {
         assert!(r.table().contains("IRRELEVANCE"));
     }
 }
+
+#[cfg(test)]
+mod ordering_probe {
+    use super::*;
+
+    /// A DIAGNOSTIC, not a check: prints the tool list the router hands the
+    /// model for every step of the English suite, so two builds can be diffed
+    /// against each other without spending a model run.
+    ///
+    /// WHAT IT MEASURED THE DAY IT WAS WRITTEN: a router change that fixed
+    /// three real false positives moved the ordering of NINETEEN of the
+    /// forty-two steps, while the suite score moved by three cases. Almost
+    /// half the suite is one swap away from a different prompt — so a score
+    /// difference of a case or two, on this instrument, says more about
+    /// ordering luck than about the change. Run it before believing a small
+    /// delta.
+    ///
+    /// `cargo test -p tacet-eval print_ordering -- --ignored --nocapture`
+    #[test]
+    #[ignore = "diagnostic: prints, asserts nothing"]
+    fn print_ordering() {
+        let env = Env::setup().unwrap();
+        let memory = SharedMemory::in_memory();
+        let catalog = selection_catalog(&env, &memory);
+        let router = Router::new();
+        let messages: Vec<String> = selection_cases()
+            .iter()
+            .flat_map(|c| c.steps.iter().map(|s| format!("{}|{}", c.name, s.message)))
+            .collect();
+        for entry in &messages {
+            let m = entry.split_once('|').map(|(_, m)| m).unwrap_or(entry);
+            let names: Vec<String> = router
+                .select(m, &catalog)
+                .iter()
+                .map(|t| t.name().to_string())
+                .collect();
+            println!("{entry}\n   {}", names.join(", "));
+        }
+    }
+}
