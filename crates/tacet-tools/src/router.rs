@@ -420,6 +420,25 @@ impl IntentProfile {
     fn tool_hints(&self) -> &'static [&'static str] {
         match self {
             IntentProfile::Document => &[
+                // "spreadsheet" WAS ADDED HERE AND THEN TAKEN BACK OUT, and the
+                // measurement is worth more than the line would have been.
+                //
+                // The lint below found that "sheet" had been reaching
+                // `read_document` by hiding inside "spreadsheet" in its own
+                // description — correct in effect, accidental in mechanism, and
+                // silently gone once scoring respected term boundaries. Naming
+                // it explicitly restored that case's ordering exactly. It also
+                // changed the hint's weight from 5 to 11 (scores are sums of
+                // lengths), moved TEN more orderings, fixed one case and broke
+                // two others. Suite totals across all four variants tried today:
+                // 42, 41, 41, 40 out of 50, with a different set failing every
+                // time; a sign test over the pooled suite gives p = 0.69.
+                //
+                // So the instrument cannot tell these apart, and when it cannot,
+                // the smaller perturbation wins — every ordering that moves is a
+                // chance to break something the suite cannot see. The promotion
+                // was never load-bearing either: `read_document` is already a
+                // document tool by the word "document" in its own NAME.
                 "document", "docx", "xlsx", "pptx", "pdf", "table", "report", "sheet", "edit",
             ],
             IntentProfile::Time => &[
@@ -1042,6 +1061,111 @@ mod tests {
             router.tool_score(&Remote, &scores),
             0,
             "'turleri' contains 'url' and must not make a directory listing a web tool"
+        );
+    }
+
+    /// LINT 1 — THE RULE MAY NOT BE UNLEARNED.
+    ///
+    /// The same substring bug was found three times in one day, in three
+    /// different places: "url" inside "teşekkürler" (a message), "url" inside
+    /// "türleri" (a tool description), and "sum" inside "summarize". Each was
+    /// fixed by routing the comparison through `tacet_skills::matching`, which
+    /// is the rule the skill and memory layers already share.
+    ///
+    /// This test reads THIS FILE and refuses to let a scoring path go back to a
+    /// bare substring search. It is deliberately literal rather than clever: a
+    /// clever check on a source file is a check nobody can read when it fires.
+    #[test]
+    fn every_scoring_path_matches_on_term_boundaries() {
+        // ONLY THE CODE, NOT THE TESTS: the forbidden patterns below appear as
+        // string literals in this very test, so linting the whole file would
+        // make it fail on itself — which is the sort of joke a test plays once.
+        let whole = include_str!("router.rs");
+        let source = whole.split("#[cfg(test)]").next().unwrap_or(whole);
+        let uses: usize = source.matches("matching::contains(").count();
+        assert!(
+            uses >= 2,
+            "both scoring sides (message triggers and tool hints) must go \
+             through the shared rule; found {uses} call sites"
+        );
+        for forbidden in [
+            "|t| simple.contains(",
+            "|t| text.contains(",
+            ".filter(|t| simple.contains",
+            ".filter(|t| text.contains",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "a scoring path went back to a bare substring search: {forbidden:?}. \
+                 Three separate bugs came from exactly this; use \
+                 tacet_skills::matching::contains."
+            );
+        }
+    }
+
+    /// LINT 2 — NO HINT MAY PROMOTE A TOOL BY MATCHING INSIDE A WORD.
+    ///
+    /// The `türleri` / `url` case, generalised: every tool in the production
+    /// catalog is scored against every profile hint BOTH WAYS, and any hint
+    /// that a bare search would find but a term-boundary search would not is
+    /// reported by name. Such a match is silent — the tool simply ranks higher
+    /// than it should and nobody sees why — so the list is pinned here rather
+    /// than left to be rediscovered.
+    ///
+    /// A NEW ENTRY IS NOT AUTOMATICALLY A BUG. It becomes one when it changes a
+    /// ranking, which is why the assertion is on the LIST rather than on the
+    /// count: adding a tool whose description happens to contain "url" inside a
+    /// word is fine, and recording it here is the price.
+    #[test]
+    fn no_tool_is_promoted_by_a_hint_hiding_inside_a_word() {
+        let store = std::sync::Arc::new(crate::data_store::SharedStore::new());
+        let memory = crate::memory::SharedMemory::in_memory();
+        let (catalog, _, _) = crate::catalog::production_catalog(&store, &memory, Some(0));
+        let mut collisions: Vec<String> = Vec::new();
+        for tool in catalog.tools() {
+            let text = simplify(&format!("{} {}", tool.name(), tool.description()));
+            for profile in IntentProfile::ALL {
+                for hint in profile.tool_hints() {
+                    if text.contains(hint) && !tacet_skills::matching::contains(&text, hint) {
+                        collisions.push(format!("{}: {hint}", tool.name()));
+                    }
+                }
+            }
+        }
+        collisions.sort();
+        collisions.dedup();
+        // THE RECORDED LIST, and each entry is a decision.
+        //
+        // Both are the General hint "write" hiding inside "rewrite", in the
+        // sentence "never rewrite it" that `time` and `calendar` use to tell the
+        // model not to reword a date. Those promotions were FALSE — neither tool
+        // writes anything — and they vanished when scoring started respecting
+        // term boundaries. They are recorded rather than removed because the
+        // prose is right; it is the hint that had no business matching it.
+        //
+        // The third entry is the opposite case and the instructive one: "sheet"
+        // hides inside "spreadsheet" in `read_document`'s own description. That
+        // promotion was CORRECT in effect — read_document really is the
+        // spreadsheet tool — and accidental in mechanism, so it vanished with
+        // the boundary rule and took the tool's rank with it.
+        //
+        // Naming "spreadsheet" as a hint was tried, and MEASURED: it restored
+        // one case's ordering exactly, moved ten more, and the suite went from
+        // 41/50 to 40/50 with a different set failing. The instrument cannot
+        // resolve that (p = 0.69), so the smaller change won and the entry
+        // stays here — recorded, harmless, and explained rather than fixed.
+        let expected = vec![
+            "calendar: write".to_string(),
+            "read_document: sheet".to_string(),
+            "time: write".to_string(),
+        ];
+        assert_eq!(
+            collisions, expected,
+            "a profile hint matches INSIDE a word of a tool's own text. With the \
+             term-boundary rule in place this is silent rather than harmful, but \
+             it means the hint and the description disagree about what the tool \
+             is — decide which one is wrong, then fix the wording, add the hint \
+             properly, or record the pair here with the reason."
         );
     }
 

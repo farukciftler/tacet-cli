@@ -1215,6 +1215,104 @@ mod tests {
 }
 
 #[cfg(test)]
+mod trigger_lint {
+    use super::*;
+    use tacet_tools::router::{IntentProfile, score_intent};
+
+    /// LINT 3 — NOTHING THAT IS NOT A REQUEST MAY SCORE AS ONE.
+    ///
+    /// This is the corpus half of the substring guard. The message side of the
+    /// router was matching triggers with a bare `contains`, so "Çok
+    /// teşekkürler" folded to "cok tesekkurler", CONTAINED the three-letter web
+    /// trigger "url", and a thank-you pulled both web tools to the front of the
+    /// budget — on the irrelevance rate, which is the number the CLI ties its
+    /// exit code to.
+    ///
+    /// The rule that fixed it lives in one function, and the two lints in
+    /// `router.rs` keep that function in the scoring path. This one asks the
+    /// question the other way round: over every greeting and every piece of
+    /// small talk in BOTH suites, does anything score at all? A new trigger
+    /// that collides with an everyday word shows up here the day it is added,
+    /// in whichever language it was added for.
+    ///
+    /// IT NEEDS NO MODEL and finishes in microseconds — the whole point of
+    /// catching this class of bug at the layer below the model.
+    #[test]
+    fn no_irrelevant_message_scores_on_any_profile() {
+        let mut offenders: Vec<String> = Vec::new();
+        for (suite, cases) in [
+            ("english", selection_cases()),
+            ("turkish", turkish_selection_cases()),
+        ] {
+            for case in cases.iter().filter(|c| c.category == Category::Irrelevance) {
+                for step in &case.steps {
+                    let scores = score_intent(&step.message);
+                    for profile in IntentProfile::ALL {
+                        let score = scores.score(profile);
+                        if score > 0 {
+                            offenders.push(format!(
+                                "{suite}/{}: {:?} scored {score} on {:?}",
+                                case.name,
+                                step.message,
+                                profile.name()
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        // THE RECORDED LIST, and it is short on purpose.
+        //
+        // All three are the same word doing two jobs: "today" and its Turkish
+        // twin "bugün" are genuine time triggers ("what is the date today?")
+        // AND ordinary conversational filler ("how are you today?"). Unlike the
+        // "url" inside "teşekkürler" case, this is not a match hiding inside a
+        // longer word — the trigger fires on the word it was written for, and
+        // the word is simply ambiguous.
+        //
+        // DELETING THE TRIGGER WOULD COST MORE THAN IT SAVES: without it a real
+        // question about today's date scores nothing and the time tool falls out
+        // of the budget, which is the failure this whole file exists to catch.
+        // So the promotion stands and the model is left to decline — which it
+        // does: all three cases pass, and the irrelevance rate is 6/6 and 4/4.
+        //
+        // What this lint is really for is the NEXT entry. Anything that appears
+        // here and is not one of these three is a trigger colliding with an
+        // everyday word, in whichever language it was added for, on the day it
+        // is added.
+        let accepted = [
+            "english/chat-how-are-you",
+            "english/chat-mood",
+            "turkish/tr-sohbet",
+        ];
+        let unexpected: Vec<&String> = offenders
+            .iter()
+            .filter(|o| !accepted.iter().any(|a| o.starts_with(a)))
+            .collect();
+        assert!(
+            unexpected.is_empty(),
+            "a message that asks for nothing is scoring as a request, which means \
+             a trigger is matching something it should not — most likely inside a \
+             longer word:\n  {}",
+            unexpected
+                .iter()
+                .map(|o| o.as_str())
+                .collect::<Vec<_>>()
+                .join("\n  ")
+        );
+        // AND THE LIST MAY NOT SHRINK SILENTLY EITHER: if one of the three stops
+        // scoring, a trigger was removed or a rule changed, and the reasoning
+        // above needs revisiting rather than quietly rotting.
+        assert_eq!(
+            offenders.len(),
+            accepted.len(),
+            "the accepted list no longer matches what the router does:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+}
+
+#[cfg(test)]
 mod ordering_probe {
     use super::*;
 
