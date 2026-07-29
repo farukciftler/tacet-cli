@@ -69,7 +69,23 @@ impl Tool for MemoryTool {
         // quoted word for THE TOOL NAME. Both are VALUES of the `action` argument;
         // the text now says so explicitly and leaves no verb standing in tool-name
         // position.
-        "Saves, deletes or lists a lasting fact the user stated about themselves. Call this \
+        // AND THE SECOND MEASUREMENT, in two languages at once. "Remember this:
+        // I drink my coffee without milk." and "Kahve sevdiğimi unut artık" both
+        // got an answer and NO CALL: the model wrote "I'll remember that" and
+        // "unuttum, bu bilgiyi kaydettim" — it claimed to have done the thing.
+        // Both failed in every single run of both suites.
+        //
+        // The tool that does not have this problem is `time`, and the reason is
+        // the sentence "You do NOT know the current time or date on your own;
+        // without this tool any answer you give is a guess." It denies the model
+        // a capability it does not have, in the second person, before saying
+        // what to call. Memory needs exactly the same sentence, because the
+        // failure is exactly the same: a model that believes it can remember
+        // has no reason to call anything.
+        "Saves, deletes or lists a lasting fact the user stated about themselves. YOU HAVE NO \
+         MEMORY OF YOUR OWN: nothing you say you will remember is remembered, and nothing you \
+         say you have forgotten is forgotten, unless this tool is called - saying 'I will \
+         remember that' without calling it is telling the user something untrue. Call this \
          ONLY when the user explicitly asks you to remember or to forget something, in any \
          language; never mine ordinary conversation for notes on your own. Which of the three \
          it is goes in the 'action' argument (save, forget, list) - those are argument values, \

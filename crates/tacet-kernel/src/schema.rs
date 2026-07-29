@@ -166,6 +166,20 @@ impl ArgSchema {
 
     /// The fields of the root schema (an empty slice if it is not an object) —
     /// the grammar and validation use this often.
+    /// The closed set this schema accepts, if it is one.
+    ///
+    /// EXPOSED FOR THE RECOVERY LAYER in `tacet-tools`: when the model writes a
+    /// bare JSON object with no tool name, a value landing inside a closed set
+    /// is EVIDENCE about which tool was meant, while the same value landing in
+    /// a free-text field is not. Without this the two cannot be told apart and
+    /// the call is dropped as ambiguous.
+    pub fn choices(&self) -> Option<&[String]> {
+        match &self.kind {
+            SchemaKind::Choice { choices } => Some(choices),
+            _ => None,
+        }
+    }
+
     pub fn fields(&self) -> &[Field] {
         match &self.kind {
             SchemaKind::Object { fields } => fields,

@@ -41,7 +41,7 @@ clap = { version = "4", features = ["derive"] }
 # 0.1.2 IS THE FLOOR: below it there is no `hash` module, and the MCP client's
 # PKCE challenge, the download verifier and the receipt chain would each need
 # their own SHA-256 again — three chances for one of them to be quietly wrong.
-tacet-kernel = { path = "crates/tacet-kernel", version = "0.1.3" }
+tacet-kernel = { path = "crates/tacet-kernel", version = "0.1.4" }
 tacet-zip = { path = "crates/tacet-zip", version = "0.1.0" }
 # 0.1.1 IS THE FLOOR: below it a tool that takes NO arguments cannot be called
 # at all — the prompt advertises `disk_usage()` and the grammar refuses it, so
@@ -58,7 +58,7 @@ tacet-grammar = { path = "crates/tacet-grammar", version = "0.1.1" }
 # engine can only say its own name ("candle"), so four different weight files
 # produce four indistinguishable reports and a comparison matrix can silently
 # measure one model in every cell.
-tacet-engine = { path = "crates/tacet-engine", version = "0.1.3" }
+tacet-engine = { path = "crates/tacet-engine", version = "0.1.4" }
 # 0.1.3 brought the addon gates and the five tools behind them; below it,
 # `catalog.rs` has no gate to ask and `shell`/`http`/`db` do not exist at all.
 # 0.1.4 IS THE FLOOR: below it `shell` is offered on Windows, where the timeout
@@ -72,7 +72,12 @@ tacet-engine = { path = "crates/tacet-engine", version = "0.1.3" }
 # and the tool budget fills with the head of the catalog — `web_search` and
 # `remember` were unreachable. It also matched triggers by bare substring, so
 # "teşekkürler" contains "url" and a thank-you pulled the web tools forward.
-tacet-tools = { path = "crates/tacet-tools", version = "0.1.6" }
+# 0.1.7 CLOSES TWO FAILURES THAT WERE NOT LUCK — each failed in every run of
+# every variant measured. Below it a bare `{"kind":"date"}` from the model is
+# dropped as ambiguous (two tools accept it, only one of them by a closed set),
+# and the memory tool lets the model answer "I'll remember that" without
+# calling anything, which tells the user something untrue.
+tacet-tools = { path = "crates/tacet-tools", version = "0.1.7" }
 tacet-skills = { path = "crates/tacet-skills", version = "0.1.0" }
 tacet-memory = { path = "crates/tacet-memory", version = "0.1.0" }
 # THE NETWORK MONOPOLY: a network call exists ONLY in these two crates. No
@@ -87,4 +92,4 @@ tacet-web = { path = "crates/tacet-web", version = "0.1.4" }
 # envelope, MRTR, poll-based tasks, issuer-bound OAuth. The 0.1 line speaks only
 # the frozen revision, and a `^0.1` resolve would silently put a client on it.
 tacet-mcp = { path = "crates/tacet-mcp", version = "0.2.0" }
-tacet-eval = { path = "crates/tacet-eval", version = "0.1.3" }
+tacet-eval = { path = "crates/tacet-eval", version = "0.1.4" }

@@ -200,7 +200,10 @@ fn recover_nameless_json(raw: &str, catalog: &ToolCatalog) -> Option<ToolCall> {
         return None;
     }
 
-    let mut matched: Option<String> = None;
+    // (name, how many of the object's values a CLOSED SET accepted) — the
+    // second number is what breaks a tie; see below.
+    let mut candidates: Vec<(String, usize)> = Vec::new();
+    let mut eliminated = 0usize;
     for tool in catalog.tools() {
         let schema = tool.schema();
         let fields = schema.fields();
@@ -224,14 +227,66 @@ fn recover_nameless_json(raw: &str, catalog: &ToolCatalog) -> Option<ToolCall> {
             continue;
         }
 
-        // A second candidate: the match is AMBIGUOUS, do not recover.
-        if matched.is_some() {
-            return None;
+        // (4) DOES THE OBJECT SURVIVE THE TOOL'S OWN CLOSED SETS? A field
+        // declared as a choice accepts nothing outside it, so a value outside
+        // the set is proof this object was never meant for this tool. Counting
+        // the ones that DO fit is what tells two candidates apart in (5).
+        let mut closed_set_hits = 0usize;
+        let mut violates = false;
+        for field in fields {
+            let Some(value) = object.get(&field.name) else {
+                continue;
+            };
+            if let Some(choices) = field.schema.choices() {
+                match value.as_str() {
+                    Some(text) if choices.iter().any(|c| c == text) => closed_set_hits += 1,
+                    _ => {
+                        violates = true;
+                        break;
+                    }
+                }
+            }
         }
-        matched = Some(tool.name().to_string());
+        if violates {
+            // REMEMBER THAT SOMETHING WAS ELIMINATED: it changes what the
+            // survivors mean. See (5).
+            eliminated += 1;
+            continue;
+        }
+
+        candidates.push((tool.name().to_string(), closed_set_hits));
     }
 
-    matched.map(|name| ToolCall::new(name, Value::Object(object)))
+    // (5) THE TIE-BREAK, and it was measured before it was written.
+    //
+    // Qwen3-4B answers "Bugün ayın kaçı?" with a bare `{"kind":"date"}` — the
+    // right arguments, no tool name. Two tools accept that object: `time`,
+    // whose `kind` is the closed set clock|date|weekday|all|diff, and
+    // `calendar`, whose `kind` is free text and therefore accepts anything at
+    // all. The old rule saw two candidates, called it ambiguous and recovered
+    // nothing, so the case failed in seven runs out of seven while the model
+    // had already done its part.
+    //
+    // A value landing inside a CLOSED SET is evidence; a value landing in a
+    // free-text field is not. So the candidate that satisfies more closed sets
+    // wins — and only when it is ALONE at the top. Two tools with the same
+    // evidence stay ambiguous, which is the old behaviour and the safe one.
+    let best = candidates.iter().map(|(_, hits)| *hits).max()?;
+    let mut winners = candidates.iter().filter(|(_, hits)| *hits == best);
+    let winner = winners.next()?;
+    if winners.next().is_some() {
+        return None;
+    }
+    // A SURVIVOR THAT SATISFIED NOTHING, WHILE SOMETHING ELSE WAS ELIMINATED,
+    // IS THE WRONG READING. `{"kind":"banana"}` eliminates `time` (its closed
+    // set has no such value) and leaves `calendar`, whose `kind` is free text
+    // and would take anything — so the object would be recovered into an
+    // EFFECTFUL calendar call when what it really looks like is a botched
+    // `time` call. Winning by being the last one standing is not evidence.
+    if winner.1 == 0 && eliminated > 0 {
+        return None;
+    }
+    Some(ToolCall::new(winner.0.clone(), Value::Object(object)))
 }
 
 /// The identity of a call WITHIN A TURN: `name|arguments`.
@@ -890,6 +945,45 @@ mod tests {
     use std::future::Future;
 
     // --- Parsing ---
+
+    /// THE CASE THAT PAID FOR THE TIE-BREAK, with the real catalog.
+    ///
+    /// Qwen3-4B answers "Bugün ayın kaçı?" with a bare `{"kind":"date"}` — the
+    /// right arguments and no tool name. Both `time` and `calendar` declare a
+    /// required `kind`, but only `time` declares it as a closed set that
+    /// contains "date"; `calendar` takes free text and would accept anything.
+    /// The old rule counted two candidates, called it ambiguous and recovered
+    /// nothing, and the case failed in seven runs out of seven.
+    #[test]
+    fn a_nameless_object_goes_to_the_tool_whose_closed_set_accepts_it() {
+        let store = std::sync::Arc::new(crate::data_store::SharedStore::new());
+        let memory = crate::memory::SharedMemory::in_memory();
+        let (catalog, _, _) = crate::catalog::production_catalog(&store, &memory, Some(0));
+
+        // The recovery is reached through the executor's call path, not through
+        // `parse` — a nameless object is not a parse, it is a rescue.
+        let call = recover_nameless_json(r#"{ "kind": "date" }"#, &catalog).expect("recovered");
+        assert_eq!(call.name, "time");
+        assert_eq!(call.args["kind"], "date");
+
+        // A value OUTSIDE the closed set is proof the object was not meant for
+        // that tool at all. With `calendar` present and taking free text, the
+        // recovery must not simply fall back to it.
+        assert!(
+            recover_nameless_json(r#"{"kind":"banana"}"#, &catalog).is_none(),
+            "a value no closed set accepts must not be handed to whichever tool \
+             happens to take free text"
+        );
+
+        // AND AMBIGUITY IS STILL AMBIGUITY: two tools with equally good evidence
+        // recover nothing, which is the old behaviour and the safe one.
+        let ambiguous = recover_nameless_json(r#"{"path":"a.md"}"#, &catalog);
+        assert!(
+            ambiguous.is_none()
+                || ambiguous.as_ref().map(|c| c.name.as_str()) == Some("read_document"),
+            "an object matching several free-text tools must not pick one at random: {ambiguous:?}"
+        );
+    }
 
     #[test]
     fn canonical_json_is_parsed() {
