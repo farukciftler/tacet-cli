@@ -1,6 +1,6 @@
 [package]
 name = "tacet-cli"
-version = "0.1.19"
+version = "0.1.20"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -119,3 +119,4 @@ candle = ["tacet-engine/candle"]
 # main.rs stays off and the binary falls back to FakeEngine without ever seeing
 # the real engine.
 metal = ["candle", "tacet-engine/metal"]
+cuda = ["candle", "tacet-engine/cuda"]

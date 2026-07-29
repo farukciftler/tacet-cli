@@ -70,6 +70,8 @@ pub fn asset_name(triple: &str) -> String {
 pub fn compiled_features() -> &'static str {
     if cfg!(feature = "metal") {
         "metal"
+    } else if cfg!(feature = "cuda") {
+        "cuda"
     } else if cfg!(feature = "candle") {
         "candle"
     } else {
@@ -79,12 +81,12 @@ pub fn compiled_features() -> &'static str {
 
 /// Ranks a feature string so two binaries can be compared.
 ///
-/// `metal` and `candle` both mean "this one can run a model" — the difference
-/// between them is speed, and swapping a GPU build for a CPU build is a
+/// `metal`, `cuda` and `candle` all mean "this one can run a model" — the difference
+/// between them is speed/device, and swapping a GPU build for a CPU build is a
 /// judgement call rather than a loss. Losing inference entirely is the loss.
 fn inference_rank(features: &str) -> u8 {
     match features {
-        "metal" => 2,
+        "metal" | "cuda" => 2,
         "candle" => 2,
         _ => 0,
     }
@@ -615,6 +617,7 @@ mod downgrade_guard_tests {
     #[test]
     fn losing_inference_ranks_lower() {
         assert!(inference_rank("none") < inference_rank("metal"));
+        assert!(inference_rank("none") < inference_rank("cuda"));
         assert!(inference_rank("none") < inference_rank("candle"));
         assert!(inference_rank("unknown") < inference_rank("candle"));
     }
@@ -624,6 +627,7 @@ mod downgrade_guard_tests {
     #[test]
     fn swapping_gpu_for_cpu_is_not_a_downgrade() {
         assert_eq!(inference_rank("metal"), inference_rank("candle"));
+        assert_eq!(inference_rank("cuda"), inference_rank("candle"));
     }
 
     /// An old release predates `--print-features` and exits with a usage error;
@@ -643,6 +647,8 @@ mod downgrade_guard_tests {
         let reported = compiled_features();
         if cfg!(feature = "metal") {
             assert_eq!(reported, "metal");
+        } else if cfg!(feature = "cuda") {
+            assert_eq!(reported, "cuda");
         } else if cfg!(feature = "candle") {
             assert_eq!(reported, "candle");
         } else {

@@ -89,40 +89,7 @@ fn is_looping(produced: &[u32]) -> bool {
     })
 }
 
-/// The device inference will run on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Device {
-    Cpu,
-    /// Apple GPU. Returns an error when candle-core's `metal` feature is off —
-    /// it DOES NOT silently FALL BACK to the CPU: the user deliberately asked for
-    /// the GPU, and presenting an engine running 10x slower as "working" would be
-    /// wrong.
-    Metal,
-}
-
-/// The default device is decided AT COMPILE TIME.
-///
-/// With the `metal` feature on the default is Metal; that is measured (Qwen2.5-3B
-/// q4_k_m, same prompt): decode 31 -> 73 tokens/s, prefill 113 -> 775 tokens/s.
-/// Explicitly compiling the feature in and still running on the CPU is nobody's
-/// intention; on the contrary, it invites the question "why is this slow".
-///
-/// With the feature off Metal cannot be chosen anyway (opening the device errors
-/// out), so the default is the CPU. Making this distinction with `cfg` is
-/// deliberate: tried at runtime with a silent fallback to the CPU, there would be
-/// nowhere at all showing why the GPU was not used.
-impl Default for Device {
-    fn default() -> Self {
-        #[cfg(feature = "metal")]
-        {
-            Device::Metal
-        }
-        #[cfg(not(feature = "metal"))]
-        {
-            Device::Cpu
-        }
-    }
-}
+pub use crate::token::Device;
 
 /// The supported GGUF architectures.
 ///
@@ -332,6 +299,8 @@ impl CandleEngine {
             Device::Cpu => CandleDevice::Cpu,
             Device::Metal => CandleDevice::new_metal(0)
                 .map_err(|e| EngineError::Inference(format!("could not open metal device: {e}")))?,
+            Device::Cuda => CandleDevice::new_cuda(0)
+                .map_err(|e| EngineError::Inference(format!("could not open cuda device: {e}")))?,
         };
 
         let mut file = std::fs::File::open(&setting.model_path)
@@ -347,6 +316,9 @@ impl CandleEngine {
         // matrix cell labelled by a folder name is labelled by whatever somebody
         // typed; this is what is actually in the tensors.
         let quant = Self::dominant_quant(&content);
+        if setting.device == Device::Cuda {
+            Self::validate_cuda_quant(&quant, &setting.model_path)?;
+        }
         // READ BEFORE THE WEIGHTS, for the same reason: the metadata is in memory
         // right now and `from_gguf` below consumes `content`.
         let context_length = read_context_length(&content);
@@ -396,6 +368,7 @@ impl CandleEngine {
             device: match setting.device {
                 Device::Cpu => "cpu".into(),
                 Device::Metal => "metal".into(),
+                Device::Cuda => "cuda".into(),
             },
         };
 
@@ -410,6 +383,24 @@ impl CandleEngine {
             vocab,
             identity,
         })
+    }
+
+    /// Pre-checks if the GGUF quantization format is supported on CUDA before loading weights.
+    fn validate_cuda_quant(quant: &str, model_path: &Path) -> EngineResult<()> {
+        let is_supported = matches!(
+            quant,
+            "Q4_0" | "Q4_1" | "Q5_0" | "Q5_1" | "Q8_0" | "Q8_1"
+                | "Q2_K" | "Q3_K" | "Q4_K" | "Q5_K" | "Q6_K" | "Q8_K"
+                | "F16" | "F32" | "BF16"
+        );
+        if !is_supported {
+            return Err(EngineError::Inference(format!(
+                "CUDA backend does not support GGUF quantization format '{quant}' in file '{}'. \
+                 (Supported CUDA formats: Q4_K, Q6_K, Q8_0, Q4_0, Q5_0, Q5_K, Q2_K, Q3_K, Q8_K, F16, F32)",
+                model_path.display()
+            )));
+        }
+        Ok(())
     }
 
     /// The tensor type most of the weights are in.
@@ -1007,4 +998,30 @@ pub fn build_vocab(tokenizer: &Tokenizer) -> Vec<String> {
     (0..size as u32)
         .map(|id| tokenizer.decode(&[id], false).unwrap_or_default())
         .collect()
+}
+
+#[cfg(test)]
+mod cuda_quant_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn cuda_quant_precheck_accepts_supported_formats() {
+        let path = Path::new("model.gguf");
+        for quant in ["Q4_K", "Q6_K", "Q8_0", "Q4_0", "Q5_0", "Q5_K", "F16", "F32"] {
+            assert!(CandleEngine::validate_cuda_quant(quant, path).is_ok());
+        }
+    }
+
+    #[test]
+    fn cuda_quant_precheck_rejects_unsupported_formats() {
+        let path = Path::new("model.gguf");
+        for quant in ["IQ2_XXS", "IQ3_S", "IQ1_M", "UNKNOWN"] {
+            let res = CandleEngine::validate_cuda_quant(quant, path);
+            assert!(res.is_err());
+            let err = res.unwrap_err().to_string();
+            assert!(err.contains("CUDA backend does not support GGUF quantization format"));
+            assert!(err.contains(quant));
+        }
+    }
 }

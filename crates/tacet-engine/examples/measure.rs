@@ -35,8 +35,9 @@ fn main() {
     // otherwise it errors out openly, it does NOT silently FALL BACK to the CPU
     // (see `Device::Metal`).
     let device = match std::env::var("TACET_DEVICE").as_deref() {
-        Ok("metal") => tacet_engine::candle_engine::Device::Metal,
-        _ => tacet_engine::candle_engine::Device::Cpu,
+        Ok("metal") => tacet_engine::Device::Metal,
+        Ok("cuda") => tacet_engine::Device::Cuda,
+        _ => tacet_engine::Device::Cpu,
     };
     let setting = match &tokenizer {
         Some(path) => tacet_engine::ModelSetting::new(&model, path),

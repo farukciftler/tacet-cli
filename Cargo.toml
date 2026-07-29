@@ -65,7 +65,7 @@ tacet-grammar = { path = "crates/tacet-grammar", version = "0.1.1" }
 # from a tool result. `Plain` kept it, which made it worse than a plain bug:
 # eval runs on FakeEngine, FakeEngine is `Plain`, so the one template no model
 # ever sees was the one template the measurement covered.
-tacet-engine = { path = "crates/tacet-engine", version = "0.1.5" }
+tacet-engine = { path = "crates/tacet-engine", version = "0.1.6" }
 # 0.1.3 brought the addon gates and the five tools behind them; below it,
 # `catalog.rs` has no gate to ask and `shell`/`http`/`db` do not exist at all.
 # 0.1.4 IS THE FLOOR: below it `shell` is offered on Windows, where the timeout

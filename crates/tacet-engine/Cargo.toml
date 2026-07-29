@@ -1,6 +1,6 @@
 [package]
 name = "tacet-engine"
-version = "0.1.5"
+version = "0.1.6"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -41,6 +41,10 @@ candle = ["dep:candle-core", "dep:candle-transformers", "dep:tokenizers"]
 # 31 -> 73 tokens/s, prefill 113 -> 775 tokens/s (Qwen2.5-3B q4_k_m). That gap
 # is far too large to leave behind a flag the user has to go looking for.
 metal = ["candle", "candle-core/metal", "candle-transformers/metal"]
+
+# NVIDIA GPU via CUDA. A SEPARATE feature, because candle-core/cuda requires
+# CUDA runtime and nvcc compilation, and does not build on macOS.
+cuda = ["candle", "candle-core/cuda", "candle-transformers/cuda"]
 
 # The measurement example DOES NOT COMPILE without candle. Unmarked, a default
 # `cargo test --workspace` would try to build it and go red because the candle

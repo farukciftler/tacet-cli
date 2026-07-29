@@ -21,8 +21,9 @@ fn main() {
     let tokenizer = std::env::var("TACET_TOKENIZER").expect("TACET_TOKENIZER");
 
     let device = match std::env::var("TACET_DEVICE").as_deref() {
-        Ok("cpu") => tacet_engine::candle_engine::Device::Cpu,
-        _ => tacet_engine::candle_engine::Device::Metal,
+        Ok("cpu") => tacet_engine::Device::Cpu,
+        Ok("cuda") => tacet_engine::Device::Cuda,
+        _ => tacet_engine::Device::Metal,
     };
     let setting = tacet_engine::ModelSetting::new(&model, &tokenizer).with_device(device);
     let engine = tacet_engine::CandleEngine::load(&setting).expect("load");

@@ -54,8 +54,8 @@ pub use provider::{
 pub use session::{MAX_TURNS, SYSTEM_INSTRUCTIONS};
 pub use thinking::extract as extract_thinking;
 pub use token::{
-    CONTEXT_BUDGET, GENERATION_SHARE, KV_CACHE_BUDGET_BYTES, TokenCounter, TruncationReport,
-    context_budget,
+    CONTEXT_BUDGET, Device, GENERATION_SHARE, KV_CACHE_BUDGET_BYTES, TokenCounter,
+    TruncationReport, context_budget, kv_cache_budget,
 };
 
 #[cfg(feature = "candle")]

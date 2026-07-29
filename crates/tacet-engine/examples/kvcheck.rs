@@ -12,7 +12,7 @@ fn main() {
         let per = tacet_engine::gguf_kv_bytes_per_token(&g);
         println!(
             "  {name:<12} declared={ctx:?} bytes/token={per:?} → budget={}",
-            tacet_engine::context_budget(ctx, per)
+            tacet_engine::context_budget(ctx, per, tacet_engine::Device::default())
         );
     }
 }

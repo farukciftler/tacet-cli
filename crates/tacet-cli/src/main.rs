@@ -1002,6 +1002,16 @@ fn scrub(text: &str, home: &str) -> String {
     out
 }
 
+fn backend() -> &'static str {
+    if cfg!(feature = "metal") {
+        "metal"
+    } else if cfg!(feature = "cuda") {
+        "cuda"
+    } else {
+        "cpu"
+    }
+}
+
 /// `tacet feedback` — see the enum doc. Writes, prints, sends nothing.
 fn feedback(turns: usize) -> ExitCode {
     let color = Color::setup();
@@ -1020,11 +1030,11 @@ fn feedback(turns: usize) -> ExitCode {
     body.push_str("<!-- Review every line before sharing. Nothing was sent anywhere;\n");
     body.push_str("     this file exists only on your machine until you paste it. -->\n\n");
     body.push_str(&format!(
-        "- version: {} · os: {} · candle: {} · metal: {}\n",
+        "- version: {} · os: {} · candle: {} · backend: {}\n",
         env!("CARGO_PKG_VERSION"),
         std::env::consts::OS,
         cfg!(feature = "candle"),
-        cfg!(feature = "metal"),
+        backend(),
     ));
     // THE WINDOW IS READ, NOT ASSERTED. This line used to say a flat `4096` and
     // that number stopped being true the day the window started coming out of
@@ -1036,6 +1046,7 @@ fn feedback(turns: usize) -> ExitCode {
         Some((gguf, _)) => tacet_engine::context_budget(
             tacet_engine::gguf_context_length(std::path::Path::new(&gguf)),
             tacet_engine::gguf_kv_bytes_per_token(std::path::Path::new(&gguf)),
+            tacet_engine::Device::default(),
         )
         .to_string(),
         None => "unknown (no local weights)".to_string(),
@@ -1411,20 +1422,20 @@ fn doctor() -> ExitCode {
 
     // The binary.
     let candle = cfg!(feature = "candle");
-    let metal = cfg!(feature = "metal");
+    let b = backend();
     println!(
-        "  binary     candle: {} · metal: {}",
+        "  binary     candle: {} · backend: {}",
         if candle {
             "yes"
         } else {
             "NO — the real engine is missing"
         },
-        if metal { "yes" } else { "no" }
+        b
     );
     if !candle {
         println!(
             "{}",
-            color.paint(YELLOW, "             reinstall with: cargo install tacet-cli --features candle (metal on Apple silicon)")
+            color.paint(YELLOW, "             reinstall with: cargo install tacet-cli --features candle (metal on Apple silicon, cuda for NVIDIA GPUs)")
         );
     }
 
@@ -2246,7 +2257,12 @@ fn engine_window(engine: &Arc<dyn EngineProvider>, gguf: &str) -> usize {
         .context_length()
         .or_else(|| tacet_engine::gguf_context_length(path));
     let per_token = tacet_engine::gguf_kv_bytes_per_token(path);
-    tacet_engine::context_budget(declared, per_token)
+    let device = match engine.identity().device.as_str() {
+        "metal" => tacet_engine::Device::Metal,
+        "cuda" => tacet_engine::Device::Cuda,
+        _ => tacet_engine::Device::Cpu,
+    };
+    tacet_engine::context_budget(declared, per_token, device)
 }
 
 /// Loads the weights WITH THE LOADING INDICATOR UP.

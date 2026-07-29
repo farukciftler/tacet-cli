@@ -33,6 +33,46 @@ use crate::prompt::{Prompt, Turn};
 /// nothing, must not end up worse off than before.
 pub const CONTEXT_BUDGET: usize = 4096;
 
+/// The device inference will run on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Device {
+    Cpu,
+    /// Apple GPU. Returns an error when candle-core's `metal` feature is off —
+    /// it DOES NOT silently FALL BACK to the CPU: the user deliberately asked for
+    /// the GPU, and presenting an engine running 10x slower as "working" would be
+    /// wrong.
+    Metal,
+    /// NVIDIA GPU via CUDA. Returns an error when candle-core's `cuda` feature is off —
+    /// it DOES NOT silently FALL BACK to the CPU: the user deliberately asked for
+    /// the GPU, and presenting an engine running 10x slower as "working" would be
+    /// wrong.
+    Cuda,
+}
+
+#[cfg(all(feature = "metal", feature = "cuda"))]
+compile_error!(
+    "`metal` and `cuda` are mutually exclusive: the default device is decided at \
+     compile time and there is only one default. Pick the backend of the machine \
+     you are building for."
+);
+
+impl Default for Device {
+    fn default() -> Self {
+        #[cfg(feature = "metal")]
+        {
+            Device::Metal
+        }
+        #[cfg(feature = "cuda")]
+        {
+            Device::Cuda
+        }
+        #[cfg(not(any(feature = "metal", feature = "cuda")))]
+        {
+            Device::Cpu
+        }
+    }
+}
+
 /// How much memory the KV cache may take.
 ///
 /// The cache grows LINEARLY with the window, so the window is really a memory
@@ -46,6 +86,14 @@ pub const CONTEXT_BUDGET: usize = 4096;
 /// the cache cheap). Four to eight times what the fixed 4096 gave.
 pub const KV_CACHE_BUDGET_BYTES: usize = 2_500_000_000;
 
+/// How much memory the KV cache may take for a given device.
+pub fn kv_cache_budget(device: Device) -> usize {
+    match device {
+        Device::Cpu | Device::Metal => 2_500_000_000,
+        Device::Cuda => 8_000_000_000,
+    }
+}
+
 /// The window to actually use.
 ///
 /// `declared` is what the model says it can take, `kv_bytes_per_token` what one
@@ -53,14 +101,18 @@ pub const KV_CACHE_BUDGET_BYTES: usize = 2_500_000_000;
 /// and the answer is then the floor — a guessed window puts positions past the
 /// model's rope table and produces plausible-looking nonsense, which is worse
 /// than a small window.
-pub fn context_budget(declared: Option<usize>, kv_bytes_per_token: Option<usize>) -> usize {
+pub fn context_budget(
+    declared: Option<usize>,
+    kv_bytes_per_token: Option<usize>,
+    device: Device,
+) -> usize {
     let (Some(declared), Some(per_token)) = (declared, kv_bytes_per_token) else {
         return CONTEXT_BUDGET;
     };
     if per_token == 0 {
         return CONTEXT_BUDGET;
     }
-    let affordable = KV_CACHE_BUDGET_BYTES / per_token;
+    let affordable = kv_cache_budget(device) / per_token;
     // The floor wins over both: a model declaring 2048 still gets 4096, because
     // that is what every path in this crate was built and measured against.
     declared.min(affordable).max(CONTEXT_BUDGET)
@@ -295,9 +347,24 @@ mod budget_tests {
         let qwen3_8b = 36 * 8 * (128 + 128) * 2;
         let gemma3_4b = 34 * 4 * (256 + 256) * 2;
 
-        assert_eq!(context_budget(Some(262_144), Some(qwen3_4b)), 16_954);
-        assert_eq!(context_budget(Some(40_960), Some(qwen3_8b)), 16_954);
-        assert_eq!(context_budget(Some(131_072), Some(gemma3_4b)), 17_951);
+        assert_eq!(
+            context_budget(Some(262_144), Some(qwen3_4b), Device::Cpu),
+            16_954
+        );
+        assert_eq!(
+            context_budget(Some(40_960), Some(qwen3_8b), Device::Cpu),
+            16_954
+        );
+        assert_eq!(
+            context_budget(Some(131_072), Some(gemma3_4b), Device::Cpu),
+            17_951
+        );
+
+        // On CUDA, the 8 GB budget affords 54,253 tokens for qwen3-4b.
+        assert_eq!(
+            context_budget(Some(262_144), Some(qwen3_4b), Device::Cuda),
+            54_253
+        );
     }
 
     /// A model whose OWN declared window is smaller than what the memory budget
@@ -306,20 +373,32 @@ mod budget_tests {
     #[test]
     fn the_models_own_limit_wins_when_it_is_the_smaller_one() {
         let small_cache = 36 * 2 * (128 + 128) * 2;
-        assert_eq!(context_budget(Some(32_768), Some(small_cache)), 32_768);
+        assert_eq!(
+            context_budget(Some(32_768), Some(small_cache), Device::Cpu),
+            32_768
+        );
     }
 
     /// THE FLOOR HOLDS IN EVERY DIRECTION. Nothing may come out of this worse
     /// off than the fixed 4096 it replaced.
     #[test]
     fn nothing_ends_up_below_the_old_fixed_window() {
-        assert_eq!(context_budget(Some(2048), Some(1_000)), CONTEXT_BUDGET);
-        assert_eq!(context_budget(None, Some(1_000)), CONTEXT_BUDGET);
-        assert_eq!(context_budget(Some(262_144), None), CONTEXT_BUDGET);
-        assert_eq!(context_budget(None, None), CONTEXT_BUDGET);
+        assert_eq!(
+            context_budget(Some(2048), Some(1_000), Device::Cpu),
+            CONTEXT_BUDGET
+        );
+        assert_eq!(
+            context_budget(None, Some(1_000), Device::Cpu),
+            CONTEXT_BUDGET
+        );
+        assert_eq!(
+            context_budget(Some(262_144), None, Device::Cpu),
+            CONTEXT_BUDGET
+        );
+        assert_eq!(context_budget(None, None, Device::Cpu), CONTEXT_BUDGET);
         // A cache so large that the budget affords nothing.
         assert_eq!(
-            context_budget(Some(262_144), Some(usize::MAX)),
+            context_budget(Some(262_144), Some(usize::MAX), Device::Cpu),
             CONTEXT_BUDGET
         );
     }
@@ -328,6 +407,9 @@ mod budget_tests {
     /// something impossible rather than nothing.
     #[test]
     fn a_zero_cost_per_token_does_not_divide() {
-        assert_eq!(context_budget(Some(262_144), Some(0)), CONTEXT_BUDGET);
+        assert_eq!(
+            context_budget(Some(262_144), Some(0), Device::Cpu),
+            CONTEXT_BUDGET
+        );
     }
 }
