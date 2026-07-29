@@ -109,4 +109,4 @@ tacet-web = { path = "crates/tacet-web", version = "0.1.4" }
 # envelope, MRTR, poll-based tasks, issuer-bound OAuth. The 0.1 line speaks only
 # the frozen revision, and a `^0.1` resolve would silently put a client on it.
 tacet-mcp = { path = "crates/tacet-mcp", version = "0.2.0" }
-tacet-eval = { path = "crates/tacet-eval", version = "0.1.5" }
+tacet-eval = { path = "crates/tacet-eval", version = "0.1.6" }

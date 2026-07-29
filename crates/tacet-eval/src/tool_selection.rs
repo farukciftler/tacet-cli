@@ -258,249 +258,229 @@ pub fn turkish_selection_cases() -> Vec<SelectionCase> {
         // --- calculate ---
         SelectionCase::tool_with_evidence("tr-hesap-carpma", "125 çarpı 8 kaç eder?", "calculate", &["1000"], Language::Turkish),
         SelectionCase::tool_with_evidence("tr-hesap-yuzde", "480'in yüzde 18'i ne kadar?", "calculate", &["86.4"], Language::Turkish),
-        SelectionCase::tool_with_evidence(
-            "tr-hesap-toplama",
-            "347 ile 268'i toplar mısın?",
-            "calculate",
-            &["615"],
-            Language::Turkish,
-        ),
+        SelectionCase::tool_with_evidence("tr-hesap-toplama", "347 ile 268'i toplar mısın?", "calculate", &["615"], Language::Turkish),
+        SelectionCase::tool_with_evidence("tr-hesap-bolme", "144 bölü 12 kaçtır?", "calculate", &["12"], Language::Turkish),
+        SelectionCase::tool_with_evidence("tr-hesap-cikarma", "1000 eksi 375 kaç eder?", "calculate", &["625"], Language::Turkish),
+        SelectionCase::tool_with_evidence("tr-hesap-indirim", "500 liralık ürüne yüzde 25 indirim uygulanırsa kaç lira öderim?", "calculate", &["375"], Language::Turkish),
+        SelectionCase::tool_with_evidence("tr-hesap-karekok", "81'in karekökü nedir?", "calculate", &["9"], Language::Turkish),
+        SelectionCase::tool_with_evidence("tr-hesap-ortalama", "10, 20 ve 30'un ortalaması kaçtır?", "calculate", &["20"], Language::Turkish),
+        SelectionCase::tool_with_evidence("tr-hesap-us", "2 üzeri 8 kaçtır?", "calculate", &["256"], Language::Turkish),
+        SelectionCase::tool_with_evidence("tr-hesap-kDV", "1000 TL + %20 KDV ne kadar yapar?", "calculate", &["1200"], Language::Turkish),
+
         // --- time ---
         SelectionCase::tool("tr-saat", "Saat kaç şu an?", "time"),
         SelectionCase::tool("tr-tarih", "Bugün ayın kaçı?", "time"),
         SelectionCase::tool("tr-gun-farki", "Yılbaşına kaç gün kaldı?", "time"),
         SelectionCase::tool("tr-hafta-gunu", "Bugün günlerden ne?", "time"),
         SelectionCase::tool("tr-dogal-tarih", "Önümüzdeki salıya kaç gün var?", "time"),
+        SelectionCase::tool("tr-zaman-dakika", "Şu an saat ve dakika bilgisi verir misin?", "time"),
+        SelectionCase::tool("tr-zaman-ay", "Hangi aydayız?", "time"),
+        SelectionCase::tool("tr-zaman-yil", "Hangi yıldayız?", "time"),
+        SelectionCase::tool("tr-zaman-tarih-farki", "15 Ağustos 2026 tarihine kaç gün var?", "time"),
+        SelectionCase::tool("tr-zaman-gecimis", "2026 yılbaşından bugüne kaç gün geçti?", "time"),
+
         // --- documents ---
-        SelectionCase::tool(
-            "tr-belge-olustur",
-            "Alışveriş listemi bir excel tablosu yap",
-            "create_document",
-        ),
-        SelectionCase::tool(
-            "tr-belge-oku",
-            "notlar.md dosyasında ne yazıyor, özetler misin?",
-            "read_document",
-        ),
-        SelectionCase::tool(
-            "tr-belge-duzenle",
-            "Az önceki tabloya bir satır daha ekle",
-            "edit_document",
-        ),
+        SelectionCase::tool("tr-belge-olustur", "Alışveriş listemi bir excel tablosu yap", "create_document"),
+        SelectionCase::tool("tr-belge-oku", "notlar.md dosyasında ne yazıyor, özetler misin?", "read_document"),
+        SelectionCase::tool("tr-belge-duzenle", "Az önceki tabloya bir satır daha ekle", "edit_document"),
+        SelectionCase::tool("tr-belge-markdown", "Toplantı kararlarını toplantı.md adıyla kaydet", "create_document"),
+        SelectionCase::tool("tr-belge-ozet", "rapor.md belgesini oku ve özet çıkar", "read_document"),
+        SelectionCase::tool("tr-belge-satir-sil", "notlar.md dosyasındaki 3. satırı sil", "edit_document"),
+        SelectionCase::tool("tr-belge-baslik-ekle", "plan.md dosyasına yeni bir başlık ekler misin?", "edit_document"),
+        SelectionCase::tool("tr-belge-icerik-oku", "icerik.txt dosyasının tüm metnini göster", "read_document"),
+        SelectionCase::tool("tr-belge-yeni-excel", "Bütçe kalemi için bir bütçe.xlsx dosyası oluştur", "create_document"),
+
         // --- files ---
-        SelectionCase::tool(
-            "tr-dosya-ara",
-            "Bütçeyle ilgili notu hangi dosyaya yazmıştım?",
-            "find_file",
-        ),
+        SelectionCase::tool("tr-dosya-ara", "Bütçeyle ilgili notu hangi dosyaya yazmıştım?", "find_file"),
+        SelectionCase::tool("tr-dosya-bul", "Klasörde 'rapor' içeren dosyaları bul", "find_file"),
+        SelectionCase::tool("tr-dosya-arama-metin", "İçinde 'Lentils' geçen dosyayı bulur musun?", "find_file"),
+        SelectionCase::tool("tr-dosya-nerede", "proje_plani.pdf nerede duruyor?", "find_file"),
+        SelectionCase::tool("tr-dosya-listele", "Dizin altındaki markdown dosyalarını arat", "find_file"),
+
         // --- code ---
-        SelectionCase::tool(
-            "tr-kod-calistir",
-            "1'den 100'e kadar asal sayıları listeler misin?",
-            "run_code",
-        ),
-        SelectionCase::tool(
-            "tr-kod-dosya",
-            "Bana fibonacci hesaplayan bir python betiği yaz ve kaydet",
-            "write_code",
-        ),
+        SelectionCase::tool("tr-kod-calistir", "1'den 100'e kadar asal sayıları listeler misin?", "run_code"),
+        SelectionCase::tool("tr-kod-dosya", "Bana fibonacci hesaplayan bir python betiği yaz ve kaydet", "write_code"),
+        SelectionCase::tool("tr-kod-hesapla", "Python ile 1'den 50'ye kadar olan sayıların toplamını çalıştır", "run_code"),
+        SelectionCase::tool("tr-kod-kaydet", "Sıcaklık dönüşümü yapan betiği donusturucu.py adıyla kaydet", "write_code"),
+        SelectionCase::tool("tr-kod-faktoryel", "Python ile 10 faktöriyel değerini hesaplayıp ekrana yazdır", "run_code"),
+
         // --- web ---
-        SelectionCase::tool(
-            "tr-hava",
-            "İstanbul'da yarın hava nasıl olacak?",
-            "web_search",
-        ),
+        SelectionCase::tool("tr-hava", "İstanbul'da yarın hava nasıl olacak?", "web_search"),
         SelectionCase::tool("tr-haber", "Dolar kuru şu an ne durumda?", "web_search"),
+        SelectionCase::tool("tr-web-site-oku", "https://example.com sayfasında ne anlatılıyor?", "web_fetch"),
+        SelectionCase::tool("tr-web-arama", "Türkiye'nin 2026 yılı enflasyon oranı haberleri ne durumda?", "web_search"),
+        SelectionCase::tool("tr-web-link", "https://news.ycombinator.com adresindeki başlıkları al", "web_fetch"),
+        SelectionCase::tool("tr-web-guncel", "Bugünün son dakika haberlerini internette ara", "web_search"),
+
         // --- memory ---
-        SelectionCase::tool(
-            "tr-hatirla",
-            "Kardeşimin doğum günü 3 mayıs, bunu unutma",
-            "remember",
-        ),
+        SelectionCase::tool("tr-hatirla", "Kardeşimin doğum günü 3 mayıs, bunu unutma", "remember"),
         SelectionCase::tool("tr-unut", "Kahve sevdiğimi unut artık", "remember"),
+        SelectionCase::tool("tr-hafiza-oku", "Benim hakkımda aklında tuttuğun notları listele", "remember"),
+        SelectionCase::tool("tr-hatirla-araba", "Arabamı 2. kat B blok park yerine koyduğumu kaydet", "remember"),
+        SelectionCase::tool("tr-hatirla-soru", "Kardeşimin doğum gününü kaydetmiştin, hatırla ne zamandı?", "remember"),
+
+        // --- git ---
+        SelectionCase::tool("tr-git-durum", "Git reposunda hangi dosyalar değişti?", "git"),
+        SelectionCase::tool("tr-git-commit", "Yapılan git değişiklikleri için commit mesajı öner", "git"),
+
         // --- irrelevance: NOTHING must be selected ---
         SelectionCase::chat_with_language("tr-selam", "Selam, nasılsın?", Language::Turkish),
         SelectionCase::chat_with_language("tr-tesekkur", "Çok teşekkürler, harikaydı!", Language::Turkish),
         SelectionCase::chat_with_language("tr-sohbet", "Bugün biraz yorgunum ya", Language::Turkish),
         SelectionCase::chat_with_language("tr-fikir", "Sence sabah sporu mu akşam sporu mu daha iyi?", Language::Turkish),
+        SelectionCase::chat_with_language("tr-kimsin", "Sen kimsin, ne iş yaparsın?", Language::Turkish),
+        SelectionCase::chat_with_language("tr-gizlilik", "Benim verilerimi başkalarıyla paylaşıyor musun?", Language::Turkish),
+        SelectionCase::chat_with_language("tr-tavsiye", "Bana güzel bir kitap önerir misin?", Language::Turkish),
+        SelectionCase::chat_with_language("tr-gorusuruz", "İyi akşamlar, sonra görüşürüz!", Language::Turkish),
+        SelectionCase::chat_with_language("tr-tebrik", "Tebrik ederim harika bir iş çıkardın", Language::Turkish),
+
+        // --- Confusable Pairs ---
+        SelectionCase::tool("tr-pair-tarih-farki", "25 Aralık tarihine kaç gün var?", "time"),
+        SelectionCase::tool_with_evidence("tr-pair-matematik", "25 ile 18'i topla", "calculate", &["43"], Language::Turkish),
+        SelectionCase::tool("tr-pair-dosya-ara", "Bütçe raporu hangi klasörde?", "find_file"),
+        SelectionCase::tool("tr-pair-dosya-oku", "Bütçe raporunun içeriğinde ne var?", "read_document"),
     ]
 }
 
 pub fn selection_cases() -> Vec<SelectionCase> {
     vec![
-        // --- calendar (macOS bridge; the tool is in the production catalog there) ---
-        SelectionCase::tool(
-            "calendar-day",
-            "What is on my calendar tomorrow?",
-            "calendar",
-        ),
-        SelectionCase::tool(
-            "calendar-remind",
-            "Remind me to call the dentist tomorrow at 9",
-            "calendar",
-        ),
+        // --- calendar ---
+        SelectionCase::tool("calendar-day", "What is on my calendar tomorrow?", "calendar"),
+        SelectionCase::tool("calendar-remind", "Remind me to call the dentist tomorrow at 9", "calendar"),
+        SelectionCase::tool("calendar-schedule", "Schedule a meeting with Alice for Friday at 3pm", "calendar"),
+        SelectionCase::tool("calendar-events", "List all my calendar events for next week", "calendar"),
+        SelectionCase::tool("calendar-next", "What is my next upcoming appointment?", "calendar"),
+        SelectionCase::tool("calendar-clear", "Clear my schedule for tomorrow morning", "calendar"),
+
         // --- calculate ---
         SelectionCase::tool_with_evidence("calculate-multiply", "What is 125 times 8?", "calculate", &["1000"], Language::English),
         SelectionCase::tool_with_evidence("calculate-add", "Could you add 347 and 268?", "calculate", &["615"], Language::English),
-        SelectionCase::tool_with_evidence(
-            "calculate-percent",
-            "How much is 250 lira with a 20 percent discount?",
-            "calculate",
-            &["200"],
-            Language::English,
-        ),
-        // --- time --- (four separate phrasings: this tool was missed twice in
-        // manual measurement)
+        SelectionCase::tool_with_evidence("calculate-percent", "How much is 250 lira with a 20 percent discount?", "calculate", &["200"], Language::English),
+        SelectionCase::tool_with_evidence("calculate-divide", "What is 144 divided by 12?", "calculate", &["12"], Language::English),
+        SelectionCase::tool_with_evidence("calculate-subtract", "What is 1000 minus 375?", "calculate", &["625"], Language::English),
+        SelectionCase::tool_with_evidence("calculate-power", "What is 2 to the power of 10?", "calculate", &["1024"], Language::English),
+        SelectionCase::tool_with_evidence("calculate-sqrt", "What is the square root of 144?", "calculate", &["12"], Language::English),
+        SelectionCase::tool_with_evidence("calculate-expression", "Calculate (50 + 50) * 5 / 2", "calculate", &["250"], Language::English),
+        SelectionCase::tool_with_evidence("calculate-vat", "Calculate $500 with 10% tax added", "calculate", &["550"], Language::English),
+        SelectionCase::tool_with_evidence("calculate-average", "What is the average of 15, 25, and 35?", "calculate", &["25"], Language::English),
+        SelectionCase::tool_with_evidence("calculate-discount", "Calculate 15% off $80", "calculate", &["68"], Language::English),
+
+        // --- time ---
         SelectionCase::tool("time-clock", "What time is it?", "time"),
-        SelectionCase::tool(
-            "time-day-of-month",
-            "What day of the month is it today?",
-            "time",
-        ),
+        SelectionCase::tool("time-day-of-month", "What day of the month is it today?", "time"),
         SelectionCase::tool("time-todays-date", "What is today's date?", "time"),
-        SelectionCase::tool(
-            "time-diff",
-            "How many days are left until new year?",
-            "time",
-        ),
+        SelectionCase::tool("time-diff", "How many days are left until new year?", "time"),
+        SelectionCase::tool("time-weekday", "What day of the week is it today?", "time"),
+        SelectionCase::tool("time-current-month", "Which month are we in currently?", "time"),
+        SelectionCase::tool("time-current-year", "What is the current year?", "time"),
+        SelectionCase::tool("time-days-to-christmas", "How many days until Christmas?", "time"),
+        SelectionCase::tool("time-days-to-date", "How many days until 15 October 2026?", "time"),
+        SelectionCase::tool("time-days-since", "How many days have passed since 1 January 2026?", "time"),
+        SelectionCase::tool("time-utc", "What is the current UTC time?", "time"),
+
         // --- read_document ---
-        SelectionCase::tool(
-            "read_document-content",
-            "What does the file report.md say?",
-            "read_document",
-        ),
-        SelectionCase::tool(
-            "read_document-summary",
-            "Could you summarize the file budget-2026.md?",
-            "read_document",
-        ),
+        SelectionCase::tool("read_document-content", "What does the file report.md say?", "read_document"),
+        SelectionCase::tool("read_document-summary", "Could you summarize the file budget-2026.md?", "read_document"),
+        SelectionCase::tool("read_document-full", "Show me the entire text of notes.txt", "read_document"),
+        SelectionCase::tool("read_document-table", "Read the table inside report.md", "read_document"),
+        SelectionCase::tool("read_document-preview", "Give me a preview of readme.md", "read_document"),
+        SelectionCase::tool("read_document-log", "Read the latest entries from app.log", "read_document"),
+
         // --- create_document ---
-        SelectionCase::tool(
-            "create_document-excel",
-            "Turn the weekly meal list into an excel file.",
-            "create_document",
-        ),
-        SelectionCase::tool(
-            "create_document-markdown",
-            "Create a short markdown file for me for the meeting notes.",
-            "create_document",
-        ),
-        // --- edit_document --- (calling read_document first is ALSO CORRECT:
-        // that is what the description says. The claim is "was edit_document
-        // called by the end of the loop".)
-        SelectionCase::tool(
-            "edit_document-row",
-            "Add the row 'Thursday | Chickpeas' to the file report.md.",
-            "edit_document",
-        ),
-        SelectionCase::tool(
-            "edit_document-title",
-            "Change the title of the file budget-2026.md to 'New Budget'.",
-            "edit_document",
-        ),
+        SelectionCase::tool("create_document-excel", "Turn the weekly meal list into an excel file.", "create_document"),
+        SelectionCase::tool("create_document-markdown", "Create a short markdown file for me for the meeting notes.", "create_document"),
+        SelectionCase::tool("create_document-report", "Create a new document called report.md with summary content", "create_document"),
+        SelectionCase::tool("create_document-csv", "Export the product list into a spreadsheet file", "create_document"),
+        SelectionCase::tool("create_document-notes", "Save a new note file named ideas.md", "create_document"),
+        SelectionCase::tool("create_document-todo", "Make a new markdown document for my todo list", "create_document"),
+
+        // --- edit_document ---
+        SelectionCase::tool("edit_document-row", "Add the row 'Thursday | Chickpeas' to the file report.md.", "edit_document"),
+        SelectionCase::tool("edit_document-title", "Change the title of the file budget-2026.md to 'New Budget'.", "edit_document"),
+        SelectionCase::tool("edit_document-append", "Append a new section to notes.md", "edit_document"),
+        SelectionCase::tool("edit_document-update-line", "Replace line 5 in report.md with updated figures", "edit_document"),
+        SelectionCase::tool("edit_document-header", "Insert a header line into document.md", "edit_document"),
+        SelectionCase::tool("edit_document-modify", "Modify the Wednesday row in the meal table inside report.md", "edit_document"),
+
         // --- find_file ---
-        SelectionCase::tool(
-            "find_file-name",
-            "Find the file about the budget.",
-            "find_file",
-        ),
-        SelectionCase::tool(
-            "find_file-content",
-            "Which of my files mentions 'Lentils'?",
-            "find_file",
-        ),
+        SelectionCase::tool("find_file-name", "Find the file about the budget.", "find_file"),
+        SelectionCase::tool("find_file-content", "Which of my files mentions 'Lentils'?", "find_file"),
+        SelectionCase::tool("find_file-where", "Where is the file architecture.md located?", "find_file"),
+        SelectionCase::tool("find_file-pattern", "Search for files with .log extension", "find_file"),
+        SelectionCase::tool("find_file-keyword", "Locate files that contain the term 'Qwen3'", "find_file"),
+        SelectionCase::tool("find_file-list", "Search my workspace for project files", "find_file"),
+
         // --- web_search ---
-        SelectionCase::tool(
-            "web_search-weather",
-            "What is the weather like in Istanbul?",
-            "web_search",
-        ),
-        SelectionCase::tool(
-            "web_search-current",
-            "How much is the dollar today?",
-            "web_search",
-        ),
+        SelectionCase::tool("web_search-weather", "What is the weather like in Istanbul?", "web_search"),
+        SelectionCase::tool("web_search-current", "How much is the dollar today?", "web_search"),
+        SelectionCase::tool("web_search-news", "What are the latest tech news headlines today?", "web_search"),
+        SelectionCase::tool("web_search-stock", "What is the current stock price of Apple?", "web_search"),
+        SelectionCase::tool("web_search-flight", "Find flight schedules from London to Paris", "web_search"),
+        SelectionCase::tool("web_search-score", "What was the score of the match in the news yesterday?", "web_search"),
+        SelectionCase::tool("web_search-inflation", "What is the current news on the inflation rate in 2026?", "web_search"),
+
         // --- web_fetch ---
-        SelectionCase::tool(
-            "web_fetch-page",
-            "Read the content of the page https://example.com/blog.",
-            "web_fetch",
-        ),
-        SelectionCase::tool(
-            "web_fetch-address",
-            "Get me the detail of the article at this address: https://example.com/article",
-            "web_fetch",
-        ),
+        SelectionCase::tool("web_fetch-page", "Read the content of the page https://example.com/blog.", "web_fetch"),
+        SelectionCase::tool("web_fetch-address", "Get me the detail of the article at this address: https://example.com/article", "web_fetch"),
+        SelectionCase::tool("web_fetch-url-summary", "Summarize the website at https://rust-lang.org", "web_fetch"),
+        SelectionCase::tool("web_fetch-extract-link", "Fetch the content from https://news.ycombinator.com", "web_fetch"),
+
         // --- remember ---
-        SelectionCase::tool(
-            "remember-save",
-            "Remember this: I drink my coffee without milk.",
-            "remember",
-        ),
-        SelectionCase::tool(
-            "remember-list",
-            "List the notes you keep about me.",
-            "remember",
-        ),
+        SelectionCase::tool("remember-save", "Remember this: I drink my coffee without milk.", "remember"),
+        SelectionCase::tool("remember-list", "List the notes you keep about me.", "remember"),
+        SelectionCase::tool("remember-birthday", "Remember that my sister's birthday is May 3rd", "remember"),
+        SelectionCase::tool("remember-forget", "Remember to forget my old home address", "remember"),
+        SelectionCase::tool("remember-query", "What note did I save about my sister's birthday?", "remember"),
+        SelectionCase::tool("remember-car-park", "Remember where I parked my car", "remember"),
+
         // --- run_code ---
-        SelectionCase::tool(
-            "run_code-primes",
-            "List the prime numbers from 1 to 30.",
-            "run_code",
-        ),
-        SelectionCase::tool(
-            "run_code-fibonacci",
-            "Produce the first 15 terms of the Fibonacci sequence.",
-            "run_code",
-        ),
-        // --- write_code --- the distinction: the user wants the code AS A FILE
-        // (run_code only reads the result, it leaves no file).
-        SelectionCase::tool(
-            "write_code-script",
-            "Write me a python script that finds prime numbers, and save it as a file.",
-            "write_code",
-        ),
-        SelectionCase::tool(
-            "write_code-converter",
-            "Write a script that converts temperature data from Celsius to Fahrenheit and put it in my folder.",
-            "write_code",
-        ),
-        // --- git --- the distinction from `find_file`: the question is about the
-        // REPOSITORY (what did I change, what was committed), not about a file
-        // whose name or content is being looked for.
-        //
-        // WHAT THIS MEASURES AND WHAT IT DOES NOT: the eval working directory
-        // (`Env::setup`) is a temp folder and NOT a git repository, so the tool
-        // answers "no_git_repository" here. That is enough for a SELECTION
-        // measurement — the score is decided by which tool the model called — but
-        // it is not enough to measure the ANSWER. A `git init` fixture in
-        // `env.rs` would close that gap.
-        SelectionCase::tool(
-            "git-status",
-            "Which files have I changed in this git repository?",
-            "git",
-        ),
-        SelectionCase::tool(
-            "git-commit-message",
-            "Summarize my git changes and write me a commit message.",
-            "git",
-        ),
-        // --- IRRELEVANCE --- no tool must be called
-        SelectionCase::chat("chat-greeting", "Hello"),
-        SelectionCase::chat("chat-thanks", "Thank you very much."),
-        SelectionCase::chat("chat-who-are-you", "Who are you?"),
-        SelectionCase::chat("chat-how-are-you", "How are you today?"),
-        SelectionCase::chat("chat-privacy", "Are you sending my data to the cloud?"),
-        SelectionCase::chat("chat-mood", "I'm a bit tired today, feeling low."),
-        // --- MULTI-TURN --- the history is preserved, the document is the one
-        // "in play"
+        SelectionCase::tool("run_code-primes", "List the prime numbers from 1 to 30 in python.", "run_code"),
+        SelectionCase::tool("run_code-fibonacci", "Produce the first 15 terms of the Fibonacci sequence.", "run_code"),
+        SelectionCase::tool("run_code-sum", "Calculate the sum of squares from 1 to 100 using python", "run_code"),
+        SelectionCase::tool("run_code-factorial", "Compute 10 factorial with a python script", "run_code"),
+
+        // --- write_code ---
+        SelectionCase::tool("write_code-script", "Write me a python script that finds prime numbers, and save it as a file.", "write_code"),
+        SelectionCase::tool("write_code-converter", "Write a script that converts temperature data from Celsius to Fahrenheit and put it in my folder.", "write_code"),
+        SelectionCase::tool("write_code-web-scraper", "Write a python web scraper script and save it to scraper.py", "write_code"),
+        SelectionCase::tool("write_code-utility", "Create a python script utility.py that renames files in batch", "write_code"),
+
+        // --- git ---
+        SelectionCase::tool("git-status", "Which files have I changed in this git repository?", "git"),
+        SelectionCase::tool("git-commit-message", "Summarize my git changes and write me a commit message.", "git"),
+        SelectionCase::tool("git-diff", "Show me the git diff for uncommitted changes", "git"),
+        SelectionCase::tool("git-branch", "Which git branch am I currently on?", "git"),
+
+        // --- IRRELEVANCE (No tool must be called) ---
+        SelectionCase::chat_with_language("chat-greeting", "Hello", Language::English),
+        SelectionCase::chat_with_language("chat-thanks", "Thank you very much.", Language::English),
+        SelectionCase::chat_with_language("chat-who-are-you", "Who are you?", Language::English),
+        SelectionCase::chat_with_language("chat-how-are-you", "How are you today?", Language::English),
+        SelectionCase::chat_with_language("chat-privacy", "Are you sending my data to the cloud?", Language::English),
+        SelectionCase::chat_with_language("chat-mood", "I'm a bit tired today, feeling low.", Language::English),
+        SelectionCase::chat_with_language("chat-recommendation", "Can you recommend a good movie?", Language::English),
+        SelectionCase::chat_with_language("chat-general-knowledge-paris", "What is the capital of France?", Language::English),
+        SelectionCase::chat_with_language("chat-general-knowledge-planet", "What is the largest planet in our solar system?", Language::English),
+        SelectionCase::chat_with_language("chat-farewell-see-you", "Goodbye, see you!", Language::English),
+        SelectionCase::chat_with_language("chat-appreciation", "You did a fantastic job, thanks!", Language::English),
+        SelectionCase::chat_with_language("chat-continuation-explain", "Tell me more about your thoughts.", Language::English),
+        SelectionCase::chat_with_language("chat-opinion-sports", "Which is better, morning or evening workout?", Language::English),
+        SelectionCase::chat_with_language("chat-bored", "I'm feeling bored, tell me a joke.", Language::English),
+        SelectionCase::chat_with_language("chat-weather-general", "I love nature and fresh air.", Language::English),
+
+        // --- Confusable Pairs ---
+        SelectionCase::tool("pair-time-diff", "How many days until 2 December 2026?", "time"),
+        SelectionCase::tool_with_evidence("pair-calc-add", "Add 25 and 18", "calculate", &["43"], Language::English),
+        SelectionCase::tool("pair-find-file", "Where is the budget file?", "find_file"),
+        SelectionCase::tool("pair-read-doc", "What does the budget file say?", "read_document"),
+        SelectionCase::tool("pair-web-search", "Who won the 2026 election?", "web_search"),
+        SelectionCase::tool("pair-web-fetch", "Summarize https://example.com/election-results", "web_fetch"),
+
+        // --- MULTI-TURN ---
         SelectionCase::chain(
             "chain-document",
             &[
-                (
-                    "Turn the weekly meal list into an excel file.",
-                    "create_document",
-                ),
+                ("Turn the weekly meal list into an excel file.", "create_document"),
                 ("Show it as a table.", "read_document"),
                 ("Change Tuesday from Rice to Beans.", "edit_document"),
             ],
@@ -517,6 +497,20 @@ pub fn selection_cases() -> Vec<SelectionCase> {
             &[
                 ("What does the file report.md say?", "read_document"),
                 ("Add a Thursday row with Chickpeas.", "edit_document"),
+            ],
+        ),
+        SelectionCase::chain(
+            "chain-find-read",
+            &[
+                ("Find the file about budget.", "find_file"),
+                ("Read its contents.", "read_document"),
+            ],
+        ),
+        SelectionCase::chain(
+            "chain-code-write",
+            &[
+                ("Run python code to find prime numbers.", "run_code"),
+                ("Save that script to primes.py.", "write_code"),
             ],
         ),
     ]
