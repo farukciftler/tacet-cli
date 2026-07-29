@@ -1919,7 +1919,7 @@ dependencies = [
 
 [[package]]
 name = "tacet-cli"
-version = "0.1.15"
+version = "0.1.17"
 dependencies = [
  "clap",
  "crossterm",
@@ -2010,7 +2010,7 @@ dependencies = [
 
 [[package]]
 name = "tacet-tools"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "serde_json",
  "tacet-engine",

@@ -271,9 +271,29 @@ struct Editor<'a> {
     state: &'a str,
     history: &'a [String],
     history_i: Option<usize>,
+    /// What was typed when the walk STARTED, kept for as long as it lasts.
+    ///
+    /// WHY IT IS A FIELD AND NOT A LOCAL: the prefix was read off the buffer
+    /// inside the walk, but the walk REPLACES the buffer with the entry it
+    /// lands on — so the filter existed on the first press of Up and was gone
+    /// on the second, which then walked the whole history. Measured with
+    /// history ["git status", "tacet why a", "git diff", "tacet why b"] and
+    /// "tacet" typed: the first Up gave "tacet why b" and the second gave
+    /// "git diff".
+    history_prefix: Option<String>,
     selection: usize,
     /// Esc closed the list — it does not open again until the user types `/`.
+    /// STICKY ON PURPOSE: a user who dismissed the list while writing a long
+    /// message does not want it back on the next keystroke.
     dismissed: bool,
+    /// A completion just filled the line, so the list is closed FOR NOW.
+    ///
+    /// SEPARATE FROM `dismissed`, and the separation is the whole fix: while
+    /// completing shared the Esc flag, pressing Tab and then deleting a single
+    /// letter left the list shut for good — the only way back was to erase the
+    /// leading `/` entirely. Reported from real use. Editing after a completion
+    /// is a NEW query and must list again; dismissing with Esc still is not.
+    completed: bool,
     /// The index, within the drawn block, of the line the caret was left on in
     /// the last draw.
     caret_line: usize,
@@ -289,8 +309,10 @@ impl<'a> Editor<'a> {
             state,
             history,
             history_i: None,
+            history_prefix: None,
             selection: 0,
             dismissed: false,
+            completed: false,
             caret_line: 0,
             first_draw: true,
             note: None,
@@ -298,7 +320,7 @@ impl<'a> Editor<'a> {
     }
 
     fn list_open(&self) -> bool {
-        !self.dismissed && list_needed(&self.buffer)
+        !self.dismissed && !self.completed && list_needed(&self.buffer)
     }
 
     fn run(&mut self) -> Input {
@@ -345,7 +367,7 @@ impl<'a> Editor<'a> {
                 {
                     self.buffer = c.name.to_string();
                     self.caret = self.buffer.len();
-                    self.dismissed = true;
+                    self.completed = true;
                     self.selection = 0;
                     return None;
                 }
@@ -353,13 +375,25 @@ impl<'a> Editor<'a> {
                 return Some(Input::Line(line));
             }
             KeyCode::Tab => {
-                if self.list_open()
-                    && let Some(c) = matches(&self.buffer).get(self.selection)
-                {
-                    self.buffer = c.name.to_string();
-                    self.caret = self.buffer.len();
-                    self.dismissed = true;
-                    self.selection = 0;
+                if self.list_open() {
+                    let m = matches(&self.buffer);
+                    if let Some(c) = m.get(self.selection) {
+                        self.buffer = c.name.to_string();
+                        self.caret = self.buffer.len();
+                        self.completed = true;
+                        self.selection = 0;
+                    }
+                } else if self.buffer.starts_with('/') {
+                    // Tab with the list already closed still completes: the
+                    // list being shut is not a statement about what the user
+                    // wants the key to do.
+                    let m = matches(&self.buffer);
+                    if let Some(c) = m.first() {
+                        self.buffer = c.name.to_string();
+                        self.caret = self.buffer.len();
+                        self.completed = true;
+                        self.selection = 0;
+                    }
                 }
             }
             KeyCode::Esc => {
@@ -397,6 +431,8 @@ impl<'a> Editor<'a> {
                     self.buffer.replace_range(new..self.caret, "");
                     self.caret = new;
                     self.selection = 0;
+                    // Editing after a completion is a new query.
+                    self.completed = false;
                     if !self.buffer.starts_with('/') {
                         self.dismissed = false;
                     }
@@ -407,13 +443,13 @@ impl<'a> Editor<'a> {
                 if new > self.caret {
                     self.buffer.replace_range(self.caret..new, "");
                     self.selection = 0;
+                    self.completed = false;
                 }
             }
+            // On an empty line ctrl-c NEITHER CRASHES NOR EXITS: exiting must
+            // be an explicit intent (see the empty-line note in main.rs).
             KeyCode::Char('c') if ctrl => {
                 if self.buffer.is_empty() {
-                    // On an empty line ctrl-c NEITHER CRASHES NOR EXITS: exiting
-                    // must be an explicit intent (see the empty-line note in
-                    // main.rs).
                     self.note = Some("/quit or ctrl-d to exit");
                 } else {
                     self.buffer.clear();
@@ -422,27 +458,27 @@ impl<'a> Editor<'a> {
                 }
             }
             // ctrl-o: peek at the last saved file without typing anything. It
-            // SUBMITS /preview — the slash path owns the actual printing, so
+            // SUBMITS `/preview` — the slash path owns the actual printing, so
             // the key and the command can never drift apart.
             KeyCode::Char('o') if ctrl => {
                 if self.buffer.is_empty() {
                     return Some(Input::Line("/preview".to_string()));
                 }
             }
+            // CTRL-D LEAVES, WHATEVER IS TYPED.
+            //
+            // readline's rule is that ctrl-d only means EOF on an empty line and
+            // deletes forward otherwise, and this followed it. The measured cost
+            // of that rule here: a user who wanted to leave had to clear the
+            // line first, and pressing ctrl-d with text in the field did nothing
+            // visible at the end of a line — a key that appears to be ignored
+            // reads as a hung program.
+            //
+            // The draft is the only thing lost, and it is the only thing that
+            // was never sent; the conversation itself is on disk (see
+            // `session.rs`). Forward-delete keeps working through the `delete`
+            // key, which is where people look for it anyway.
             KeyCode::Char('d') if ctrl => {
-                // CTRL-D LEAVES, WHATEVER IS TYPED.
-                //
-                // readline's rule is that ctrl-d only means EOF on an empty
-                // line and deletes forward otherwise, and this followed it. The
-                // measured cost of that rule here: a user who wanted to leave
-                // had to clear the line first, and pressing ctrl-d with text in
-                // the field did nothing visible at the end of a line — a key
-                // that appears to be ignored reads as a hung program.
-                //
-                // The draft is the only thing lost, and it is the only thing
-                // that was never sent; the conversation itself is on disk (see
-                // `session.rs`). Forward-delete keeps working through the
-                // `delete` key, which is where people look for it anyway.
                 return Some(Input::Done);
             }
             KeyCode::Char('a') if ctrl => self.caret = 0,
@@ -468,6 +504,17 @@ impl<'a> Editor<'a> {
         None
     }
 
+    fn without_controls(text: &str) -> String {
+        text.chars()
+            .filter_map(|c| match c {
+                '\n' => Some('\n'),
+                '\t' => Some(' '),
+                c if c.is_control() => None,
+                c => Some(c),
+            })
+            .collect()
+    }
+
     /// Strips terminal control bytes from text that ENTERS THE BUFFER.
     ///
     /// WHY: pasted text is UNTRUSTED — the clipboard may come from a web page
@@ -480,52 +527,107 @@ impl<'a> Editor<'a> {
     /// SENT. `chars().count()` also counts it as one printable column, so the
     /// caret arithmetic in `lines` drifts and the input frame comes apart.
     ///
-    /// FILTERED AT `add`, THE SINGLE ENTRANCE, not in the paste branch:
+    /// FILTERED HERE, AT THE SINGLE ENTRANCE, not in the paste branch:
     /// cleaning it up only while drawing would leave the raw bytes in the
     /// buffer, which is the half of the problem that actually reaches the
     /// model. `\n` SURVIVES — alt+enter uses it; `\t` becomes a space so the
     /// column arithmetic stays honest.
-    fn without_controls(text: &str) -> String {
-        text.chars()
-            .filter_map(|c| match c {
-                '\n' => Some('\n'),
-                '\t' => Some(' '),
-                // C0, DEL and C1 (U+009B is a one-character CSI). None of them
-                // has a printable width.
-                c if c.is_control() => None,
-                c => Some(c),
-            })
-            .collect()
-    }
-
     fn add(&mut self, text: &str) {
         let text = &Self::without_controls(text);
         self.buffer.insert_str(self.caret, text);
         self.caret += text.len();
         self.selection = 0;
+        self.completed = false;
         self.history_i = None;
+        self.history_prefix = None;
         if text.starts_with('/') && self.caret == 1 {
             self.dismissed = false;
         }
+    }
+
+    /// Test seams for the three keystrokes whose INTERACTION is the behaviour
+    /// under test. Driving them through `run()` would need a terminal.
+    #[cfg(test)]
+    fn complete_for_test(&mut self) {
+        if let Some(c) = matches(&self.buffer).first() {
+            self.buffer = c.name.to_string();
+            self.caret = self.buffer.len();
+            self.completed = true;
+            self.selection = 0;
+        }
+    }
+
+    #[cfg(test)]
+    fn backspace_for_test(&mut self) {
+        let new = previous_boundary(&self.buffer, self.caret);
+        if new < self.caret {
+            self.buffer.replace_range(new..self.caret, "");
+            self.caret = new;
+            self.selection = 0;
+            self.completed = false;
+            if !self.buffer.starts_with('/') {
+                self.dismissed = false;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn dismiss_for_test(&mut self) {
+        self.dismissed = true;
     }
 
     fn walk_history(&mut self, direction: i32) {
         if self.history.is_empty() {
             return;
         }
-        let last = self.history.len() - 1;
-        self.history_i = match (self.history_i, direction) {
-            (None, -1) => Some(last),
+        // The prefix is captured ONCE, when the walk begins, and then held: by
+        // the second press the buffer is no longer what the user typed, it is
+        // the entry we just landed on.
+        if self.history_i.is_none() {
+            self.history_prefix = if self.buffer.is_empty() {
+                None
+            } else {
+                Some(self.buffer.clone())
+            };
+        }
+        let prefix = self.history_prefix.clone();
+        let matches: Vec<(usize, &String)> = if let Some(ref p) = prefix {
+            self.history
+                .iter()
+                .enumerate()
+                .filter(|(_, h)| h.starts_with(p))
+                .collect()
+        } else {
+            self.history.iter().enumerate().collect()
+        };
+
+        if matches.is_empty() {
+            return;
+        }
+
+        let curr_match_idx = self
+            .history_i
+            .and_then(|hi| matches.iter().position(|(idx, _)| *idx == hi));
+        let next_match_idx = match (curr_match_idx, direction) {
+            (None, -1) => Some(matches.len() - 1),
             (None, _) => None,
             (Some(0), -1) => Some(0),
             (Some(i), -1) => Some(i - 1),
-            (Some(i), _) if i >= last => None,
+            (Some(i), _) if i >= matches.len() - 1 => None,
             (Some(i), _) => Some(i + 1),
         };
-        self.buffer = match self.history_i {
-            Some(i) => self.history[i].clone(),
-            None => String::new(),
-        };
+
+        match next_match_idx {
+            Some(idx) => {
+                let (real_idx, val) = matches[idx];
+                self.history_i = Some(real_idx);
+                self.buffer = val.clone();
+            }
+            None => {
+                self.history_i = None;
+                self.buffer = prefix.unwrap_or_default();
+            }
+        }
         self.caret = self.buffer.len();
     }
 
@@ -893,6 +995,109 @@ mod tests {
     /// It goes through `Editor::add`, the single entrance, because that is
     /// where the fix lives: a filter applied only while drawing would leave the
     /// raw bytes in what gets sent.
+    /// REPORTED FROM REAL USE: Tab completes, one letter is deleted, and the
+    /// list never comes back.
+    ///
+    /// The cause was one flag doing two jobs. Completing shared the flag Esc
+    /// sets, and that flag is sticky by design — so after a completion the only
+    /// way to see the list again was to erase the leading `/` entirely.
+    /// Dismissing with Esc still survives editing; completing does not.
+    #[test]
+    fn the_list_comes_back_after_editing_a_completion() {
+        let history: Vec<String> = Vec::new();
+        let mut e = Editor::new("", &history);
+        e.add("/hel");
+        assert!(e.list_open(), "typing a slash command lists");
+
+        e.complete_for_test();
+        assert_eq!(e.buffer, "/help");
+        assert!(
+            !e.list_open(),
+            "a completed line does not keep the list open"
+        );
+
+        e.backspace_for_test();
+        assert_eq!(e.buffer, "/hel");
+        assert!(
+            e.list_open(),
+            "deleting a letter after a completion is a new query and must list again"
+        );
+    }
+
+    /// And the rule the fix must not break: Esc means Esc.
+    #[test]
+    fn esc_keeps_the_list_shut_while_editing() {
+        let history: Vec<String> = Vec::new();
+        let mut e = Editor::new("", &history);
+        e.add("/hel");
+        e.dismiss_for_test();
+        assert!(!e.list_open());
+        e.backspace_for_test();
+        assert!(
+            !e.list_open(),
+            "a list dismissed with Esc stays shut until a new slash is typed"
+        );
+    }
+
+    /// THE PREFIX MUST SURVIVE THE SECOND PRESS.
+    ///
+    /// Prefix-filtered history is only useful if the filter lasts the whole
+    /// walk. As first written the prefix was read off the buffer inside the
+    /// walk — but the walk replaces the buffer with the entry it lands on, so
+    /// the filter applied to the first Up and vanished on the second, which
+    /// then stepped through unrelated commands.
+    #[test]
+    fn walking_history_keeps_filtering_by_what_was_typed() {
+        let history: Vec<String> = ["git status", "tacet why a", "git diff", "tacet why b"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut e = Editor::new("", &history);
+        e.add("tacet");
+
+        e.walk_history(-1);
+        assert_eq!(e.buffer, "tacet why b", "the newest match comes first");
+        e.walk_history(-1);
+        assert_eq!(
+            e.buffer, "tacet why a",
+            "the second press must skip 'git diff' — it does not match the prefix"
+        );
+        // And back down again, still filtered.
+        e.walk_history(1);
+        assert_eq!(e.buffer, "tacet why b");
+    }
+
+    /// With nothing typed, the walk is the whole history — the ordinary
+    /// behaviour, and the one the filter must not take away.
+    #[test]
+    fn an_empty_line_walks_everything() {
+        let history: Vec<String> = ["one", "two"].iter().map(|s| s.to_string()).collect();
+        let mut e = Editor::new("", &history);
+        e.walk_history(-1);
+        assert_eq!(e.buffer, "two");
+        e.walk_history(-1);
+        assert_eq!(e.buffer, "one");
+    }
+
+    /// Editing the line ends the walk: the next Up starts a NEW filter from
+    /// what is now typed, rather than carrying the old one.
+    #[test]
+    fn editing_after_a_walk_starts_a_new_filter() {
+        let history: Vec<String> = ["git status", "tacet why a"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut e = Editor::new("", &history);
+        e.add("tacet");
+        e.walk_history(-1);
+        assert_eq!(e.buffer, "tacet why a");
+
+        let mut e = Editor::new("", &history);
+        e.add("git");
+        e.walk_history(-1);
+        assert_eq!(e.buffer, "git status");
+    }
+
     #[test]
     fn pasted_control_bytes_never_enter_the_buffer() {
         let history: Vec<String> = Vec::new();

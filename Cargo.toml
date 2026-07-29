@@ -77,7 +77,10 @@ tacet-engine = { path = "crates/tacet-engine", version = "0.1.4" }
 # dropped as ambiguous (two tools accept it, only one of them by a closed set),
 # and the memory tool lets the model answer "I'll remember that" without
 # calling anything, which tells the user something untrue.
-tacet-tools = { path = "crates/tacet-tools", version = "0.1.7" }
+# 0.1.8 carries the trailing-comma repair for small models AND its tests: the
+# repair landed untested, and a function that rewrites the model's own words
+# before parsing them is the last place to leave untested.
+tacet-tools = { path = "crates/tacet-tools", version = "0.1.8" }
 tacet-skills = { path = "crates/tacet-skills", version = "0.1.0" }
 tacet-memory = { path = "crates/tacet-memory", version = "0.1.0" }
 # THE NETWORK MONOPOLY: a network call exists ONLY in these two crates. No

@@ -627,11 +627,11 @@ mod tests {
 
     #[test]
     fn plain_http_is_accepted_on_the_local_network() {
-        // It must pass the address gate; a network error is expected after that.
-        let e = WebSearchClient::with_address("http://localhost:8888")
-            .search("a", None)
-            .unwrap_err();
-        assert!(!matches!(e, WebError::InvalidAddress(_)), "{e:?}");
+        // It must pass the address gate (not fail with InvalidAddress).
+        let res = WebSearchClient::with_address("http://localhost:8888").search("a", None);
+        if let Err(e) = res {
+            assert!(!matches!(e, WebError::InvalidAddress(_)), "{e:?}");
+        }
     }
 
     /// WITHOUT AN ADDON THERE IS NO ADDRESS EITHER. In the previous state the

@@ -100,7 +100,10 @@ impl ToolCall {
         let body = strip_code_fence(raw.trim());
 
         // Format 1 — canonical: {"tool":"name","args":{...}}
-        if let Ok(Value::Object(object)) = serde_json::from_str::<Value>(body) {
+        let parsed_val = serde_json::from_str::<Value>(body)
+            .or_else(|_| serde_json::from_str::<Value>(&Self::repair_json(body)));
+
+        if let Ok(Value::Object(object)) = parsed_val {
             let name = object
                 .get("tool")
                 .or_else(|| object.get("name"))
@@ -149,15 +152,77 @@ impl ToolCall {
             let args = if inner.is_empty() {
                 Value::Object(Default::default())
             } else {
-                match serde_json::from_str(inner) {
+                match serde_json::from_str(inner)
+                    .or_else(|_| serde_json::from_str(&Self::repair_json(inner)))
+                {
                     Ok(v) => v,
-                    // This `(` was not the opening of the call; move to the candidate on the left.
+                    // This `(` was not the opening of the call; move to the
+                    // candidate on the left.
                     Err(_) => continue,
                 }
             };
             return Some(Self::new(name, args));
         }
         None
+    }
+
+    /// The one malformation small models produce often enough to be worth
+    /// repairing: a trailing comma before a closing brace or bracket.
+    ///
+    /// DELIBERATELY THE ONLY ONE. Every repair rewrites what the model actually
+    /// said before it is parsed, and a rewrite that guesses can turn a call the
+    /// model did not make into one it did. A trailing comma is safe to drop
+    /// because JSON gives it no meaning at all; anything beyond that (adding a
+    /// missing quote, closing an unbalanced brace) requires guessing INTENT and
+    /// is not done here.
+    ///
+    /// STRING-AWARE, and that is the whole difficulty: a comma inside a string
+    /// value belongs to the user's text, not to the syntax. `{"q":"a,}"}` must
+    /// come out unchanged, escapes included.
+    fn repair_json(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let chars: Vec<char> = s.chars().collect();
+        let mut in_string = false;
+        let mut escape = false;
+        let mut i = 0;
+
+        while i < chars.len() {
+            let c = chars[i];
+            if in_string {
+                if escape {
+                    escape = false;
+                } else if c == '\\' {
+                    escape = true;
+                } else if c == '"' {
+                    in_string = false;
+                }
+                out.push(c);
+                i += 1;
+                continue;
+            }
+
+            if c == '"' {
+                in_string = true;
+                out.push(c);
+                i += 1;
+                continue;
+            }
+
+            if c == ',' {
+                let mut j = i + 1;
+                while j < chars.len() && chars[j].is_whitespace() {
+                    j += 1;
+                }
+                if j < chars.len() && (chars[j] == '}' || chars[j] == ']') {
+                    i += 1;
+                    continue;
+                }
+            }
+
+            out.push(c);
+            i += 1;
+        }
+        out
     }
 }
 
@@ -954,6 +1019,64 @@ mod tests {
     /// contains "date"; `calendar` takes free text and would accept anything.
     /// The old rule counted two candidates, called it ambiguous and recovered
     /// nothing, and the case failed in seven runs out of seven.
+    /// THE REPAIR MUST NOT INVENT A CALL.
+    ///
+    /// It was added without a test; these are the cases that decide whether a
+    /// rewrite of the model's own words is safe. A comma inside a STRING is the
+    /// user's text and must survive untouched — dropping one there would change
+    /// the arguments a tool is called with, silently.
+    #[test]
+    fn the_json_repair_drops_only_a_meaningless_comma() {
+        // What it exists for.
+        assert_eq!(
+            ToolCall::repair_json(r#"{"path":"src/main.rs",}"#),
+            r#"{"path":"src/main.rs"}"#
+        );
+        assert_eq!(ToolCall::repair_json(r#"{"a":[1,2,],}"#), r#"{"a":[1,2]}"#);
+        // Whitespace and newlines between the comma and the brace.
+        assert_eq!(ToolCall::repair_json("{\"a\":1,\n}"), "{\"a\":1\n}");
+
+        // WHAT IT MUST NOT TOUCH.
+        for untouched in [
+            r#"{"q":"a,}"}"#,               // a comma before `}` INSIDE a string
+            r#"{"q":"a,]"}"#,               // and before `]`
+            r#"{"q":"say \", }\" twice"}"#, // an escaped quote, then the pattern
+            r#"{"a":1,"b":2}"#,             // an ordinary separating comma
+            r#"{"a":[1,2],"b":3}"#,
+            r#"{}"#,
+        ] {
+            assert_eq!(
+                ToolCall::repair_json(untouched),
+                untouched,
+                "the repair changed something it had no business changing"
+            );
+        }
+
+        // AND IT MUST NOT CHANGE A CALL THAT ALREADY PARSES. Valid JSON in,
+        // identical JSON out — the repair is only ever reached after a parse
+        // failure, but nothing enforces that from inside, so it is checked here.
+        for valid in [
+            r#"{"tool":"time","args":{"kind":"date"}}"#,
+            r#"{"expression":"12*8","digits":2}"#,
+        ] {
+            assert_eq!(ToolCall::repair_json(valid), valid);
+            assert!(serde_json::from_str::<Value>(&ToolCall::repair_json(valid)).is_ok());
+        }
+    }
+
+    /// And the end-to-end path: a call a small model would botch now runs.
+    #[test]
+    fn a_call_with_a_trailing_comma_is_still_a_call() {
+        let call = ToolCall::parse(r#"web_search({"query":"istanbul weather",})"#).expect("parsed");
+        assert_eq!(call.name, "web_search");
+        assert_eq!(call.args["query"], "istanbul weather");
+
+        let canonical = ToolCall::parse(r#"{"tool":"calculate","args":{"expression":"2+2",},}"#)
+            .expect("parsed");
+        assert_eq!(canonical.name, "calculate");
+        assert_eq!(canonical.args["expression"], "2+2");
+    }
+
     #[test]
     fn a_nameless_object_goes_to_the_tool_whose_closed_set_accepts_it() {
         let store = std::sync::Arc::new(crate::data_store::SharedStore::new());
