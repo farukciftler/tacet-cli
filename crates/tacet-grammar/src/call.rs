@@ -88,6 +88,12 @@ impl CallConstraint {
     /// only meaningful with an engine that KNOWS the tokenizer, because the mask
     /// speaks in token ids.
     pub fn new(vocab: &[String], catalog: &ToolCatalog) -> Self {
+        let mask = TokenMask::new(vocab);
+        Self::with_mask(mask, vocab, catalog)
+    }
+
+    /// Compiles the constraint reusing a pre-built `TokenMask`.
+    pub fn with_mask(mask: TokenMask, vocab: &[String], catalog: &ToolCatalog) -> Self {
         let tools: Vec<(String, Arc<Grammar>, bool)> = catalog
             .tools()
             .iter()
@@ -119,7 +125,7 @@ impl CallConstraint {
             .collect();
         Self {
             inner: Arc::new(Inner {
-                mask: TokenMask::new(vocab),
+                mask,
                 vocab: vocab.to_vec(),
                 tools,
                 paren_tokens,

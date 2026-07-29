@@ -135,12 +135,48 @@ impl Category {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum Language {
+    Turkish,
+    English,
+}
+
 /// A single user message and the tool expected from it.
 #[derive(Debug, Clone, Serialize)]
 pub struct SelectionStep {
     pub message: String,
     /// `None` = no tool must be called for this message.
     pub expected: Option<String>,
+    pub evidence: Vec<String>,
+    pub forbidden: Vec<String>,
+    pub language: Option<Language>,
+}
+
+impl SelectionStep {
+    pub fn new(message: &str, expected: Option<&str>) -> Self {
+        Self {
+            message: message.into(),
+            expected: expected.map(Into::into),
+            evidence: Vec::new(),
+            forbidden: Vec::new(),
+            language: None,
+        }
+    }
+
+    pub fn with_evidence(mut self, ev: &[&str]) -> Self {
+        self.evidence = ev.iter().map(|s| s.to_string()).collect();
+        self
+    }
+
+    pub fn with_forbidden(mut self, fb: &[&str]) -> Self {
+        self.forbidden = fb.iter().map(|s| s.to_string()).collect();
+        self
+    }
+
+    pub fn with_language(mut self, lang: Language) -> Self {
+        self.language = Some(lang);
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -156,10 +192,17 @@ impl SelectionCase {
         Self {
             name: name.into(),
             category: Category::Tool,
-            steps: vec![SelectionStep {
-                message: message.into(),
-                expected: Some(expected.into()),
-            }],
+            steps: vec![SelectionStep::new(message, Some(expected))],
+        }
+    }
+
+    fn tool_with_evidence(name: &str, message: &str, expected: &str, evidence: &[&str], lang: Language) -> Self {
+        Self {
+            name: name.into(),
+            category: Category::Tool,
+            steps: vec![SelectionStep::new(message, Some(expected))
+                .with_evidence(evidence)
+                .with_language(lang)],
         }
     }
 
@@ -168,10 +211,15 @@ impl SelectionCase {
         Self {
             name: name.into(),
             category: Category::Irrelevance,
-            steps: vec![SelectionStep {
-                message: message.into(),
-                expected: None,
-            }],
+            steps: vec![SelectionStep::new(message, None)],
+        }
+    }
+
+    fn chat_with_language(name: &str, message: &str, lang: Language) -> Self {
+        Self {
+            name: name.into(),
+            category: Category::Irrelevance,
+            steps: vec![SelectionStep::new(message, None).with_language(lang)],
         }
     }
 
@@ -182,10 +230,7 @@ impl SelectionCase {
             category: Category::MultiTurn,
             steps: steps
                 .iter()
-                .map(|(m, e)| SelectionStep {
-                    message: (*m).into(),
-                    expected: Some((*e).into()),
-                })
+                .map(|(m, e)| SelectionStep::new(m, Some(e)))
                 .collect(),
         }
     }
@@ -211,12 +256,14 @@ impl SelectionCase {
 pub fn turkish_selection_cases() -> Vec<SelectionCase> {
     vec![
         // --- calculate ---
-        SelectionCase::tool("tr-hesap-carpma", "125 çarpı 8 kaç eder?", "calculate"),
-        SelectionCase::tool("tr-hesap-yuzde", "480'in yüzde 18'i ne kadar?", "calculate"),
-        SelectionCase::tool(
+        SelectionCase::tool_with_evidence("tr-hesap-carpma", "125 çarpı 8 kaç eder?", "calculate", &["1000"], Language::Turkish),
+        SelectionCase::tool_with_evidence("tr-hesap-yuzde", "480'in yüzde 18'i ne kadar?", "calculate", &["86.4"], Language::Turkish),
+        SelectionCase::tool_with_evidence(
             "tr-hesap-toplama",
             "347 ile 268'i toplar mısın?",
             "calculate",
+            &["615"],
+            Language::Turkish,
         ),
         // --- time ---
         SelectionCase::tool("tr-saat", "Saat kaç şu an?", "time"),
@@ -272,10 +319,10 @@ pub fn turkish_selection_cases() -> Vec<SelectionCase> {
         ),
         SelectionCase::tool("tr-unut", "Kahve sevdiğimi unut artık", "remember"),
         // --- irrelevance: NOTHING must be selected ---
-        SelectionCase::chat("tr-selam", "Selam, nasılsın?"),
-        SelectionCase::chat("tr-tesekkur", "Çok teşekkürler, harikaydı!"),
-        SelectionCase::chat("tr-sohbet", "Bugün biraz yorgunum ya"),
-        SelectionCase::chat("tr-fikir", "Sence sabah sporu mu akşam sporu mu daha iyi?"),
+        SelectionCase::chat_with_language("tr-selam", "Selam, nasılsın?", Language::Turkish),
+        SelectionCase::chat_with_language("tr-tesekkur", "Çok teşekkürler, harikaydı!", Language::Turkish),
+        SelectionCase::chat_with_language("tr-sohbet", "Bugün biraz yorgunum ya", Language::Turkish),
+        SelectionCase::chat_with_language("tr-fikir", "Sence sabah sporu mu akşam sporu mu daha iyi?", Language::Turkish),
     ]
 }
 
@@ -293,12 +340,14 @@ pub fn selection_cases() -> Vec<SelectionCase> {
             "calendar",
         ),
         // --- calculate ---
-        SelectionCase::tool("calculate-multiply", "What is 125 times 8?", "calculate"),
-        SelectionCase::tool("calculate-add", "Could you add 347 and 268?", "calculate"),
-        SelectionCase::tool(
+        SelectionCase::tool_with_evidence("calculate-multiply", "What is 125 times 8?", "calculate", &["1000"], Language::English),
+        SelectionCase::tool_with_evidence("calculate-add", "Could you add 347 and 268?", "calculate", &["615"], Language::English),
+        SelectionCase::tool_with_evidence(
             "calculate-percent",
             "How much is 250 lira with a 20 percent discount?",
             "calculate",
+            &["200"],
+            Language::English,
         ),
         // --- time --- (four separate phrasings: this tool was missed twice in
         // manual measurement)
@@ -485,6 +534,58 @@ pub struct StepOutcome {
     pub called: Vec<String>,
     pub passed: bool,
     pub answer: String,
+    pub answer_passed: bool,
+}
+
+pub fn check_answer_quality(
+    step: &SelectionStep,
+    answer: &str,
+    tool_outcomes: &[String],
+) -> bool {
+    let mut pool = String::with_capacity(answer.len() + 512);
+    pool.push_str(answer);
+    for t in tool_outcomes {
+        pool.push(' ');
+        pool.push_str(t);
+    }
+    let pool_lower = pool.to_lowercase();
+
+    for ev in &step.evidence {
+        if !pool_lower.contains(&ev.to_lowercase()) {
+            return false;
+        }
+    }
+
+    for fb in &step.forbidden {
+        if pool_lower.contains(&fb.to_lowercase()) {
+            return false;
+        }
+    }
+
+    if let Some(lang) = step.language {
+        match lang {
+            Language::Turkish => {
+                let lower = answer.to_lowercase();
+                let diacritics_or_words = [
+                    "ç", "ğ", "ı", "ö", "ş", "ü", "ve", "bir", "bu", "için", "saat", "gün", "tarih", "dosya", "not",
+                ];
+                let hits = diacritics_or_words.iter().filter(|&m| lower.contains(m)).count();
+                if hits == 0 && !answer.trim().is_empty() {
+                    return false;
+                }
+            }
+            Language::English => {
+                let lower = answer.to_lowercase();
+                let words = ["the", "is", "and", "to", "in", "for", "it", "on", "of", "with"];
+                let hits = words.iter().filter(|&m| lower.contains(m)).count();
+                if hits == 0 && !answer.trim().is_empty() {
+                    return false;
+                }
+            }
+        }
+    }
+
+    true
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -499,29 +600,18 @@ pub struct SelectionOutcome {
 pub struct SelectionReport {
     pub engine: String,
     /// WHAT produced these numbers — model file, quantization, device.
-    ///
-    /// Without it the report said `"candle"` and nothing else, so four
-    /// different weight files gave four indistinguishable reports and a
-    /// comparison matrix could silently measure one model in every cell.
     pub identity: tacet_engine::EngineIdentity,
-    /// How long the whole suite took. Every latency guard anybody writes needs
-    /// a number to compare against, and there was none.
     pub wall_ms: u128,
-    /// The catalog the router chose from, by name. It is NOT constant across
-    /// machines — three tools are platform-gated — so a score is only
-    /// comparable against a score with the same list.
     pub catalog: Vec<String>,
     pub cases: Vec<SelectionOutcome>,
-    /// The hit rate of the tool + multi-turn cases.
     pub tool_passed: usize,
     pub tool_total: usize,
-    /// Irrelevance SEPARATELY: a drop here invalidates a rise in the hit rate.
     pub irrelevance_passed: usize,
     pub irrelevance_total: usize,
-    /// The hit rate PER STEP in multi-turn cases — a per-case number hides the
-    /// rest of a chain that broke on the first step.
     pub step_passed: usize,
     pub step_total: usize,
+    pub answer_passed: usize,
+    pub answer_total: usize,
 }
 
 impl SelectionReport {
@@ -542,6 +632,8 @@ impl SelectionReport {
             irrelevance_total: 0,
             step_passed: 0,
             step_total: 0,
+            answer_passed: 0,
+            answer_total: 0,
             cases,
         };
         for c in &r.cases {
@@ -558,6 +650,8 @@ impl SelectionReport {
             for s in &c.steps {
                 r.step_total += 1;
                 r.step_passed += s.passed as usize;
+                r.answer_total += 1;
+                r.answer_passed += s.answer_passed as usize;
             }
         }
         r
@@ -571,6 +665,10 @@ impl SelectionReport {
         ratio(self.irrelevance_passed, self.irrelevance_total)
     }
 
+    pub fn answer_rate(&self) -> f64 {
+        ratio(self.answer_passed, self.answer_total)
+    }
+
     pub fn table(&self) -> String {
         let width = self
             .cases
@@ -580,8 +678,6 @@ impl SelectionReport {
             .unwrap_or(4)
             .max(4);
         let mut s = String::new();
-        // THE HEADER NAMES THE SUBJECT. A table that says only "candle" is a
-        // table whose subject is unknown the moment a second model exists.
         s.push_str(&format!(
             "engine: {}  (tool selection set)\n",
             self.identity.line()
@@ -635,6 +731,12 @@ impl SelectionReport {
             self.step_total,
             ratio(self.step_passed, self.step_total) * 100.0
         ));
+        s.push_str(&format!(
+            "ANSWER QUALITY  {}/{}  ({:.1}%)\n",
+            self.answer_passed,
+            self.answer_total,
+            self.answer_rate() * 100.0
+        ));
         s
     }
 
@@ -645,7 +747,7 @@ impl SelectionReport {
     }
 }
 
-fn ratio(passed: usize, total: usize) -> f64 {
+pub fn ratio(passed: usize, total: usize) -> f64 {
     if total == 0 {
         0.0
     } else {
@@ -657,7 +759,6 @@ fn ratio(passed: usize, total: usize) -> f64 {
 // The runner
 // ---------------------------------------------------------------------------
 
-/// Gives the production catalog in its dried-out form.
 fn selection_catalog(env: &Env, memory: &SharedMemory) -> ToolCatalog {
     let (full, _, _) =
         tacet_tools::catalog::production_catalog(&env.store, memory, Some(FIXED_EPOCH));
@@ -673,13 +774,6 @@ fn selection_catalog(env: &Env, memory: &SharedMemory) -> ToolCatalog {
     c
 }
 
-/// Announces ONCE the tools that could not pass the discovery gate.
-///
-/// The warning DOES NOT CHANGE the runner's behaviour, it makes it visible: the
-/// cases expecting these tools will lose on this machine and the score will
-/// drop. Left silent, every report taken outside macOS would be read as "the hit
-/// rate fell" and a regression that does not exist would be hunted. That the
-/// loss comes FROM THE PLATFORM is written here, next to the report.
 fn announce_missing_tools(catalog: &ToolCatalog) {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -700,18 +794,21 @@ fn announce_missing_tools(catalog: &ToolCatalog) {
     });
 }
 
-/// Runs all the cases. The engine must be REAL; it is not meaningful with the
-/// fake engine.
 pub fn run_selection(cases: &[SelectionCase], engine: &Arc<dyn EngineProvider>) -> SelectionReport {
+    run_selection_with_options(cases, engine, None, false)
+}
+
+pub fn run_selection_with_options(
+    cases: &[SelectionCase],
+    engine: &Arc<dyn EngineProvider>,
+    budget: Option<usize>,
+    force_tool_name: bool,
+) -> SelectionReport {
     let started = std::time::Instant::now();
     let outcomes: Vec<SelectionOutcome> = cases
         .iter()
-        .map(|c| run_selection_case(c, engine))
+        .map(|c| run_selection_case_with_options(c, engine, budget, force_tool_name))
         .collect();
-    // The catalog is recorded, not assumed: `calendar` is macOS-only and
-    // run_code/write_code depend on a sandbox being discoverable, so the same
-    // suite scores against a different tool set on a different machine. A
-    // number without its catalog cannot be compared with another number.
     let catalog = production_catalog_names();
     SelectionReport::new(
         engine.identity(),
@@ -721,8 +818,6 @@ pub fn run_selection(cases: &[SelectionCase], engine: &Arc<dyn EngineProvider>) 
     )
 }
 
-/// The names the router chose from, in catalog order — built exactly the way
-/// the cases build it, so the list in the report is the list that ran.
 fn production_catalog_names() -> Vec<String> {
     let Ok(env) = Env::setup() else {
         return Vec::new();
@@ -735,12 +830,18 @@ fn production_catalog_names() -> Vec<String> {
         .collect()
 }
 
-/// Runs one case. In a multi-turn case the environment, the history and the
-/// catalog are SHARED: for the message "show it as a table" to be resolvable,
-/// the "document in play" must really have been created in the previous step.
 pub fn run_selection_case(
     case: &SelectionCase,
     engine: &Arc<dyn EngineProvider>,
+) -> SelectionOutcome {
+    run_selection_case_with_options(case, engine, None, false)
+}
+
+pub fn run_selection_case_with_options(
+    case: &SelectionCase,
+    engine: &Arc<dyn EngineProvider>,
+    budget: Option<usize>,
+    force_tool_name: bool,
 ) -> SelectionOutcome {
     let env = match Env::setup() {
         Ok(e) => e,
@@ -755,6 +856,7 @@ pub fn run_selection_case(
                     called: Vec::new(),
                     passed: false,
                     answer: format!("the environment could not be set up: {e}"),
+                    answer_passed: false,
                 }],
             };
         }
@@ -768,10 +870,12 @@ pub fn run_selection_case(
         env.dir(),
         Arc::clone(&traces) as Arc<dyn tacet_kernel::Reporter>,
     );
-    // The constraint is built once OUTSIDE the loop: the trie cost is
-    // proportional to the vocabulary size.
-    let constraint = engine.vocab().map(|v| CallConstraint::new(&v, &catalog));
-    let router = Router::new();
+
+    let router = if let Some(b) = budget {
+        Router::new().budget_override(b)
+    } else {
+        Router::new()
+    };
 
     let mut history: Vec<Turn> = Vec::new();
     let mut step_outcomes: Vec<StepOutcome> = Vec::new();
@@ -780,16 +884,19 @@ pub fn run_selection_case(
         let ticket = executor.new_turn();
         traces.reset();
         let selected: ToolCatalog = router.select(&step.message, &catalog).into_iter().collect();
+        let constraint = engine.vocab().map(|v| {
+            if force_tool_name {
+                CallConstraint::new(&v, &selected)
+            } else {
+                CallConstraint::new(&v, &catalog)
+            }
+        });
 
         let mut turn_tools: Vec<Turn> = Vec::new();
         let mut called: Vec<String> = Vec::new();
         let mut answer = String::new();
 
         for _ in 0..MAX_TURNS {
-            // WHERE THE QUESTION GOES: at the END of the prompt on the first
-            // turn, IN FRONT OF the tool call on later turns. The production
-            // path (tacet-cli) does it this way; if eval did it differently what
-            // is measured would not be the application's behaviour.
             let first = turn_tools.is_empty();
             let question = if first { step.message.as_str() } else { "" };
             let previous: Vec<Turn> = if first {
@@ -834,18 +941,14 @@ pub fn run_selection_case(
             turn_tools.push(Turn::tool(outcome.to_model.clone()));
         }
 
-        // THE HIT CLAIM — "was it called somewhere in the loop".
-        //
-        // WHY NOT THE FIRST CALL: `edit_document`'s own description says "call
-        // read_document first". A claim looking at the first call would count a
-        // model FOLLOWING THE INSTRUCTION as a failure. On the irrelevance side
-        // the claim is absolute: no tool at all, nowhere in the loop.
         let passed = match &step.expected {
             Some(name) => called.iter().any(|c| c == name),
             None => called.is_empty(),
         };
 
-        // The history is PERSISTENT: the next user message must see this turn.
+        let tool_outcomes_text: Vec<String> = turn_tools.iter().map(|t| t.text.clone()).collect();
+        let answer_passed = passed && check_answer_quality(step, &answer, &tool_outcomes_text);
+
         history.push(Turn::user(&step.message));
         history.extend(turn_tools);
         if !answer.is_empty() {
@@ -858,6 +961,7 @@ pub fn run_selection_case(
             called,
             passed,
             answer,
+            answer_passed,
         });
     }
 
@@ -1180,6 +1284,7 @@ mod tests {
                     called: vec![],
                     passed: false,
                     answer: String::new(),
+                    answer_passed: false,
                 }],
             },
             SelectionOutcome {
@@ -1192,6 +1297,7 @@ mod tests {
                     called: vec![],
                     passed: true,
                     answer: String::new(),
+                    answer_passed: true,
                 }],
             },
         ];

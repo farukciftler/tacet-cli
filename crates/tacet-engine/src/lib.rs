@@ -164,6 +164,33 @@ mod tests {
     }
 
     #[test]
+    fn static_first_prompt_ordering_preserves_prefix_when_memory_notes_differ() {
+        use crate::prompt::Template;
+        let prompt1 = Prompt::new("SYSTEM INSTRUCTIONS\ndir_block: /path/to/dir", "question 1")
+            .with_tools(&catalog())
+            .with_memory("user prefers dark mode");
+
+        let prompt2 = Prompt::new("SYSTEM INSTRUCTIONS\ndir_block: /path/to/dir", "question 2")
+            .with_tools(&catalog())
+            .with_memory("user prefers light mode");
+
+        let text1 = prompt1.text_with_template(Template::ChatML);
+        let text2 = prompt2.text_with_template(Template::ChatML);
+
+        let system_prefix = "<|im_start|>system\nSYSTEM INSTRUCTIONS\ndir_block: /path/to/dir";
+        assert!(text1.starts_with(system_prefix));
+        assert!(text2.starts_with(system_prefix));
+
+        let common_prefix_len = text1
+            .bytes()
+            .zip(text2.bytes())
+            .take_while(|(b1, b2)| b1 == b2)
+            .count();
+        let tools_end = text1.find("</tools>").unwrap() + "</tools>".len();
+        assert!(common_prefix_len >= tools_end);
+    }
+
+    #[test]
     fn the_chatml_template_separates_roles_with_fences() {
         use crate::prompt::Template;
         let prompt = Prompt::new("You are Tacet.", "what is on tomorrow?")

@@ -27,7 +27,8 @@ pub use env::{EXTERNAL_TOOL, Env, FakeExternalTool};
 pub use report::EvalReport;
 pub use runner::{CaseOutcome, EngineSelector, FakeSelector, SingleEngine, run, run_case};
 pub use tool_selection::{
-    Category, SelectionCase, SelectionReport, run_selection, run_selection_case, selection_cases,
+    Category, Language, SelectionCase, SelectionReport, check_answer_quality, ratio,
+    run_selection, run_selection_case, run_selection_with_options, selection_cases,
     turkish_selection_cases,
 };
 // The turn budget and the system instruction are NO LONGER defined here: both

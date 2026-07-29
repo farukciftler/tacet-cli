@@ -630,6 +630,7 @@ impl Router {
 #[derive(Debug, Clone, Default)]
 pub struct Router {
     max: Option<usize>,
+    budget_override: Option<usize>,
     /// See `reserving`.
     reserved: Vec<String>,
 }
@@ -646,8 +647,19 @@ impl Router {
         self
     }
 
-    fn budget(&self) -> usize {
-        self.max.unwrap_or(MAX_TOOLS)
+    /// Measurement-only budget override: CAN exceed `MAX_TOOLS`.
+    /// `0` means the whole catalog.
+    pub fn budget_override(mut self, count: usize) -> Self {
+        self.budget_override = Some(count);
+        self
+    }
+
+    fn budget(&self, catalog_len: usize) -> usize {
+        if let Some(b) = self.budget_override {
+            if b == 0 { catalog_len } else { b }
+        } else {
+            self.max.unwrap_or(MAX_TOOLS)
+        }
     }
 
     /// Picks the tools to show the model in this session, based on the message.
@@ -693,7 +705,7 @@ impl Router {
                 })
                 .then(a.1.cmp(&b.1))
         });
-        let budget = self.budget();
+        let budget = self.budget(catalog.tools().len());
         // THE RESERVATION IS FOR SILENCE, NOT FOR COMPETITION. It exists so a
         // question in a language the trigger table has never seen can still
         // reach a connected server. When a profile DID fire, the message has

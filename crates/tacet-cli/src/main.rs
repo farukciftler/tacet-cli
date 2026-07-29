@@ -276,24 +276,33 @@ enum Command {
         threshold: f64,
         /// Runs the TOOL SELECTION set instead of the logic set — with a REAL
         /// model.
-        ///
-        /// A separate flag, because both what is measured and the threshold
-        /// differ: the logic set is deterministic with FakeEngine and 100% is
-        /// expected; the selection set measures the model's own choice, takes
-        /// minutes and 100% is not expected.
         #[arg(long)]
         tool_selection: bool,
         /// With --tool-selection: run the TURKISH selection set instead of the
-        /// English one (a separate list — mixed languages would blur the number).
+        /// English one.
         #[arg(long)]
         turkish: bool,
         /// The local model folder the selection set will use (`~/models/<name>`).
         #[arg(long, default_value = DEFAULT_MODEL)]
         model: String,
-        /// Run only the cases whose name contains this string (selection set;
-        /// diagnostic).
+        /// Run only the cases whose name contains this string.
         #[arg(long)]
         only: Option<String>,
+        /// Enforce quantization match (Item 14: e.g. Q4_K_M)
+        #[arg(long)]
+        require_quant: Option<String>,
+        /// Override tool budget for measurement (Item 10)
+        #[arg(long)]
+        budget: Option<usize>,
+        /// Run a tool budget sweep (Item 10: e.g. "6,9,12,0")
+        #[arg(long)]
+        budget_sweep: Option<String>,
+        /// Format-only gate test for CI (Item 12)
+        #[arg(long)]
+        format_gate: bool,
+        /// Force tool name prefix constraint (Item 13)
+        #[arg(long)]
+        force_tool_name: bool,
     },
     /// Lists the catalog and its schemas.
     Tools {
@@ -729,9 +738,40 @@ fn main() -> ExitCode {
             turkish,
             model,
             only,
+            require_quant,
+            budget,
+            budget_sweep,
+            format_gate,
+            force_tool_name,
         } => {
-            if tool_selection {
-                eval_tool_selection(json, threshold, &model, only.as_deref(), turkish)
+            if format_gate {
+                let color = Color::setup();
+                let engine = match model_package::resolve_pair(&model) {
+                    Some((m, t)) => match candle_engine_from_path(&m, t.as_deref()) {
+                        Ok(engine) => engine,
+                        Err(e) => {
+                            eprintln!("error: real model could not be loaded: {e}");
+                            return ExitCode::FAILURE;
+                        }
+                    },
+                    None => {
+                        model_not_found_report(&model, &color);
+                        return ExitCode::FAILURE;
+                    }
+                };
+                eval_format_gate(&engine)
+            } else if tool_selection || budget.is_some() || budget_sweep.is_some() || require_quant.is_some() || force_tool_name {
+                eval_tool_selection(
+                    json,
+                    threshold,
+                    &model,
+                    only.as_deref(),
+                    turkish,
+                    require_quant.as_deref(),
+                    budget,
+                    budget_sweep.as_deref(),
+                    force_tool_name,
+                )
             } else {
                 eval(json, threshold)
             }
@@ -5341,22 +5381,64 @@ fn eval(json: bool, threshold: f64) -> ExitCode {
 /// capacity and rises over time; irrelevance is a limit that CANNOT BE BROKEN —
 /// an assistant that calls a tool on a greeting is unusable whatever its
 /// accuracy. That is why the exit code is tied to irrelevance.
+fn eval_format_gate(engine: &Arc<dyn EngineProvider>) -> ExitCode {
+    let cases = vec![
+        ("What is 125 times 8?", "calculate"),
+        ("What time is it right now?", "time"),
+        ("Find file containing budget", "find_file"),
+        ("Read document notes.md", "read_document"),
+        ("Create an excel table for my shopping list", "create_document"),
+        ("Remember my birthday is May 3rd", "remember"),
+        ("İstanbul'da yarın hava nasıl olacak?", "web_search"),
+        ("What is on my calendar tomorrow?", "calendar"),
+    ];
+
+    let mut parsed_calls = 0;
+    let total = cases.len();
+
+    let env = match tacet_eval::Env::setup() {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("format gate: failed to setup env: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let memory = tacet_tools::memory::SharedMemory::in_memory();
+    let (catalog, _, _) = tacet_tools::catalog::production_catalog(&env.store, &memory, None);
+
+    for (msg, _expected) in &cases {
+        let prompt = Prompt::new(SYSTEM_INSTRUCTIONS, *msg).with_tools(&catalog);
+        if let Ok(generation) = wait(engine.generate(&prompt, None, SamplingSetting::default())) {
+            if tacet_tools::executor::ToolCall::parse(&generation.text).is_some() {
+                parsed_calls += 1;
+            }
+        }
+    }
+
+    println!("FORMAT GATE RESULT: {parsed_calls}/{total} calls parsed valid tool syntax");
+    if parsed_calls >= 7 {
+        ExitCode::SUCCESS
+    } else {
+        eprintln!("format gate failed: {parsed_calls}/{total} < 7");
+        ExitCode::FAILURE
+    }
+}
+
 fn eval_tool_selection(
     json: bool,
     threshold: f64,
     model_name: &str,
     only: Option<&str>,
     turkish: bool,
+    require_quant: Option<&str>,
+    budget: Option<usize>,
+    budget_sweep: Option<&str>,
+    force_tool_name: bool,
 ) -> ExitCode {
     let color = Color::setup();
     let engine = match model_package::resolve_pair(model_name) {
         Some((m, t)) => match candle_engine_from_path(&m, t.as_deref()) {
             Ok(engine) => {
-                // THE SILENT-OVERRIDE WARNING. `resolve_pair` consults
-                // `TACET_MODEL` BEFORE the catalog, so a variable left over in a
-                // shell overrides `--model` for every cell of a comparison and
-                // the whole matrix measures one model. Nothing said so; now it
-                // does, and it names both the flag and the file that won.
                 if model_package::pair_from_env().is_some() {
                     eprintln!(
                         "{}",
@@ -5378,8 +5460,6 @@ fn eval_tool_selection(
             }
         },
         None => {
-            // The catalog is printed HERE TOO: before the measurement runs the
-            // user needs to see which package they could select.
             model_not_found_report(model_name, &color);
             eprintln!("error: the tool selection measurement REQUIRES a real model.");
             return ExitCode::FAILURE;
@@ -5398,6 +5478,37 @@ fn eval_tool_selection(
             return ExitCode::FAILURE;
         }
     }
+
+    if let Some(sweep_str) = budget_sweep {
+        let points: Vec<usize> = sweep_str
+            .split(',')
+            .filter_map(|s| s.trim().parse::<usize>().ok())
+            .collect();
+        if points.is_empty() {
+            eprintln!("error: invalid --budget-sweep format. Example: 6,9,12,0");
+            return ExitCode::FAILURE;
+        }
+        println!("============================================================");
+        println!("TOOL BUDGET SWEEP SUMMARY ({model_name})");
+        println!("============================================================");
+        println!("{:<8} | {:<10} | {:<10} | {:<12} | {:<8}", "budget", "tool acc", "per-step", "irrelevance", "wall ms");
+        println!("------------------------------------------------------------");
+        for b in points {
+            let report = tacet_eval::run_selection_with_options(&cases, &engine, Some(b), force_tool_name);
+            let b_label = if b == 0 { "all".to_string() } else { b.to_string() };
+            println!(
+                "{:<8} | {:<10.1}% | {:<10.1}% | {:<12.1}% | {} ms",
+                b_label,
+                report.tool_rate() * 100.0,
+                report.answer_rate() * 100.0,
+                report.irrelevance_rate() * 100.0,
+                report.wall_ms
+            );
+        }
+        println!("============================================================");
+        return ExitCode::SUCCESS;
+    }
+
     eprintln!(
         "{}",
         color.paint(
@@ -5406,7 +5517,18 @@ fn eval_tool_selection(
         )
     );
 
-    let report = tacet_eval::run_selection(&cases, &engine);
+    let report = tacet_eval::run_selection_with_options(&cases, &engine, budget, force_tool_name);
+
+    if let Some(req_q) = require_quant {
+        if !report.identity.quant.to_lowercase().contains(&req_q.to_lowercase()) {
+            eprintln!(
+                "error: required quantization '{req_q}' does not match engine quantization '{}'",
+                report.identity.quant
+            );
+            return ExitCode::FAILURE;
+        }
+    }
+
     if json {
         println!("{}", report.json());
     } else {

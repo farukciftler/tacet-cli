@@ -47,7 +47,7 @@ tacet-zip = { path = "crates/tacet-zip", version = "0.1.0" }
 # at all — the prompt advertises `disk_usage()` and the grammar refuses it, so
 # the model writes something that parses as no call and the tool never runs.
 # Remote (MCP) catalogs are full of such tools.
-tacet-grammar = { path = "crates/tacet-grammar", version = "0.1.1" }
+tacet-grammar = { path = "crates/tacet-grammar", version = "0.1.2" }
 # EVERY NUMBER BELOW THAT IS NOT 0.1.0 IS A FLOOR, NOT A PREFERENCE, and each
 # one was put there by a fix that a `^0.1.0` install would have resolved away.
 # `cargo install tacet-cli` picks the newest match, but a machine with an older
@@ -65,7 +65,7 @@ tacet-grammar = { path = "crates/tacet-grammar", version = "0.1.1" }
 # from a tool result. `Plain` kept it, which made it worse than a plain bug:
 # eval runs on FakeEngine, FakeEngine is `Plain`, so the one template no model
 # ever sees was the one template the measurement covered.
-tacet-engine = { path = "crates/tacet-engine", version = "0.1.6" }
+tacet-engine = { path = "crates/tacet-engine", version = "0.1.7" }
 # 0.1.3 brought the addon gates and the five tools behind them; below it,
 # `catalog.rs` has no gate to ask and `shell`/`http`/`db` do not exist at all.
 # 0.1.4 IS THE FLOOR: below it `shell` is offered on Windows, where the timeout
@@ -94,7 +94,7 @@ tacet-engine = { path = "crates/tacet-engine", version = "0.1.6" }
 # are the largest block in the prompt and until now had none — the worst
 # nine-tool selection measures 2542 tokens, 62% of the 4096-token floor window,
 # re-sent on every pass of the tool loop.
-tacet-tools = { path = "crates/tacet-tools", version = "0.1.9" }
+tacet-tools = { path = "crates/tacet-tools", version = "0.1.10" }
 tacet-skills = { path = "crates/tacet-skills", version = "0.1.0" }
 tacet-memory = { path = "crates/tacet-memory", version = "0.1.0" }
 # THE NETWORK MONOPOLY: a network call exists ONLY in these two crates. No
@@ -109,4 +109,4 @@ tacet-web = { path = "crates/tacet-web", version = "0.1.4" }
 # envelope, MRTR, poll-based tasks, issuer-bound OAuth. The 0.1 line speaks only
 # the frozen revision, and a `^0.1` resolve would silently put a client on it.
 tacet-mcp = { path = "crates/tacet-mcp", version = "0.2.0" }
-tacet-eval = { path = "crates/tacet-eval", version = "0.1.4" }
+tacet-eval = { path = "crates/tacet-eval", version = "0.1.5" }

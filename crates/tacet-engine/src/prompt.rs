@@ -285,11 +285,6 @@ impl Prompt {
             m.push_str(self.tools.trim_end());
             m.push_str("\n</tools>");
         }
-        if let Some(h) = &self.memory {
-            m.push_str("\n\n<memory>\n");
-            m.push_str(h.trim());
-            m.push_str("\n</memory>");
-        }
 
         // History + question are turned into a SINGLE list of blocks, then
         // CONSECUTIVE IDENTICAL ROLES ARE MERGED.
@@ -313,19 +308,25 @@ impl Prompt {
             blocks.push((t.role.gemma(), body));
         }
         // If the question is empty no closing user block is added (see the
-        // `question` field) — but THE GUIDE STILL GOES IN. See
-        // `guidance_block`: without this the skill guidance was present on the
-        // first turn of the tool loop and GONE from the second onward, which is
-        // exactly the turn where the model is recovering from a tool result and
-        // needs it most. Pushed as its own `user` block; the merge below folds
-        // it into the preceding tool-result turn, so no second consecutive
-        // `user` fence is produced.
+        // `question` field) — but THE GUIDE AND MEMORY STILL GO IN.
         if !self.question.trim().is_empty() {
             let mut question = String::new();
             self.gemma_write_question(&mut question);
             blocks.push(("user", question));
-        } else if let Some(g) = self.guidance_block() {
-            blocks.push(("user", g));
+        } else {
+            let mut extra = String::new();
+            if let Some(mem) = self.memory_block() {
+                extra.push_str(&mem);
+            }
+            if let Some(g) = self.guidance_block() {
+                if !extra.is_empty() {
+                    extra.push('\n');
+                }
+                extra.push_str(&g);
+            }
+            if !extra.is_empty() {
+                blocks.push(("user", extra));
+            }
         }
 
         // If the first block is `user` it sticks to the same turn as a
@@ -353,10 +354,13 @@ impl Prompt {
         m
     }
 
-    /// Guide + question. The guide sits IMMEDIATELY BEFORE the question (see the
-    /// SKILL DECISION at the head of this file); kept separate so the same order
-    /// is not written out twice at two call sites.
+    /// Memory + Guide + question. The memory and guide sit IMMEDIATELY BEFORE the question
+    /// (static-first prompt ordering).
     fn gemma_write_question(&self, m: &mut String) {
+        if let Some(mem) = self.memory_block() {
+            m.push_str(&mem);
+            m.push('\n');
+        }
         if let Some(g) = self.guidance_block() {
             m.push_str(&g);
             m.push('\n');
@@ -364,18 +368,13 @@ impl Prompt {
         m.push_str(self.question.trim());
     }
 
+    /// The `<memory>` fence, or `None` when there are no memory notes.
+    fn memory_block(&self) -> Option<String> {
+        let m = self.memory.as_ref()?;
+        Some(format!("<memory>\n{}\n</memory>", m.trim()))
+    }
+
     /// The `<guidance>` fence, or `None` when there is no guide.
-    ///
-    /// ONE PLACE, THREE CALL SITES (ChatML, Gemma, and the empty-question path
-    /// of both). It used to be written inline inside the question branch of each
-    /// template, and that is precisely how the bug got in: `plain_text` wrote the
-    /// guide unconditionally while ChatML and Gemma wrote it only when the
-    /// question was non-empty. So on the second and later turns of the tool loop
-    /// — the ones where `question` is deliberately EMPTY (see the `question`
-    /// field) — the guidance silently disappeared on every real template, and
-    /// only on the one template no model ever sees did it survive. That also
-    /// meant eval, which runs on FakeEngine and therefore on `Plain`, was
-    /// measuring a prompt shape production never produced.
     fn guidance_block(&self) -> Option<String> {
         let g = self.guide.as_ref()?;
         Some(format!("<guidance>\n{}\n</guidance>", g.trim()))
@@ -398,13 +397,6 @@ impl Prompt {
             m.push_str(self.tools.trim_end());
             m.push_str("\n</tools>");
         }
-        // Memory in the system block: fixed user context, not a conversation
-        // turn.
-        if let Some(h) = &self.memory {
-            m.push_str("\n\n<memory>\n");
-            m.push_str(h.trim());
-            m.push_str("\n</memory>");
-        }
         m.push_str("<|im_end|>\n");
 
         // TOOL RESULTS are wrapped in `<tool_response>` and CONSECUTIVE ones
@@ -413,9 +405,9 @@ impl Prompt {
         // for each tool result produces consecutive user turns in the history and
         // shifts the "last question" the model sees.
         // Is a closing user turn going to be opened for the question? When it is
-        // not (the tool loop's second and later turns), the guide has to find
-        // another home — see `guidance_block` and the two `guide_placed` sites
-        // below.
+        // not (the tool loop's second and later turns), the guide and memory have
+        // to find another home — see `guidance_block`, `memory_block` and the two
+        // `guide_placed` sites below.
         let question_turn = !self.question.trim().is_empty();
         let mut guide_placed = false;
 
@@ -430,18 +422,18 @@ impl Prompt {
                     m.push_str("\n</tool_response>");
                     i += 1;
                 }
-                // THE GUIDANCE RIDES ALONG WITH THE LAST TOOL RESULT. It cannot
-                // be its own turn here: that would put two `user` fences back to
-                // back, the sequence this template's merge rule exists to avoid.
-                // Riding along keeps it where the SKILL DECISION at the head of
-                // this file wants it — the last block before the generation
-                // anchor, which in a small model is the block that carries most.
-                if i == self.history.len()
-                    && !question_turn
-                    && let Some(g) = self.guidance_block()
-                {
-                    m.push('\n');
-                    m.push_str(&g);
+                // THE MEMORY AND GUIDANCE RIDE ALONG WITH THE LAST TOOL RESULT.
+                // It cannot be its own turn here: that would put two `user` fences
+                // back to back, the sequence this template's merge rule exists to avoid.
+                if i == self.history.len() && !question_turn {
+                    if let Some(mem) = self.memory_block() {
+                        m.push('\n');
+                        m.push_str(&mem);
+                    }
+                    if let Some(g) = self.guidance_block() {
+                        m.push('\n');
+                        m.push_str(&g);
+                    }
                     guide_placed = true;
                 }
                 m.push_str("<|im_end|>\n");
@@ -455,61 +447,39 @@ impl Prompt {
             i += 1;
         }
 
-        // The guide sits INSIDE the question, immediately before it — as a
-        // separate turn a role boundary would come between them and the weight
-        // advantage of the last block in a small model (see the SKILL DECISION at
-        // the head of this file) would be lost.
-        // IF THE QUESTION IS EMPTY the closing user turn IS NEVER OPENED (see the
-        // `question` field): the history already ends with a `<tool_response>`
-        // user turn and the model must continue straight from there.
+        // The memory and guide sit INSIDE the question, immediately before it.
         if question_turn {
             m.push_str("<|im_start|>user\n");
+            if let Some(mem) = self.memory_block() {
+                m.push_str(&mem);
+                m.push('\n');
+            }
             if let Some(g) = self.guidance_block() {
                 m.push_str(&g);
                 m.push('\n');
             }
             m.push_str(self.question.trim());
             m.push_str("<|im_end|>\n");
-        } else if !guide_placed && let Some(g) = self.guidance_block() {
-            // THE FALLBACK, for a history that does NOT end in a tool result.
-            // Production never builds that shape today (the tool loop always
-            // appends assistant-call + tool-result in pairs), but "the guide is
-            // dropped" must not be one refactor away from being true again — the
-            // whole point of this change. One extra `user` turn is a smaller
-            // price than a silently missing instruction.
-            m.push_str("<|im_start|>user\n");
-            m.push_str(&g);
-            m.push_str("<|im_end|>\n");
+        } else if !guide_placed {
+            let mut extra = String::new();
+            if let Some(mem) = self.memory_block() {
+                extra.push_str(&mem);
+            }
+            if let Some(g) = self.guidance_block() {
+                if !extra.is_empty() {
+                    extra.push('\n');
+                }
+                extra.push_str(&g);
+            }
+            if !extra.is_empty() {
+                m.push_str("<|im_start|>user\n");
+                m.push_str(&extra);
+                m.push_str("<|im_end|>\n");
+            }
         }
 
-        // The generation anchor: the model writes from here on. There is NO
-        // trailing `\n` — in ChatML the single newline after the role line was
-        // already given here.
+        // The generation anchor: the model writes from here on.
         m.push_str("<|im_start|>assistant\n");
-
-        // TRIED AND REVERTED (20 Jul 2026) — do not write
-        // `<think>\n\n</think>\n\n` here. That is Qwen3's official
-        // `enable_thinking=false` path and it really does turn thinking off, BUT
-        // IT BREAKS THE TOOL CALL FORMAT.
-        //
-        // A 10-question measurement, same pair, this line the only variable:
-        //   Qwen3-4B  7/10 -> 2/10        Qwen3-8B  (unmeasured) -> 4/10
-        // The models pick the tool NAME correctly but abandon the syntax:
-        //   `{ "expression": "1247 * 89" }`   (no name)
-        //   `<web_search(query:"...")>`       (invented angle brackets)
-        //   `find_file pattern: "report"`     (no parenthesis/JSON)
-        // That is, the `tool({...})` pattern dissolves and `ToolCall::parse`
-        // counts none of them as a call — the tool never runs at all.
-        //
-        // Likely cause: the anchor injects a foreign block between the
-        // `Example: calculate({"expression":"12*8"})` in the system instructions
-        // and the start of generation, weakening the model's ability to carry the
-        // pattern. (Same family as the "the example carries weight" finding
-        // documented in `session.rs`.)
-        //
-        // Thinking is now stripped from the output ONLY by `thinking.rs`. The
-        // price is real: a hybrid 8B burns tokens while thinking (27.2s -> 13.1s
-        // difference measured). But slow+correct beats fast+broken.
         m
     }
 
@@ -525,12 +495,6 @@ impl Prompt {
             m.push_str("\n</tools>\n");
         }
 
-        if let Some(h) = &self.memory {
-            m.push_str("<memory>\n");
-            m.push_str(h.trim());
-            m.push_str("\n</memory>\n");
-        }
-
         if !self.history.is_empty() {
             m.push_str("<history>\n");
             for t in &self.history {
@@ -539,8 +503,11 @@ impl Prompt {
             m.push_str("</history>\n");
         }
 
-        // WRITTEN WHETHER OR NOT THERE IS A QUESTION — the same rule the other
-        // two templates now follow (see `guidance_block`).
+        if let Some(mem) = self.memory_block() {
+            m.push_str(&mem);
+            m.push('\n');
+        }
+
         if let Some(g) = self.guidance_block() {
             m.push_str(&g);
             m.push('\n');
