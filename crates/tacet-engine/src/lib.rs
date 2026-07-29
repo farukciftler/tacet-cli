@@ -303,6 +303,68 @@ mod tests {
         }
     }
 
+    /// THE TOOL LOOP'S SECOND TURN STILL GETS ITS GUIDANCE — on every template.
+    ///
+    /// The shape being measured is the one production builds from turn two
+    /// onward: the question has MOVED INTO THE HISTORY (in front of the tool
+    /// call) and `question` is left empty, deliberately, so the model does not
+    /// read its own request as unanswered. The guide used to be written only
+    /// inside the question turn, so it vanished at exactly that point — the turn
+    /// where the model is recovering from a tool result and needs the guidance
+    /// most. `Plain` kept it, which is worse than a plain bug: eval runs on
+    /// FakeEngine, FakeEngine is `Plain`, so the one template no model sees was
+    /// the one template the measurement covered.
+    #[test]
+    fn the_guide_survives_an_empty_question_on_every_template() {
+        use crate::prompt::Template;
+        let prompt = Prompt::new("s", "").with_guide("GUIDE TEXT").with_history([
+            Turn::user("the real question here"),
+            Turn::assistant("calculate({\"expression\":\"12*8\"})"),
+            Turn::tool("96"),
+        ]);
+        for template in [Template::Plain, Template::ChatML, Template::Gemma] {
+            let m = prompt.text_with_template(template);
+            assert!(
+                m.contains("GUIDE TEXT"),
+                "the guide was dropped on {template:?}:\n{m}"
+            );
+            // AND IT IS THE LAST BLOCK, right before the generation anchor —
+            // being present but buried above the tool result would give away the
+            // weight advantage the guide is placed for.
+            let g = m.find("GUIDE TEXT").expect("no guide");
+            let r = m.find("96").expect("no tool result");
+            assert!(
+                r < g,
+                "the guide is above the tool result on {template:?}:\n{m}"
+            );
+        }
+    }
+
+    /// The fix for the test above must not buy its way out with a second
+    /// consecutive `user` fence — a sequence absent from the training
+    /// distribution, and the reason `chatml_text` merges tool results in the
+    /// first place.
+    #[test]
+    fn the_guide_does_not_open_a_second_consecutive_user_turn() {
+        use crate::prompt::Template;
+        let prompt = Prompt::new("s", "").with_guide("GUIDE TEXT").with_history([
+            Turn::user("q"),
+            Turn::assistant("call"),
+            Turn::tool("96"),
+        ]);
+
+        let chatml = prompt.text_with_template(Template::ChatML);
+        assert!(
+            !chatml.contains("<|im_end|>\n<|im_start|>user\n<guidance>"),
+            "the guidance opened its own user turn after the tool result:\n{chatml}"
+        );
+        let gemma = prompt.text_with_template(Template::Gemma);
+        assert!(
+            !gemma.contains("<end_of_turn>\n<start_of_turn>user\n<guidance>"),
+            "the guidance opened its own user turn after the tool result:\n{gemma}"
+        );
+    }
+
     #[test]
     fn the_plain_template_never_uses_chatml_fences() {
         use crate::prompt::Template;

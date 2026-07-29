@@ -38,6 +38,20 @@ const KNOWN: &[(&str, &str)] = &[
         "thinking",
         "qwen thinking mode: auto (per-turn heuristic, default) | on | off",
     ),
+    // BOTH ARE SHORTCUTS FOR FLAGS (`--temperature`, `--seed`), which is the
+    // rule this file opens with. They exist because the default — greedy,
+    // seed 0 — is the right default for a MEASUREMENT and not always the right
+    // one for a retry, and a user who wants a second path through the model
+    // should not retype the flag every session. A non-numeric value here is
+    // ignored with a warning rather than obeyed (see `SamplingChoice::resolve`).
+    (
+        "temperature",
+        "sampling temperature 0.0-2.0 (default 0 = greedy and reproducible)",
+    ),
+    (
+        "seed",
+        "sampling seed; only meaningful with a temperature above 0",
+    ),
     (
         "update.check",
         "look for a newer release once a day: on | off | ask (default: ask, once, in the shell)",

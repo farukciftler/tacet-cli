@@ -6,13 +6,19 @@
 //! inner reasoning in English even while answering in another language, so
 //! foreign-language text spills onto the screen.
 //!
-//! We build two layers of defence, because neither is enough on its own:
-//!   1. `prompt.rs` pre-writes an empty `<think></think>` pair on the
-//!      generation anchor (Qwen3's official `enable_thinking=false` path) — the
-//!      model never starts thinking at all. That is the cheap, correct fix.
-//!   2. This module strips the block if it shows up anyway. Layer 1 relies on a
-//!      CONTRACT that varies from model to model; layer 2 looks at the text
-//!      itself.
+//! THIS MODULE IS THE ONLY DEFENCE, and that is worth stating plainly because
+//! this comment used to claim otherwise. It described a first layer in
+//! `prompt.rs` that pre-wrote an empty `<think></think>` pair on the generation
+//! anchor (Qwen3's official `enable_thinking=false` path). That layer was TRIED
+//! AND REVERTED — see the measurement record at the end of `Prompt::chatml_text`:
+//! it really did turn thinking off and it BROKE THE TOOL CALL FORMAT with it
+//! (Qwen3-4B 7/10 -> 2/10). Anyone reading this file must not go on believing
+//! there is a cheaper layer upstream catching most of the cases.
+//!
+//! What is left upstream is the SOFT SWITCH (`/think` / `/no_think` appended to
+//! the user message — `thinking_switch` in the CLI), which is a request the
+//! model may ignore. So the block still shows up, and stripping it here is the
+//! thing that actually holds.
 //!
 //! The stripped thinking is NOT DISCARDED, it lives in `Generation.thinking`:
 //! it is valuable for diagnosis (the model explains there why it picked that

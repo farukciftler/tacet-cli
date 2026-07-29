@@ -749,7 +749,7 @@ impl Tool for CreateDocumentTool {
     fn description(&self) -> &str {
         "Creates an Excel, Markdown or plain text file. Call this IMMEDIATELY when the user asks \
          for a file, table, list or report ('make an excel/table/report', in any language) — do \
-         note ask or narrate. Write markdown into 'content'; for a table write a markdown table \
+         not ask or narrate. Write markdown into 'content'; for a table write a markdown table \
          (| ... |). For bulk device data pass 'source_ref' instead of 'content'."
     }
 

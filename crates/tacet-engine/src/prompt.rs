@@ -313,11 +313,19 @@ impl Prompt {
             blocks.push((t.role.gemma(), body));
         }
         // If the question is empty no closing user block is added (see the
-        // `question` field).
+        // `question` field) — but THE GUIDE STILL GOES IN. See
+        // `guidance_block`: without this the skill guidance was present on the
+        // first turn of the tool loop and GONE from the second onward, which is
+        // exactly the turn where the model is recovering from a tool result and
+        // needs it most. Pushed as its own `user` block; the merge below folds
+        // it into the preceding tool-result turn, so no second consecutive
+        // `user` fence is produced.
         if !self.question.trim().is_empty() {
             let mut question = String::new();
             self.gemma_write_question(&mut question);
             blocks.push(("user", question));
+        } else if let Some(g) = self.guidance_block() {
+            blocks.push(("user", g));
         }
 
         // If the first block is `user` it sticks to the same turn as a
@@ -349,12 +357,28 @@ impl Prompt {
     /// SKILL DECISION at the head of this file); kept separate so the same order
     /// is not written out twice at two call sites.
     fn gemma_write_question(&self, m: &mut String) {
-        if let Some(g) = &self.guide {
-            m.push_str("<guidance>\n");
-            m.push_str(g.trim());
-            m.push_str("\n</guidance>\n");
+        if let Some(g) = self.guidance_block() {
+            m.push_str(&g);
+            m.push('\n');
         }
         m.push_str(self.question.trim());
+    }
+
+    /// The `<guidance>` fence, or `None` when there is no guide.
+    ///
+    /// ONE PLACE, THREE CALL SITES (ChatML, Gemma, and the empty-question path
+    /// of both). It used to be written inline inside the question branch of each
+    /// template, and that is precisely how the bug got in: `plain_text` wrote the
+    /// guide unconditionally while ChatML and Gemma wrote it only when the
+    /// question was non-empty. So on the second and later turns of the tool loop
+    /// — the ones where `question` is deliberately EMPTY (see the `question`
+    /// field) — the guidance silently disappeared on every real template, and
+    /// only on the one template no model ever sees did it survive. That also
+    /// meant eval, which runs on FakeEngine and therefore on `Plain`, was
+    /// measuring a prompt shape production never produced.
+    fn guidance_block(&self) -> Option<String> {
+        let g = self.guide.as_ref()?;
+        Some(format!("<guidance>\n{}\n</guidance>", g.trim()))
     }
 
     /// ChatML: the system instructions and the tool description merge into a
@@ -388,6 +412,13 @@ impl Prompt {
         // template. Merging is not an idle detail: opening a separate user turn
         // for each tool result produces consecutive user turns in the history and
         // shifts the "last question" the model sees.
+        // Is a closing user turn going to be opened for the question? When it is
+        // not (the tool loop's second and later turns), the guide has to find
+        // another home — see `guidance_block` and the two `guide_placed` sites
+        // below.
+        let question_turn = !self.question.trim().is_empty();
+        let mut guide_placed = false;
+
         let mut i = 0;
         while i < self.history.len() {
             let t = &self.history[i];
@@ -398,6 +429,20 @@ impl Prompt {
                     m.push_str(self.history[i].text.trim());
                     m.push_str("\n</tool_response>");
                     i += 1;
+                }
+                // THE GUIDANCE RIDES ALONG WITH THE LAST TOOL RESULT. It cannot
+                // be its own turn here: that would put two `user` fences back to
+                // back, the sequence this template's merge rule exists to avoid.
+                // Riding along keeps it where the SKILL DECISION at the head of
+                // this file wants it — the last block before the generation
+                // anchor, which in a small model is the block that carries most.
+                if i == self.history.len()
+                    && !question_turn
+                    && let Some(g) = self.guidance_block()
+                {
+                    m.push('\n');
+                    m.push_str(&g);
+                    guide_placed = true;
                 }
                 m.push_str("<|im_end|>\n");
                 continue;
@@ -417,14 +462,23 @@ impl Prompt {
         // IF THE QUESTION IS EMPTY the closing user turn IS NEVER OPENED (see the
         // `question` field): the history already ends with a `<tool_response>`
         // user turn and the model must continue straight from there.
-        if !self.question.trim().is_empty() {
+        if question_turn {
             m.push_str("<|im_start|>user\n");
-            if let Some(g) = &self.guide {
-                m.push_str("<guidance>\n");
-                m.push_str(g.trim());
-                m.push_str("\n</guidance>\n");
+            if let Some(g) = self.guidance_block() {
+                m.push_str(&g);
+                m.push('\n');
             }
             m.push_str(self.question.trim());
+            m.push_str("<|im_end|>\n");
+        } else if !guide_placed && let Some(g) = self.guidance_block() {
+            // THE FALLBACK, for a history that does NOT end in a tool result.
+            // Production never builds that shape today (the tool loop always
+            // appends assistant-call + tool-result in pairs), but "the guide is
+            // dropped" must not be one refactor away from being true again — the
+            // whole point of this change. One extra `user` turn is a smaller
+            // price than a silently missing instruction.
+            m.push_str("<|im_start|>user\n");
+            m.push_str(&g);
             m.push_str("<|im_end|>\n");
         }
 
@@ -485,10 +539,11 @@ impl Prompt {
             m.push_str("</history>\n");
         }
 
-        if let Some(g) = &self.guide {
-            m.push_str("<guidance>\n");
-            m.push_str(g.trim());
-            m.push_str("\n</guidance>\n");
+        // WRITTEN WHETHER OR NOT THERE IS A QUESTION — the same rule the other
+        // two templates now follow (see `guidance_block`).
+        if let Some(g) = self.guidance_block() {
+            m.push_str(&g);
+            m.push('\n');
         }
 
         // If the question is empty only the generation anchor is written (see the

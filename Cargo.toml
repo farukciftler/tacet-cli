@@ -58,7 +58,14 @@ tacet-grammar = { path = "crates/tacet-grammar", version = "0.1.1" }
 # engine can only say its own name ("candle"), so four different weight files
 # produce four indistinguishable reports and a comparison matrix can silently
 # measure one model in every cell.
-tacet-engine = { path = "crates/tacet-engine", version = "0.1.4" }
+# 0.1.5 IS THE FLOOR FOR ANY SKILL TO SURVIVE A TOOL CALL: below it the
+# `<guidance>` block was written ONLY inside the question turn, and from the
+# second turn of the tool loop onward the question is deliberately empty — so
+# the skill guidance vanished at exactly the turn where the model is recovering
+# from a tool result. `Plain` kept it, which made it worse than a plain bug:
+# eval runs on FakeEngine, FakeEngine is `Plain`, so the one template no model
+# ever sees was the one template the measurement covered.
+tacet-engine = { path = "crates/tacet-engine", version = "0.1.5" }
 # 0.1.3 brought the addon gates and the five tools behind them; below it,
 # `catalog.rs` has no gate to ask and `shell`/`http`/`db` do not exist at all.
 # 0.1.4 IS THE FLOOR: below it `shell` is offered on Windows, where the timeout
@@ -80,7 +87,14 @@ tacet-engine = { path = "crates/tacet-engine", version = "0.1.4" }
 # 0.1.8 carries the trailing-comma repair for small models AND its tests: the
 # repair landed untested, and a function that rewrites the model's own words
 # before parsing them is the last place to leave untested.
-tacet-tools = { path = "crates/tacet-tools", version = "0.1.8" }
+# 0.1.9 FIXES A SENTENCE THE MODEL READS ON EVERY TURN: `create_document`'s
+# description said "do note ask or narrate" where it meant "do NOT ask", so the
+# one instruction telling the model to act instead of narrating was garbled in
+# the prompt itself. It also puts a ceiling under the tool descriptions, which
+# are the largest block in the prompt and until now had none — the worst
+# nine-tool selection measures 2542 tokens, 62% of the 4096-token floor window,
+# re-sent on every pass of the tool loop.
+tacet-tools = { path = "crates/tacet-tools", version = "0.1.9" }
 tacet-skills = { path = "crates/tacet-skills", version = "0.1.0" }
 tacet-memory = { path = "crates/tacet-memory", version = "0.1.0" }
 # THE NETWORK MONOPOLY: a network call exists ONLY in these two crates. No

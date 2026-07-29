@@ -238,6 +238,18 @@ enum Command {
         /// Loads ONE named session (`tacet sessions` prints the names).
         #[arg(long = "session", value_name = "ID")]
         session_id: Option<String>,
+        /// Sampling temperature. 0 (the default) is GREEDY and reproducible;
+        /// raise it to get a different path through the model on a retry.
+        ///
+        /// NOT A QUALITY DIAL. Above 0 the same question stops giving the same
+        /// answer, which is the point on a retry and a problem in a measurement
+        /// — `tacet eval` deliberately never touches this.
+        #[arg(long, value_name = "0.0-2.0")]
+        temperature: Option<f32>,
+        /// Sampling seed. Same seed + same prompt + same temperature = the same
+        /// output; only meaningful with `--temperature` above 0.
+        #[arg(long, value_name = "N")]
+        seed: Option<u64>,
     },
     /// Lists the conversations kept on disk — and deletes them.
     ///
@@ -664,6 +676,8 @@ fn main() -> ExitCode {
         json: false,
         continue_session: false,
         session_id: None,
+        temperature: None,
+        seed: None,
     });
     match command {
         Command::Chat {
@@ -676,6 +690,8 @@ fn main() -> ExitCode {
             json,
             continue_session,
             session_id,
+            temperature,
+            seed,
         } => {
             // flag > env (applied deeper) > config file > built-in default —
             // the config file only speaks when the flag stays silent.
@@ -691,6 +707,7 @@ fn main() -> ExitCode {
             } else {
                 engine
             };
+            let sampling = SamplingChoice::resolve(temperature, seed, &Color::setup());
             chat(ChatRun {
                 choice: engine,
                 script,
@@ -701,6 +718,7 @@ fn main() -> ExitCode {
                 json,
                 continue_session,
                 session_id,
+                sampling,
             })
         }
         Command::Sessions { json, purge } => sessions(json, purge),
@@ -809,6 +827,122 @@ mod command_line {
     #[test]
     fn the_argument_table_is_well_formed() {
         Shell::command().debug_assert();
+    }
+
+    /// TOUCHING NOTHING MUST CHANGE NOTHING. The sampling knobs were added so
+    /// variance could be MEASURED and a retry could take a different path; they
+    /// were not added to move the default. If this test ever fails, every
+    /// number ever recorded against this shell has silently changed meaning.
+    #[test]
+    fn the_sampling_default_is_still_greedy_and_seeded_at_zero() {
+        let base = SamplingSetting::default();
+        let applied = SamplingChoice::default().apply(base);
+        assert_eq!(applied.temperature, base.temperature);
+        assert_eq!(applied.seed, base.seed);
+        assert_eq!(applied.temperature, 0.0, "the default must stay greedy");
+        assert!(SamplingChoice::default().line().is_none());
+    }
+
+    /// The knobs move only what they own. `max_tokens` is derived from the
+    /// prompt's length and `cancel` is the user's Ctrl-C — a preference must not
+    /// be able to reach either, or a config file could quietly cap generation.
+    #[test]
+    fn sampling_touches_only_temperature_and_seed() {
+        static FLAG: AtomicBool = AtomicBool::new(false);
+        let base = SamplingSetting {
+            max_tokens: 777,
+            cancel: Some(&FLAG),
+            ..Default::default()
+        };
+        let applied = SamplingChoice {
+            temperature: Some(0.8),
+            seed: Some(42),
+        }
+        .apply(base);
+        assert_eq!(applied.temperature, 0.8);
+        assert_eq!(applied.seed, 42);
+        assert_eq!(applied.max_tokens, 777);
+        assert!(applied.cancel.is_some());
+        assert_eq!(applied.repeat_penalty, base.repeat_penalty);
+    }
+
+    /// An out-of-range temperature is CLAMPED, not obeyed and not refused.
+    /// Above ~2 the distribution is near-uniform and the output is noise; a
+    /// negative one is not a temperature at all. Refusing to start the shell
+    /// over a number in a config file would be the worse answer.
+    #[test]
+    fn an_impossible_temperature_is_clamped() {
+        let hot = SamplingChoice {
+            temperature: Some(50.0),
+            seed: None,
+        }
+        .apply(SamplingSetting::default());
+        assert_eq!(hot.temperature, MAX_TEMPERATURE);
+        let cold = SamplingChoice {
+            temperature: Some(-3.0),
+            seed: None,
+        }
+        .apply(SamplingSetting::default());
+        assert_eq!(cold.temperature, 0.0);
+    }
+
+    /// A non-greedy session must SAY SO. The banner line is the only place the
+    /// user can see that this shell is not the reproducible one.
+    #[test]
+    fn a_raised_temperature_shows_up_on_the_banner() {
+        let note = SamplingChoice {
+            temperature: Some(0.7),
+            seed: Some(9),
+        }
+        .line()
+        .expect("a non-default sampling must produce a line");
+        assert!(note.contains("0.7"), "{note}");
+        assert!(note.contains('9'), "{note}");
+        // Temperature 0 is the default; naming it would put a permanent, useless
+        // decoration on every banner.
+        assert!(
+            SamplingChoice {
+                temperature: Some(0.0),
+                seed: None
+            }
+            .line()
+            .is_none()
+        );
+    }
+
+    /// THE FLAGS PARSE, and `chat` is what carries them.
+    #[test]
+    fn the_sampling_flags_reach_the_chat_command() {
+        let parsed =
+            Shell::try_parse_from(["tacet", "chat", "--temperature", "0.7", "--seed", "5"])
+                .expect("parses");
+        match parsed.command {
+            Some(Command::Chat {
+                temperature, seed, ..
+            }) => {
+                assert_eq!(temperature, Some(0.7));
+                assert_eq!(seed, Some(5));
+            }
+            other => panic!("expected a chat command, got {}", other.is_some()),
+        }
+    }
+
+    /// EVERY CONFIG KEY IS A FLAG. `config.rs` opens with that rule and the two
+    /// sampling keys are the newest chance to break it — a key with no flag
+    /// behind it is a second settings system growing quietly.
+    #[test]
+    fn the_sampling_config_keys_have_flags_behind_them() {
+        let known: Vec<&str> = config::known_keys().iter().map(|(k, _)| *k).collect();
+        assert!(known.contains(&"temperature"), "{known:?}");
+        assert!(known.contains(&"seed"), "{known:?}");
+        let flags: Vec<String> = Shell::command()
+            .find_subcommand("chat")
+            .expect("chat subcommand")
+            .get_arguments()
+            .map(|a| a.get_id().to_string())
+            .collect();
+        assert!(flags.contains(&"temperature".to_string()), "{flags:?}");
+        assert!(flags.contains(&"seed".to_string()), "{flags:?}");
     }
 
     /// `tacet update` INSTALLS, and the older spelling still parses.
@@ -3107,6 +3241,107 @@ struct ChatRun {
     json: bool,
     continue_session: bool,
     session_id: Option<String>,
+    /// How generation samples. Already RESOLVED here (flag > config > default) —
+    /// `chat` does not read the config file itself, the same way it does not
+    /// resolve the model name itself.
+    sampling: SamplingChoice,
+}
+
+/// The two sampling knobs the user is allowed to turn.
+///
+/// WHY THEY ARE EXPOSED AT ALL, given that the defaults are deliberate: they
+/// were not exposed, and the cost was two things that could not be done at all.
+/// (1) The variance of this shell could not be MEASURED — every run used
+/// temperature 0 and seed 0, so "did that prompt change help, or is this
+/// run-to-run noise?" had no experiment behind it. (2) A user handed a bad
+/// greedy answer had no "try that again differently"; greedy is one path
+/// through the model and there is no second one without a knob.
+///
+/// THE DEFAULTS DO NOT MOVE. `Default` here is exactly `SamplingSetting`'s —
+/// temperature 0.0, seed 0 — so a user who touches nothing gets bit-identical
+/// behaviour to before this existed. That is the point: the knob is new, the
+/// position is not.
+#[derive(Debug, Clone, Copy, Default)]
+struct SamplingChoice {
+    /// `None` = keep the engine default (greedy).
+    temperature: Option<f32>,
+    seed: Option<u64>,
+}
+
+/// The most a temperature may be. Above ~2 the distribution is close enough to
+/// uniform that the output is noise, and accepting a number that produces
+/// garbage is not a favour to anyone.
+const MAX_TEMPERATURE: f32 = 2.0;
+
+impl SamplingChoice {
+    /// flag > config file > built-in default — the same precedence, in the same
+    /// order, as `model` and `engine`.
+    ///
+    /// A NONSENSE VALUE IN THE CONFIG FILE IS IGNORED, LOUDLY. The file is the
+    /// quietest voice in the precedence chain and a typo in it must not be able
+    /// to change how the model samples; but staying silent would leave a user
+    /// who wrote `temperature: "0,7"` believing it took effect.
+    fn resolve(temperature: Option<f32>, seed: Option<u64>, color: &Color) -> Self {
+        Self {
+            temperature: temperature.or_else(|| Self::config_number("temperature", color)),
+            seed: seed.or_else(|| Self::config_number("seed", color)),
+        }
+    }
+
+    fn config_number<T: std::str::FromStr>(key: &str, color: &Color) -> Option<T> {
+        let raw = config::get_str(key)?;
+        match raw.trim().parse::<T>() {
+            Ok(v) => Some(v),
+            Err(_) => {
+                eprintln!(
+                    "{}",
+                    color.paint(
+                        YELLOW,
+                        &format!(
+                            "(config: `{key}` is not a number ('{raw}') — ignored; \
+                             `tacet config unset {key}` clears it)"
+                        )
+                    )
+                );
+                None
+            }
+        }
+    }
+
+    /// The setting the engine is handed. `max_tokens` and `cancel` are NOT set
+    /// here: those are properties of the turn (the prompt's length, the user's
+    /// Ctrl-C), not of the user's sampling preference, and the call site owns
+    /// them.
+    fn apply(self, base: SamplingSetting) -> SamplingSetting {
+        SamplingSetting {
+            temperature: self
+                .temperature
+                .unwrap_or(base.temperature)
+                .clamp(0.0, MAX_TEMPERATURE),
+            seed: self.seed.unwrap_or(base.seed),
+            ..base
+        }
+    }
+
+    /// Is anything off the default — the status line and the banner say so.
+    /// A shell sampling at 0.9 that looks exactly like a shell sampling at 0 is
+    /// how an unreproducible measurement gets taken without anyone noticing.
+    fn line(self) -> Option<String> {
+        let t = self.temperature.filter(|v| *v > f32::EPSILON);
+        match (t, self.seed) {
+            (None, None) => None,
+            (t, s) => {
+                let mut parts = Vec::new();
+                if let Some(t) = t {
+                    parts.push(format!("temperature {t}"));
+                }
+                if let Some(s) = s {
+                    parts.push(format!("seed {s}"));
+                }
+                Some(parts.join(" · "))
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -3121,6 +3356,7 @@ fn chat(run: ChatRun) -> ExitCode {
         json,
         continue_session,
         session_id,
+        sampling,
     } = run;
     let dir = dir.as_str();
     let model_name = model_name.as_str();
@@ -3358,12 +3594,21 @@ fn chat(run: ChatRun) -> ExitCode {
                 color.paint(BRASS, "."),
                 color.paint(DIM, &version_line().replace("tacet ", ""))
             );
+            // THE SAMPLING LINE IS PART OF THE IDENTITY LINE when it is off the
+            // default. A shell sampling at 0.9 that looks exactly like a shell
+            // sampling greedily is how an unreproducible run gets taken for a
+            // reproducible one — the same argument `EngineIdentity` makes about
+            // never letting a measurement hide its own subject.
+            let sampling_note = sampling
+                .line()
+                .map(|s| format!(" · {s}"))
+                .unwrap_or_default();
             println!(
                 "{}",
                 color.paint(
                     DIM,
                     &format!(
-                        "{} · {} tools · /help",
+                        "{} · {} tools{sampling_note} · /help",
                         engine.name(),
                         catalog.tools().len()
                     )
@@ -3732,6 +3977,18 @@ fn chat(run: ChatRun) -> ExitCode {
         // Every tool that really ran this turn, in order — the `--json` trace
         // and the tool-name list the transcript stores.
         let mut turn_calls: Vec<serde_json::Value> = Vec::new();
+        // DID THE INNER LOOP REACH AN ENDING, or did it just run out of turns?
+        //
+        // Every `break` below is an ENDING — an answer, a cancel, an engine
+        // error, a side effect we will not retry. Falling out of the `for`
+        // instead means the model called a tool on all `MAX_TURNS` passes and
+        // never wrote a sentence, and until this flag existed that outcome was
+        // INVISIBLE: `answer` stayed empty, nothing was printed, no assistant
+        // turn was stored, `--json` reported `"answer": ""` with no error, and
+        // the process exited SUCCESS. That contradicts this file's own rule at
+        // the bottom ("a turn that never produced an answer is a FAILED RUN")
+        // and it reads to the user as the shell swallowing their question.
+        let mut settled = false;
         for _ in 0..tacet_eval::MAX_TURNS {
             // History = the previous turns + the results of the tools that ran in
             // THIS turn. The question also sits at the end separately (see the
@@ -3986,11 +4243,15 @@ fn chat(run: ChatRun) -> ExitCode {
                     // part of the window is given to generation. On thinking models
                     // the difference is decisive — with a fixed cap the 8B was cut off
                     // before finishing its thinking block and never called a tool.
-                    SamplingSetting {
+                    // THE USER'S SAMPLING CHOICE IS LAYERED ON LAST (see
+                    // `SamplingChoice`), and it touches only `temperature` and
+                    // `seed`: the cancel flag and the cap are properties of THIS
+                    // TURN, not of a preference, so they stay owned here.
+                    sampling.apply(SamplingSetting {
                         cancel: Some(&CANCEL),
                         max_tokens: counter.generation_cap(&prompt),
                         ..Default::default()
-                    },
+                    }),
                     &listener,
                 ),
             ) {
@@ -4000,6 +4261,7 @@ fn chat(run: ChatRun) -> ExitCode {
                     eprintln!("\nengine error: {e}");
                     turn_error = Some(e.to_string());
                     any_turn_failed = true;
+                    settled = true;
                     break;
                 }
             };
@@ -4082,6 +4344,7 @@ fn chat(run: ChatRun) -> ExitCode {
                     }
                     answer = String::new();
                 }
+                settled = true;
                 break;
             }
 
@@ -4100,6 +4363,7 @@ fn chat(run: ChatRun) -> ExitCode {
                     "{}",
                     color.paint(YELLOW, &format!("(generation was cut short: {reason})"))
                 );
+                settled = true;
                 break;
             }
 
@@ -4145,6 +4409,7 @@ fn chat(run: ChatRun) -> ExitCode {
                     screen.line(&format::Formatter::all(screen.tty(), answer.trim()));
                     screen.write(RESET);
                 }
+                settled = true;
                 break;
             };
             indicator.finish();
@@ -4179,7 +4444,39 @@ fn chat(run: ChatRun) -> ExitCode {
                     )
                 );
                 answer = "The operation partly went through; I did not retry.".to_string();
+                settled = true;
                 break;
+            }
+        }
+
+        // THE TURN BUDGET RAN OUT WITH NOTHING TO SHOW. The model called a tool
+        // on every one of `MAX_TURNS` passes and never wrote a sentence. This is
+        // NOT dressed up as an answer: an invented closing line would put words
+        // in the model's mouth, and the tools that DID run are already on screen
+        // as chips, so the user can see what happened. What they could not see
+        // before was that it had STOPPED.
+        //
+        // It counts as a failed turn for the same reason an engine error does:
+        // the caller of `tacet -m ... --json` checks the exit code, and a run
+        // that produced no answer must not report success.
+        if !settled {
+            any_turn_failed = true;
+            turn_error = Some(format!(
+                "the turn budget ({}) ran out — a tool was called on every pass and no answer was written",
+                tacet_eval::MAX_TURNS
+            ));
+            if human {
+                eprintln!(
+                    "{}",
+                    color.paint(
+                        YELLOW,
+                        &format!(
+                            "(stopped after {} tool turns without an answer — try asking for one \
+                             step at a time)",
+                            tacet_eval::MAX_TURNS
+                        )
+                    )
+                );
             }
         }
 
@@ -4302,27 +4599,35 @@ fn chat(run: ChatRun) -> ExitCode {
             // interactive `--json` session this makes the stream JSONL: one
             // object per turn, which is what a reader consuming a live pipe can
             // actually parse.
-            println!(
-                "{}",
-                serde_json::json!({
-                    "answer": answer,
-                    "tools": tool_names,
-                    "traces": turn_calls,
-                    "tokens": {
-                        "prompt": turn_prompt,
-                        "generation": turn_generation,
-                        "context": last_context,
-                        "session": session_tokens,
-                    },
-                    // `null` when nothing is being kept (see `keep_transcript`):
-                    // an invented id would point at a file that does not exist.
-                    "session": chat_session.as_ref().and_then(session::Session::id),
-                    // ABSENT ON SUCCESS, so `has("error")` is the check a script
-                    // makes. Present and non-null means `answer` is not an
-                    // answer — do not treat an empty string as one.
-                    "error": turn_error,
-                })
-            );
+            let mut record = serde_json::json!({
+                "answer": answer,
+                "tools": tool_names,
+                "traces": turn_calls,
+                "tokens": {
+                    "prompt": turn_prompt,
+                    "generation": turn_generation,
+                    "context": last_context,
+                    "session": session_tokens,
+                },
+                // `null` when nothing is being kept (see `keep_transcript`):
+                // an invented id would point at a file that does not exist.
+                "session": chat_session.as_ref().and_then(session::Session::id),
+            });
+            // ABSENT ON SUCCESS, so `has("error")` is the check a script makes.
+            // Present means `answer` is not an answer — do not treat an empty
+            // string as one.
+            //
+            // IT IS INSERTED RATHER THAN LISTED ABOVE, and that is the whole
+            // point: written as `"error": turn_error` the field serialised to
+            // `null` on a clean turn, so it was ALWAYS present and the documented
+            // `has("error")` check was true for every line the shell ever
+            // printed. The comment described a contract the code did not keep.
+            if let Some(reason) = &turn_error
+                && let Some(map) = record.as_object_mut()
+            {
+                map.insert("error".into(), serde_json::Value::String(reason.clone()));
+            }
+            println!("{record}");
         } else {
             println!();
         }

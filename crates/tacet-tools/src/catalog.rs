@@ -423,6 +423,101 @@ mod tests {
         (c, s)
     }
 
+    /// THE TOOL DESCRIPTIONS ARE THE BIGGEST BLOCK IN THE PROMPT, and until this
+    /// test existed nothing bounded them.
+    ///
+    /// Every other injected text in this codebase has a cap written down and
+    /// enforced — `GUIDE_LIMIT` (700 chars), `tacet_memory::INJECTION_LIMIT`,
+    /// `DIR_CONTEXT_BYTES` (500). The tool block had none, and it is the block
+    /// that gets re-sent on EVERY turn of the tool loop. Measured on the day this
+    /// was written, with the estimator the budget itself uses (2 bytes per 5
+    /// tokens): run_code ~394 tokens, write_code ~368, time ~359, calendar ~273,
+    /// remember ~240 — the top five alone are ~1630 tokens, and a 9-tool
+    /// selection runs 1200-1800.
+    ///
+    /// THE CEILING IS SET AT TODAY'S WORST CASE, NOT AT A WISH. 420 tokens is
+    /// just above `run_code`; this test is not a demand to rewrite the current
+    /// descriptions (each of their sentences is a measured scar — see the
+    /// comments above them). It is a ratchet: the next description cannot be
+    /// bigger than the biggest one we already argued for. Lowering the number is
+    /// a separate, measured piece of work.
+    #[test]
+    fn no_tool_description_grows_past_the_current_worst_case() {
+        /// The same arithmetic as `TokenCounter::estimate`, repeated here rather
+        /// than depended on: this crate does not know the engine layer, and one
+        /// division is a smaller price than a dependency edge pointing the wrong
+        /// way.
+        fn tokens(text: &str) -> usize {
+            text.len().saturating_mul(2).div_ceil(5)
+        }
+        const CEILING: usize = 420;
+
+        let (c, _) = catalog(true);
+        for tool in c.tools() {
+            let cost = tokens(tool.description());
+            assert!(
+                cost <= CEILING,
+                "the `{}` description is ~{cost} tokens, over the {CEILING} ceiling. \
+                 It is sent on every turn of the tool loop; if the sentences are all \
+                 earning their place, move the ceiling DELIBERATELY and say why here.",
+                tool.name()
+            );
+        }
+    }
+
+    /// The whole block, not just its worst line. Nine tools is the router's
+    /// budget (`router::MAX_TOOLS`), so this is the real per-turn cost of the
+    /// most expensive selection the router can produce.
+    #[test]
+    fn the_nine_most_expensive_tools_stay_inside_the_block_budget() {
+        fn tokens(text: &str) -> usize {
+            text.len().saturating_mul(2).div_ceil(5)
+        }
+        /// MEASURED, NOT CHOSEN. The worst nine on the day this was written come
+        /// to 2542 tokens: run_code 424, write_code 402, time 388, calendar 300,
+        /// remember 292, edit_document 213, create_document 184, find_file 181,
+        /// web_search 158. The ceiling is that number plus a small margin.
+        ///
+        /// READ THE NUMBER BEFORE MOVING IT. On the 4096-token FLOOR window —
+        /// what a model that declares nothing gets (`tacet_engine::CONTEXT_BUDGET`)
+        /// — 2542 tokens is **62% of the whole window** before the system block,
+        /// the memory, the guide, the history or the question have been written,
+        /// and it is re-sent on every pass of the tool loop. On a 17k window it is
+        /// noise; on the floor it is the dominant cost. Bringing this down is real
+        /// work with a real measurement attached (does selection accuracy survive
+        /// shorter descriptions?), and it is NOT what this test asks for. This
+        /// test only says: no bigger than today.
+        const BLOCK_CEILING: usize = 2600;
+
+        let (c, _) = catalog(true);
+        let mut costs: Vec<(usize, &str)> = c
+            .tools()
+            .iter()
+            .map(|t| {
+                // The line the prompt actually writes: `- name(sig) — description`.
+                let line = format!(
+                    "- {}({}) — {}\n",
+                    t.name(),
+                    t.schema().short_signature(),
+                    t.description().trim()
+                );
+                (tokens(&line), t.name())
+            })
+            .collect();
+        costs.sort_unstable_by_key(|c| std::cmp::Reverse(c.0));
+        let worst: usize = costs
+            .iter()
+            .take(crate::router::MAX_TOOLS)
+            .map(|c| c.0)
+            .sum();
+        assert!(
+            worst <= BLOCK_CEILING,
+            "the worst {}-tool block is ~{worst} tokens, over the {BLOCK_CEILING} ceiling: {:?}",
+            crate::router::MAX_TOOLS,
+            &costs[..costs.len().min(crate::router::MAX_TOOLS)]
+        );
+    }
+
     #[test]
     fn the_catalog_contains_the_expected_tools() {
         let (c, _) = catalog(true);

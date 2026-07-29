@@ -68,16 +68,19 @@ impl IntentProfile {
 
     /// The phrases looked for in the user's message.
     ///
-    /// BEHAVIOUR CHANGE ON THE ENGLISH PASS: these strings used to be TURKISH on
-    /// purpose, because they are not code but DATA — they are matched against
-    /// what the user types, and every one of them was added from a measured
-    /// failure (the records are kept in the comments below). The whole code base
-    /// was moved to English by product decision, so they are English now. THE
-    /// PRICE IS EXPLICIT: a user who writes in Turkish no longer touches any
-    /// trigger, the score falls to zero and the tool order falls back to the
-    /// catalog order — which is precisely the failure mode the measurements
-    /// below describe. Making this list MULTILINGUAL (an English list plus a
-    /// per-locale list) is the follow-up work; nothing here rules that out.
+    /// THE ENGLISH HALF of the trigger data. These strings are not code but
+    /// DATA — they are matched against what the user types, and every one of
+    /// them was added from a measured failure (the records are kept in the
+    /// comments below).
+    ///
+    /// THE PRICE THIS COMMENT USED TO WARN ABOUT IS NO LONGER PAID, and the
+    /// correction matters because the old text ("a user who writes in Turkish no
+    /// longer touches any trigger") reads as an open wound and would send the
+    /// next reader fixing something that is fixed. When the code base was moved
+    /// to English these strings went with it and the Turkish score really did
+    /// fall to zero; `locale_triggers` was then added and `score_intent` sums
+    /// BOTH lists. Every entry there mirrors a measured English twin here — the
+    /// follow-up work that comment promised is done.
     ///
     /// Specific phrases ("as a table") sit in the same list as generic words
     /// ("table"); no separation is needed, the sum of lengths already establishes
