@@ -51,6 +51,39 @@ pub enum MCPError {
     /// The URL scheme was not accepted (see `client::validate_url`).
     #[error("the address was not accepted: {0}")]
     InvalidAddress(String),
+
+    /// The server asked a question and it was DECLINED — nobody to ask
+    /// (headless), or the user pressed Esc. The retried call is never sent.
+    ///
+    /// A SEPARATE VARIANT from `Server`: nothing went wrong on the far side and
+    /// nothing went wrong on the wire. A decision was made, and the sentence
+    /// the user reads should say so.
+    #[error("the server asked for input and the call was declined")]
+    InputDeclined,
+
+    /// RFC 9207: the authorization response did not name the issuer we started
+    /// with — or named a different one. NOT REDEEMED.
+    #[error("the authorization response did not come from the expected issuer")]
+    IssuerMismatch,
+
+    /// The `state` did not come back unchanged: this response belongs to a
+    /// different authorization attempt.
+    #[error("the authorization response did not match this login attempt")]
+    StateMismatch,
+
+    /// There is no token for this connection, or the one there is has expired.
+    #[error("this connection is not logged in")]
+    NotAuthorized,
+
+    /// A remote task ran past the deadline (spec §6). The task may still be
+    /// running on the server; what ended is our waiting.
+    #[error("the remote task was still running after {0} seconds; stopped waiting")]
+    TaskDeadline(u64),
+
+    /// The server kept asking instead of answering (spec §4). The cap exists so
+    /// a server cannot hold a turn hostage.
+    #[error("the server asked for input more than {0} times; the call was abandoned")]
+    InputRounds(usize),
 }
 
 impl MCPError {

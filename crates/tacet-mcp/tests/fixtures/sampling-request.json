@@ -1,0 +1,21 @@
+[
+  {
+    "status": 200,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 7,
+      "method": "sampling/createMessage",
+      "params": {
+        "messages": [
+          {
+            "role": "user",
+            "content": {
+              "type": "text",
+              "text": "what is in the users calendar?"
+            }
+          }
+        ]
+      }
+    }
+  }
+]

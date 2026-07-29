@@ -381,6 +381,16 @@ enum Command {
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
+    /// The MCP connections in `mcp.json` — list them, or try one for real.
+    ///
+    /// `try` is the ONE command in this program that deliberately opens a
+    /// socket to a third party without a conversation around it: it exists so
+    /// "is this server reachable, and which revision does it speak" has an
+    /// answer that is three numbers rather than an adjective.
+    Mcp {
+        #[command(subcommand)]
+        job: McpJob,
+    },
     /// Shows how to give Tacet its intended look (font + colours).
     ///
     /// HONESTY FIRST: a terminal program CANNOT change the terminal's font —
@@ -411,6 +421,43 @@ enum Command {
 
 /// The jobs of the `config` subcommand. The shape mirrors every other list
 /// command in this shell: human text by default, `--json` for scripts.
+#[derive(Subcommand)]
+enum McpJob {
+    /// The configured connections. Reads the file only; NO NETWORK.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Talks to one connection: discovery, the tool list, the round trip.
+    /// **GOES ON THE NETWORK.**
+    Try {
+        /// The connection's name in `mcp.json`.
+        name: String,
+        /// Also call this remote tool. Nothing is called unless you name it —
+        /// "has no effects" is not something a description can be trusted for.
+        #[arg(long)]
+        call: Option<String>,
+        /// The arguments for `--call`, as JSON. Defaults to `{}`.
+        #[arg(long, default_value = "{}")]
+        args: String,
+    },
+    /// Logs in to a connection that has an `auth` block (OAuth, M3).
+    ///
+    /// Tacet prints the authorization URL and waits for the redirect URL to be
+    /// pasted back. It does NOT open a browser and does NOT listen on a port:
+    /// a program whose promise is that it does nothing behind your back does
+    /// not open windows or sockets for you.
+    Login {
+        /// The connection's name in `mcp.json`.
+        name: String,
+    },
+    /// Forgets a connection's stored token, on this machine only.
+    Logout {
+        /// The connection's name in `mcp.json`.
+        name: String,
+    },
+}
+
 #[derive(Subcommand)]
 enum ConfigJob {
     /// Lists every known key, its current value and the file's location.
@@ -676,6 +723,12 @@ fn main() -> ExitCode {
             ConfigJob::Unset { key } => config::unset(&key),
             ConfigJob::Path => config::path(),
         },
+        Command::Mcp { job } => match job {
+            McpJob::List { json } => mcp_list(json),
+            McpJob::Try { name, call, args } => mcp_try(&name, call, &args),
+            McpJob::Login { name } => mcp_login(&name),
+            McpJob::Logout { name } => mcp_logout(&name),
+        },
         Command::Doctor => doctor(),
         Command::Feedback { turns } => feedback(turns),
         Command::Log { json, limit } => receipt::log(json, limit),
@@ -828,6 +881,205 @@ fn total_ram_bytes() -> Option<u64> {
 ///
 /// It DIAGNOSES AND SUGGESTS, it never changes anything: the fix commands are
 /// printed for the user to run, in the same spirit as `tacet font`.
+// ---------------------------------------------------------------------------
+// MCP connections
+// ---------------------------------------------------------------------------
+
+/// The configured connections. READS THE FILE ONLY — no socket is opened, so
+/// this is safe to run when you just want to know what is configured.
+fn mcp_list(json: bool) -> ExitCode {
+    let color = Color::setup();
+    let connections = match mcp::connections() {
+        Ok(list) => list,
+        Err(message) => {
+            eprintln!("  {}", color.paint(YELLOW, &message));
+            return ExitCode::FAILURE;
+        }
+    };
+    if json {
+        let rows: Vec<serde_json::Value> = connections
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "name": c.name,
+                    "url": c.url,
+                    "enabled": c.enabled,
+                    "spec": c.spec,
+                    "spec_understood": c.spec_understood,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&rows).unwrap_or_else(|_| "[]".into())
+        );
+        return ExitCode::SUCCESS;
+    }
+    if connections.is_empty() {
+        println!("  no connections — Tacet talks to nothing until you add one");
+        return ExitCode::SUCCESS;
+    }
+    for c in &connections {
+        let state = if c.enabled { "on" } else { "off" };
+        println!(
+            "  {}  {}  {}",
+            color.paint(BOLD, &c.name),
+            color.paint(DIM, &format!("{state} · spec {}", c.spec)),
+            color.paint(DIM, &c.url),
+        );
+        if !c.spec_understood {
+            println!(
+                "    {}",
+                color.paint(YELLOW, "that spec value is not recognised — auto is used")
+            );
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// The paste flow (spec §5). Three prints and one read: the URL, the paste,
+/// the file it landed in.
+fn mcp_login(name: &str) -> ExitCode {
+    let color = Color::setup();
+    let step = match mcp::begin_login(name) {
+        Ok(step) => step,
+        Err(message) => {
+            eprintln!("  {}", color.paint(YELLOW, &message));
+            return ExitCode::FAILURE;
+        }
+    };
+    println!("  open this in a browser:");
+    println!();
+    println!("    {}", step.url);
+    println!();
+    println!(
+        "  {}",
+        color.paint(
+            DIM,
+            "then paste the address you land on back here (it will look like a 404 page)"
+        )
+    );
+    print!("  > ");
+    let _ = std::io::stdout().flush();
+    let mut pasted = String::new();
+    if std::io::stdin().read_line(&mut pasted).is_err() || pasted.trim().is_empty() {
+        eprintln!("  {}", color.paint(YELLOW, "nothing pasted; nothing was sent"));
+        return ExitCode::FAILURE;
+    }
+    match mcp::finish_login(&step, &pasted) {
+        Ok(path) => {
+            println!("  {} {path}", color.paint(BRASS, "saved"));
+            println!(
+                "  {}",
+                color.paint(DIM, "the token file is private to your account (0600 on unix; on windows it is as private as your profile folder and no more)")
+            );
+            ExitCode::SUCCESS
+        }
+        Err(message) => {
+            eprintln!("  {}", color.paint(YELLOW, &message));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn mcp_logout(name: &str) -> ExitCode {
+    let color = Color::setup();
+    match mcp::logout(name) {
+        Ok(true) => {
+            println!("  the stored token was removed from this machine");
+            println!(
+                "  {}",
+                color.paint(
+                    DIM,
+                    "the authorization server was not told — revoke it there yourself if you want it gone for good"
+                )
+            );
+            ExitCode::SUCCESS
+        }
+        Ok(false) => {
+            println!("  there was no stored token for that connection");
+            ExitCode::SUCCESS
+        }
+        Err(message) => {
+            eprintln!("  {}", color.paint(YELLOW, &message));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The live smoke test (spec §9): discovery, the catalog, the round trip.
+/// **GOES ON THE NETWORK, on purpose, when typed.** Three numbers, no
+/// adjectives.
+fn mcp_try(name: &str, call: Option<String>, args: &str) -> ExitCode {
+    let color = Color::setup();
+    let call = match call {
+        None => None,
+        Some(tool) => match serde_json::from_str::<serde_json::Value>(args) {
+            Ok(parsed) => {
+                // WHAT IS ABOUT TO BE SENT IS SHOWN FIRST, the same rule the
+                // approval gate follows: this command has no gate in front of
+                // it, so the transparency has to be here.
+                println!(
+                    "  {} {tool} {}",
+                    color.paint(DIM, "→"),
+                    color.paint(DIM, &crate::ui::one_line(&parsed.to_string()))
+                );
+                Some((tool, parsed))
+            }
+            Err(error) => {
+                eprintln!("  {}", color.paint(YELLOW, &format!("--args is not JSON: {error}")));
+                return ExitCode::FAILURE;
+            }
+        },
+    };
+    let outcome = match mcp::try_connection(name, Arc::new(TerminalAsk), call) {
+        Ok(outcome) => outcome,
+        Err(message) => {
+            eprintln!("  {}", color.paint(YELLOW, &message));
+            return ExitCode::FAILURE;
+        }
+    };
+    println!(
+        "  {}  {}  {}",
+        color.paint(BOLD, &outcome.revision),
+        color.paint(DIM, &format!("{} ms", outcome.millis)),
+        color.paint(DIM, &format!("{} tools", outcome.tools.len())),
+    );
+    if outcome.fell_back {
+        println!(
+            "  {}",
+            color.paint(
+                YELLOW,
+                "the server did not accept the current revision; the frozen path was used"
+            )
+        );
+    }
+    for (tool, description) in &outcome.tools {
+        // A description the far side wrote, on its way to a terminal: one line,
+        // capped, escapes gone.
+        println!(
+            "    {}  {}",
+            tool,
+            color.paint(DIM, &crate::ui::one_line(description))
+        );
+    }
+    if outcome.tools.is_empty() {
+        println!("  {}", color.paint(DIM, "(the server offers no tools)"));
+    }
+    if let Some((tool, text, is_error)) = &outcome.called {
+        println!();
+        println!(
+            "  {} {}",
+            color.paint(BOLD, tool),
+            color.paint(DIM, if *is_error { "· the server called it an error" } else { "" })
+        );
+        for line in text.lines().take(20) {
+            println!("    {}", crate::ui::one_line(line));
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 fn doctor() -> ExitCode {
     let color = Color::setup();
     println!("{}{}", color.paint(BOLD, "Tacet"), color.paint(BRASS, "."));
@@ -983,6 +1235,75 @@ fn font() -> ExitCode {
 /// `SilentDeny` would be wrong too: here there IS someone to ask. The reason the
 /// gate exists is to show the content being sent (the query string) to the user
 /// VERBATIM.
+/// Answers a server's MRTR question (spec §4) — the terminal side of the
+/// pattern that replaced elicitation push.
+///
+/// THE MODEL IS NEVER ASKED. A server's question is put in front of the USER,
+/// verbatim but sanitised, prefixed with the connection's name so nobody has to
+/// guess who is asking. Feeding it to the model instead would be `sampling`
+/// with extra steps, and `sampling` is refused permanently.
+///
+/// Declining is `None`: an empty answer, an EOF, a closed pipe. The call is
+/// then abandoned and the retry is never sent.
+struct TerminalAsk;
+
+impl mcp::InputAsk for TerminalAsk {
+    fn ask(&self, server: &str, questions: &[mcp::Question]) -> Option<Vec<String>> {
+        use mcp::QuestionKind;
+        let color = Color::setup();
+        eprintln!();
+        eprintln!(
+            "  {} the '{server}' server is asking for something before it will run this:",
+            color.paint(BRASS, "[input]")
+        );
+        let mut answers = Vec::with_capacity(questions.len());
+        for question in questions {
+            // The question is DATA. It is printed and nothing else — never
+            // parsed for commands, never handed to the model.
+            eprintln!("    {}", crate::ui::one_line(&question.prompt));
+            match &question.kind {
+                QuestionKind::Boolean => eprint!("    [y/N] "),
+                QuestionKind::Choice(choices) => {
+                    for (i, choice) in choices.iter().enumerate() {
+                        eprintln!("      {}. {}", i + 1, crate::ui::one_line(choice));
+                    }
+                    eprint!("    pick a number (enter cancels) ");
+                }
+                QuestionKind::Text => eprint!("    answer (enter cancels) "),
+            }
+            let _ = std::io::stderr().flush();
+            let mut line = String::new();
+            if std::io::stdin().read_line(&mut line).is_err() {
+                return None;
+            }
+            let line = line.trim().to_string();
+            match &question.kind {
+                // A bare enter on a yes/no is an ANSWER (no), not a cancel:
+                // that is what [y/N] means everywhere else in this shell.
+                QuestionKind::Boolean => answers.push(line),
+                QuestionKind::Choice(choices) => {
+                    let picked = line.parse::<usize>().ok().filter(|n| *n >= 1 && *n <= choices.len());
+                    match picked {
+                        Some(n) => answers.push(choices[n - 1].clone()),
+                        None => {
+                            eprintln!("    (cancelled)");
+                            return None;
+                        }
+                    }
+                }
+                QuestionKind::Text => {
+                    if line.is_empty() {
+                        eprintln!("    (cancelled)");
+                        return None;
+                    }
+                    answers.push(line);
+                }
+            }
+        }
+        Some(answers)
+    }
+}
+
 struct TerminalApproval;
 
 impl ApprovalGate for TerminalApproval {
@@ -2733,7 +3054,7 @@ fn chat(run: ChatRun) -> ExitCode {
 
     // MCP CONNECTIONS — `mcp.json` in the config directory. If the file is
     // missing it does nothing and NO NETWORK CALL IS MADE.
-    let mcp_load = mcp::load_from_default();
+    let mcp_load = mcp::load_from_default_with(Arc::new(TerminalAsk));
     let mcp_names = mcp::feed_catalog(&mut catalog, &mcp_load);
     report_mcp(&mcp_load, &color);
 
@@ -2770,7 +3091,9 @@ fn chat(run: ChatRun) -> ExitCode {
         Arc::clone(&traces) as Arc<dyn Reporter>,
     );
 
-    let router = Router::new();
+    // The remote tools get a floor in the budget: a catalog the model is never
+    // shown is a catalog that does not exist as far as the answer is concerned.
+    let router = Router::new().reserving(mcp_names.clone());
     // THE COUNTER CARRIES THE MODEL'S OWN WINDOW. `TokenCounter::default()` used
     // to be built here, which hard-wired 4096 — a constant of a DIFFERENT
     // architecture (iOS FoundationModels really does hand out 4096). Running our

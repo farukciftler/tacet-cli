@@ -1,0 +1,24 @@
+[
+  {
+    "status": 400,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "error": {
+        "code": -32602,
+        "message": "params._meta must be an object carrying the required 'io.modelcontextprotocol/protocolVersion' and 'io.modelcontextprotocol/clientCapabilities' envelope keys"
+      }
+    }
+  },
+  {
+    "status": 400,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "error": {
+        "code": -32602,
+        "message": "params._meta must be an object carrying the required 'io.modelcontextprotocol/protocolVersion' and 'io.modelcontextprotocol/clientCapabilities' envelope keys"
+      }
+    }
+  }
+]

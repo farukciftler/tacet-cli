@@ -1,0 +1,18 @@
+[
+  {
+    "status": 200,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "serverInfo": {
+          "name": "example",
+          "version": "1.0"
+        },
+        "capabilities": {
+          "tools": {}
+        }
+      }
+    }
+  }
+]

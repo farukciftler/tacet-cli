@@ -1,0 +1,53 @@
+[
+  {
+    "status": 200,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "resultType": "task",
+        "taskId": "t-42",
+        "status": "working",
+        "pollIntervalMs": 10
+      }
+    }
+  },
+  {
+    "status": 200,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "result": {
+        "status": "working",
+        "pollIntervalMs": 10
+      }
+    }
+  },
+  {
+    "status": 200,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "result": {
+        "status": "working",
+        "pollIntervalMs": 10
+      }
+    }
+  },
+  {
+    "status": 200,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 4,
+      "result": {
+        "status": "completed",
+        "content": [
+          {
+            "type": "text",
+            "text": "export finished: 812 rows"
+          }
+        ]
+      }
+    }
+  }
+]

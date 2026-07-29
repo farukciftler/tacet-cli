@@ -24,6 +24,10 @@ use tacet_kernel::{Tool, ToolCatalog};
 // tool's home turf; the count is still small enough for a 4B's selection.
 pub const MAX_TOOLS: usize = 9;
 
+/// How many of the budget's slots a remote catalog may claim when none of its
+/// tools won a slot on merit.
+pub const RESERVED_SLOTS: usize = 3;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IntentProfile {
     Document,
@@ -421,9 +425,11 @@ pub fn score_intent(message: &str) -> IntentScores {
 /// The router that applies the tool budget.
 ///
 /// Stateless: the same message + the same catalog always gives the same list.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Router {
     max: Option<usize>,
+    /// See `reserving`.
+    reserved: Vec<String>,
 }
 
 impl Router {
@@ -448,6 +454,22 @@ impl Router {
     /// (stable sort). Tools scoring zero are added too until the budget fills — an
     /// empty list going to the model is worse than the general tools at the head of
     /// the catalog going instead.
+    /// Names that may not be crowded out of the budget entirely — the remote
+    /// (MCP) tools.
+    ///
+    /// WHY THIS EXISTS: the profiles are a table written against the built-in
+    /// catalog, so a remote tool only ever scores through the word overlap
+    /// above — and word overlap is a LATIN-ALPHABET trick. Measured: "wie ist
+    /// die Festplattenauslastung auf meinem Server" reached the remote tools,
+    /// "サーバーのディスク使用状況" did not, and the model answered that it has
+    /// no access to servers. It was telling the truth: nothing in its prompt
+    /// said otherwise. A few reserved slots mean the model always knows the
+    /// connection EXISTS, whatever language the question is in.
+    pub fn reserving(mut self, names: Vec<String>) -> Self {
+        self.reserved = names;
+        self
+    }
+
     pub fn select(&self, message: &str, catalog: &ToolCatalog) -> Vec<Arc<dyn Tool>> {
         let scores = score_intent(message);
         let mut ordered: Vec<(usize, usize, Arc<dyn Tool>)> = catalog
@@ -457,13 +479,49 @@ impl Router {
             .map(|(i, t)| (self.tool_score(t.as_ref(), &scores), i, t.clone()))
             .collect();
 
-        // The key is (-score, catalog order): fully deterministic.
-        ordered.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-        ordered
-            .into_iter()
-            .take(self.budget())
-            .map(|(_, _, t)| t)
-            .collect()
+        // The key is (-profile score, -word overlap, catalog order): fully
+        // deterministic, and the middle term is what lets a tool the profiles
+        // have never heard of reach the model at all (see `overlap`).
+        let message_stems = stems(&simplify(message));
+        ordered.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| {
+                    overlap(b.2.as_ref(), &message_stems).cmp(&overlap(a.2.as_ref(), &message_stems))
+                })
+                .then(a.1.cmp(&b.1))
+        });
+        let budget = self.budget();
+        let mut chosen: Vec<Arc<dyn Tool>> = ordered
+            .iter()
+            .take(budget)
+            .map(|(_, _, t)| t.clone())
+            .collect();
+
+        // THE RESERVATION, applied last and only when it changes something: if
+        // no reserved tool made the cut on merit, the weakest of the chosen
+        // give way to the best-ranked reserved ones. `RESERVED_SLOTS` is small
+        // on purpose — this is "the model must know the connection exists", not
+        // "remote tools win".
+        if !self.reserved.is_empty() && budget > RESERVED_SLOTS {
+            let already = chosen
+                .iter()
+                .filter(|t| self.reserved.iter().any(|n| n == t.name()))
+                .count();
+            if already < RESERVED_SLOTS {
+                let wanted = RESERVED_SLOTS - already;
+                let extra: Vec<Arc<dyn Tool>> = ordered
+                    .iter()
+                    .map(|(_, _, t)| t)
+                    .filter(|t| self.reserved.iter().any(|n| n == t.name()))
+                    .filter(|t| !chosen.iter().any(|c| c.name() == t.name()))
+                    .take(wanted)
+                    .cloned()
+                    .collect();
+                chosen.truncate(budget.saturating_sub(extra.len()));
+                chosen.extend(extra);
+            }
+        }
+        chosen
     }
 
     /// A tool's score: for every profile the tool belongs to, the product of the
@@ -492,6 +550,64 @@ impl Router {
             })
             .sum()
     }
+}
+
+/// WORDS THE MESSAGE AND THE TOOL SHARE — the tie-breaker that lets a tool the
+/// profiles know nothing about be chosen.
+///
+/// WHY IT HAD TO EXIST: the profiles are a fixed table written against the
+/// BUILT-IN catalog, but MCP adds tools at run time, named and described by
+/// somebody else, in whatever language they please. Measured: with a server
+/// offering 20 remote tools, "serverdeki disk durumu nedir" scored every one of
+/// them zero, the budget filled with built-ins in catalog order, and the model —
+/// which had never been shown the tool — answered "I cannot access external
+/// systems". It was right: nothing had told it otherwise.
+///
+/// It is a TIE-BREAKER, not a score. A profile that fires still decides first;
+/// this only orders the mass of tools that scored zero, where the alternative
+/// was catalog order, which is to say alphabetical luck.
+fn overlap(tool: &dyn Tool, message_stems: &[String]) -> usize {
+    if message_stems.is_empty() {
+        return 0;
+    }
+    let text = simplify(&format!("{} {}", tool.name(), tool.description()));
+    let tool_stems = stems(&text);
+    message_stems
+        .iter()
+        .filter(|stem| tool_stems.iter().any(|t| t == *stem))
+        .map(|stem| stem.len())
+        .sum()
+}
+
+/// The distinctive words of a piece of text, cut to a stem.
+///
+/// STEMMED, because Turkish glues its grammar onto the end of the word: the
+/// message says "diskin", "durumu", "loglari" where the tool says "disk",
+/// "durum", "log". Five characters is enough to keep "docker" apart from
+/// "dosya" and short enough to survive a suffix.
+fn stems(text: &str) -> Vec<String> {
+    // "server"/"sunucu" are NOT here on purpose: for a remote catalog the
+    // connection's name is the strongest signal in the sentence, and stopping
+    // it was measured to hide every remote tool from a message that named the
+    // machine it meant.
+    const STOP: &[&str] = &[
+        "nedir", "nasil", "bana", "icin", "ile", "var", "bir", "the", "and", "for", "what",
+        "please", "you", "can", "give", "tell",
+    ];
+    let mut out: Vec<String> = Vec::new();
+    for word in text.split(|c: char| !c.is_alphanumeric()) {
+        if word.chars().count() < 3 || STOP.contains(&word) {
+            continue;
+        }
+        // FOUR characters, not five: measured across languages, "servidor" and
+        // "serverim" share four ("serv") and diverge at the fifth. Four is the
+        // shortest cut that still keeps "docker" apart from "dosya".
+        let stem: String = word.chars().take(4).collect();
+        if !out.contains(&stem) {
+            out.push(stem);
+        }
+    }
+    out
 }
 
 #[cfg(test)]

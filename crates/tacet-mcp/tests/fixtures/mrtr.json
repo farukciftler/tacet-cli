@@ -1,0 +1,34 @@
+[
+  {
+    "status": 200,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "resultType": "input_required",
+        "questions": [
+          {
+            "id": "confirm",
+            "type": "boolean",
+            "prompt": "confirm cost: creating project (est. $5)"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "status": 200,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "project created"
+          }
+        ]
+      }
+    }
+  }
+]

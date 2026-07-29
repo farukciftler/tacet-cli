@@ -1,0 +1,11 @@
+[
+  {
+    "status": 200,
+    "body": {
+      "access_token": "at-live",
+      "refresh_token": "rt-live",
+      "expires_in": 3600,
+      "token_type": "Bearer"
+    }
+  }
+]

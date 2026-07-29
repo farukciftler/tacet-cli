@@ -25,6 +25,18 @@ pub fn request_body(id: u64, method: &str, params: Value) -> Vec<u8> {
 ///
 /// `notifications/initialized` is its only user: it is the second half of the
 /// MCP handshake, and skipping it makes strict servers reject `tools/list`.
+/// A JSON-RPC error answer. Written for ONE purpose: refusing `sampling`
+/// (see `MCPClient::handle_sampling`). A refusal has to be a real protocol
+/// answer, not silence — silence reads as a broken client and gets retried.
+pub fn error_body(id: u64, code: i64, message: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": { "code": code, "message": message },
+    }))
+    .unwrap_or_default()
+}
+
 pub fn notification_body(method: &str) -> Vec<u8> {
     json!({ "jsonrpc": "2.0", "method": method })
         .to_string()

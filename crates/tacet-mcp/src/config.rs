@@ -78,6 +78,21 @@ pub struct ConnectionSetting {
     pub key_env: Option<String>,
     #[serde(default = "yes", alias = "etkin")]
     pub enabled: bool,
+    /// Which protocol revision to speak: `"auto"` (default), `"2026-07-28"`,
+    /// or `"legacy"`.
+    ///
+    /// KEPT AS A STRING, not an enum: an unknown value must not make the whole
+    /// file fail to parse and take every other connection down with it. It is
+    /// read through `spec_choice()`, where a typo falls back to `auto` — and
+    /// `spec_is_understood()` lets the shell say so out loud.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<String>,
+    /// OAuth settings (M3). When present, `tacet mcp login <name>` fills the
+    /// token file and the stored token is used INSTEAD of `key`/`key_env` —
+    /// a connection that can log in should not also be carrying a static
+    /// secret around.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<crate::auth::AuthSetting>,
 }
 
 fn yes() -> bool {
@@ -85,6 +100,25 @@ fn yes() -> bool {
 }
 
 impl ConnectionSetting {
+    /// The revision to speak. An unrecognised `spec` is treated as `auto` —
+    /// the safe reading, since `auto` tries the current revision and falls back
+    /// by itself.
+    pub fn spec_choice(&self) -> crate::client::SpecChoice {
+        self.spec
+            .as_deref()
+            .and_then(crate::client::SpecChoice::parse)
+            .unwrap_or_default()
+    }
+
+    /// Was the `spec` value understood. `false` means the shell should say the
+    /// value was not recognised rather than pretending it was.
+    pub fn spec_is_understood(&self) -> bool {
+        match self.spec.as_deref() {
+            None => true,
+            Some(text) => crate::client::SpecChoice::parse(text).is_some(),
+        }
+    }
+
     /// The key to use — the environment variable first, then the value in the
     /// file.
     pub fn resolved_key(&self) -> Option<String> {

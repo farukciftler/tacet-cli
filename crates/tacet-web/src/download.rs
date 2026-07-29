@@ -712,164 +712,19 @@ pub fn digest_from_file(path: &Path) -> DownloadResult<String> {
 
 /// The SHA-256 digest of in-memory data.
 pub fn digest(data: &[u8]) -> String {
-    let mut h = Sha256::new();
-    h.feed(data);
-    hex(&h.finish())
+    sha256_hex(data)
 }
 
-fn hex(bytes: &[u8; 32]) -> String {
-    let mut s = String::with_capacity(64);
-    for b in bytes {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
-}
+/// The digest as lowercase hex, for callers OUTSIDE this module (the receipt
+/// chain hashes its entries with it). RE-EXPORTED, NOT REIMPLEMENTED: the hash
+/// itself lives in `tacet_kernel::hash`, where the download verifier, the
+/// receipt chain and the MCP client's PKCE challenge all reach the same proven
+/// core. Pure computation: re-exporting it does not widen the network monopoly.
+pub use tacet_kernel::sha256_hex;
 
-/// SHA-256 (FIPS 180-4).
-///
-/// NO DEPENDENCY WAS ADDED, and this is NOT THE OPPOSITE of the `ureq`/TLS
-/// decision, it is the same one. The criterion there was: "when written by
-/// hand, is what comes out a security hole, or a closed subset of a few hundred
-/// lines". TLS was the first (chain validation, cipher suites, handshake
-/// states). SHA-256 is the second: its input is a byte array, its output is 32
-/// bytes, its specification is one page and its CORRECTNESS CAN BE PROVEN WITH
-/// THE OFFICIAL TEST VECTORS (see the tests). A wrongly written hash does not
-/// silently say "valid"; the test vector blows up on the first run.
-struct Sha256 {
-    state: [u32; 8],
-    buffer: [u8; 64],
-    filled: usize,
-    total_bytes: u64,
-}
+use tacet_kernel::Sha256;
+use tacet_kernel::hash::hex;
 
-const H0: [u32; 8] = [
-    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
-];
-
-const K: [u32; 64] = [
-    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
-];
-
-/// The digest as lowercase hex, for callers OUTSIDE this module. The receipt
-/// chain (`tacet log`) hashes its entries with the same hand-written, test
-/// vector proven core the download verifier uses — one implementation, both
-/// jobs. Pure computation: exporting it does not widen the network monopoly.
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    let mut h = Sha256::new();
-    h.feed(bytes);
-    hex(&h.finish())
-}
-
-impl Sha256 {
-    fn new() -> Self {
-        Self {
-            state: H0,
-            buffer: [0u8; 64],
-            filled: 0,
-            total_bytes: 0,
-        }
-    }
-
-    fn feed(&mut self, mut data: &[u8]) {
-        self.total_bytes = self.total_bytes.wrapping_add(data.len() as u64);
-        if self.filled > 0 {
-            let n = data.len().min(64 - self.filled);
-            self.buffer[self.filled..self.filled + n].copy_from_slice(&data[..n]);
-            self.filled += n;
-            data = &data[n..];
-            if self.filled == 64 {
-                let block = self.buffer;
-                process_block(&mut self.state, &block);
-                self.filled = 0;
-            }
-        }
-        // WHOLE BLOCKS are processed without being copied into the buffer: on a
-        // 2.5 GB file an unnecessary copy is a measurable slowdown.
-        while data.len() >= 64 {
-            let (block, rest) = data.split_at(64);
-            let mut b = [0u8; 64];
-            b.copy_from_slice(block);
-            process_block(&mut self.state, &b);
-            data = rest;
-        }
-        if !data.is_empty() {
-            self.buffer[..data.len()].copy_from_slice(data);
-            self.filled = data.len();
-        }
-    }
-
-    fn finish(mut self) -> [u8; 32] {
-        let bit_length = self.total_bytes.wrapping_mul(8);
-        // Padding: 0x80, then zeros until 8 bytes are left for the length field.
-        self.feed(&[0x80]);
-        while self.filled != 56 {
-            self.feed(&[0x00]);
-        }
-        // The length DOES NOT GO through `feed`: it would corrupt the
-        // `total_bytes` counter, and after the padding the buffer is at exactly
-        // 56 bytes anyway.
-        self.buffer[56..64].copy_from_slice(&bit_length.to_be_bytes());
-        let block = self.buffer;
-        process_block(&mut self.state, &block);
-
-        let mut output = [0u8; 32];
-        for (i, word) in self.state.iter().enumerate() {
-            output[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
-        }
-        output
-    }
-}
-
-fn process_block(state: &mut [u32; 8], block: &[u8; 64]) {
-    let mut w = [0u32; 64];
-    for i in 0..16 {
-        w[i] = u32::from_be_bytes([
-            block[4 * i],
-            block[4 * i + 1],
-            block[4 * i + 2],
-            block[4 * i + 3],
-        ]);
-    }
-    for i in 16..64 {
-        let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-        let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-        w[i] = w[i - 16]
-            .wrapping_add(s0)
-            .wrapping_add(w[i - 7])
-            .wrapping_add(s1);
-    }
-    let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = *state;
-    for i in 0..64 {
-        let e1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-        let choice = (e & f) ^ ((!e) & g);
-        let t1 = h
-            .wrapping_add(e1)
-            .wrapping_add(choice)
-            .wrapping_add(K[i])
-            .wrapping_add(w[i]);
-        let a0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-        let majority = (a & b) ^ (a & c) ^ (b & c);
-        let t2 = a0.wrapping_add(majority);
-        h = g;
-        g = f;
-        f = e;
-        e = d.wrapping_add(t1);
-        d = c;
-        c = b;
-        b = a;
-        a = t1.wrapping_add(t2);
-    }
-    for (slot, value) in state.iter_mut().zip([a, b, c, d, e, f, g, h]) {
-        *slot = slot.wrapping_add(value);
-    }
-}
 
 #[cfg(test)]
 mod tests {

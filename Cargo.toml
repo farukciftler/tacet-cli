@@ -37,9 +37,16 @@ clap = { version = "4", features = ["derive"] }
 # tacet-engine and tacet-kernel write "this crate MUST NOT PICK an executor, so
 # no tokio". A dependency comes back when it is needed, with its rationale.
 
-tacet-kernel = { path = "crates/tacet-kernel", version = "0.1.0" }
+# 0.1.2 IS THE FLOOR: below it there is no `hash` module, and the MCP client's
+# PKCE challenge, the download verifier and the receipt chain would each need
+# their own SHA-256 again — three chances for one of them to be quietly wrong.
+tacet-kernel = { path = "crates/tacet-kernel", version = "0.1.2" }
 tacet-zip = { path = "crates/tacet-zip", version = "0.1.0" }
-tacet-grammar = { path = "crates/tacet-grammar", version = "0.1.0" }
+# 0.1.1 IS THE FLOOR: below it a tool that takes NO arguments cannot be called
+# at all — the prompt advertises `disk_usage()` and the grammar refuses it, so
+# the model writes something that parses as no call and the tool never runs.
+# Remote (MCP) catalogs are full of such tools.
+tacet-grammar = { path = "crates/tacet-grammar", version = "0.1.1" }
 # EVERY NUMBER BELOW THAT IS NOT 0.1.0 IS A FLOOR, NOT A PREFERENCE, and each
 # one was put there by a fix that a `^0.1.0` install would have resolved away.
 # `cargo install tacet-cli` picks the newest match, but a machine with an older
@@ -51,7 +58,11 @@ tacet-engine = { path = "crates/tacet-engine", version = "0.1.2" }
 # `catalog.rs` has no gate to ask and `shell`/`http`/`db` do not exist at all.
 # 0.1.4 IS THE FLOOR: below it `shell` is offered on Windows, where the timeout
 # cannot kill the process group and a runaway command would outlive the turn.
-tacet-tools = { path = "crates/tacet-tools", version = "0.1.4" }
+# 0.1.5 IS THE FLOOR for anyone using MCP: below it the router cannot see a
+# remote catalog at all (every remote tool scores zero and never enters the
+# 9-tool budget), so the model answers "I have no access to servers" while the
+# connection is working perfectly.
+tacet-tools = { path = "crates/tacet-tools", version = "0.1.5" }
 tacet-skills = { path = "crates/tacet-skills", version = "0.1.0" }
 tacet-memory = { path = "crates/tacet-memory", version = "0.1.0" }
 # THE NETWORK MONOPOLY: a network call exists ONLY in these two crates. No
@@ -61,6 +72,9 @@ tacet-memory = { path = "crates/tacet-memory", version = "0.1.0" }
 # which does not have it. 0.1.3 IS THE FLOOR NOW: below it the `http` addon's
 # host allow-list cannot read its own stored form, so a multi-host install
 # refuses every call it was configured to permit.
-tacet-web = { path = "crates/tacet-web", version = "0.1.3" }
-tacet-mcp = { path = "crates/tacet-mcp", version = "0.1.0" }
+tacet-web = { path = "crates/tacet-web", version = "0.1.4" }
+# 0.2.0 SPEAKS THE 2026-07-28 REVISION: stateless requests, the `_meta`
+# envelope, MRTR, poll-based tasks, issuer-bound OAuth. The 0.1 line speaks only
+# the frozen revision, and a `^0.1` resolve would silently put a client on it.
+tacet-mcp = { path = "crates/tacet-mcp", version = "0.2.0" }
 tacet-eval = { path = "crates/tacet-eval", version = "0.1.1" }

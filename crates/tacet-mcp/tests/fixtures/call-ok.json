@@ -1,0 +1,17 @@
+[
+  {
+    "status": 200,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "3 issues found"
+          }
+        ]
+      }
+    }
+  }
+]

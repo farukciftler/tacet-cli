@@ -1,0 +1,81 @@
+[
+  {
+    "status": 200,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "resultType": "input_required",
+        "questions": [
+          {
+            "id": "a",
+            "prompt": "again"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "status": 200,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "result": {
+        "resultType": "input_required",
+        "questions": [
+          {
+            "id": "a",
+            "prompt": "again"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "status": 200,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "result": {
+        "resultType": "input_required",
+        "questions": [
+          {
+            "id": "a",
+            "prompt": "again"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "status": 200,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 4,
+      "result": {
+        "resultType": "input_required",
+        "questions": [
+          {
+            "id": "a",
+            "prompt": "again"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "status": 200,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 5,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "never reached"
+          }
+        ]
+      }
+    }
+  }
+]

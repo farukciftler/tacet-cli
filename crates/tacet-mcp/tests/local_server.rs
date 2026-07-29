@@ -28,6 +28,14 @@ use tacet_mcp::client::MCPClient;
 struct Identity {
     user_agent: Option<String>,
     client_name: Option<String>,
+    /// Did any request carry a session id. On the 2026-07-28 path the server
+    /// hands one out on every response and the client must IGNORE it — this is
+    /// where that is measured over a real socket, not in a fixture.
+    session_echoed: bool,
+    /// The protocol header the client actually wrote.
+    protocol: Option<String>,
+    /// The routing headers gateways read (SEP-2243).
+    method_header: Option<String>,
 }
 
 /// The handle for the server thread: a stop flag + a join handle.
@@ -138,6 +146,17 @@ fn handle_request(
             let value = trimmed["user-agent:".len()..].trim().to_string();
             observed.lock().expect("identity lock").user_agent = Some(value);
         }
+        if lower.starts_with("mcp-session-id:") {
+            observed.lock().expect("identity lock").session_echoed = true;
+        }
+        if lower.starts_with("mcp-protocol-version:") {
+            let value = trimmed["mcp-protocol-version:".len()..].trim().to_string();
+            observed.lock().expect("identity lock").protocol = Some(value);
+        }
+        if lower.starts_with("mcp-method:") {
+            let value = trimmed["mcp-method:".len()..].trim().to_string();
+            observed.lock().expect("identity lock").method_header = Some(value);
+        }
     }
     let mut body = vec![0u8; length];
     reader.read_exact(&mut body)?;
@@ -154,16 +173,24 @@ fn handle_request(
         return Ok(true);
     };
 
+    // WHO IS CALLING travels in `_meta` on every request now (there is no
+    // handshake to carry it); the old spelling is still read so the frozen
+    // path stays measurable too.
+    if let Some(name) = request
+        .get("params")
+        .and_then(|p| {
+            p.get("_meta")
+                .and_then(|m| m.get("io.modelcontextprotocol/clientInfo"))
+                .or_else(|| p.get("clientInfo"))
+        })
+        .and_then(|c| c.get("name"))
+        .and_then(|n| n.as_str())
+    {
+        observed.lock().expect("identity lock").client_name = Some(name.to_string());
+    }
+
     let result = match method {
         "initialize" => {
-            if let Some(name) = request
-                .get("params")
-                .and_then(|p| p.get("clientInfo"))
-                .and_then(|c| c.get("name"))
-                .and_then(|n| n.as_str())
-            {
-                observed.lock().expect("identity lock").client_name = Some(name.to_string());
-            }
             serde_json::json!({
             "protocolVersion": "2025-06-18",
             "capabilities": {"tools": {}},
@@ -305,7 +332,22 @@ fn full_flow(sse: bool) {
         assert_eq!(
             o.client_name.as_deref(),
             Some("tacet"),
-            "initialize.clientInfo.name must carry the product name"
+            "_meta clientInfo.name must carry the product name"
+        );
+        assert_eq!(
+            o.protocol.as_deref(),
+            Some(tacet_mcp::PROTOCOL_VERSION),
+            "the revision the client speaks, read off the wire"
+        );
+        assert_eq!(
+            o.method_header.as_deref(),
+            Some("tools/call"),
+            "the routing header of the last request mirrors its body"
+        );
+        assert!(
+            !o.session_echoed,
+            "the server offered a session id on every response and the stateless \
+             path must never send one back"
         );
     }
 

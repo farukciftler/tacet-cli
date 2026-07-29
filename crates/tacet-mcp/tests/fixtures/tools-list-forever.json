@@ -1,0 +1,22 @@
+[
+  {
+    "status": 200,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "tools": [
+          {
+            "name": "search",
+            "description": "Searches.",
+            "inputSchema": {
+              "type": "object"
+            }
+          }
+        ],
+        "ttlMs": 2592000000,
+        "cacheScope": "server"
+      }
+    }
+  }
+]

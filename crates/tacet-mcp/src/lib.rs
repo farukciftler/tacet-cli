@@ -5,10 +5,12 @@
 //! rule stays auditable, the HTTP dependency also lives only in those two
 //! manifests.
 //!
-//! Hand-written JSON-RPC 2.0 + Streamable HTTP + SSE. NO official MCP SDK WAS
-//! PULLED IN: v1 needs three methods (`initialize`, `tools/list`,
-//! `tools/call`), and Tacet's identity is built on not pulling in ready-made
-//! crates. The exception is TLS: writing that by hand would be irresponsible
+//! Hand-written JSON-RPC 2.0 over plain request/response HTTP, speaking the
+//! **2026-07-28** revision, with the old one kept frozen beside it for the
+//! deprecation window. NO official MCP SDK WAS PULLED IN: the client needs a
+//! handful of methods, and the hand-written client IS the audit story — a beta
+//! SDK of tens of thousands of lines would replace it with a promise. The one
+//! exception is TLS: writing that by hand would be irresponsible
 //! (see `Cargo.toml`).
 //!
 //! ## The promise
@@ -30,24 +32,39 @@
 //! | `sse` | `text/event-stream` parsing | no |
 //! | `bridge` | MCP JSON Schema -> `ArgSchema`, description truncation | no |
 //! | `config` | config directory + `mcp.json` | no |
-//! | `client` | HTTP POST + session state | **YES, the only place** |
+//! | `elicit` | MRTR questions: parsing, sanitizing, answering | no |
+//! | `legacy` | the frozen 2025-06-18 path (sunset 2027-07-28) | no socket of its own |
+//! | `transport` | the socket seam + the record/replay test transport | **YES, the only place** |
+//! | `client` | protocol logic on top of `transport` | no socket of its own |
 //!
 //! The only module that goes online is `client`; everything else is pure and
 //! tested without the network. The single network test in the tests is
 //! `#[ignore]`.
 
+pub mod auth;
 pub mod bridge;
 pub mod client;
 pub mod config;
+pub mod elicit;
 pub mod error;
 pub mod jsonrpc;
+pub mod legacy;
 pub mod sse;
+pub mod tasks;
+pub mod transport;
 
 pub use bridge::{
     Conversion, ConversionNotes, UntranslatableReason, choice_is_portable, convert_schema,
     name_is_portable, truncate_description,
 };
-pub use client::{MCPClient, PROTOCOL_VERSION, TIMEOUT_S, ToolSpec};
+pub use client::{
+    CATALOG_TTL_CAP, MCPClient, PROTOCOL_VERSION, Revision, SpecChoice, TIMEOUT_S, ToolSpec,
+};
+pub use auth::{AuthSetting, Token, TokenStore};
+pub use elicit::{DeclineInput, InputAsk, MAX_INPUT_ROUNDS, Question, QuestionKind};
+pub use legacy::LEGACY_PROTOCOL_VERSION;
+pub use tasks::{SilentWatch, TaskWatch};
+pub use transport::{HttpTransport, Request, Transport};
 pub use config::{
     Config, ConnectionSetting, key_file_is_exposed, read_checked, read_default_checked,
 };

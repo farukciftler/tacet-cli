@@ -1,0 +1,39 @@
+[
+  {
+    "status": 200,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "tools": [
+          {
+            "name": "search",
+            "description": "Searches the issue tracker.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "query": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "name": "create_issue",
+            "description": "Creates an issue.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ],
+        "ttlMs": 600000,
+        "cacheScope": "server"
+      }
+    }
+  }
+]

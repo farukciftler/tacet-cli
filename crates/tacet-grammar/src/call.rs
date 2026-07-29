@@ -46,8 +46,18 @@ struct Inner {
     /// tool would repeat the same work once per catalog entry.
     mask: TokenMask,
     vocab: Vec<String>,
-    /// (tool name, the compiled grammar of its arguments) — in catalog order.
-    tools: Vec<(String, Arc<Grammar>)>,
+    /// (tool name, the compiled grammar of its arguments, may it be called with
+    /// NO arguments at all) — in catalog order.
+    ///
+    /// THE THIRD FIELD IS NOT A CONVENIENCE. The prompt advertises an
+    /// argument-less tool as `disk_usage()`, and until this existed the grammar
+    /// answered that with "after `(` I expect `{`". Measured on a real model
+    /// with a remote catalog: the model picked the right tool, tried to write
+    /// `disk_usage()`, had the token masked away, and slid into `disk_usage]()`
+    /// — which parses as nothing at all, so the tool never ran and the user was
+    /// told the assistant has no access to servers. The tools block and the
+    /// grammar have to advertise the same language.
+    tools: Vec<(String, Arc<Grammar>, bool)>,
     /// The tokens that CONTAIN a `(`: (id, the part before `(`, the part after
     /// the first `(`).
     ///
@@ -78,14 +88,25 @@ impl CallConstraint {
     /// only meaningful with an engine that KNOWS the tokenizer, because the mask
     /// speaks in token ids.
     pub fn new(vocab: &[String], catalog: &ToolCatalog) -> Self {
-        let tools: Vec<(String, Arc<Grammar>)> = catalog
+        let tools: Vec<(String, Arc<Grammar>, bool)> = catalog
             .tools()
             .iter()
-            .map(|t| (t.name().to_string(), Grammar::compile(&t.schema())))
+            .map(|t| {
+                let schema = t.schema();
+                // "No argument is REQUIRED" — not "no argument exists": a tool
+                // whose fields are all optional is legitimately called with
+                // none, and that is what `name()` means.
+                let optional_only = schema.fields().iter().all(|f| !f.required);
+                (
+                    t.name().to_string(),
+                    Grammar::compile(&schema),
+                    optional_only,
+                )
+            })
             .collect();
         let longest_name = tools
             .iter()
-            .map(|(n, _)| n.chars().count())
+            .map(|(n, _, _)| n.chars().count())
             .max()
             .unwrap_or(0);
         let paren_tokens = vocab
@@ -133,7 +154,14 @@ enum Stage {
     /// it at every step (see `align_prefix`).
     Prefix { queue: String },
     /// `tool_name(` was consumed; the arguments are now subject to the GRAMMAR.
-    Args { state: GrammarState },
+    ///
+    /// `fresh` is "nothing but whitespace has arrived since the `(`", and with
+    /// `empty_ok` it is what makes `name()` a complete call.
+    Args {
+        state: GrammarState,
+        fresh: bool,
+        empty_ok: bool,
+    },
     /// The arguments closed and `)` was consumed too — the call is complete.
     Closed,
 }
@@ -184,7 +212,7 @@ fn align_prefix(inner: &Inner, queue: &str) -> String {
             continue;
         }
         let s: String = chars[start..].iter().collect();
-        if inner.tools.iter().any(|(name, _)| name.starts_with(&s)) {
+        if inner.tools.iter().any(|(name, _, _)| name.starts_with(&s)) {
             return s;
         }
     }
@@ -212,9 +240,13 @@ impl CallSession {
                 // flowing and a later call can still be caught.
                 if c == '(' {
                     let name = align_prefix(&inner, queue);
-                    if let Some((_, grammar)) = inner.tools.iter().find(|(n, _)| *n == name) {
+                    if let Some((_, grammar, empty_ok)) =
+                        inner.tools.iter().find(|(n, _, _)| *n == name)
+                    {
                         self.stage = Stage::Args {
                             state: grammar.state(),
+                            fresh: true,
+                            empty_ok: *empty_ok,
                         };
                         return Ok(());
                     }
@@ -229,14 +261,26 @@ impl CallSession {
                 }
                 Ok(())
             }
-            Stage::Args { state } => {
+            Stage::Args {
+                state,
+                fresh,
+                empty_ok,
+            } => {
                 // A `)` arriving while the grammar is in an accepting state
                 // closes the call. This is checked first: `)` is not valid inside
                 // the grammar of the arguments, so letting it fall through would
                 // be an error.
-                if state.is_done() && c == ')' {
+                //
+                // AN EMPTY ARGUMENT LIST IS ALSO ACCEPTING when the tool needs
+                // nothing: `disk_usage()` is exactly what the prompt shows.
+                if c == ')' && (state.is_done() || (*fresh && *empty_ok)) {
                     self.stage = Stage::Closed;
                     return Ok(());
+                }
+                // Whitespace between `(` and the first real character does not
+                // count as having written arguments.
+                if !c.is_whitespace() {
+                    *fresh = false;
                 }
                 state.advance(&c.to_string()).map_err(|_| {
                     // Getting here means masking and advancing have drifted
@@ -273,10 +317,11 @@ impl CallSession {
             }
             let name = format!("{matched}{before}");
             let name = name.trim();
-            let Some((_, grammar)) = self.inner.tools.iter().find(|(n, _)| n == name) else {
+            let Some((_, grammar, empty_ok)) = self.inner.tools.iter().find(|(n, _, _)| n == name)
+            else {
                 continue;
             };
-            if !remainder_conforms(grammar, remainder) {
+            if !remainder_conforms(grammar, remainder, *empty_ok) {
                 logits[*id] = f32::NEG_INFINITY;
             }
         }
@@ -288,7 +333,11 @@ impl CallSession {
 /// The same logic as the `Stage::Args` branch of `swallow`: a `)` arriving in an
 /// accepting state closes the call, and what follows is no longer the grammar's
 /// business.
-fn remainder_conforms(grammar: &Arc<Grammar>, remainder: &str) -> bool {
+fn remainder_conforms(grammar: &Arc<Grammar>, remainder: &str, empty_ok: bool) -> bool {
+    // `()` in a single token: nothing was written and nothing had to be.
+    if empty_ok && remainder.trim() == ")" {
+        return true;
+    }
     let mut state = grammar.state();
     for c in remainder.chars() {
         if state.is_done() && c == ')' {
@@ -310,8 +359,12 @@ impl ConstraintSession for CallSession {
     }
 
     fn mask(&self, logits: &mut [f32]) {
-        let state = match &self.stage {
-            Stage::Args { state } => state,
+        let (state, closable) = match &self.stage {
+            Stage::Args {
+                state,
+                fresh,
+                empty_ok,
+            } => (state, *fresh && *empty_ok),
             // PREFIX STAGE: free text is legitimate, so there is NO general mask.
             // The only exception are tokens that close the tool name and enter
             // the arguments within the SAME token (like `("`). If those are not
@@ -338,7 +391,16 @@ impl ConstraintSession for CallSession {
         // the call, like `))` or `) ...`. The check performed inside the walk
         // fixes both: the prefix must PASS the grammar, and the remainder must be
         // EXACTLY the terminator.
-        let allowed = self.inner.mask.mask_with_terminator(state, Some(')'));
+        let mut allowed = self.inner.mask.mask_with_terminator(state, Some(')'));
+        if closable {
+            // The one token the walk cannot offer: a bare `)` on a state that
+            // has produced nothing yet.
+            for (id, text) in self.inner.vocab.iter().enumerate() {
+                if text == ")" && id < allowed.len() {
+                    allowed[id] = true;
+                }
+            }
+        }
         for (id, logit) in logits.iter_mut().enumerate() {
             // An index outside the vocabulary: the constraint can say nothing
             // about it, and closing it is the safest choice.
@@ -426,6 +488,77 @@ mod tests {
                 .advance(c as u32)
                 .expect("valid text must be accepted");
         }
+    }
+
+    /// A tool that needs nothing, and one whose only field is optional.
+    struct Bare(&'static str, bool);
+
+    impl Tool for Bare {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn description(&self) -> &str {
+            "needs nothing"
+        }
+        fn schema(&self) -> ArgSchema {
+            if self.1 {
+                ArgSchema::empty()
+            } else {
+                ArgSchema::object(vec![Field::new("detail", ArgSchema::text())])
+            }
+        }
+        fn run<'a>(
+            &'a self,
+            _args: serde_json::Value,
+            _ctx: &'a mut ToolContext,
+        ) -> ToolFuture<'a> {
+            boxed(async move { ToolOutcome::read_ok("ok", "ok") })
+        }
+    }
+
+    /// AN ARGUMENT-LESS TOOL MUST BE CALLABLE THE WAY THE PROMPT ADVERTISES IT.
+    ///
+    /// THE REGRESSION, measured on a real model with a remote catalog: the
+    /// tools block shows `serverim_disk_durumu()`, the grammar demanded `{`
+    /// after `(`, so the `()` token was masked away — and the model slid into
+    /// `serverim_disk_durumu]()`, which parses as no call at all. The tool
+    /// never ran and the user was told the assistant cannot reach servers. The
+    /// prompt and the grammar have to advertise the SAME language.
+    #[test]
+    fn a_tool_that_needs_no_arguments_can_be_called_with_none() {
+        let mut catalog = tacet_kernel::ToolCatalog::new();
+        catalog.add(Arc::new(Bare("disk_usage", true)));
+        catalog.add(Arc::new(Bare("listing", false)));
+        let k = CallConstraint::new(&vocab(), &catalog);
+
+        for text in [
+            "disk_usage()",
+            "listing()",
+            "disk_usage({})",
+            "disk_usage( )",
+        ] {
+            let mut s = k.session();
+            feed(&mut s, text);
+            assert!(s.is_done(), "{text} did not close the call");
+        }
+
+        // The mask OFFERS the close, rather than leaving the model to fight
+        // its way around it.
+        let mut s = k.session();
+        feed(&mut s, "disk_usage(");
+        assert!(allowed(s.as_ref(), ')'), "the bare `)` must be reachable");
+
+        // A REQUIRED field is still required — the door opened here is exactly
+        // as wide as "this tool asks for nothing".
+        let mut strict = tacet_kernel::ToolCatalog::new();
+        strict.add(Arc::new(DocumentTool));
+        let strict = CallConstraint::new(&vocab(), &strict);
+        let mut s = strict.session();
+        feed(&mut s, "create_document(");
+        assert!(
+            !allowed(s.as_ref(), ')'),
+            "a tool with required fields must not be closable empty"
+        );
     }
 
     #[test]

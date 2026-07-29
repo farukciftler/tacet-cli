@@ -111,6 +111,29 @@ impl MCPTool {
     }
 }
 
+/// Paints a running remote task onto the chip that started it:
+/// `serverim · export · running · 12s`.
+struct ChipWatch {
+    reporter: Arc<dyn tacet_kernel::Reporter>,
+    trace: tacet_kernel::TraceId,
+    connection: String,
+}
+
+impl tacet_mcp::TaskWatch for ChipWatch {
+    fn tick(&self, progress: &tacet_mcp::tasks::Progress) {
+        self.reporter.update(
+            self.trace,
+            TraceUpdate::default().text(format!(
+                "{} · {} · {} · {}s",
+                self.connection,
+                progress.id,
+                progress.status,
+                progress.elapsed.as_secs()
+            )),
+        );
+    }
+}
+
 impl Tool for MCPTool {
     fn name(&self) -> &str {
         &self.name
@@ -151,7 +174,20 @@ impl Tool for MCPTool {
                     .raw_input(serde_json::to_string_pretty(&args).unwrap_or_default()),
             );
 
-            let result = self.client.call_tool(&self.remote_name, &args);
+            // A remote task can run for a minute or more (spec §6). The chip is
+            // the only thing standing between that and "it froze", so the
+            // watcher is built here, around THIS call's chip.
+            let watch: Arc<dyn tacet_mcp::TaskWatch> = Arc::new(ChipWatch {
+                reporter: Arc::clone(&ctx.reporter),
+                trace,
+                connection: self.connection_name.clone(),
+            });
+            let result = self.client.call_tool_watching(
+                &self.remote_name,
+                &args,
+                &self.connection_name,
+                watch,
+            );
 
             match result {
                 Err(error) => {
@@ -334,10 +370,38 @@ impl LoadOutcome {
 /// A single connection: `initialize` + `tools/list` + the schema bridge.
 /// **GOES ON THE NETWORK.**
 pub fn load_connection(setting: &ConnectionSetting) -> LoadOutcome {
+    load_connection_with(setting, Arc::new(tacet_mcp::DeclineInput))
+}
+
+/// `load_connection`, with somebody to answer the server's questions (MRTR,
+/// spec §4). Headless callers pass `DeclineInput` and get today's behaviour:
+/// a server that asks for input gets a declined call.
+pub fn load_connection_with(
+    setting: &ConnectionSetting,
+    asker: Arc<dyn tacet_mcp::InputAsk>,
+) -> LoadOutcome {
     let mut outcome = LoadOutcome::default();
 
-    let client = match MCPClient::new(setting.url.clone(), setting.resolved_key()) {
-        Ok(c) => Arc::new(c),
+    // An unrecognised `spec` is NOT guessed at silently: the connection still
+    // loads (as `auto`, the safe reading) and the user is told which word was
+    // not understood.
+    if !setting.spec_is_understood() {
+        outcome.notes.push(format!(
+            "{}: the spec value {:?} was not recognised — using auto (2026-07-28, then legacy)",
+            setting.name,
+            setting.spec.clone().unwrap_or_default()
+        ));
+    }
+
+    // THE TOKEN WINS OVER THE STATIC KEY. A connection configured for OAuth
+    // that still carries a `key` is a leftover, and the leftover is the one
+    // more likely to be stale.
+    let (key, auth_note) = resolve_key(setting);
+    if let Some(note) = auth_note {
+        outcome.notes.push(format!("{}: {note}", setting.name));
+    }
+    let client = match MCPClient::new(setting.url.clone(), key) {
+        Ok(c) => Arc::new(c.with_spec(setting.spec_choice()).with_asker(asker)),
         Err(e) => {
             outcome
                 .connection_errors
@@ -355,6 +419,16 @@ pub fn load_connection(setting: &ConnectionSetting) -> LoadOutcome {
             return outcome;
         }
     };
+
+    // The chip and the notes never guess which revision was spoken; they read
+    // it off the client, which knows because it is the one that spoke.
+    if client.fell_back() {
+        outcome.notes.push(format!(
+            "{}: legacy protocol (the server did not accept {})",
+            setting.name,
+            tacet_mcp::PROTOCOL_VERSION
+        ));
+    }
 
     for spec in specs {
         match convert_schema(&spec.schema) {
@@ -386,22 +460,255 @@ pub fn load_connection(setting: &ConnectionSetting) -> LoadOutcome {
     outcome
 }
 
+// ---------------------------------------------------------------------------
+// M3 — logging in, from the shell's point of view
+// ---------------------------------------------------------------------------
+
+/// What the user must do by hand, because nothing here opens a browser or
+/// listens on a socket.
+pub struct LoginStep {
+    /// The URL to open. Printed, never launched.
+    pub url: String,
+    /// Carried back into `finish_login`; holds the CSRF state and the PKCE
+    /// verifier, neither of which ever leaves this machine.
+    pub started: tacet_mcp::auth::Authorization,
+    setting: tacet_mcp::AuthSetting,
+    connection: String,
+}
+
+/// Starts the authorization-code flow for a connection. NO NETWORK YET — this
+/// only builds a URL.
+pub fn begin_login(name: &str) -> Result<LoginStep, String> {
+    let (config, _exposed) =
+        tacet_mcp::config::read_default_checked().map_err(|e| e.short_error())?;
+    let setting = config
+        .connections
+        .iter()
+        .find(|c| c.name.eq_ignore_ascii_case(name))
+        .ok_or_else(|| format!("no connection named {name:?} in mcp.json"))?;
+    let auth = setting
+        .auth
+        .clone()
+        .ok_or_else(|| format!("{name:?} has no `auth` block in mcp.json — nothing to log in to"))?;
+    let started = tacet_mcp::auth::begin(&auth).map_err(|e| e.short_error())?;
+    Ok(LoginStep {
+        url: started.url.clone(),
+        started,
+        setting: auth,
+        connection: setting.name.clone(),
+    })
+}
+
+/// Finishes it with the URL the user pasted back. **GOES ON THE NETWORK** —
+/// but only after the state and the issuer have both checked out.
+pub fn finish_login(step: &LoginStep, pasted: &str) -> Result<String, String> {
+    let redirect = tacet_mcp::auth::parse_redirect(pasted.trim());
+    let transport = tacet_mcp::HttpTransport::new();
+    let token = tacet_mcp::auth::redeem(
+        &transport,
+        &step.setting,
+        &step.started,
+        &redirect,
+        tacet_mcp::auth::now_seconds(),
+    )
+    .map_err(|e| e.short_error())?;
+
+    let path = tacet_mcp::auth::token_path().ok_or("no config directory to write the token into")?;
+    let mut store = tacet_mcp::auth::read_tokens(&path).map_err(|e| e.short_error())?;
+    store.tokens.insert(step.connection.clone(), token);
+    tacet_mcp::auth::write_tokens(&path, &store).map_err(|e| e.short_error())?;
+    Ok(path.display().to_string())
+}
+
+/// Forgets a connection's token. Local only — the authorization server is not
+/// told, because a client that quietly calls a revocation endpoint on your
+/// behalf is doing something you did not ask for.
+pub fn logout(name: &str) -> Result<bool, String> {
+    let path = tacet_mcp::auth::token_path().ok_or("no config directory")?;
+    let mut store = tacet_mcp::auth::read_tokens(&path).map_err(|e| e.short_error())?;
+    let removed = store
+        .tokens
+        .keys()
+        .find(|k| k.eq_ignore_ascii_case(name))
+        .cloned();
+    match removed {
+        Some(key) => {
+            store.tokens.remove(&key);
+            tacet_mcp::auth::write_tokens(&path, &store).map_err(|e| e.short_error())?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// The credential a connection should travel with, and anything the user needs
+/// to be told about it.
+///
+/// The token is only used if it is BOUND to the issuer this connection is
+/// configured with (SEP-2352) and has not expired — both checks live in
+/// `tacet_mcp::auth`, which is where the reasoning about credentials belongs.
+fn resolve_key(setting: &ConnectionSetting) -> (Option<String>, Option<String>) {
+    let Some(auth) = &setting.auth else {
+        return (setting.resolved_key(), None);
+    };
+    let Some(path) = tacet_mcp::auth::token_path() else {
+        return (None, Some("no config directory, so no stored token".into()));
+    };
+    let store = match tacet_mcp::auth::read_tokens(&path) {
+        Ok(store) => store,
+        Err(e) => return (None, Some(e.short_error())),
+    };
+    match store.usable(&setting.name, &auth.issuer, tacet_mcp::auth::now_seconds()) {
+        Some(token) => (Some(token.access_token.clone()), None),
+        None => (
+            None,
+            Some(format!(
+                "not logged in (or the token expired) — run `tacet mcp login {}`",
+                setting.name
+            )),
+        ),
+    }
+}
+
 /// Every valid connection in the configuration. **GOES ON THE NETWORK.**
 ///
 /// With no connections it returns an empty outcome — NOT AN ERROR (§2.1 "off by
 /// default").
 pub fn load_from_config(config: &Config) -> LoadOutcome {
+    load_from_config_with(config, Arc::new(tacet_mcp::DeclineInput))
+}
+
+pub fn load_from_config_with(
+    config: &Config,
+    asker: Arc<dyn tacet_mcp::InputAsk>,
+) -> LoadOutcome {
     let mut total = LoadOutcome::default();
     for setting in config.valid() {
-        total.merge(load_connection(setting));
+        total.merge(load_connection_with(setting, Arc::clone(&asker)));
     }
     total
+}
+
+// ---------------------------------------------------------------------------
+// The shell's window onto the connections
+// ---------------------------------------------------------------------------
+
+/// The MRTR types the shell needs to implement its own asker. RE-EXPORTED HERE
+/// rather than reached for directly: `tacet-mcp` is not in the shell's
+/// production graph, and "MCP is reached through this module" is the invariant
+/// that keeps it that way.
+pub use tacet_mcp::{InputAsk, Question, QuestionKind};
+
+/// One line of `tacet mcp list`. Plain data — the shell decides how to paint
+/// it, this module decides what is true.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionSummary {
+    pub name: String,
+    pub url: String,
+    pub enabled: bool,
+    /// What the file says, as written; `auto` when it says nothing.
+    pub spec: String,
+    /// Was that value recognised. `false` means the connection still works (as
+    /// `auto`) but the word in the file is not one we know.
+    pub spec_understood: bool,
+}
+
+/// The configured connections. READS THE FILE ONLY — no socket is opened.
+pub fn connections() -> Result<Vec<ConnectionSummary>, String> {
+    let (config, _exposed) = tacet_mcp::config::read_default_checked()
+        .map_err(|e| e.short_error())?;
+    Ok(config
+        .connections
+        .iter()
+        .map(|c| ConnectionSummary {
+            name: c.name.clone(),
+            url: c.url.clone(),
+            enabled: c.enabled,
+            spec: c.spec.clone().unwrap_or_else(|| "auto".into()),
+            spec_understood: c.spec_is_understood(),
+        })
+        .collect())
+}
+
+/// What one live attempt learned. Three numbers and a list, no adjectives.
+#[derive(Debug, Clone)]
+pub struct TryOutcome {
+    /// The revision actually spoken.
+    pub revision: String,
+    /// Did `auto` have to fall back to the frozen path.
+    pub fell_back: bool,
+    pub millis: u128,
+    /// Name and already-truncated description, in catalog order.
+    pub tools: Vec<(String, String)>,
+    /// The tool that was called, its output, and whether the SERVER called it
+    /// an error. `None` when no call was asked for.
+    pub called: Option<(String, String, bool)>,
+}
+
+/// Talks to ONE connection: discovery, the catalog, the round-trip time.
+/// **GOES ON THE NETWORK** — it is only ever called because somebody typed it.
+pub fn try_connection(
+    name: &str,
+    asker: Arc<dyn InputAsk>,
+    call: Option<(String, Value)>,
+) -> Result<TryOutcome, String> {
+    let (config, _exposed) = tacet_mcp::config::read_default_checked()
+        .map_err(|e| e.short_error())?;
+    let setting = config
+        .connections
+        .iter()
+        .find(|c| c.name.eq_ignore_ascii_case(name))
+        .ok_or_else(|| format!("no connection named {name:?} in mcp.json"))?;
+
+    let client = MCPClient::new(setting.url.clone(), setting.resolved_key())
+        .map_err(|e| e.short_error())?
+        .with_spec(setting.spec_choice())
+        .with_asker(asker);
+
+    let started = std::time::Instant::now();
+    let specs = client.tools().map_err(|e| e.short_error())?;
+    let millis = started.elapsed().as_millis();
+
+    // ONE CALL, AND ONLY THE ONE THAT WAS NAMED. The draft spec asks this
+    // command to make "one no-effect call if the server offers one" — but
+    // whether a tool has effects cannot be read off its description, and
+    // guessing wrong means running something on somebody's server to satisfy a
+    // smoke test. The user names the tool or no call is made.
+    let called = match call {
+        None => None,
+        Some((tool, arguments)) => Some(
+            client
+                .call_tool_as(&tool, &arguments, name)
+                .map(|(text, is_error)| (tool.clone(), text, is_error))
+                .map_err(|e| format!("{tool}: {}", e.short_error()))?,
+        ),
+    };
+
+    Ok(TryOutcome {
+        called,
+        revision: client
+            .revision()
+            .map(tacet_mcp::Revision::label)
+            .unwrap_or("unknown")
+            .to_string(),
+        fell_back: client.fell_back(),
+        millis,
+        tools: specs
+            .into_iter()
+            .map(|s| (s.name, truncate_description(&s.description)))
+            .collect(),
+    })
 }
 
 /// Loads from `mcp.json` in the configuration directory (the path is decided by
 /// `tacet_kernel::env`, not by `tacet_mcp`). If the file is missing it stays quietly
 /// empty. **GOES ON THE NETWORK.**
 pub fn load_from_default() -> LoadOutcome {
+    load_from_default_with(Arc::new(tacet_mcp::DeclineInput))
+}
+
+/// `load_from_default`, with somebody to answer a server's questions.
+pub fn load_from_default_with(asker: Arc<dyn tacet_mcp::InputAsk>) -> LoadOutcome {
     let mut outcome = LoadOutcome::default();
     // `read_default_checked`, NOT `read_default`: the permission measurement has
     // to sit on the path the shell actually takes. The note is pushed BEFORE the
@@ -422,7 +729,7 @@ pub fn load_from_default() -> LoadOutcome {
                      environment with `key_env`"
                 ));
             }
-            outcome.merge(load_from_config(&c));
+            outcome.merge(load_from_config_with(&c, asker));
         }
         Err(e) => outcome
             .connection_errors
@@ -760,6 +1067,8 @@ mod tests {
             key: None,
             key_env: None,
             enabled: true,
+            spec: None,
+            auth: None,
         };
         let outcome = load_connection(&setting);
         assert!(outcome.tools.is_empty());

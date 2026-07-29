@@ -1,0 +1,59 @@
+[
+  {
+    "status": 400,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "error": {
+        "code": -32600,
+        "message": "Unsupported protocol version 2026-07-28"
+      }
+    }
+  },
+  {
+    "status": 400,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "error": {
+        "code": -32600,
+        "message": "Unsupported protocol version 2026-07-28"
+      }
+    }
+  },
+  {
+    "status": 200,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "result": {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {
+          "tools": {}
+        }
+      }
+    }
+  },
+  {
+    "status": 202,
+    "body": {}
+  },
+  {
+    "status": 200,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 4,
+      "result": {
+        "tools": [
+          {
+            "name": "search",
+            "description": "Searches.",
+            "inputSchema": {
+              "type": "object"
+            }
+          }
+        ]
+      }
+    }
+  }
+]
