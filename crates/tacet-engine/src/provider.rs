@@ -189,7 +189,7 @@ impl EngineIdentity {
         }
         format!(
             "{} · {} · {} · {} · {}",
-            self.engine, self.model_path, self.quant, self.device, &self.model_fingerprint
+            self.engine, self.model_path, self.quant, self.device, self.model_fingerprint
         )
     }
 }
