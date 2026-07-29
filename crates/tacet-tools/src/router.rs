@@ -1154,11 +1154,29 @@ mod tests {
         // 41/50 to 40/50 with a different set failing. The instrument cannot
         // resolve that (p = 0.69), so the smaller change won and the entry
         // stays here — recorded, harmless, and explained rather than fixed.
-        let expected = vec![
-            "calendar: write".to_string(),
-            "read_document: sheet".to_string(),
-            "time: write".to_string(),
+        // PLATFORM-PROOF, THE HARD WAY — this test failed on Linux the first
+        // time it ran there, and the reason is the one this project documented
+        // in its own review the same morning: `calendar` is macOS-only, so a
+        // fixed list of expected pairs is a list about ONE operating system.
+        // The assertion is therefore two-directional and asks the catalog what
+        // it contains rather than assuming: nothing unrecorded may collide, and
+        // every recorded pair whose tool is actually here must still collide —
+        // so a pair that stops colliding cannot rot in this list either.
+        let recorded = [
+            ("calendar", "write"),
+            ("read_document", "sheet"),
+            ("time", "write"),
         ];
+        let present: Vec<String> = catalog
+            .tools()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        let expected: Vec<String> = recorded
+            .iter()
+            .filter(|(tool, _)| present.iter().any(|p| p == tool))
+            .map(|(tool, hint)| format!("{tool}: {hint}"))
+            .collect();
         assert_eq!(
             collisions, expected,
             "a profile hint matches INSIDE a word of a tool's own text. With the \
@@ -1166,6 +1184,43 @@ mod tests {
              it means the hint and the description disagree about what the tool \
              is — decide which one is wrong, then fix the wording, add the hint \
              properly, or record the pair here with the reason."
+        );
+    }
+
+    /// AND THE SAME LINT ON THE OTHER PLATFORM'S CATALOG.
+    ///
+    /// The two-directional form above was not caution, it was a repair: the
+    /// fixed list passed on macOS and failed on Linux, where `calendar` is not
+    /// in the catalog at all. This case builds the smaller shape by hand so the
+    /// platform difference is measured on both machines rather than on
+    /// whichever one happens to run the test.
+    #[test]
+    fn the_collision_lint_holds_on_a_catalog_without_the_mac_only_tools() {
+        let store = std::sync::Arc::new(crate::data_store::SharedStore::new());
+        let memory = crate::memory::SharedMemory::in_memory();
+        let (full, _, _) = crate::catalog::production_catalog(&store, &memory, Some(0));
+        let mut lean = ToolCatalog::new();
+        for tool in full.tools() {
+            if tool.name() != "calendar" {
+                lean.add(std::sync::Arc::clone(tool));
+            }
+        }
+        let mut collisions: Vec<String> = Vec::new();
+        for tool in lean.tools() {
+            let text = simplify(&format!("{} {}", tool.name(), tool.description()));
+            for profile in IntentProfile::ALL {
+                for hint in profile.tool_hints() {
+                    if text.contains(hint) && !tacet_skills::matching::contains(&text, hint) {
+                        collisions.push(format!("{}: {hint}", tool.name()));
+                    }
+                }
+            }
+        }
+        collisions.sort();
+        collisions.dedup();
+        assert!(
+            !collisions.iter().any(|c| c.starts_with("calendar")),
+            "a tool that is not in this catalog cannot collide in it: {collisions:?}"
         );
     }
 
