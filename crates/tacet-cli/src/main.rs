@@ -413,17 +413,29 @@ enum Command {
     /// changes nothing.
     Font,
 
-    /// Asks GitHub whether a newer release exists.
+    /// Updates this binary to the newest release.
     ///
     /// NOTHING CHECKS BY ITSELF. There is no start-up check and no timer: a
     /// program whose promise is that it stays off the network cannot quietly
-    /// go online to ask about itself. This runs when it is typed, and only
-    /// `--install` writes anything.
+    /// go online to ask about itself. This runs when it is typed.
+    ///
+    /// THE BARE COMMAND NOW UPDATES, and the reason for the change is that the
+    /// old default was a trap of the most ordinary kind: `tacet update` printed
+    /// that a newer version existed and did nothing, so the user typed the
+    /// command that sounds like the whole job and got half of it. Every other
+    /// tool with this word installs.
+    ///
+    /// WHAT DID NOT CHANGE IS THE CONSENT. The download still names the file,
+    /// its size and its digest and still asks before writing anything —
+    /// "update" is now the default INTENT, never a silent action. `--check`
+    /// keeps the old look-only behaviour for scripts that want it.
     Update {
-        /// Downloads the release build for this platform and replaces this
-        /// binary with it. The download passes the same approval gate as a
-        /// model package.
+        /// Only look. Prints whether a newer release exists and writes nothing.
         #[arg(long)]
+        check: bool,
+        /// Deprecated: the bare `tacet update` does this now. Kept so the older
+        /// spelling in READMEs and muscle memory keeps working.
+        #[arg(long, hide = true)]
         install: bool,
         /// Skips the question. What is being downloaded is still printed.
         #[arg(long = "no-approval")]
@@ -747,16 +759,35 @@ fn main() -> ExitCode {
         Command::Log { json, limit } => receipt::log(json, limit),
         Command::Font => font(),
         Command::Update {
+            check,
             install,
             no_approval,
         } => {
             let color = Color::setup();
-            let outcome = if install {
-                update::install(&color, no_approval).map(|()| true)
+            // `--install` is the old spelling and now means nothing extra; it
+            // is accepted so an older README does not become wrong.
+            let _ = install;
+            let outcome = if check {
+                update::check(&color, false).map(|_| update::Outcome::AlreadyCurrent)
             } else {
-                update::check(&color, false)
+                update::install(&color, no_approval)
             };
             match outcome {
+                // ALREADY CURRENT IS A SUCCESS. It is also the most common run
+                // of all, so it gets a sentence rather than silence.
+                Ok(update::Outcome::AlreadyCurrent) if !check => {
+                    eprintln!(
+                        "  {}",
+                        color.paint(
+                            DIM,
+                            &format!(
+                                "already on the newest release ({})",
+                                env!("CARGO_PKG_VERSION")
+                            )
+                        )
+                    );
+                    ExitCode::SUCCESS
+                }
                 Ok(_) => ExitCode::SUCCESS,
                 Err(message) => {
                     eprintln!("  {}", color.paint(YELLOW, &message));
@@ -764,6 +795,56 @@ fn main() -> ExitCode {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod command_line {
+    use super::*;
+    use clap::CommandFactory;
+
+    /// The argument table is a contract with everyone's muscle memory, and clap
+    /// only notices a broken one at RUN time — a conflicting flag or a bad
+    /// default panics the first user, not the build. This asks it to check.
+    #[test]
+    fn the_argument_table_is_well_formed() {
+        Shell::command().debug_assert();
+    }
+
+    /// `tacet update` INSTALLS, and the older spelling still parses.
+    ///
+    /// The default changed deliberately: the old bare command printed that a
+    /// newer version existed and did nothing, so the word that sounds like the
+    /// whole job did half of it. What did not change is that the download still
+    /// asks before writing — `--no-approval` is the only way past the question.
+    #[test]
+    fn update_installs_by_default_and_can_still_only_look() {
+        let bare = Shell::try_parse_from(["tacet", "update"]).expect("parses");
+        match bare.command {
+            Some(Command::Update {
+                check,
+                install,
+                no_approval,
+            }) => {
+                assert!(!check, "the bare command is not a check");
+                assert!(!install, "the old flag is not implied");
+                assert!(!no_approval, "the question is asked unless waived");
+            }
+            _ => panic!("update did not parse as the update command"),
+        }
+
+        let looking = Shell::try_parse_from(["tacet", "update", "--check"]).expect("parses");
+        assert!(matches!(
+            looking.command,
+            Some(Command::Update { check: true, .. })
+        ));
+
+        // The spelling in older READMEs must not become an error.
+        let old = Shell::try_parse_from(["tacet", "update", "--install"]).expect("parses");
+        assert!(matches!(
+            old.command,
+            Some(Command::Update { install: true, .. })
+        ));
     }
 }
 

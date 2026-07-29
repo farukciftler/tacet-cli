@@ -1,4 +1,4 @@
-//! `tacet update` — asks GitHub whether a newer release exists, and on request
+//! `tacet update` — replaces this binary with the newest release, after asking
 //! replaces this binary with it.
 //!
 //! NOTHING HERE RUNS UNTIL THE USER SAYS SO. There is no check at start-up and
@@ -59,7 +59,7 @@ pub fn asset_name(triple: &str) -> String {
 /// Which inference features this binary was compiled with.
 ///
 /// THE REASON THIS EXISTS IS A REAL LOSS. `cargo install tacet-cli --features
-/// metal` produces a binary that runs the model; `tacet update --install`
+/// metal` produces a binary that runs the model; `tacet update`
 /// replaced it with a release asset built WITHOUT those features, and the next
 /// launch quietly said "fell back to FakeEngine". Nothing errored, nothing was
 /// corrupted — the user simply had a different program with the same name, and
@@ -122,7 +122,9 @@ fn network_text(error: &tacet_web::WebError) -> String {
     }
 }
 
-/// `tacet update` — report only. Returns true when something newer exists.
+/// `tacet update --check` — report only. Returns true when something newer
+/// exists. The bare `tacet update` installs; this is the look-only half, kept
+/// for scripts and for anyone who wants to read before they write.
 pub fn check(color: &Color, quiet: bool) -> Result<bool, String> {
     let release = tacet_web::release::latest(REPO, TIMEOUT).map_err(|e| network_text(&e))?;
     let newer = tacet_web::release::is_newer(&release.tag, current_version());
@@ -155,7 +157,7 @@ pub fn check(color: &Color, quiet: bool) -> Result<bool, String> {
         Some(triple) if release.asset_for(&asset_name(triple)).is_some() => {
             eprintln!(
                 "  install: {}",
-                color.paint(crate::ui::BOLD, "tacet update --install")
+                color.paint(crate::ui::BOLD, "tacet update")
             );
         }
         Some(triple) => {
@@ -181,14 +183,20 @@ pub fn check(color: &Color, quiet: bool) -> Result<bool, String> {
     Ok(true)
 }
 
-/// `tacet update --install`.
-pub fn install(color: &Color, no_approval: bool) -> Result<(), String> {
+/// `tacet update`.
+/// What an update run did. BEING UP TO DATE IS NOT AN ERROR — it used to be
+/// returned as one, which was harmless while installing needed its own flag and
+/// is not now that `tacet update` is the whole command: the most common run of
+/// all would have printed a yellow failure and exited non-zero.
+pub enum Outcome {
+    Updated,
+    AlreadyCurrent,
+}
+
+pub fn install(color: &Color, no_approval: bool) -> Result<Outcome, String> {
     let release = tacet_web::release::latest(REPO, TIMEOUT).map_err(|e| network_text(&e))?;
     if !tacet_web::release::is_newer(&release.tag, current_version()) {
-        return Err(format!(
-            "already on the latest version ({}) — nothing to install",
-            current_version()
-        ));
+        return Ok(Outcome::AlreadyCurrent);
     }
 
     let triple = host_triple().ok_or_else(|| {
@@ -287,7 +295,7 @@ pub fn install(color: &Color, no_approval: bool) -> Result<(), String> {
         )
     );
     eprintln!("  path:   {}", current.display());
-    Ok(())
+    Ok(Outcome::Updated)
 }
 
 /// Runs the downloaded binary once, just to ask what it was built with.
@@ -467,7 +475,7 @@ pub fn daily_notice(color: &Color) -> Option<String> {
         color.paint(crate::ui::DIM, "update available:"),
         current_version(),
         latest.trim_start_matches('v'),
-        color.paint(crate::ui::DIM, "tacet update --install")
+        color.paint(crate::ui::DIM, "tacet update")
     ))
 }
 
