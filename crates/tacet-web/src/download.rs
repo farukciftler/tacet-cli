@@ -725,7 +725,6 @@ pub use tacet_kernel::sha256_hex;
 use tacet_kernel::Sha256;
 use tacet_kernel::hash::hex;
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

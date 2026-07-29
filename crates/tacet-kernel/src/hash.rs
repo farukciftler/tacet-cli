@@ -7,7 +7,6 @@
 //! does not announce itself. Pure computation, no dependency, no socket:
 //! moving it here widens nothing.
 
-
 /// SHA-256 (FIPS 180-4).
 ///
 /// NO DEPENDENCY WAS ADDED, and this is NOT THE OPPOSITE of the `ureq`/TLS
@@ -40,11 +39,14 @@ const K: [u32; 64] = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
-/// The digest as lowercase hex, for callers OUTSIDE this module. The receipt
-/// chain (`tacet log`) hashes its entries with the same hand-written, test
-/// vector proven core the download verifier uses — one implementation, both
+impl Default for Sha256 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Sha256 {
+    /// A fresh hasher. `feed` as many times as you like, `finish` once.
     pub fn new() -> Self {
         Self {
             state: H0,

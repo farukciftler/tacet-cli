@@ -432,7 +432,6 @@ impl MCPClient {
         watch: &dyn crate::tasks::TaskWatch,
     ) -> MCPResult<(String, bool)> {
         let started = Instant::now();
-        let mut wait = crate::tasks::interval(None).max(self.poll_floor);
         loop {
             let result = self
                 .send_read(
@@ -452,12 +451,10 @@ impl MCPClient {
                 return Ok(flatten_content(&result));
             }
             if started.elapsed() >= crate::tasks::DEADLINE {
-                return Err(MCPError::TaskDeadline(
-                    crate::tasks::DEADLINE.as_secs(),
-                ));
+                return Err(MCPError::TaskDeadline(crate::tasks::DEADLINE.as_secs()));
             }
-            wait = crate::tasks::interval(crate::tasks::suggested_ms(&result))
-                .max(self.poll_floor);
+            let wait =
+                crate::tasks::interval(crate::tasks::suggested_ms(&result)).max(self.poll_floor);
             std::thread::sleep(wait);
         }
     }
@@ -745,14 +742,11 @@ fn attach_meta(params: &mut Value) {
         "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
         "io.modelcontextprotocol/clientCapabilities": { "tools": {} },
     });
-    match params {
-        Value::Object(map) => {
-            map.insert("_meta".into(), meta);
-        }
-        // Params that are not an object cannot carry `_meta`. Nothing in this
-        // client builds such params; if something ever does, the request still
-        // goes out rather than failing over a nicety.
-        _ => {}
+    // Params that are not an object cannot carry `_meta`. Nothing in this client
+    // builds such params; if something ever does, the request still goes out
+    // rather than failing over a nicety.
+    if let Value::Object(map) = params {
+        map.insert("_meta".into(), meta);
     }
 }
 
@@ -1021,7 +1015,9 @@ mod tests {
     #[test]
     fn only_a_sentence_about_the_revision_means_the_wrong_revision() {
         assert!(mentions_version("Unsupported protocol version: 2026-07-28"));
-        assert!(mentions_version("this protocol version is not supported here"));
+        assert!(mentions_version(
+            "this protocol version is not supported here"
+        ));
         assert!(mentions_version("2026-07-28 is no longer supported"));
         // The one that taught us the difference: a real server rejecting a
         // request of OURS, not the revision.

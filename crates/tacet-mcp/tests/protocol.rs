@@ -11,12 +11,12 @@
 
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
+use tacet_mcp::auth::{self, AuthSetting};
 use tacet_mcp::client::{Revision, SpecChoice, clamp_ttl};
 use tacet_mcp::elicit::{InputAsk, Question};
 use tacet_mcp::error::MCPError;
-use tacet_mcp::transport::replay::{Canned, ReplayTransport};
-use tacet_mcp::auth::{self, AuthSetting};
 use tacet_mcp::tasks::{self, Progress, TaskWatch};
+use tacet_mcp::transport::replay::{Canned, ReplayTransport};
 use tacet_mcp::{CATALOG_TTL_CAP, MAX_INPUT_ROUNDS, MCPClient, PROTOCOL_VERSION};
 
 const URL: &str = "https://example.com/mcp";
@@ -64,7 +64,9 @@ fn c1_the_new_path_carries_its_headers_and_client_info() {
     let (client, transport) = client(replies);
 
     client.tools().expect("tools/list");
-    client.call_tool("search", &serde_json::json!({"query": "bug"})).expect("tools/call");
+    client
+        .call_tool("search", &serde_json::json!({"query": "bug"}))
+        .expect("tools/call");
 
     let call = transport
         .sent()
@@ -90,8 +92,7 @@ fn c1_the_new_path_carries_its_headers_and_client_info() {
     // The whole envelope, not just the name: a real server rejects a request
     // that carries only `clientInfo`.
     assert_eq!(
-        meta["io.modelcontextprotocol/protocolVersion"],
-        PROTOCOL_VERSION,
+        meta["io.modelcontextprotocol/protocolVersion"], PROTOCOL_VERSION,
         "the body says the same revision as the header"
     );
     let capabilities = &meta["io.modelcontextprotocol/clientCapabilities"];
@@ -137,7 +138,9 @@ fn c2_no_session_id_and_no_handshake_on_the_new_path() {
     let (client, transport) = client(replies);
 
     client.tools().expect("tools/list");
-    client.call_tool("search", &serde_json::json!({})).expect("tools/call");
+    client
+        .call_tool("search", &serde_json::json!({}))
+        .expect("tools/call");
 
     for request in transport.sent() {
         assert!(
@@ -249,7 +252,11 @@ fn c4_an_answered_question_re_sends_the_same_call() {
     let client = client.with_asker(asker.clone());
 
     let (text, is_error) = client
-        .call_tool_as("create_project", &serde_json::json!({"name": "tacet"}), "linear")
+        .call_tool_as(
+            "create_project",
+            &serde_json::json!({"name": "tacet"}),
+            "linear",
+        )
         .expect("the call finished");
     assert_eq!(text, "project created");
     assert!(!is_error);
@@ -544,8 +551,8 @@ fn c10_a_response_without_a_valid_iss_is_never_redeemed() {
         "http://127.0.0.1/callback?code=abc&state={}&iss=https%3A%2F%2Fauth.example.com",
         started.state
     ));
-    let token = auth::redeem(transport.as_ref(), &setting, &started, &good, 1_000)
-        .expect("redeemed");
+    let token =
+        auth::redeem(transport.as_ref(), &setting, &started, &good, 1_000).expect("redeemed");
     assert_eq!(token.issuer, setting.issuer);
     assert_eq!(transport.calls(), 1);
     let body = String::from_utf8_lossy(&transport.sent()[0].body).to_string();

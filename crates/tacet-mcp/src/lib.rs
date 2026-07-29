@@ -53,6 +53,7 @@ pub mod sse;
 pub mod tasks;
 pub mod transport;
 
+pub use auth::{AuthSetting, Token, TokenStore};
 pub use bridge::{
     Conversion, ConversionNotes, UntranslatableReason, choice_is_portable, convert_schema,
     name_is_portable, truncate_description,
@@ -60,12 +61,11 @@ pub use bridge::{
 pub use client::{
     CATALOG_TTL_CAP, MCPClient, PROTOCOL_VERSION, Revision, SpecChoice, TIMEOUT_S, ToolSpec,
 };
-pub use auth::{AuthSetting, Token, TokenStore};
-pub use elicit::{DeclineInput, InputAsk, MAX_INPUT_ROUNDS, Question, QuestionKind};
-pub use legacy::LEGACY_PROTOCOL_VERSION;
-pub use tasks::{SilentWatch, TaskWatch};
-pub use transport::{HttpTransport, Request, Transport};
 pub use config::{
     Config, ConnectionSetting, key_file_is_exposed, read_checked, read_default_checked,
 };
+pub use elicit::{DeclineInput, InputAsk, MAX_INPUT_ROUNDS, Question, QuestionKind};
 pub use error::{MCPError, MCPResult, SCREEN_LIMIT, safe_for_screen};
+pub use legacy::LEGACY_PROTOCOL_VERSION;
+pub use tasks::{SilentWatch, TaskWatch};
+pub use transport::{HttpTransport, Request, Transport};

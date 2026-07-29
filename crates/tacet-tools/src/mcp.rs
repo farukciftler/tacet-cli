@@ -486,10 +486,9 @@ pub fn begin_login(name: &str) -> Result<LoginStep, String> {
         .iter()
         .find(|c| c.name.eq_ignore_ascii_case(name))
         .ok_or_else(|| format!("no connection named {name:?} in mcp.json"))?;
-    let auth = setting
-        .auth
-        .clone()
-        .ok_or_else(|| format!("{name:?} has no `auth` block in mcp.json — nothing to log in to"))?;
+    let auth = setting.auth.clone().ok_or_else(|| {
+        format!("{name:?} has no `auth` block in mcp.json — nothing to log in to")
+    })?;
     let started = tacet_mcp::auth::begin(&auth).map_err(|e| e.short_error())?;
     Ok(LoginStep {
         url: started.url.clone(),
@@ -513,7 +512,8 @@ pub fn finish_login(step: &LoginStep, pasted: &str) -> Result<String, String> {
     )
     .map_err(|e| e.short_error())?;
 
-    let path = tacet_mcp::auth::token_path().ok_or("no config directory to write the token into")?;
+    let path =
+        tacet_mcp::auth::token_path().ok_or("no config directory to write the token into")?;
     let mut store = tacet_mcp::auth::read_tokens(&path).map_err(|e| e.short_error())?;
     store.tokens.insert(step.connection.clone(), token);
     tacet_mcp::auth::write_tokens(&path, &store).map_err(|e| e.short_error())?;
@@ -578,10 +578,7 @@ pub fn load_from_config(config: &Config) -> LoadOutcome {
     load_from_config_with(config, Arc::new(tacet_mcp::DeclineInput))
 }
 
-pub fn load_from_config_with(
-    config: &Config,
-    asker: Arc<dyn tacet_mcp::InputAsk>,
-) -> LoadOutcome {
+pub fn load_from_config_with(config: &Config, asker: Arc<dyn tacet_mcp::InputAsk>) -> LoadOutcome {
     let mut total = LoadOutcome::default();
     for setting in config.valid() {
         total.merge(load_connection_with(setting, Arc::clone(&asker)));
@@ -615,8 +612,8 @@ pub struct ConnectionSummary {
 
 /// The configured connections. READS THE FILE ONLY — no socket is opened.
 pub fn connections() -> Result<Vec<ConnectionSummary>, String> {
-    let (config, _exposed) = tacet_mcp::config::read_default_checked()
-        .map_err(|e| e.short_error())?;
+    let (config, _exposed) =
+        tacet_mcp::config::read_default_checked().map_err(|e| e.short_error())?;
     Ok(config
         .connections
         .iter()
@@ -652,8 +649,8 @@ pub fn try_connection(
     asker: Arc<dyn InputAsk>,
     call: Option<(String, Value)>,
 ) -> Result<TryOutcome, String> {
-    let (config, _exposed) = tacet_mcp::config::read_default_checked()
-        .map_err(|e| e.short_error())?;
+    let (config, _exposed) =
+        tacet_mcp::config::read_default_checked().map_err(|e| e.short_error())?;
     let setting = config
         .connections
         .iter()

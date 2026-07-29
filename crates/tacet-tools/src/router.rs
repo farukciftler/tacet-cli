@@ -486,7 +486,8 @@ impl Router {
         ordered.sort_by(|a, b| {
             b.0.cmp(&a.0)
                 .then_with(|| {
-                    overlap(b.2.as_ref(), &message_stems).cmp(&overlap(a.2.as_ref(), &message_stems))
+                    overlap(b.2.as_ref(), &message_stems)
+                        .cmp(&overlap(a.2.as_ref(), &message_stems))
                 })
                 .then(a.1.cmp(&b.1))
         });

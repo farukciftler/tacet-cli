@@ -877,10 +877,6 @@ fn total_ram_bytes() -> Option<u64> {
     }
 }
 
-/// `tacet doctor` — one screen that answers "is this machine set up right".
-///
-/// It DIAGNOSES AND SUGGESTS, it never changes anything: the fix commands are
-/// printed for the user to run, in the same spirit as `tacet font`.
 // ---------------------------------------------------------------------------
 // MCP connections
 // ---------------------------------------------------------------------------
@@ -963,7 +959,10 @@ fn mcp_login(name: &str) -> ExitCode {
     let _ = std::io::stdout().flush();
     let mut pasted = String::new();
     if std::io::stdin().read_line(&mut pasted).is_err() || pasted.trim().is_empty() {
-        eprintln!("  {}", color.paint(YELLOW, "nothing pasted; nothing was sent"));
+        eprintln!(
+            "  {}",
+            color.paint(YELLOW, "nothing pasted; nothing was sent")
+        );
         return ExitCode::FAILURE;
     }
     match mcp::finish_login(&step, &pasted) {
@@ -1027,7 +1026,10 @@ fn mcp_try(name: &str, call: Option<String>, args: &str) -> ExitCode {
                 Some((tool, parsed))
             }
             Err(error) => {
-                eprintln!("  {}", color.paint(YELLOW, &format!("--args is not JSON: {error}")));
+                eprintln!(
+                    "  {}",
+                    color.paint(YELLOW, &format!("--args is not JSON: {error}"))
+                );
                 return ExitCode::FAILURE;
             }
         },
@@ -1071,7 +1073,14 @@ fn mcp_try(name: &str, call: Option<String>, args: &str) -> ExitCode {
         println!(
             "  {} {}",
             color.paint(BOLD, tool),
-            color.paint(DIM, if *is_error { "· the server called it an error" } else { "" })
+            color.paint(
+                DIM,
+                if *is_error {
+                    "· the server called it an error"
+                } else {
+                    ""
+                }
+            )
         );
         for line in text.lines().take(20) {
             println!("    {}", crate::ui::one_line(line));
@@ -1080,6 +1089,10 @@ fn mcp_try(name: &str, call: Option<String>, args: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// `tacet doctor` — one screen that answers "is this machine set up right".
+///
+/// It DIAGNOSES AND SUGGESTS, it never changes anything: the fix commands are
+/// printed for the user to run, in the same spirit as `tacet font`.
 fn doctor() -> ExitCode {
     let color = Color::setup();
     println!("{}{}", color.paint(BOLD, "Tacet"), color.paint(BRASS, "."));
@@ -1282,7 +1295,10 @@ impl mcp::InputAsk for TerminalAsk {
                 // that is what [y/N] means everywhere else in this shell.
                 QuestionKind::Boolean => answers.push(line),
                 QuestionKind::Choice(choices) => {
-                    let picked = line.parse::<usize>().ok().filter(|n| *n >= 1 && *n <= choices.len());
+                    let picked = line
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|n| *n >= 1 && *n <= choices.len());
                     match picked {
                         Some(n) => answers.push(choices[n - 1].clone()),
                         None => {

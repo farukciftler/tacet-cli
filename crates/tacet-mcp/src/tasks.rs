@@ -133,14 +133,12 @@ pub fn interval(suggested_ms: Option<u64>) -> Duration {
 
 /// The interval a `tasks/get` answer asks for next time, if it asks.
 pub fn suggested_ms(result: &Value) -> Option<u64> {
-    ["pollIntervalMs", "retryAfterMs"]
-        .iter()
-        .find_map(|key| {
-            result
-                .get(*key)
-                .or_else(|| result.get("task").and_then(|t| t.get(*key)))
-                .and_then(Value::as_u64)
-        })
+    ["pollIntervalMs", "retryAfterMs"].iter().find_map(|key| {
+        result
+            .get(*key)
+            .or_else(|| result.get("task").and_then(|t| t.get(*key)))
+            .and_then(Value::as_u64)
+    })
 }
 
 #[cfg(test)]
@@ -158,7 +156,10 @@ mod tests {
             task_id(&json!({"task": {"id": "t-2", "status": "working"}})),
             Some("t-2".into())
         );
-        assert_eq!(task_id(&json!({"content": [{"type": "text", "text": "ok"}]})), None);
+        assert_eq!(
+            task_id(&json!({"content": [{"type": "text", "text": "ok"}]})),
+            None
+        );
         // A task envelope with no id is not a task we can follow.
         assert_eq!(task_id(&json!({"resultType": "task"})), None);
     }
@@ -174,7 +175,10 @@ mod tests {
 
     #[test]
     fn an_unknown_status_stops_the_waiting_rather_than_extending_it() {
-        assert!(matches!(state(&json!({"status": "working"})), State::Working(_)));
+        assert!(matches!(
+            state(&json!({"status": "working"})),
+            State::Working(_)
+        ));
         assert!(state(&json!({"status": "completed"})).is_done());
         assert!(state(&json!({"status": "failed"})).is_done());
         assert!(

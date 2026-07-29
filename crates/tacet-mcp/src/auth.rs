@@ -97,7 +97,12 @@ impl AuthSetting {
 fn origin(url: &str) -> String {
     let without_scheme = url
         .split_once("://")
-        .map(|(scheme, rest)| format!("{scheme}://{}", rest.split(['/', '?', '#']).next().unwrap_or("")))
+        .map(|(scheme, rest)| {
+            format!(
+                "{scheme}://{}",
+                rest.split(['/', '?', '#']).next().unwrap_or("")
+            )
+        })
         .unwrap_or_default();
     without_scheme.trim_end_matches('/').to_ascii_lowercase()
 }
@@ -282,11 +287,7 @@ pub fn check_redirect(
 
 /// The body of the token request. Kept separate from the sending so the shape
 /// is testable and so nothing about a secret has to be reconstructed in a test.
-pub fn token_request_body(
-    setting: &AuthSetting,
-    started: &Authorization,
-    code: &str,
-) -> String {
+pub fn token_request_body(setting: &AuthSetting, started: &Authorization, code: &str) -> String {
     format!(
         "grant_type=authorization_code&code={}&redirect_uri={}&client_id={}&code_verifier={}",
         escape(code),
@@ -366,7 +367,10 @@ pub fn refresh(
     if !token.is_for(&setting.issuer) {
         return Err(MCPError::IssuerMismatch);
     }
-    let refresh_token = token.refresh_token.as_deref().ok_or(MCPError::NotAuthorized)?;
+    let refresh_token = token
+        .refresh_token
+        .as_deref()
+        .ok_or(MCPError::NotAuthorized)?;
     let body = refresh_request_body(setting, refresh_token);
     let response = post_form(transport, &setting.token_endpoint, body)?;
     let mut fresh = token_from_response(setting, &response, now)?;
@@ -448,8 +452,7 @@ pub fn random_token() -> String {
 
 /// base64url without padding (RFC 4648 §5) — what PKCE asks for.
 pub fn base64url(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let b = [
@@ -547,7 +550,11 @@ mod tests {
     #[test]
     fn the_authorization_url_carries_pkce_and_state() {
         let started = begin(&setting()).expect("built");
-        assert!(started.url.starts_with("https://auth.example.com/authorize?"));
+        assert!(
+            started
+                .url
+                .starts_with("https://auth.example.com/authorize?")
+        );
         assert!(started.url.contains("code_challenge_method=S256"));
         assert!(started.url.contains(&format!("state={}", started.state)));
         // The verifier NEVER travels with the authorization request; only its
@@ -637,13 +644,21 @@ mod tests {
 
         let mut store = TokenStore::default();
         store.tokens.insert("home".into(), token);
-        assert!(store.usable("home", "https://auth.example.com", 1_000).is_some());
         assert!(
-            store.usable("home", "https://evil.example.com", 1_000).is_none(),
+            store
+                .usable("home", "https://auth.example.com", 1_000)
+                .is_some()
+        );
+        assert!(
+            store
+                .usable("home", "https://evil.example.com", 1_000)
+                .is_none(),
             "the store enforces the binding too, not just the token"
         );
         assert!(
-            store.usable("home", "https://auth.example.com", 4_600).is_none(),
+            store
+                .usable("home", "https://auth.example.com", 4_600)
+                .is_none(),
             "an expired token is not usable"
         );
     }
