@@ -36,7 +36,14 @@ use crate::data_store::Table;
 /// `strip_prefix` at the call site, and on Windows it produced a path no user
 /// would recognise and the model could not round-trip:
 ///
-///     file_created (markdown): \\?\C:\Users\...\Temp\tacet-...\notes\note.md
+/// ```text
+/// file_created (markdown): \\?\C:\Users\...\Temp\tacet-...\notes\note.md
+/// ```
+///
+/// AN INDENTED EXAMPLE WOULD HAVE BEEN A DOCTEST. Four spaces after `///` is a
+/// Rust code block to rustdoc, and this line is a Windows path — it compiled
+/// nowhere and turned the whole workspace red on all three platforms, having
+/// been written to fix a failure on one. The fence is not decoration.
 ///
 /// Two separate things went wrong there and only one of them was visible.
 ///

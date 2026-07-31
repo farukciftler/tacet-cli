@@ -81,7 +81,17 @@ tacet-grammar = { path = "crates/tacet-grammar", version = "0.1.2" }
 # string, the array and the object all still open, `ToolCall::parse` returned
 # `None`, and it read from the outside as the model refusing to call the tool.
 # Below this version the guarantee has an exception nothing in the code names.
-tacet-engine = { path = "crates/tacet-engine", version = "0.1.9" }
+# 0.1.10 IS THE FLOOR FOR ANY CONSTRAINED GENERATION ON METAL, and the bug it
+# fixes was surfaced by 0.1.9's own stop-token mask rather than caused by it.
+# candle's `sample_argmax` is `logits.argmax(D::Minus1)?.to_scalar::<u32>()`,
+# and on the Metal backend that reduction hands back the extremum's BITS rather
+# than its INDEX once the distribution is mostly `-inf` — the exact shape a
+# grammar mask produces. Measured: a turn died with "constraint rejected the
+# token: 4286578688", which is 0xFF800000, the bit pattern of `-inf`. No
+# vocabulary has four billion entries; it was never a token id, and the message
+# named the wrong layer. The greedy choice is now taken over the masked logits
+# we already hold on the CPU, so the answer is an index by construction.
+tacet-engine = { path = "crates/tacet-engine", version = "0.1.10" }
 # 0.1.3 brought the addon gates and the five tools behind them; below it,
 # `catalog.rs` has no gate to ask and `shell`/`http`/`db` do not exist at all.
 # 0.1.4 IS THE FLOOR: below it `shell` is offered on Windows, where the timeout
@@ -134,7 +144,7 @@ tacet-engine = { path = "crates/tacet-engine", version = "0.1.9" }
 # and the model was handed a full absolute path — spelled with backslashes,
 # which it then has to escape to write back inside a JSON argument. CI had been
 # red on windows-latest for exactly this.
-tacet-tools = { path = "crates/tacet-tools", version = "0.1.13" }
+tacet-tools = { path = "crates/tacet-tools", version = "0.1.14" }
 tacet-skills = { path = "crates/tacet-skills", version = "0.1.0" }
 tacet-memory = { path = "crates/tacet-memory", version = "0.1.0" }
 # THE NETWORK MONOPOLY: a network call exists ONLY in these two crates. No
@@ -174,4 +184,4 @@ tacet-mcp = { path = "crates/tacet-mcp", version = "0.2.0" }
 #     against a check no input could fail.
 #   * The prompt. The set built no `<guidance>` block, so it measured a prompt
 #     the app has never sent.
-tacet-eval = { path = "crates/tacet-eval", version = "0.1.9" }
+tacet-eval = { path = "crates/tacet-eval", version = "0.1.10" }

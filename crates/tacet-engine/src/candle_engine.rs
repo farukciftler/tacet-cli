@@ -57,11 +57,14 @@ const LOOP_THRESHOLD: usize = 3;
 /// In the stream, TRAILING padding is dropped (see `run_loop`).
 const REPLACEMENT: char = '\u{FFFD}';
 
-/// The index of the highest logit — for diagnostics: "what would the model have
-/// wanted without the mask".
+/// The index of the highest logit.
 ///
-/// `LogitsProcessor` cannot be reused (it has state, the seed advances), so the
-/// argmax is done by hand. Only called when `TACET_TRACE_DUMP` is on.
+/// TWO CALLERS NOW, and the second is not a diagnostic. It was written for
+/// `TACET_TRACE_DUMP` ("what would the model have wanted without the mask"),
+/// because `LogitsProcessor` cannot be reused — it has state and the seed
+/// advances. It is now also THE GREEDY SAMPLER on the constrained path: see the
+/// note at the call site for the `-inf` bit pattern candle's Metal argmax
+/// handed back as a token id.
 fn largest_index(logits: &[f32]) -> usize {
     logits
         .iter()
@@ -611,6 +614,10 @@ impl CandleEngine {
                 temperature: setting.temperature as f64,
             }
         };
+        // `greedy` IS REMEMBERED BEFORE THE SAMPLER TAKES OWNERSHIP: the
+        // constrained branch below decides the argmax itself (see the note
+        // there) and needs to know which mode is in force.
+        let greedy = sampling == Sampling::ArgMax;
         let mut sampler = LogitsProcessor::from_sampling(setting.seed, sampling);
 
         let mut session = constraint.map(|c| c.session());
@@ -793,11 +800,54 @@ impl CandleEngine {
                         "the constraint forbade every token".into(),
                     ));
                 }
-                let masked = Tensor::new(raw.as_slice(), &self.device)
-                    .map_err(|e| EngineError::Inference(e.to_string()))?;
-                let chosen = sampler
-                    .sample(&masked)
-                    .map_err(|e| EngineError::Inference(e.to_string()))?;
+                // GREEDY IS DONE HERE, NOT ON THE GPU, and it is a correctness
+                // fix rather than an optimisation.
+                //
+                // MEASURED, qwen3-4b on Metal, immediately after the stop token
+                // joined the mask: a turn died with
+                //
+                //     engine error: constraint rejected the token: 4286578688
+                //
+                // 4286578688 is 0xFF800000 — the BIT PATTERN OF `-inf` read as
+                // a `u32`. It is not a token id at all; no vocabulary has four
+                // billion entries. Candle's `sample_argmax` is
+                // `logits.argmax(D::Minus1)?.to_scalar::<u32>()`, and on the
+                // Metal backend that reduction hands back the extremum's BITS
+                // rather than its INDEX once the distribution is mostly
+                // `-inf` — which is exactly the shape a grammar mask produces,
+                // and which got several times more common when the stop token
+                // started being masked too.
+                //
+                // We already hold the masked logits in `raw` (the mask is
+                // applied on the CPU side), so the round trip to the GPU was
+                // buying nothing but this bug. `largest_index` is the same
+                // `total_cmp` argmax written out, and its result is an index
+                // into a slice BY CONSTRUCTION.
+                //
+                // THE SAMPLED PATHS STILL GO THROUGH CANDLE, because they need
+                // its seeded rng, and they do not take the argmax branch.
+                let chosen = if greedy {
+                    largest_index(&raw) as u32
+                } else {
+                    let masked = Tensor::new(raw.as_slice(), &self.device)
+                        .map_err(|e| EngineError::Inference(e.to_string()))?;
+                    sampler
+                        .sample(&masked)
+                        .map_err(|e| EngineError::Inference(e.to_string()))?
+                };
+                // AND A BOUND ON WHATEVER CAME BACK. The constraint reports an
+                // out-of-range id as "constraint rejected the token", which
+                // names the wrong layer: the grammar did not reject anything,
+                // it was handed something that is not a token. Saying so here
+                // is the difference between a bug report about the grammar and
+                // one about the sampler.
+                if chosen as usize >= self.vocab.len() {
+                    return Err(EngineError::Inference(format!(
+                        "the sampler returned {chosen}, which is not a token id \
+                         (the vocabulary has {} entries)",
+                        self.vocab.len()
+                    )));
+                }
                 if let Some(wanted) = unmasked_best
                     && wanted != chosen as usize
                 {
@@ -1095,5 +1145,45 @@ mod cuda_quant_tests {
             assert!(err.contains("CUDA backend does not support GGUF quantization format"));
             assert!(err.contains(quant));
         }
+    }
+}
+
+#[cfg(test)]
+mod greedy_tests {
+    use super::*;
+
+    /// THE PROPERTY THE CONSTRAINED PATH NOW RESTS ON: over a vector shaped
+    /// like a grammar mask — almost everything `-inf`, a handful of real
+    /// values — the greedy choice is an INDEX INTO THAT VECTOR.
+    ///
+    /// It is written out because the thing it replaced did not have this
+    /// property. `sample_argmax` in candle is
+    /// `logits.argmax(D::Minus1)?.to_scalar::<u32>()`, and on Metal that came
+    /// back as 4286578688 — `0xFF800000`, the bit pattern of `-inf` — which the
+    /// grammar then reported as "constraint rejected the token". No vocabulary
+    /// has four billion entries; it was never a token id.
+    ///
+    /// THE MASK SHAPE IS THE POINT. An ordinary logit vector never hits this:
+    /// the bug needs a distribution that is mostly `-inf`, which is exactly and
+    /// only what a tool-call grammar produces — and which got several times
+    /// more common when the stop token joined the mask.
+    #[test]
+    fn the_greedy_choice_over_a_masked_vector_is_a_valid_index() {
+        let mut logits = vec![f32::NEG_INFINITY; 4096];
+        logits[3971] = -12.5;
+        logits[12] = -40.0;
+        let picked = largest_index(&logits);
+        assert!(picked < logits.len(), "{picked} is not an index");
+        assert_eq!(picked, 3971);
+
+        // The degenerate case still answers with an index rather than a bit
+        // pattern. The generation loop refuses this vector one step earlier
+        // ("the constraint forbade every token"); what matters here is that the
+        // fallback is 0 and not something out of range.
+        let all_closed = vec![f32::NEG_INFINITY; 64];
+        assert!(largest_index(&all_closed) < all_closed.len());
+
+        // And an empty slice must not panic — `unwrap_or(0)` is load-bearing.
+        assert_eq!(largest_index(&[]), 0);
     }
 }
