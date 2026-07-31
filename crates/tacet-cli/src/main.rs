@@ -282,9 +282,19 @@ enum Command {
         /// English one.
         #[arg(long)]
         turkish: bool,
-        /// The local model folder the selection set will use (`~/models/<name>`).
-        #[arg(long, default_value = DEFAULT_MODEL)]
-        model: String,
+        /// The local model folder (`~/models/<name>`).
+        ///
+        /// WITH `--tool-selection` (or any of the measurement flags) it is the
+        /// model whose choices are measured, and it defaults to `DEFAULT_MODEL`.
+        ///
+        /// WITHOUT them, giving a model switches the LOGIC set from `FakeEngine`
+        /// to that model — which is the only way `EvalCase::grounded` can ever
+        /// fire. The flag had a `default_value` before, so there was no way to
+        /// express "no model" and the logic set was permanently pinned to the
+        /// fake engine: the case list carried a claim about the model's SENTENCE
+        /// that nothing could reach. An `Option` is what tells the two apart.
+        #[arg(long)]
+        model: Option<String>,
         /// Run only the cases whose name contains this string.
         #[arg(long)]
         only: Option<String>,
@@ -744,9 +754,15 @@ fn main() -> ExitCode {
             format_gate,
             force_tool_name,
         } => {
+            // `model` IS AN OPTION NOW (see the flag's own doc): every path that
+            // REQUIRES a model resolves the default here, and the logic set uses
+            // its ABSENCE to stay on `FakeEngine`. Before, `default_value` made
+            // "no model" inexpressible, so the logic set could never run against
+            // real weights and `EvalCase::grounded` was unreachable.
+            let named_model = model.clone().unwrap_or_else(|| DEFAULT_MODEL.to_string());
             if format_gate {
                 let color = Color::setup();
-                let engine = match model_package::resolve_pair(&model) {
+                let engine = match model_package::resolve_pair(&named_model) {
                     Some((m, t)) => match candle_engine_from_path(&m, t.as_deref()) {
                         Ok(engine) => engine,
                         Err(e) => {
@@ -755,7 +771,7 @@ fn main() -> ExitCode {
                         }
                     },
                     None => {
-                        model_not_found_report(&model, &color);
+                        model_not_found_report(&named_model, &color);
                         return ExitCode::FAILURE;
                     }
                 };
@@ -764,7 +780,7 @@ fn main() -> ExitCode {
                 eval_tool_selection(
                     json,
                     threshold,
-                    &model,
+                    &named_model,
                     only.as_deref(),
                     turkish,
                     require_quant.as_deref(),
@@ -773,7 +789,7 @@ fn main() -> ExitCode {
                     force_tool_name,
                 )
             } else {
-                eval(json, threshold)
+                eval(json, threshold, model.as_deref())
             }
         }
         Command::Tools { schema } => tools(schema),
@@ -3767,7 +3783,10 @@ fn chat(run: ChatRun) -> ExitCode {
         }
 
         // Slash commands: they DO NOT GO to the model as a message.
-        if message.starts_with('/') {
+        // `is_command` AND NOT `starts_with('/')`: an absolute path is the
+        // natural way to name a directory in a message, and it also starts with
+        // a slash. See the rule and the transcript that forced it in `input`.
+        if input::is_command(&message) {
             // A SLASH COMMAND HAS NO JSON SHAPE. Every one of them prints a
             // human table to stdout, which is exactly the byte stream `--json`
             // promises not to produce. Saying so in JSON keeps the promise:
@@ -4045,7 +4064,33 @@ fn chat(run: ChatRun) -> ExitCode {
         // the bottom ("a turn that never produced an answer is a FAILED RUN")
         // and it reads to the user as the shell swallowing their question.
         let mut settled = false;
-        for _ in 0..tacet_eval::MAX_TURNS {
+        // Set by a duplicate call; read by `final_turn` on the next pass.
+        let mut must_answer = false;
+        for turn in 0..tacet_eval::MAX_TURNS {
+            // THE LAST PASS IS OFFERED NO TOOLS, so it cannot spend itself on
+            // another call.
+            //
+            // MEASURED, 30 Jul 2026 (qwen3-4b, logic set with a real engine):
+            // turns ended with the model still calling when the budget ran out —
+            // `calculate ×4`, `time ×4`, `send_out ×4`. The executor's duplicate
+            // guard was working the whole time: the repeat never ran, it came
+            // back as `duplicate_call: … Either answer the user with what you
+            // have, or call a different tool`. The model ignored the sentence and
+            // called again. That is the lesson this codebase already wrote down
+            // for the loop itself — "loop prevention must rest on code, not
+            // text" — applied to the WAY OUT of the loop, which had stayed a
+            // text nudge.
+            //
+            // WITH NO `<tools>` BLOCK AND NO CONSTRAINT there is nothing to name
+            // and nothing to imitate, so the pass produces prose. The cost is one
+            // tool round: three remain per user turn, and the deepest chain in
+            // the suite uses two.
+            //
+            // THIS DOES NOT REPLACE `settled`. A model that writes a call from
+            // memory even with the list gone still ends the turn empty, and that
+            // outcome must keep being reported rather than hidden by the fix that
+            // was supposed to prevent it.
+            let final_turn = turn + 1 == tacet_eval::MAX_TURNS || must_answer;
             // History = the previous turns + the results of the tools that ran in
             // THIS turn. The question also sits at the end separately (see the
             // `turn_tools` comment).
@@ -4077,9 +4122,20 @@ fn chat(run: ChatRun) -> ExitCode {
                     .chain(turn_tools.iter().cloned())
                     .collect()
             };
-            let mut prompt = Prompt::new(&system, question)
-                .with_tools(&selected)
-                .with_history(previous);
+            // ON THE LAST PASS THE SYSTEM TEXT SWAPS ITS TAIL: the call
+            // instructions are replaced by the statement that a call is now
+            // inert (see `FINAL_PASS_INSTRUCTION`). Appending rather than
+            // replacing keeps the identity, the working directory block and
+            // everything else the shell put in `system`.
+            let system_now = if final_turn {
+                format!("{system}\n\n{}", tacet_engine::FINAL_PASS_INSTRUCTION)
+            } else {
+                system.clone()
+            };
+            let mut prompt = Prompt::new(&system_now, question).with_history(previous);
+            if !final_turn {
+                prompt = prompt.with_tools(&selected);
+            }
             if let Some(g) = &guide {
                 prompt = prompt.with_guide(g);
             }
@@ -4287,8 +4343,12 @@ fn chat(run: ChatRun) -> ExitCode {
             let generation = match wait(
                 engine.generate_streaming(
                     &prompt,
+                    // NO CONSTRAINT ON THE LAST PASS — see `final_turn`. Leaving
+                    // it on would keep a call reachable from a prompt that no
+                    // longer lists one, which is the worst of both.
                     constraint
                         .as_ref()
+                        .filter(|_| !final_turn)
                         .map(|c| c as &dyn tacet_engine::Constrainer),
                     // THE CANCEL FLAG PASSES TO THE ENGINE: Ctrl-C stops generation at
                     // the next token. Without the flag a cancel would only be noticed
@@ -4469,6 +4529,20 @@ fn chat(run: ChatRun) -> ExitCode {
                 break;
             };
             indicator.finish();
+            // A REPEATED CALL ENDS THE TOOL PHASE OF THIS TURN.
+            //
+            // THE EXECUTOR ALREADY DID ITS HALF and it worked: the same (tool,
+            // arguments) pair does not RUN a second time in a turn — that gate is
+            // code, not text, and it held. What was missing was a CONSEQUENCE.
+            // The refusal came back as a sentence and the model, being a 4B,
+            // ignored it and called again; the user waited through every extra
+            // generation. From here the next pass runs the way the LAST pass
+            // runs: no tool list, no grammar, `FINAL_PASS_INSTRUCTION` instead of
+            // the call instructions. The model cannot repeat what it is no longer
+            // offered.
+            if outcome.reason == tacet_tools::executor::ExecutionReason::RepeatedCall {
+                must_answer = true;
+            }
             let is_error = outcome.is_error();
             let retryable = outcome.retryable;
 
@@ -5351,14 +5425,57 @@ fn candle_engine_from_path(
 // eval
 // ---------------------------------------------------------------------------
 
-fn eval(json: bool, threshold: f64) -> ExitCode {
-    let report = tacet_eval::run(&tacet_eval::all(), &FakeSelector);
+/// The LOGIC set. `FakeEngine` by default; a named model switches the same case
+/// list to a real one.
+///
+/// THE TWO MODES MEASURE DIFFERENT THINGS AND THE THRESHOLD ONLY FITS ONE.
+/// With the fake engine the script pins every choice, the run is deterministic
+/// and anything below 100% is a defect in Tacet's own logic — that is what
+/// `--threshold` guards and what CI runs. With a real model the scripts are
+/// ignored: the same cases now ask the model to pick the tools AND stay inside
+/// what they returned (`EvalCase::grounded`), so failures are the model's, the
+/// number moves between runs, and holding it to the CI threshold would report
+/// the model as a regression in the shell. The threshold is therefore NOT
+/// applied in that mode — the run is a measurement, not a gate.
+fn eval(json: bool, threshold: f64, model_name: Option<&str>) -> ExitCode {
+    let color = Color::setup();
+    let selector: Box<dyn tacet_eval::EngineSelector> = match model_name {
+        Some(name) => {
+            let engine = match model_package::resolve_pair(name) {
+                Some((m, t)) => match candle_engine_from_path(&m, t.as_deref()) {
+                    Ok(engine) => {
+                        eprintln!("{}", color.paint(DIM, &format!("(model: {m})")));
+                        engine
+                    }
+                    Err(e) => {
+                        eprintln!("error: the real model could not be loaded: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                },
+                None => {
+                    model_not_found_report(name, &color);
+                    eprintln!("error: --model was given, so the logic set REQUIRES that model.");
+                    return ExitCode::FAILURE;
+                }
+            };
+            eprintln!(
+                "{}",
+                color.paint(
+                    DIM,
+                    "(the scripts are IGNORED: this run measures the model, not the logic)"
+                )
+            );
+            Box::new(tacet_eval::SingleEngine(engine))
+        }
+        None => Box::new(FakeSelector),
+    };
+    let report = tacet_eval::run(&tacet_eval::all(), selector.as_ref());
     if json {
         println!("{}", report.json());
     } else {
         print!("{}", report.table());
     }
-    if report.success_rate + f64::EPSILON >= threshold {
+    if model_name.is_some() || report.success_rate + f64::EPSILON >= threshold {
         ExitCode::SUCCESS
     } else {
         eprintln!(

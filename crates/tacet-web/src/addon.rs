@@ -470,14 +470,36 @@ fn check_host(v: &str) -> Result<(), String> {
         .chars()
         .filter(|c| !(c.is_ascii_alphanumeric() || *c == '-' || *c == '.'))
         .collect();
-    if bad.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
+    if !bad.is_empty() {
+        return Err(format!(
             "'{v}': a host name holds letters, digits, '-' and '.' — '{bad}' is not allowed"
-        ))
+        ));
     }
+    // A SINGLE LABEL WITH NO DOT IS A TYPO, and the prompt has already accepted
+    // one: a transcript shows `merhaba` and `merhab` entered at this question and
+    // written into the confirmation as hosts. Every check above passed them —
+    // they are, letter for letter, valid host syntax.
+    //
+    // WHAT IT COSTS TO REFUSE: a machine on the local network named with a single
+    // label. Its IP and its fully qualified name both carry dots and both still
+    // pass, so the capability is not lost — only the spelling that is
+    // indistinguishable from a mistake.
+    //
+    // WHAT IT BUYS: this list is the entire boundary of an addon whose own banner
+    // says data leaves the machine. An entry that silently does nothing leaves the
+    // user believing they configured a host they did not.
+    if !v.contains('.') && !DOTLESS_HOSTS.contains(&v.to_ascii_lowercase().as_str()) {
+        return Err(format!(
+            "'{v}': a host name carries a dot (api.example.com) — for a machine on your own \
+             network write its IP address or its full name"
+        ));
+    }
+    Ok(())
 }
+
+/// The single-label hosts that are real. `localhost` is the only name that means
+/// the same thing on every machine; everything else dotless is a guess.
+const DOTLESS_HOSTS: &[&str] = &["localhost"];
 
 /// One question the install asks.
 #[derive(Debug, Clone, Copy)]
@@ -905,6 +927,32 @@ mod tests {
         let d = std::env::temp_dir().join(format!("tacet-addon-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         d.join(REGISTRY_FILE)
+    }
+
+    /// A WORD IS NOT A HOST. The transcript that forced this: `merhaba` and
+    /// `merhab` were typed at the allowed-hosts question and reached the
+    /// confirmation screen as hosts, because every syntactic check passed them.
+    #[test]
+    fn a_dotless_word_is_not_accepted_as_a_host() {
+        for word in ["merhaba", "merhab", "example", "SERVER"] {
+            assert!(
+                check_host(word).is_err(),
+                "'{word}' should not pass as a host"
+            );
+        }
+        // The capability is not lost: a dotted name, an IP and localhost pass.
+        for host in [
+            "api.example.com",
+            "abdullahfaruk.com",
+            "192.168.1.5",
+            "localhost",
+            "LOCALHOST",
+        ] {
+            assert!(check_host(host).is_ok(), "'{host}' should pass: {:?}", check_host(host));
+        }
+        // And the more specific complaints still come first.
+        assert!(check_host("https://example.com").unwrap_err().contains("scheme"));
+        assert!(check_host("example.com/path").unwrap_err().contains("path"));
     }
 
     #[test]

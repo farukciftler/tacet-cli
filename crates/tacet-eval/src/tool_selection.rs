@@ -36,7 +36,8 @@ use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;
 use tacet_engine::{
-    EngineProvider, MAX_TURNS, Prompt, SYSTEM_INSTRUCTIONS, SamplingSetting, Turn, wait,
+    EngineProvider, FINAL_PASS_INSTRUCTION, MAX_TURNS, Prompt, SYSTEM_INSTRUCTIONS,
+    SamplingSetting, Turn, wait,
 };
 use tacet_grammar::CallConstraint;
 use tacet_kernel::{
@@ -207,6 +208,7 @@ impl SelectionCase {
     }
 
     /// A case where a tool must NOT be called.
+    #[allow(dead_code)]
     fn chat(name: &str, message: &str) -> Self {
         Self {
             name: name.into(),
@@ -889,8 +891,21 @@ pub fn run_selection_case_with_options(
         let mut turn_tools: Vec<Turn> = Vec::new();
         let mut called: Vec<String> = Vec::new();
         let mut answer = String::new();
+        // A duplicate call ends the tool phase — the shell does the same, and
+        // this set exists to measure the shell.
+        let mut must_answer = false;
 
-        for _ in 0..MAX_TURNS {
+        for turn in 0..MAX_TURNS {
+            // THE LAST PASS IS OFFERED NO TOOLS — the shell does the same, and
+            // this set exists to measure the shell. See the rationale in
+            // `tacet-cli`'s turn loop.
+            //
+            // IT CANNOT LOWER A HIT RATE THAT WAS REAL: a case counts as a hit
+            // when the expected tool is called on ANY pass, and the passes it
+            // could have been called on are untouched. What it removes is the
+            // fourth identical call, which was never a hit — only a way to
+            // finish the turn with nothing said.
+            let final_turn = turn + 1 == MAX_TURNS || must_answer;
             let first = turn_tools.is_empty();
             let question = if first { step.message.as_str() } else { "" };
             let previous: Vec<Turn> = if first {
@@ -903,15 +918,22 @@ pub fn run_selection_case_with_options(
                     .chain(turn_tools.iter().cloned())
                     .collect()
             };
-            let prompt = Prompt::new(SYSTEM_INSTRUCTIONS, question)
-                .with_tools(&selected)
-                .with_history(previous);
+            let system = if final_turn {
+                format!("{SYSTEM_INSTRUCTIONS}\n\n{FINAL_PASS_INSTRUCTION}")
+            } else {
+                SYSTEM_INSTRUCTIONS.to_string()
+            };
+            let mut prompt = Prompt::new(&system, question).with_history(previous);
+            if !final_turn {
+                prompt = prompt.with_tools(&selected);
+            }
 
             let generation = match wait(
                 engine.generate(
                     &prompt,
                     constraint
                         .as_ref()
+                        .filter(|_| !final_turn)
                         .map(|c| c as &dyn tacet_engine::Constrainer),
                     SamplingSetting::default(),
                 ),
@@ -932,6 +954,9 @@ pub fn run_selection_case_with_options(
                 break;
             };
             called.push(outcome.tool_name.clone());
+            if outcome.reason == tacet_tools::executor::ExecutionReason::RepeatedCall {
+                must_answer = true;
+            }
             turn_tools.push(Turn::tool(outcome.to_model.clone()));
         }
 

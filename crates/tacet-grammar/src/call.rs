@@ -317,6 +317,26 @@ impl CallSession {
         if matched.is_empty() && !can_start_new_name(queue) {
             return;
         }
+        // A BARE TOOL NAME IS LEFT ALONE, AND THAT IS A MEASURED DECISION.
+        //
+        // Gemma-3-4B-It scores 0/32 on the selection set because it writes the
+        // NAME as prose: asked "What is 125 times 8?" with the whole catalog and
+        // the literal example `calculate({"expression":"12*8"})` in front of it,
+        // its entire answer is `calculate.` — the right tool, no call.
+        //
+        // COMMITTING ON THE NAME WAS TRIED AND IT MADE THINGS WORSE (30 Jul
+        // 2026). Masking everything but `(` once the whole generation is exactly
+        // a tool name does fire, and the model does write `calculate(` — and then
+        // wanders inside the string the argument grammar leaves open and never
+        // closes it. One message went from 7 SECONDS to over TEN MINUTES and had
+        // to be killed; the selection subset stayed at 0/3 and only got slower.
+        //
+        // THE LESSON, worth keeping because it generalises: a mask can force
+        // SYNTAX, it cannot supply COMPETENCE. A model that does not know this
+        // call format does not learn it by having every other token closed — it
+        // just fails more expensively. Model/format fit is a model-selection
+        // question, not a grammar question.
+
         for (id, before, remainder) in &self.inner.paren_tokens {
             if *id >= logits.len() {
                 continue;

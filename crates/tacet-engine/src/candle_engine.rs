@@ -408,15 +408,31 @@ impl CandleEngine {
     /// A GGUF mixes types on purpose (the embedding and the output head are often
     /// kept at higher precision than the body), so "the quantization" is the MODE,
     /// not a single value — and that is exactly the thing a mixed-precision recipe
-    /// would change, which is why the count is taken over tensors rather than read
-    /// off the file name.
+    /// would change, which is why it is read from the tensors rather than off the
+    /// file name.
+    ///
+    /// THE MODE IS TAKEN OVER BYTES, NOT OVER TENSOR COUNT, and the difference is
+    /// not cosmetic. Counting tensors, Gemma-3-4B-It reported **F32** — for
+    /// Unsloth's 2.49 GB q4 file. Gemma3 carries six small F32 norm tensors per
+    /// layer against seven quantized matrices, and across 34 layers the norms win
+    /// the head count while holding a rounding error's worth of the file. Anybody
+    /// reading that cell of a comparison matrix would conclude the model had been
+    /// run unquantized, and would compare it against the others as if it had.
+    ///
+    /// Weighting by `elem_count × the type's own byte size` asks the question that
+    /// was meant all along — what are the WEIGHTS stored as — and a handful of
+    /// norm vectors can no longer outvote the body of the model.
     fn dominant_quant(content: &gguf_file::Content) -> String {
-        let mut counts: std::collections::BTreeMap<String, usize> =
+        let mut bytes: std::collections::BTreeMap<String, usize> =
             std::collections::BTreeMap::new();
         for info in content.tensor_infos.values() {
-            *counts.entry(format!("{:?}", info.ggml_dtype)).or_default() += 1;
+            let elems = info.shape.elem_count();
+            let block = info.ggml_dtype.block_size().max(1);
+            let size = info.ggml_dtype.type_size();
+            *bytes.entry(format!("{:?}", info.ggml_dtype)).or_default() +=
+                elems / block * size;
         }
-        counts
+        bytes
             .into_iter()
             .max_by_key(|(_, n)| *n)
             .map(|(name, _)| name)

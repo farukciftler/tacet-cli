@@ -2068,7 +2068,7 @@ dependencies = [
 
 [[package]]
 name = "tacet-cli"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "clap",
  "crossterm",
@@ -2086,7 +2086,7 @@ dependencies = [
 
 [[package]]
 name = "tacet-engine"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "candle-core",
  "candle-transformers",
@@ -2099,7 +2099,7 @@ dependencies = [
 
 [[package]]
 name = "tacet-eval"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "serde",
  "serde_json",
@@ -2159,7 +2159,7 @@ dependencies = [
 
 [[package]]
 name = "tacet-tools"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "serde_json",
  "tacet-engine",
@@ -2173,7 +2173,7 @@ dependencies = [
 
 [[package]]
 name = "tacet-web"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "serde_json",
  "tacet-kernel",

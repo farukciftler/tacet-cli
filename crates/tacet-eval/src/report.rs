@@ -21,6 +21,25 @@ pub struct EvalReport {
     /// success" would make a change that accidentally filters out the cases look
     /// green.
     pub success_rate: f64,
+    /// (passed, total) over the cases that hold TACET responsible.
+    ///
+    /// WHY IT IS REPORTED SEPARATELY: this line is the one with an absolute
+    /// claim on it. With the fake engine it must read 100% — that is the CI
+    /// gate — and with a real engine it should STILL read 100%, because a case
+    /// about a schema gate or a retry flag does not know which model it is
+    /// running under. A single averaged percentage buried that: 69.2% over a
+    /// mixed set says nothing about whether the defect is in this repository or
+    /// in the weights, and those are fixed in different places by different work.
+    pub logic: (usize, usize),
+    /// (passed, total) over the cases that hold the MODEL responsible.
+    pub behaviour: (usize, usize),
+    /// How many FAILURES are attributed to Tacet — the ones that are bugs in
+    /// this repository. See `Blame`: this is the number the logic line was
+    /// reaching for and could not express, because a case can be ABOUT Tacet and
+    /// still fail because the model never called anything.
+    pub tacet_faults: usize,
+    /// How many failures are attributed to the model.
+    pub model_faults: usize,
     pub cases: Vec<CaseOutcome>,
 }
 
@@ -33,11 +52,28 @@ impl EvalReport {
         } else {
             passed as f64 / total as f64
         };
+        let count = |m: crate::case::Measures| {
+            let of_kind: Vec<&CaseOutcome> =
+                cases.iter().filter(|c| c.measures == m).collect();
+            (
+                of_kind.iter().filter(|c| c.passed).count(),
+                of_kind.len(),
+            )
+        };
+        let logic = count(crate::case::Measures::Logic);
+        let behaviour = count(crate::case::Measures::Behaviour);
+        let blamed = |b: crate::runner::Blame| cases.iter().filter(|c| c.blame == Some(b)).count();
+        let tacet_faults = blamed(crate::runner::Blame::Tacet);
+        let model_faults = blamed(crate::runner::Blame::Model);
         Self {
             engine: engine.to_string(),
             total,
             passed,
             success_rate,
+            logic,
+            behaviour,
+            tacet_faults,
+            model_faults,
             cases,
         }
     }
@@ -88,12 +124,46 @@ impl EvalReport {
             }
         }
 
+        // THE TWO LINES COME FIRST AND THE TOTAL LAST, because the total is the
+        // least useful of the three. `LOGIC` carries the absolute claim — it must
+        // read 100% whatever engine ran — and a reader who takes only one number
+        // away should take that one.
+        let pct = |(p, t): (usize, usize)| {
+            if t == 0 {
+                100.0
+            } else {
+                p as f64 / t as f64 * 100.0
+            }
+        };
         s.push_str(&format!(
-            "\n{}/{} passed  ({:.1}%)\n",
+            "\nLOGIC       {}/{}  ({:.1}%)   <- MUST read 100% on any engine\n",
+            self.logic.0,
+            self.logic.1,
+            pct(self.logic)
+        ));
+        s.push_str(&format!(
+            "BEHAVIOUR   {}/{}  ({:.1}%)   <- the model's, not Tacet's\n",
+            self.behaviour.0,
+            self.behaviour.1,
+            pct(self.behaviour)
+        ));
+        s.push_str(&format!(
+            "TOTAL       {}/{}  ({:.1}%)\n",
             self.passed,
             self.total,
             self.success_rate * 100.0
         ));
+        // THE LINE THAT ANSWERS "WHERE DO I LOOK". A case can be ABOUT Tacet and
+        // fail because the model never called anything; only the attribution
+        // separates the two, and `tacet` is the count that has to reach zero.
+        if self.passed < self.total {
+            s.push_str(&format!(
+                "  of the {} failures: {} tacet · {} model\n",
+                self.total - self.passed,
+                self.tacet_faults,
+                self.model_faults
+            ));
+        }
         s
     }
 

@@ -181,6 +181,31 @@ impl MemoryTool {
             .and_then(|v| v.as_str())
             .map(|s| s.split(',').map(|p| p.trim().to_string()).collect())
             .unwrap_or_default();
+        // NO KEYWORDS IS NOT A REFUSAL ANY MORE — it is a job this tool does.
+        //
+        // THE INCONSISTENCY, found by the first eval case ever written for this
+        // tool and then reproduced by a real model: the schema marks `keywords`
+        // OPTIONAL, so the grammar cheerfully produces `remember({"action":
+        // "save","text":"..."})` — and `MemoryStore::add` refuses it with
+        // `NoKeys`. A model that followed the schema to the letter got a
+        // GUARANTEED failure, and the user was told their note could not be
+        // saved for a field they were never required to give.
+        //
+        // WHY DERIVE RATHER THAN MARK THE FIELD REQUIRED: the schema is ONE
+        // object for three actions, and `list` needs neither text nor keys.
+        // Making the field required would force keywords onto calls that have
+        // nothing to key. The store's rule exists for RECALL — a note nobody can
+        // find is a note nobody kept — and that is a need this tool can meet on
+        // the model's behalf.
+        //
+        // THE DERIVED KEYS ARE A FLOOR, NOT A REPLACEMENT: `keywords` given by
+        // the model always wins, because the model saw the sentence in context
+        // and the fallback only sees its words.
+        let keywords = if keywords.iter().any(|k| !k.trim().is_empty()) {
+            keywords
+        } else {
+            keys_from(text)
+        };
 
         // The returned type is `Result<(), String>`: both a filter rejection and a
         // disk failure reach the user through THE SAME channel (a Turkish
@@ -276,6 +301,32 @@ impl MemoryTool {
             r.as_str(),
         )
     }
+}
+
+/// The shortest word a derived keyword may be.
+///
+/// Three is where the function words of both languages this ships in stop being
+/// counted: `the`, `and`, `for`, `bir`, `ile`, `bu`. It is a crude filter and it
+/// is meant to be — a derived key only has to make the note FINDABLE, and the
+/// model's own keywords always win when it gives them.
+const MIN_DERIVED_KEY: usize = 4;
+
+/// Keywords taken from the note itself, for a `save` that arrived without any.
+///
+/// See the call site for why this exists at all. The rules are deliberately
+/// small: split on anything that is not a letter or a digit, drop what is
+/// shorter than `MIN_DERIVED_KEY`, lowercase, keep the first few in the order
+/// they were written. Word ORDER is the ranking — the subject of a one-sentence
+/// fact comes early, and a fact is what this tool stores.
+///
+/// `fix_keys` in `tacet-memory` still has the last word: it lowercases, dedupes
+/// and caps the list. This function only has to produce candidates.
+fn keys_from(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.chars().count() >= MIN_DERIVED_KEY)
+        .map(|w| w.to_lowercase())
+        .take(4)
+        .collect()
 }
 
 /// Shortens the note text so the chip stays on one line.
@@ -475,4 +526,62 @@ mod tests {
             }
         }
     }
+
+    /// A SAVE WITHOUT KEYWORDS MUST STILL SAVE.
+    ///
+    /// The schema marks the field optional and the store demanded it: a model
+    /// that read the schema correctly got a guaranteed failure. Reproduced by
+    /// qwen3-4b on the `remember-fact` eval case before this existed.
+    #[test]
+    fn a_save_with_no_keywords_is_still_stored() {
+        let (tool, memory, _, mut ctx) = setup();
+        let o = execute(tool.run(
+            serde_json::json!({
+                "action": "save",
+                "text": "the user's sister is called Ayse"
+            }),
+            &mut ctx,
+        ));
+        assert_eq!(o.state, ToolState::Written, "{}", o.chip_text);
+        assert!(o.to_model.contains("note saved"), "{}", o.to_model);
+        assert_eq!(
+            memory.with(|s| s.count()),
+            Some(1),
+            "the note did not reach the store"
+        );
+    }
+
+    /// THE MODEL'S OWN KEYWORDS WIN. The fallback is a floor, not a rewrite:
+    /// the model saw the sentence in context, this function only sees words.
+    #[test]
+    fn given_keywords_are_not_replaced_by_derived_ones() {
+        let (tool, memory, _, mut ctx) = setup();
+        execute(tool.run(
+            serde_json::json!({
+                "action": "save",
+                "text": "the user's sister is called Ayse",
+                "keywords": "family, sibling"
+            }),
+            &mut ctx,
+        ));
+        let keys = memory
+            .with(|s| s.notes().first().map(|n| n.keys.clone()))
+            .flatten()
+            .expect("a note");
+        assert!(keys.contains(&"family".to_string()), "{keys:?}");
+        assert!(!keys.contains(&"sister".to_string()), "{keys:?}");
+    }
+
+    #[test]
+    fn short_words_are_not_keys_and_the_list_is_capped() {
+        // `the`, `is` and `a` are below the floor; the rest survive in order.
+        assert_eq!(
+            keys_from("the user is a vegetarian and dislikes mushrooms entirely"),
+            vec!["user", "vegetarian", "dislikes", "mushrooms"]
+        );
+        // Nothing long enough: an empty list, and `add` still refuses — which is
+        // correct, a note of only function words is a note nobody can find.
+        assert!(keys_from("bu bir ile").is_empty());
+    }
+
 }
