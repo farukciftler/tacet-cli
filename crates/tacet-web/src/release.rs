@@ -163,9 +163,7 @@ pub fn parse(body: &str) -> WebResult<Release> {
                             // fail on every download.
                             .and_then(|d| d.strip_prefix("sha256:"))
                             .map(|d| d.trim().to_ascii_lowercase())
-                            .filter(|d| {
-                                d.len() == 64 && d.chars().all(|c| c.is_ascii_hexdigit())
-                            }),
+                            .filter(|d| d.len() == 64 && d.chars().all(|c| c.is_ascii_hexdigit())),
                     })
                 })
                 .collect()

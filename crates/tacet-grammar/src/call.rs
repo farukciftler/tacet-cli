@@ -542,6 +542,79 @@ mod tests {
         }
     }
 
+    /// THE PROPERTY THE ENGINE'S STOP-TOKEN MASK RESTS ON.
+    ///
+    /// `candle_engine` closes the end-of-turn token for every step where
+    /// `is_structural()` is true, because the README's guarantee ("malformed
+    /// JSON cannot be GENERATED") has a hole exactly the width of one stop
+    /// token: nothing in `mask` covers it, so a model could end its turn in the
+    /// middle of a JSON string and hand the parser an unterminated call. That
+    /// really happened — qwen3-4b ended a `write_code` call on
+    /// `... print(result]})`, with the string, the array and the object all
+    /// still open.
+    ///
+    /// WHAT THIS TEST PINS is the claim the fix depends on: `is_structural()`
+    /// is true for the WHOLE region between `(` and `)`, INCLUDING the moments
+    /// when the argument grammar is already in an accepting state. Those
+    /// moments are the dangerous ones — `{"format":"excel","file_name":"a"}` is
+    /// complete as JSON and completely unusable as a call while the `)` is
+    /// missing. Were `is_structural()` to narrow to "mid-token" the engine
+    /// would silently reopen the hole, and no test in the engine crate could
+    /// see it.
+    #[test]
+    fn the_whole_argument_region_reports_itself_structural() {
+        let k = constraint();
+        let mut session = k.session();
+
+        assert!(
+            !session.is_structural(),
+            "free text before a call must not be structural, or the stop token \
+             would be masked for an ordinary answer"
+        );
+
+        feed(&mut session, "create_document(");
+        assert!(session.is_structural(), "just inside the parenthesis");
+
+        // Step through a complete argument object one character at a time. Every
+        // single position must report structural — including the last one, where
+        // the JSON is finished and only the `)` is outstanding.
+        for c in r#"{"format":"excel","file_name":"a"}"#.chars() {
+            session
+                .advance(c as u32)
+                .expect("valid argument text is accepted");
+            assert!(
+                session.is_structural(),
+                "position after {c:?} left the structural region while the call was open"
+            );
+        }
+        // THE JSON IS COMPLETE AND THE CALL IS NOT: `is_done` speaks for the
+        // whole call and is still false, which is precisely why the stop token
+        // must stay closed here. Stopping now yields
+        // `create_document({"format":"excel","file_name":"a"}` — valid JSON,
+        // unparseable call.
+        assert!(
+            !session.is_done(),
+            "the closing parenthesis is still missing"
+        );
+        assert!(
+            session.is_structural(),
+            "A COMPLETE ARGUMENT OBJECT IS STILL AN OPEN CALL"
+        );
+        assert!(
+            allowed(session.as_ref(), ')'),
+            "the terminator must be reachable, or masking the stop token here \
+             would leave the model with no way to finish"
+        );
+
+        // And the way out is the terminator — after it the model may end its
+        // turn again, which is what keeps this from being a hang.
+        feed(&mut session, ")");
+        assert!(
+            !session.is_structural(),
+            "after `)` the call is closed and the stop token must be available again"
+        );
+    }
+
     /// AN ARGUMENT-LESS TOOL MUST BE CALLABLE THE WAY THE PROMPT ADVERTISES IT.
     ///
     /// THE REGRESSION, measured on a real model with a remote catalog: the

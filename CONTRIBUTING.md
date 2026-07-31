@@ -30,10 +30,42 @@ cargo build --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo fmt --all
-cargo run -p tacet-cli -- eval      # 21 behavioural cases, deterministic, no model needed
+cargo run -p tacet-cli -- eval              # behavioural cases, deterministic, no model needed
+cargo run -p tacet-cli -- eval --routing    # the router's own choice, no model needed
 ```
 
-CI runs all of it on macOS, Linux and Windows. `eval` uses a mock engine, so it needs no weights and no network.
+CI runs all of it on macOS, Linux and Windows. Neither of these loads weights or opens a socket.
+
+### The three measurements, and which one to reach for
+
+| Command | Measures | Cost | Gates CI |
+|---|---|---|---|
+| `eval` | Tacet's LOGIC, on a mock engine | milliseconds | yes |
+| `eval --routing` | which tools the ROUTER puts in the prompt | milliseconds | yes |
+| `eval --tool-selection --model <name>` | the MODEL's choice, on real weights | ~20 minutes | no |
+
+Reach for `--routing` first when a tool "stops being called". The router shows the
+model at most nine tools out of the catalog, and **a tool that is not in those
+nine cannot be called however well the model reasons** — so a routing defect
+looks exactly like a model regression, arrives twenty minutes later, and gets
+fixed in the wrong place. `--routing` answers it in milliseconds and prints the
+rank the expected tool landed at. `tacet why "<message>"` explains one message
+in the same terms.
+
+### Claiming an improvement
+
+Two runs of the same suite differ by a case or two for no reason. Do not read
+"+3 points" off two table headers — one case is worth 3.1 points on a 32-case
+suite, and the analysis module puts the threshold at **six paired cases moving
+one way and none the other**. Produce both reports with `--json` and let the
+comparison say it:
+
+```bash
+cargo run -p tacet-cli -- eval --compare before.json after.json
+```
+
+It pairs the cases by name, runs a sign test over the ones that moved, prints a
+bootstrap interval, and states a verdict. It works on any of the three reports.
 
 ## Writing a tool
 

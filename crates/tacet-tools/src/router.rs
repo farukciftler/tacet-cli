@@ -28,10 +28,41 @@ pub const MAX_TOOLS: usize = 9;
 /// tools won a slot on merit.
 pub const RESERVED_SLOTS: usize = 3;
 
+/// THE SPLITTING RULE, and it is the only one this enum has ever grown by:
+/// **two intents that share words but want OPPOSITE tools are two profiles.**
+/// `Web` was split off `General` for exactly that reason ("read that page" vs
+/// "read that file"), and three more splits have since been forced by the
+/// routing measurement:
+///
+/// * `General` -> `Files` + `Memory`. "Find the file about the budget" and
+///   "Remember my address" both scored under General, so the `remember` tool —
+///   whose NAME is the General hint `remember` — headed the list on every file
+///   question. Measured on the routing set: `find_file` sat at rank 7 on its own
+///   sentence.
+/// * `Time` -> `Clock` + `Calendar`. "What time is it" and "what is on my
+///   calendar tomorrow" both scored under Time, and `calendar` won both,
+///   because `calendar` is itself a Time hint while `time` was not. The device
+///   clock and the user's diary are not the same question.
+/// * `Repo` was added rather than folded into `Files`: "which FILES have I
+///   changed in this git repository" fires both, and with one profile
+///   `find_file` outscored `git` on a sentence about commits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IntentProfile {
     Document,
-    Time,
+    /// The DEVICE CLOCK and calendar arithmetic — what time is it, what is
+    /// today's date, how many days until X.
+    Clock,
+    /// The USER'S DIARY — events, meetings, reminders.
+    Calendar,
+    /// CHANGING a document that already exists.
+    ///
+    /// WHY IT IS NOT PART OF `Document`: the three document tools share every
+    /// word a message can carry (".md", "table", "report"), so under one
+    /// profile their order is fixed by hint mass alone and `create_document`
+    /// headed every request to EDIT one — the message had no way to say
+    /// otherwise. The edit VERBS are what separate them, and a verb needs a
+    /// profile to score in.
+    DocEdit,
     Calc,
     /// Messages that explicitly point at THE INTERNET (address, page, site).
     ///
@@ -44,25 +75,38 @@ pub enum IntentProfile {
     /// the "search on the device" intent; the two share the same words but want
     /// OPPOSITE tools.
     Web,
-    General,
+    /// The version-controlled working directory.
+    Repo,
+    /// Files ON THIS DEVICE — finding, listing, reading them.
+    Files,
+    /// What the user asked to be remembered or forgotten.
+    Memory,
 }
 
 impl IntentProfile {
-    pub const ALL: [IntentProfile; 5] = [
+    pub const ALL: [IntentProfile; 9] = [
         IntentProfile::Document,
-        IntentProfile::Time,
+        IntentProfile::DocEdit,
+        IntentProfile::Clock,
+        IntentProfile::Calendar,
         IntentProfile::Calc,
         IntentProfile::Web,
-        IntentProfile::General,
+        IntentProfile::Repo,
+        IntentProfile::Files,
+        IntentProfile::Memory,
     ];
 
     pub fn name(&self) -> &'static str {
         match self {
             IntentProfile::Document => "document",
-            IntentProfile::Time => "time",
+            IntentProfile::DocEdit => "doc-edit",
+            IntentProfile::Clock => "clock",
+            IntentProfile::Calendar => "calendar",
             IntentProfile::Calc => "calc",
             IntentProfile::Web => "web",
-            IntentProfile::General => "general",
+            IntentProfile::Repo => "repo",
+            IntentProfile::Files => "files",
+            IntentProfile::Memory => "memory",
         }
     }
 
@@ -130,21 +174,44 @@ impl IntentProfile {
                 "make a file",
                 "file create",
                 "make a list",
+                // CAME FROM THE ROUTING SET: "Export the product list into a
+                // spreadsheet file" and "Save a new note file named ideas.md"
+                // touched NOTHING in this profile — the first scored only
+                // through the Files words "list"/"file", the second only
+                // through ".md", and `create_document` sat at ranks 8 and 9 on
+                // two plain requests to create a document. "spreadsheet" is the
+                // word users write when they mean xlsx without naming it.
+                "spreadsheet",
+                "export",
+                "file named",
+                "save a new",
             ],
-            IntentProfile::Time => &[
-                "calendar",
-                "event",
-                "meeting",
-                "appointment",
-                "reminder",
-                "at what time",
-                "today",
-                "tomorrow",
-                "this week",
-                "next week",
-                "date",
-                "schedule",
-                "agenda",
+            IntentProfile::DocEdit => &[
+                "change the title",
+                "change the",
+                // BARE "change" IS HERE, and the git sentence it also touches
+                // was checked rather than assumed: "Which files have I changed
+                // in this git repository?" scores 6 here and 23 on Repo, and
+                // `git`'s Repo mass wins it by more than three to one. What it
+                // buys is "Change Tuesday from Rice to Beans." — an edit
+                // request with no document word in it at all, which reached
+                // NOTHING and left `edit_document` at rank 5 behind two tools
+                // that were there on catalog order.
+                "change",
+                "append",
+                "insert",
+                "replace",
+                "modify",
+                "update the",
+                "edit the",
+                "add the row",
+                "add a row",
+                "add this row",
+                "delete the line",
+                "add a section",
+                "new section",
+            ],
+            IntentProfile::Clock => &[
                 // CAME FROM MEASUREMENT (the user's real session): "what time is it
                 // in turkey", "what day of the month is it" and "how many days
                 // until new year" touched no trigger at all — "at what TIME" was
@@ -153,22 +220,71 @@ impl IntentProfile {
                 // appeared in the middle rather than at the HEAD of the list; in a
                 // small model, position is selection probability.
                 "what time is it",
+                "at what time",
                 "day of the month",
                 "which day",
-                // TURKISH RESTORED (simplified forms — the matcher folds
-                // diacritics): the English pass translated these away, but they
-                // are DATA matched against what the user actually types, and
-                // Turkish users type Turkish. Every entry mirrors a measured
-                // English twin above.
                 "what day",
-                "how many days left",
-                "how many days until",
+                "today",
+                "tomorrow",
+                "date",
+                // THE "how many days" FAMILY IS ONE ENTRY, not four. The routing
+                // set failed on "until Christmas", "until 15 October", "left
+                // until new year" and "have passed since 1 January" — four
+                // sentences, one intent, and writing four strings would have
+                // measured the four sentences rather than the intent. The
+                // longest common phrase is the trigger; the two directions
+                // ("until"/"since") are kept because they also occur without
+                // the "how many days" opener ("days since the release").
+                "how many days",
+                "days until",
+                "days since",
                 "new year",
+                // CAME FROM THE ROUTING SET: with only bare "current" in the Web
+                // profile, "What is the current year?", "Which month are we in
+                // currently?" and "What is the current UTC time?" all scored as
+                // INTERNET questions and `time` fell to rank 4 behind
+                // web_search/web_fetch/find_file. These three name the DEVICE
+                // clock, and each is longer than the Web trigger it has to beat.
+                "current year",
+                "current month",
+                "current time",
+                "current date",
+                "which month",
+                "what year",
+                "utc",
                 // "when" IS DELIBERATELY ABSENT: "when is the meeting" is written
                 // as often as "when was he elected", and the second is a web
                 // question. Writing it into both profiles equalises the scores;
                 // writing it into neither leaves the distinction to the message's
                 // other words — in measurement that came out right.
+            ],
+            IntentProfile::Calendar => &[
+                "calendar",
+                "event",
+                "meeting",
+                "appointment",
+                "reminder",
+                // "remind me" IS SEPARATE FROM "reminder": the request is
+                // written as a verb ("remind me to call the dentist") far more
+                // often than as the noun, and the noun's trigger does not match
+                // it — "reminder" is not a prefix of "remind".
+                "remind me",
+                // "tomorrow" IS IN BOTH THIS PROFILE AND `Clock`, deliberately.
+                // It is the one word that belongs to both questions — "what is
+                // tomorrow's date" is the clock, "tomorrow's meeting" is the
+                // diary — and putting it in only one made that one win both.
+                // Listed twice it cancels out, and the DECIDING word ("date" vs
+                // "meeting") carries the sentence, which is what should happen.
+                // "today" is NOT given the same treatment: it has no diary
+                // reading strong enough to outweigh the news and weather
+                // questions it also appears in.
+                "tomorrow",
+                "schedule",
+                "my schedule",
+                "agenda",
+                "this week",
+                "next week",
+                "upcoming",
             ],
             IntentProfile::Calc => &[
                 "calculate",
@@ -205,6 +321,19 @@ impl IntentProfile {
                 "simulation",
                 "how many",
                 "terms",
+                // "times" MOVED HERE FROM THE WEB PROFILE. In English the
+                // multiplication sign is written as a word, and while it lived
+                // under Web the sentence "What is 125 times 8?" scored as an
+                // internet question — measured on the routing set, `calculate`
+                // came fourth behind web_search, web_fetch and find_file. It is
+                // the same word the timetable case wanted, and the two are told
+                // apart by the company it keeps: "ferry" and "bus times" carry
+                // their own triggers over there.
+                "times",
+                // The file extension IS the request when a script is asked for
+                // as a file.
+                ".py",
+                ".js",
             ],
             IntentProfile::Web => &[
                 "http",
@@ -228,7 +357,23 @@ impl IntentProfile {
                 "election",
                 "in what year",
                 "which year",
-                "current",
+                // BARE "current" WAS REMOVED AND THE PHRASES IT STOOD FOR PUT IN
+                // ITS PLACE. Measured on the routing set, the single word cost
+                // four cases and bought none that these do not: "What is the
+                // current year?", "Which month are we in currently?" and "What
+                // is the current UTC time?" are DEVICE CLOCK questions, and
+                // "Which git branch am I currently on?" is a question about the
+                // working directory — all four scored as internet questions and
+                // all four put `web_search` at the head of the list. What the
+                // word was there for is a PRICE, a RATE or a HEADLINE moving in
+                // the world, and each of those is written out below.
+                "current price",
+                "current rate",
+                "current stock",
+                "current news",
+                "current exchange",
+                "current inflation",
+                "currently trading",
                 "news",
                 "breaking",
                 // "weather forecast" WAS NOT ENOUGH: the eval case reads "what is
@@ -250,11 +395,25 @@ impl IntentProfile {
                 // tools — the same logic as where the Web and General profiles were
                 // split.
                 //
-                // The plural "times" was chosen deliberately: "what time is it" and
-                // "at what time" are not written with the plural, so the `time`
-                // cluster is unaffected by this line.
-                "times",
+                // BARE "times" WAS REMOVED, and the reason is the multiplication
+                // sign nobody writes as a symbol. The line above used to argue
+                // that the plural is safe because "what time is it" is never
+                // written plural — true, and it missed the other English
+                // sentence that carries it: "What is 125 TIMES 8?". Measured on
+                // the routing set, that one word made an arithmetic question
+                // score as an internet question and put `web_search`,
+                // `web_fetch` and `find_file` ahead of `calculate`. The
+                // timetable case it was added for ("ortakoy uskudar ferry
+                // times") still fires on "ferry" below, so nothing was lost.
                 "service times",
+                // "ferry times" IS SPELLED OUT ALONGSIDE "ferry", and the pair
+                // is what replaced the bare "times" this profile used to carry.
+                // With "times" moved to Calc (see there), the real session's
+                // "what are the ortakoy uskudar ferry times" scored 5 on each
+                // side and the TIE went to Calc — a timetable question about to
+                // be answered by the calculator. The longer phrase settles it
+                // where it belongs without touching "125 times 8".
+                "ferry times",
                 "ferry",
                 "bus times",
                 "train times",
@@ -266,6 +425,13 @@ impl IntentProfile {
                 "now playing",
                 "price of",
                 "how much is it in",
+                // "How much is the dollar today?" was scoring 11 on Calc
+                // through "how much is" and 6 on Web through "dollar", so the
+                // calculator headed a question about an exchange rate. The
+                // definite article is what separates the two readings: a
+                // calculation is written "how much is 250 lira with...", never
+                // "how much is THE ...".
+                "how much is the",
                 "dollar",
                 "euro",
                 "stock market",
@@ -274,17 +440,68 @@ impl IntentProfile {
                 // Tacet itself ("what is tacet", "what is a tool") towards the web;
                 // a weight with no payoff.
             ],
-            IntentProfile::General => &[
+            IntentProfile::Repo => &[
+                "git",
+                "commit",
+                "branch",
+                "repository",
+                "repo",
+                "staged",
+                "my changes",
+                "have i changed",
+                "diff",
+                "pull request",
+                // "Summarize my git changes and write me a commit message."
+                // scored 9 on Repo and 6 on Document, and 6 x create_document's
+                // hint mass beat 9 x git's. The phrase names the one thing only
+                // this tool can supply.
+                "commit message",
+            ],
+            IntentProfile::Files => &[
                 "file",
                 "folder",
                 "directory",
                 "search",
                 "find",
+                "locate",
                 "list",
                 "read",
-                "note",
-                "remember",
                 "summarize",
+                // CAME FROM THE ROUTING SET. "Show me the entire text of
+                // notes.txt", "Give me a preview of readme.md" and "Read the
+                // latest entries from app.log" name a file by its EXTENSION and
+                // nothing else; without these the sentences scored only through
+                // the word "note" (which is a Memory word) and `remember`
+                // headed the list on three requests to read a file.
+                "show me",
+                "entire text",
+                "preview of",
+                "contents",
+                ".txt",
+                ".log",
+                "workspace",
+                "where is",
+            ],
+            IntentProfile::Memory => &[
+                "remember",
+                "forget",
+                "keep in mind",
+                "note down",
+                "make a note",
+                "do not forget",
+                "my name is",
+                // "List the notes you keep about me." reached NO memory trigger
+                // and `remember` fell out of the budget entirely — the one
+                // outcome this measurement calls a hard failure, because a tool
+                // that is not in the prompt cannot be called. "note" cannot be
+                // the trigger (see below); "about me" can.
+                "about me",
+                "you keep about",
+                // "note" ALONE IS DELIBERATELY ABSENT and it is the whole reason
+                // this profile was split out. It sits inside "notes.txt",
+                // "notes.md" and "meeting notes" — three FILE requests — so the
+                // one word that reads as memory to a human is the one word that
+                // cannot be a trigger here.
             ],
         }
     }
@@ -323,22 +540,44 @@ impl IntentProfile {
                 "excel dosyasi",
                 "sunum",
                 "baslik ekle",
+                // "adiyla" ("under the name ..."), NOT "kaydet". The verb was
+                // moved here first and had to be moved back, and the pair of
+                // sentences that settled it is worth writing down:
+                //
+                //   "Toplanti kararlarini toplanti.md adiyla kaydet"  -> create_document
+                //   "Arabami 2. kat B blok park yerine koydugumu kaydet" -> remember
+                //
+                // Turkish uses one verb for saving a file and for noting a fact,
+                // so whichever profile owns "kaydet" loses the other sentence —
+                // with it here `remember` fell out of the budget, with it under
+                // Memory `create_document` did. What separates them is not the
+                // verb but what is being named: the file sentences say ADIYLA,
+                // the memory sentence does not. The verb stays under Memory and
+                // the naming word carries the file half.
+                "adiyla",
+                "olustur",
             ],
-            IntentProfile::Time => &[
-                "takvim",
-                "toplanti",
-                "etkinlik",
-                "hatirlat",
-                "randevu",
-                "ajanda",
+            IntentProfile::Clock => &[
                 "yarin",
                 "bugun",
                 "saat kac",
                 "ayin kaci",
                 "kac gun",
                 "hangi gun",
-                "gelecek hafta",
                 "yilbasi",
+                "tarihi",
+                "hangi ay",
+                "hangi yil",
+            ],
+            IntentProfile::Calendar => &[
+                "takvim",
+                "toplanti",
+                "etkinlik",
+                "hatirlat",
+                "randevu",
+                "ajanda",
+                "gelecek hafta",
+                "bu hafta",
             ],
             IntentProfile::Calc => &[
                 "hesapla",
@@ -348,8 +587,25 @@ impl IntentProfile {
                 "topla",
                 "ortalama",
                 "kod calistir",
+                // "betik" AND "betig" ARE BOTH NEEDED and that is the softening
+                // rule, not a typo: Turkish softens the final k to g before a
+                // vowel, so "betik" becomes "betigi" — and since matching is by
+                // PREFIX, "betik" is not a prefix of "betigi" and matched
+                // nothing on the two sentences that asked for a script by name.
                 "betik",
+                "betig",
                 "program yaz",
+                "asal sayi",
+                "sirala",
+                "fibonacci",
+                // "donustur" (convert/transform) is the same kind of marker as
+                // "sirala": it says "produce this with a script, do not write it
+                // out from memory". It settles "Sicaklik donusumu yapan betigi
+                // donusturucu.py adiyla kaydet", where the Document word
+                // "adiyla" was outscoring the two Calc words and sending a
+                // request for a SCRIPT to `create_document`.
+                "donustur",
+                "donusum",
             ],
             IntentProfile::Web => &[
                 // THE CURRENT-INFORMATION MARKERS, in Turkish.
@@ -370,12 +626,28 @@ impl IntentProfile {
                 "kuru",
                 "dolar",
                 "euro",
-                "altin",
+                // "altin" ALONE WAS A FALSE POSITIVE, found by `tacet why` on a
+                // routing case: Turkish "altinda" / "altindaki" (under, beneath)
+                // folds to a string that STARTS WITH "altin", and prefix
+                // matching is on for anything four characters and up. So
+                // "Dizin altindaki markdown dosyalarini arat" — a request to
+                // search a folder — scored 5 points as a GOLD PRICE question.
+                // Same family as "url" inside "tesekkurler"; the cure is the
+                // same too, name the phrase rather than the root.
+                "altin fiyat",
+                "gram altin",
+                "altin kac",
                 "haber",
                 "guncel",
                 "son durum",
                 "borsa",
                 "hava durumu",
+                // "hava durumu" IS NOT HOW THE QUESTION IS ASKED. The eval's own
+                // Turkish weather case reads "Istanbul'da yarin hava nasil
+                // olacak?" — no "durumu" in it — so the sentence scored only
+                // through the Clock word "yarin" and the model was shown the
+                // device clock for a weather question.
+                "hava nasil",
                 "kac tl",
                 "kac dolar",
                 "internette",
@@ -384,7 +656,48 @@ impl IntentProfile {
                 "sefer saatleri",
                 "canli",
             ],
-            IntentProfile::General => &[
+            IntentProfile::DocEdit => &[
+                // "sil" is three letters and therefore matches as a whole term
+                // only — which is what is wanted: "sil" (delete) must not be
+                // reached from "silinmis" or "silahli".
+                "sil", "degistir", "ekle", "guncelle", "satiri", "satirini",
+            ],
+            IntentProfile::Repo => &[
+                // The repository is named in English even in a Turkish
+                // sentence ("git reposunda hangi dosyalar degisti") — what
+                // Turkish supplies is the verb around it.
+                "degisti",
+                "degisiklik",
+                "commit mesaji",
+            ],
+            IntentProfile::Files => &[
+                "dosya",
+                "klasor",
+                "dizin",
+                "listele",
+                // "ara" and "bul" are three letters: the term-boundary rule is
+                // what stops "ara" from catching "aralik" (December) — the
+                // measured failure the rule was born from, one crate over.
+                "ara",
+                "bul",
+                "oku",
+                "goster",
+                "nerede",
+                "hangi klasor",
+                "metnini",
+                // "arat" IS NOT REACHED BY "ara". The three-letter root has to
+                // match as a WHOLE term (the rule that keeps "ara" out of
+                // "aralik"), so the causative "arat" — which is how the request
+                // "Dizin altindaki markdown dosyalarini arat" is actually
+                // written — matched nothing at all.
+                "arat",
+                // "hangi dosyaya yazmistim" is a question about WHERE something
+                // is, but it contains "dosyaya yaz", which is a Document
+                // trigger; without a Files phrase of its own the sentence asked
+                // to CREATE a file.
+                "hangi dosya",
+            ],
+            IntentProfile::Memory => &[
                 // MEMORY, the way it is asked: "unutma" (do not forget) and
                 // "unut" (forget) point at the SAME tool — one writes a note,
                 // the other removes it, and both are `remember`.
@@ -393,17 +706,11 @@ impl IntentProfile {
                 "unut",
                 "aklinda tut",
                 "not al",
+                // "kaydet" STAYS HERE. It is also the verb for saving a file;
+                // see the note under `Document`'s locale list for the two
+                // sentences that decided which profile owns it and which owns
+                // the word next to it.
                 "kaydet",
-                // FILES.
-                "dosya",
-                "klasor",
-                "listele",
-                // "ara" and "bul" are three letters: the term-boundary rule is
-                // what stops "ara" from catching "aralik" (December) — the
-                // measured failure the rule was born from, one crate over.
-                "ara",
-                "bul",
-                "oku",
             ],
         }
     }
@@ -443,15 +750,36 @@ impl IntentProfile {
                 // was never load-bearing either: `read_document` is already a
                 // document tool by the word "document" in its own NAME.
                 "document", "docx", "xlsx", "pptx", "pdf", "table", "report", "sheet", "edit",
+                // "create" AND "excel" EARN THEIR PLACE ON THE NAME SIDE.
+                // Since the name and the description are priced apart (see
+                // `tool_score`), a hint that appears in a tool's NAME is the
+                // strongest evidence the router has — and `create_document` is
+                // the only tool in the catalog whose name says what it does to
+                // a document. Without "create" the three document tools were
+                // separated only by their prose and `read_document` headed
+                // every request to MAKE one.
+                "create", "excel", "markdown",
             ],
-            IntentProfile::Time => &[
+            IntentProfile::Clock => &[
+                // "time" AND "clock" NAME THE TOOL, and their absence was the
+                // whole `calendar`-beats-`time` defect: `calendar` matched the
+                // Time hint "calendar" in its own NAME while `time` matched
+                // nothing in its own, so the diary won every question about the
+                // clock.
+                "time",
+                "clock",
+                "date",
+                "weekday",
+                "day",
+                "difference",
+            ],
+            IntentProfile::Calendar => &[
                 "calendar",
                 "event",
                 "meeting",
                 "appointment",
-                "date",
-                "clock",
                 "reminder",
+                "schedule",
             ],
             IntentProfile::Calc => &[
                 "calculate",
@@ -461,11 +789,42 @@ impl IntentProfile {
                 "formula",
                 "numeric",
                 "arithmetic",
+                "expression",
+                // "write" AND "script" ARE HINTS, NOT TRIGGERS, and the
+                // distinction is what makes them safe. The comment on the Calc
+                // TRIGGER list rules bare "write" out because "write a report"
+                // is document work — that argument is about the MESSAGE side.
+                // Here the text being matched is the TOOL, and `write_code` is
+                // the only tool in the catalog whose name carries both words.
+                // Without them the Calc profile ordered its three tools
+                // `calculate` > `run_code` > `write_code` by hint mass alone,
+                // so a request to SAVE a script never put the saving tool near
+                // the top.
+                "write",
+                "script",
             ],
-            IntentProfile::Web => &["web", "internet", "page", "address", "url", "search"],
-            IntentProfile::General => &[
-                "file", "folder", "find", "read", "write", "list", "memory", "remember",
+            IntentProfile::Web => &[
+                "web", "internet", "page", "address", "url", "search", "fetch", "online",
             ],
+            IntentProfile::Repo => &["git", "commit", "branch", "repository", "diff"],
+            IntentProfile::Files => &[
+                // "search" IS DELIBERATELY ABSENT, and it was here for one
+                // measurement. It is in `web_search`'s NAME, so with the name
+                // weighted (see `tool_score`) every device-file question put the
+                // INTERNET search tool second: "Export the product list into a
+                // spreadsheet file" came back web_search at rank 2. `find_file`
+                // needs no help from it — it matches "file" and "find" in its
+                // own name already.
+                "file",
+                "folder",
+                "find",
+                "read",
+                "list",
+                "directory",
+                "locate",
+            ],
+            IntentProfile::DocEdit => &["edit", "change", "modify", "append", "replace", "insert"],
+            IntentProfile::Memory => &["memory", "remember", "forget", "recall", "note"],
         }
     }
 }
@@ -486,8 +845,16 @@ impl IntentScores {
             .unwrap_or(0)
     }
 
-    /// The dominant profile. If no trigger matched, `General` — forcing an unknown
+    /// The dominant profile. If no trigger matched, `Files` — forcing an unknown
     /// message into a specific profile brings the wrong tool forward.
+    ///
+    /// `Files` INHERITS THE FALLBACK from the old `General`, and the choice is
+    /// narrower than it looks: the ONE caller that reads this value is
+    /// `Router::select`, which asks `scores.score(scores.dominant()) == 0` —
+    /// "did anything fire at all". When nothing did, every profile scores zero
+    /// and WHICH profile is named changes nothing about the selection. The
+    /// variant here is a placeholder for "no intent", not a claim about the
+    /// message.
     pub fn dominant(&self) -> IntentProfile {
         self.scores
             .iter()
@@ -497,7 +864,7 @@ impl IntentScores {
             .rev()
             .max_by_key(|(_, s)| *s)
             .map(|(p, _)| *p)
-            .unwrap_or(IntentProfile::General)
+            .unwrap_or(IntentProfile::Files)
     }
 
     pub fn all(&self) -> &[(IntentProfile, usize)] {
@@ -754,8 +1121,51 @@ impl Router {
     /// A product was preferred over a sum: if the message contains no time phrase,
     /// the calendar tool scores 0 even if a hint matches. Summed, an unrelated tool
     /// would climb the list just for having a long name.
+    ///
+    /// THE NAME AND THE DESCRIPTION ARE NO LONGER ONE STRING, and this is the
+    /// correction of a defect that had made the router hand the top of the list
+    /// to the wrong tool on almost every file question. Measured with
+    /// `tacet eval --routing` (the model-free routing set added for exactly
+    /// this) on "Find the file about the budget.":
+    ///
+    ///   1. run_code    200      6. create_document 104
+    ///   2. write_code  152      7. find_file        64   <- its own home turf
+    ///
+    /// The cause is arithmetic, not judgement. The hints were matched against
+    /// `name + description` glued together and every match added its length, so
+    /// a tool's score grew with the SIZE OF ITS PROSE. `run_code` has a
+    /// thousand-character description that says, correctly, that it cannot open
+    /// a FILE, cannot see a FOLDER, must not LIST from MEMORY and should not be
+    /// used to WRITE one — five General hints, 25 characters, all of them
+    /// earned by DENYING the thing the message asked for. `find_file`'s shorter
+    /// description matched two, so the tool that cannot read files outscored
+    /// the tool that finds them three to one.
+    ///
+    /// The fix separates the two texts and prices them differently:
+    ///
+    /// * THE NAME IS EVIDENCE. `find_file` is called find_file because that is
+    ///   what it does; a name is chosen once and cannot pad itself. It is worth
+    ///   `NAME_WEIGHT` times a description match.
+    /// * THE DESCRIPTION IS A HINT, AND IT IS CAPPED. Above `DESCRIPTION_CAP`
+    ///   the extra matches stop being evidence about the tool and start being
+    ///   evidence about how much the author wrote. The cap is what makes the
+    ///   score independent of prose length — which is the property that was
+    ///   missing, not the weighting.
+    ///
+    /// NEITHER NUMBER IS A TUNING KNOB TO TASTE: both were chosen against the
+    /// routing set and the effect is recorded in this file's git history. The
+    /// cap has to sit near the length of a real hint match (a word or two) or
+    /// it stops binding; the weight has to be large enough that ONE name match
+    /// beats a description that matched everything.
     fn tool_score(&self, tool: &dyn Tool, scores: &IntentScores) -> usize {
-        let text = simplify(&format!("{} {}", tool.name(), tool.description()));
+        /// A hint found in the tool's NAME counts this many times one found in
+        /// its description.
+        const NAME_WEIGHT: usize = 4;
+        /// The most a description may contribute, in matched characters.
+        const DESCRIPTION_CAP: usize = 10;
+
+        let name = simplify(tool.name());
+        let description = simplify(tool.description());
         IntentProfile::ALL
             .iter()
             .map(|p| {
@@ -779,12 +1189,19 @@ impl Router {
                 // MEASURED: the suite scored 26/32 with it and 26/32 without,
                 // the same total with one different case failing. It costs
                 // nothing measurable and fixes something real, so it stays.
-                let hint: usize = p
+                let in_name: usize = p
                     .tool_hints()
                     .iter()
-                    .filter(|t| tacet_skills::matching::contains(&text, t))
+                    .filter(|t| tacet_skills::matching::contains(&name, t))
                     .map(|t| t.len())
                     .sum();
+                let in_description: usize = p
+                    .tool_hints()
+                    .iter()
+                    .filter(|t| tacet_skills::matching::contains(&description, t))
+                    .map(|t| t.len())
+                    .sum();
+                let hint = NAME_WEIGHT * in_name + in_description.min(DESCRIPTION_CAP);
                 message_score * hint
             })
             .sum()
@@ -946,7 +1363,7 @@ mod tests {
         );
         let forget = score_intent("Kahve sevdiğimi unut artık");
         assert!(
-            forget.score(IntentProfile::General) > 0,
+            forget.score(IntentProfile::Memory) > 0,
             "'unut' must point at the memory tool"
         );
         let news = score_intent("Bugün haberlerde ne var?");
@@ -980,7 +1397,7 @@ mod tests {
         // catch "aralık".
         let december = score_intent("20 aralık için toplantı koy");
         assert!(
-            december.score(IntentProfile::Time) > 0,
+            december.score(IntentProfile::Calendar) > 0,
             "a December meeting is calendar work"
         );
     }
@@ -1258,18 +1675,18 @@ mod tests {
         // A single long trigger ("appointment", 11) must score higher than two
         // short ones ("find" 4 + "note" 4).
         let long = score_intent("appointment");
-        let short = score_intent("find note");
-        assert_eq!(long.score(IntentProfile::Time), "appointment".len());
-        assert!(long.score(IntentProfile::Time) > short.score(IntentProfile::General));
+        let short = score_intent("find");
+        assert_eq!(long.score(IntentProfile::Calendar), "appointment".len());
+        assert!(long.score(IntentProfile::Calendar) > short.score(IntentProfile::Files));
     }
 
     #[test]
     fn case_is_folded_for_scoring() {
         assert_eq!(
-            score_intent("Show Tomorrow's MEETING").score(IntentProfile::Time),
-            score_intent("show tomorrow's meeting").score(IntentProfile::Time)
+            score_intent("Show Tomorrow's MEETING").score(IntentProfile::Calendar),
+            score_intent("show tomorrow's meeting").score(IntentProfile::Calendar)
         );
-        assert!(score_intent("MEETING").score(IntentProfile::Time) > 0);
+        assert!(score_intent("MEETING").score(IntentProfile::Calendar) > 0);
     }
 
     /// RESTORED. This test used to measure Turkish diacritic folding
@@ -1294,10 +1711,10 @@ mod tests {
         // uppercases `i` as `İ`, so an English word typed in caps arrives as
         // "MEETİNG". Rust's plain `to_lowercase()` turns `İ` into `i` + U+0307, which
         // matches no trigger — only the explicit fold above rescues it.
-        assert!(score_intent("MEETİNG TOMORROW").score(IntentProfile::Time) > 0);
+        assert!(score_intent("MEETİNG TOMORROW").score(IntentProfile::Calendar) > 0);
         assert_eq!(
-            score_intent("MEETİNG TOMORROW").score(IntentProfile::Time),
-            score_intent("meeting tomorrow").score(IntentProfile::Time)
+            score_intent("MEETİNG TOMORROW").score(IntentProfile::Calendar),
+            score_intent("meeting tomorrow").score(IntentProfile::Calendar)
         );
     }
 
@@ -1425,14 +1842,16 @@ mod tests {
         );
         assert_eq!(
             score_intent("tomorrow's meeting").dominant(),
-            IntentProfile::Time
+            IntentProfile::Calendar
         );
         assert_eq!(
             score_intent("calculate the percent").dominant(),
             IntentProfile::Calc
         );
-        // With no trigger at all it falls back to General.
-        assert_eq!(score_intent("zzz qqq").dominant(), IntentProfile::General);
+        // With no trigger at all it falls back to the placeholder profile —
+        // see `dominant`: the only caller asks whether ANYTHING fired, so which
+        // variant is named here changes no selection.
+        assert_eq!(score_intent("zzz qqq").dominant(), IntentProfile::Files);
     }
 
     #[test]

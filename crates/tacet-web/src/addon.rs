@@ -948,10 +948,18 @@ mod tests {
             "localhost",
             "LOCALHOST",
         ] {
-            assert!(check_host(host).is_ok(), "'{host}' should pass: {:?}", check_host(host));
+            assert!(
+                check_host(host).is_ok(),
+                "'{host}' should pass: {:?}",
+                check_host(host)
+            );
         }
         // And the more specific complaints still come first.
-        assert!(check_host("https://example.com").unwrap_err().contains("scheme"));
+        assert!(
+            check_host("https://example.com")
+                .unwrap_err()
+                .contains("scheme")
+        );
         assert!(check_host("example.com/path").unwrap_err().contains("path"));
     }
 

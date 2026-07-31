@@ -35,7 +35,7 @@ Tacet is that layer, written to be read. Every non-obvious decision has a commen
 
 **Invalid tool calls are impossible, not unlikely.** Once the model emits `calculate(`, a pushdown automaton masks the logits at every step. Malformed JSON, a field that isn't in the schema, an out-of-range number, a missing required key — none of them can be *generated*. Not validated after the fact: unrepresentable. Sampling runs after masking, so no sampling strategy can escape it.
 
-**The network monopoly is checkable by eye.** Exactly two crates may open a socket, and the HTTP dependency appears in exactly those two manifests. You do not have to trust a privacy claim you cannot audit — `grep ureq crates/*/Cargo.toml` is the audit.
+**The network monopoly is checkable by eye.** Exactly two crates may open a socket, and the HTTP dependency appears in exactly those two manifests. You do not have to trust a privacy claim you cannot audit — `grep -v '^\s*#' crates/*/Cargo.toml | grep ureq` is the audit, and `cargo test -p tacet-cli --test network_monopoly` is the same audit as a failing build.
 
 **Nothing leaves the device by default.** Web search is an *addon* you install deliberately, pointed at a SearXNG instance you run. Until you do, the search tools are not merely disabled — they are absent from the catalog the model can see.
 

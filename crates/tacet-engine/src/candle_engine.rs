@@ -389,9 +389,21 @@ impl CandleEngine {
     fn validate_cuda_quant(quant: &str, model_path: &Path) -> EngineResult<()> {
         let is_supported = matches!(
             quant,
-            "Q4_0" | "Q4_1" | "Q5_0" | "Q5_1" | "Q8_0" | "Q8_1"
-                | "Q2_K" | "Q3_K" | "Q4_K" | "Q5_K" | "Q6_K" | "Q8_K"
-                | "F16" | "F32" | "BF16"
+            "Q4_0"
+                | "Q4_1"
+                | "Q5_0"
+                | "Q5_1"
+                | "Q8_0"
+                | "Q8_1"
+                | "Q2_K"
+                | "Q3_K"
+                | "Q4_K"
+                | "Q5_K"
+                | "Q6_K"
+                | "Q8_K"
+                | "F16"
+                | "F32"
+                | "BF16"
         );
         if !is_supported {
             return Err(EngineError::Inference(format!(
@@ -429,8 +441,7 @@ impl CandleEngine {
             let elems = info.shape.elem_count();
             let block = info.ggml_dtype.block_size().max(1);
             let size = info.ggml_dtype.type_size();
-            *bytes.entry(format!("{:?}", info.ggml_dtype)).or_default() +=
-                elems / block * size;
+            *bytes.entry(format!("{:?}", info.ggml_dtype)).or_default() += elems / block * size;
         }
         bytes
             .into_iter()
@@ -729,6 +740,51 @@ impl CandleEngine {
                 // env read.
                 let unmasked_best = dump.then(|| largest_index(&raw));
                 s.mask(&mut raw);
+                // THE STOP TOKEN IS PART OF THE MASK, and leaving it out was a
+                // hole straight through this project's headline claim.
+                //
+                // README: "Malformed JSON, a field that isn't in the schema, a
+                // value out of range — none of them can be GENERATED. Not
+                // validated after the fact: unrepresentable." The grammar
+                // delivers that for every ORDINARY token, because `mask` walks
+                // the automaton. It never covered the one token that is not
+                // ordinary: end-of-turn. Nothing forbade it, so the model could
+                // simply STOP in the middle of a JSON string and the text handed
+                // to the parser was malformed after all.
+                //
+                // MEASURED, qwen3-4b, the selection suite's `write_code`
+                // web-scraper case. The model wrote a correct call and ended it
+                // like this:
+                //
+                //     ... print(result]})
+                //
+                // — the string holding the script was never closed, the array
+                // and object were never closed, and `ToolCall::parse` returned
+                // `None`. From the outside it looked like the model had refused
+                // to call the tool; the model had done its part and the decoder
+                // had let it stop.
+                //
+                // ONCE INSIDE `tool(` THE ONLY WAY OUT IS `)`. That is what
+                // `is_structural` means here — it is true for the whole
+                // argument region, not only where the automaton is mid-token —
+                // so the stop tokens are closed for all of it. The model can
+                // still finish whenever it likes: closing the JSON and writing
+                // `)` leaves the structural region and hands the stop token
+                // back. What it can no longer do is walk away from an open
+                // brace.
+                //
+                // THE COST IS A HONEST FAILURE INSTEAD OF A SILENT ONE. A model
+                // that will not close its arguments now runs to `max_tokens`
+                // and the turn reports "generation was cut off halfway", which
+                // is what actually happened, rather than delivering unparseable
+                // text that reads as "no tool call".
+                if structural {
+                    for id in &self.stop_tokens {
+                        if let Some(slot) = raw.get_mut(*id as usize) {
+                            *slot = f32::NEG_INFINITY;
+                        }
+                    }
+                }
                 // If everything was forbidden the sampler would make a meaningless
                 // choice (a NaN probability distribution); this is a grammar bug
                 // and must not be glossed over.

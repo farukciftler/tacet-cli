@@ -231,7 +231,7 @@ pub fn run_case(case: &EvalCase, selector: &dyn EngineSelector) -> CaseOutcome {
             Ok(g) => g,
             Err(e) => {
                 faults.push(format!("engine error: {e}"));
-            model_fault = true;
+                model_fault = true;
                 break;
             }
         };

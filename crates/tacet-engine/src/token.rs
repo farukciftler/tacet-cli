@@ -56,6 +56,17 @@ compile_error!(
      you are building for."
 );
 
+// `derivable_impls` IS SUPPRESSED, NOT OBEYED — and the reason is that clippy
+// only ever sees one third of this function. With neither `metal` nor `cuda`
+// on, the body really is a bare `Device::Cpu` and the lint is right about the
+// text it can see; `#[derive(Default)] + #[default] Cpu` would compile and
+// would then pin EVERY build to the CPU, including the two that were built for
+// a GPU. That is exactly the silent downgrade this enum's own doc comments
+// refuse ("it DOES NOT silently FALL BACK to the CPU"). CI runs clippy without
+// features, so this was a hard error on the default lint set — see the
+// measurement note: a lint whose premise is a feature flag has to be answered
+// where the flag is, not by deleting the branches it cannot see.
+#[allow(clippy::derivable_impls)]
 impl Default for Device {
     fn default() -> Self {
         #[cfg(feature = "metal")]

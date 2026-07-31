@@ -278,17 +278,22 @@ fn chat() -> Vec<EvalCase> {
             .forbidden(&["ChatGPT", "OpenAI", "Anthropic"])
             .behaviour(),
         EvalCase::new("chat-capabilities", "What can you do?")
-            .script(&["I can help with document editing, file search, calculations, and local notes."])
+            .script(&[
+                "I can help with document editing, file search, calculations, and local notes.",
+            ])
             .evidence(&["document", "calculations"])
             .behaviour(),
         EvalCase::new("chat-farewell", "Goodbye, see you later!")
             .script(&["Goodbye! Have a great day."])
             .evidence(&["Goodbye"])
             .behaviour(),
-        EvalCase::new("chat-opinion", "Which is better, morning or evening workout?")
-            .script(&["Both have benefits depending on your schedule and energy levels."])
-            .evidence(&["benefits"])
-            .behaviour(),
+        EvalCase::new(
+            "chat-opinion",
+            "Which is better, morning or evening workout?",
+        )
+        .script(&["Both have benefits depending on your schedule and energy levels."])
+        .evidence(&["benefits"])
+        .behaviour(),
         EvalCase::new("chat-continuation", "Tell me more about that")
             .script(&["Sure, here are additional details."])
             .evidence(&["details"])
@@ -356,23 +361,38 @@ fn calc() -> Vec<EvalCase> {
             .evidence(&["12"]),
         EvalCase::new("calc-float", "What is 15.5 times 4.2?")
             .tool("calculate")
-            .script(&[r#"calculate({"expression":"15.5*4.2"})"#, "15.5 x 4.2 = 65.1."])
+            .script(&[
+                r#"calculate({"expression":"15.5*4.2"})"#,
+                "15.5 x 4.2 = 65.1.",
+            ])
             .evidence(&["65.1"]),
         EvalCase::new("calc-complex", "Calculate (45 + 55) * 12 / 4")
             .tool("calculate")
-            .script(&[r#"calculate({"expression":"(45+55)*12/4"})"#, "Result is 300."])
+            .script(&[
+                r#"calculate({"expression":"(45+55)*12/4"})"#,
+                "Result is 300.",
+            ])
             .evidence(&["300"]),
         EvalCase::new("calc-syntax-error", "What is 12 ++ * 5?")
             .tool("calculate")
-            .script(&[r#"calculate({"expression":"12++*5"})"#, "Syntax error in expression."])
+            .script(&[
+                r#"calculate({"expression":"12++*5"})"#,
+                "Syntax error in expression.",
+            ])
             .evidence(&["tool_failed"]),
         EvalCase::new("calc-zero-division", "What is 100 divided by 0?")
             .tool("calculate")
-            .script(&[r#"calculate({"expression":"100/0"})"#, "Division by zero is undefined."])
+            .script(&[
+                r#"calculate({"expression":"100/0"})"#,
+                "Division by zero is undefined.",
+            ])
             .evidence(&["tool_failed"]),
         EvalCase::new("calc-large-number", "What is 999999 times 999999?")
             .tool("calculate")
-            .script(&[r#"calculate({"expression":"999999*999999"})"#, "999998000001."])
+            .script(&[
+                r#"calculate({"expression":"999999*999999"})"#,
+                "999998000001.",
+            ])
             .evidence(&["999998000001"]),
     ]
 }
@@ -620,16 +640,19 @@ fn grounding() -> Vec<EvalCase> {
     vec![
         // Three figures in the file, three in the answer, and a fourth would be
         // an invention.
-        EvalCase::new("grounding-budget-figures", "What are the figures in budget-2026.md?")
-            .tool("read_document")
-            .script(&[
-                r#"read_document({"path":"budget-2026.md"})"#,
-                "Rent 18000 TL, kitchen 9000 TL, transport 2500 TL.",
-            ])
-            .evidence(&["18000", "9000", "2500"])
-            .grounded()
-            .behaviour()
-            .once(),
+        EvalCase::new(
+            "grounding-budget-figures",
+            "What are the figures in budget-2026.md?",
+        )
+        .tool("read_document")
+        .script(&[
+            r#"read_document({"path":"budget-2026.md"})"#,
+            "Rent 18000 TL, kitchen 9000 TL, transport 2500 TL.",
+        ])
+        .evidence(&["18000", "9000", "2500"])
+        .grounded()
+        .behaviour()
+        .once(),
         // A result the model cannot plausibly hold: if the sentence and the tool
         // disagree, the sentence is the one that reached the user.
         EvalCase::new("grounding-calc-large", "What is 1234 times 7?")
@@ -643,10 +666,7 @@ fn grounding() -> Vec<EvalCase> {
         // recounts it for itself lands one or two off.
         EvalCase::new("grounding-countdown", "How many days until 1 August 2026?")
             .tool("time")
-            .script(&[
-                r#"time({"kind":"diff","target":"2026-08-01"})"#,
-                "12 days.",
-            ])
+            .script(&[r#"time({"kind":"diff","target":"2026-08-01"})"#, "12 days."])
             .evidence(&["days=12", "to=2026-08-01"])
             .grounded()
             .behaviour()

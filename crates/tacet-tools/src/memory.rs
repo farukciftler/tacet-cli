@@ -583,5 +583,4 @@ mod tests {
         // correct, a note of only function words is a note nobody can find.
         assert!(keys_from("bu bir ile").is_empty());
     }
-
 }

@@ -53,12 +53,8 @@ impl EvalReport {
             passed as f64 / total as f64
         };
         let count = |m: crate::case::Measures| {
-            let of_kind: Vec<&CaseOutcome> =
-                cases.iter().filter(|c| c.measures == m).collect();
-            (
-                of_kind.iter().filter(|c| c.passed).count(),
-                of_kind.len(),
-            )
+            let of_kind: Vec<&CaseOutcome> = cases.iter().filter(|c| c.measures == m).collect();
+            (of_kind.iter().filter(|c| c.passed).count(), of_kind.len())
         };
         let logic = count(crate::case::Measures::Logic);
         let behaviour = count(crate::case::Measures::Behaviour);

@@ -197,13 +197,21 @@ impl SelectionCase {
         }
     }
 
-    fn tool_with_evidence(name: &str, message: &str, expected: &str, evidence: &[&str], lang: Language) -> Self {
+    fn tool_with_evidence(
+        name: &str,
+        message: &str,
+        expected: &str,
+        evidence: &[&str],
+        lang: Language,
+    ) -> Self {
         Self {
             name: name.into(),
             category: Category::Tool,
-            steps: vec![SelectionStep::new(message, Some(expected))
-                .with_evidence(evidence)
-                .with_language(lang)],
+            steps: vec![
+                SelectionStep::new(message, Some(expected))
+                    .with_evidence(evidence)
+                    .with_language(lang),
+            ],
         }
     }
 
@@ -258,231 +266,844 @@ impl SelectionCase {
 pub fn turkish_selection_cases() -> Vec<SelectionCase> {
     vec![
         // --- calculate ---
-        SelectionCase::tool_with_evidence("tr-hesap-carpma", "125 çarpı 8 kaç eder?", "calculate", &["1000"], Language::Turkish),
-        SelectionCase::tool_with_evidence("tr-hesap-yuzde", "480'in yüzde 18'i ne kadar?", "calculate", &["86.4"], Language::Turkish),
-        SelectionCase::tool_with_evidence("tr-hesap-toplama", "347 ile 268'i toplar mısın?", "calculate", &["615"], Language::Turkish),
-        SelectionCase::tool_with_evidence("tr-hesap-bolme", "144 bölü 12 kaçtır?", "calculate", &["12"], Language::Turkish),
-        SelectionCase::tool_with_evidence("tr-hesap-cikarma", "1000 eksi 375 kaç eder?", "calculate", &["625"], Language::Turkish),
-        SelectionCase::tool_with_evidence("tr-hesap-indirim", "500 liralık ürüne yüzde 25 indirim uygulanırsa kaç lira öderim?", "calculate", &["375"], Language::Turkish),
-        SelectionCase::tool_with_evidence("tr-hesap-karekok", "81'in karekökü nedir?", "calculate", &["9"], Language::Turkish),
-        SelectionCase::tool_with_evidence("tr-hesap-ortalama", "10, 20 ve 30'un ortalaması kaçtır?", "calculate", &["20"], Language::Turkish),
-        SelectionCase::tool_with_evidence("tr-hesap-us", "2 üzeri 8 kaçtır?", "calculate", &["256"], Language::Turkish),
-        SelectionCase::tool_with_evidence("tr-hesap-kDV", "1000 TL + %20 KDV ne kadar yapar?", "calculate", &["1200"], Language::Turkish),
-
+        SelectionCase::tool_with_evidence(
+            "tr-hesap-carpma",
+            "125 çarpı 8 kaç eder?",
+            "calculate",
+            &["1000"],
+            Language::Turkish,
+        ),
+        SelectionCase::tool_with_evidence(
+            "tr-hesap-yuzde",
+            "480'in yüzde 18'i ne kadar?",
+            "calculate",
+            &["86.4"],
+            Language::Turkish,
+        ),
+        SelectionCase::tool_with_evidence(
+            "tr-hesap-toplama",
+            "347 ile 268'i toplar mısın?",
+            "calculate",
+            &["615"],
+            Language::Turkish,
+        ),
+        SelectionCase::tool_with_evidence(
+            "tr-hesap-bolme",
+            "144 bölü 12 kaçtır?",
+            "calculate",
+            &["12"],
+            Language::Turkish,
+        ),
+        SelectionCase::tool_with_evidence(
+            "tr-hesap-cikarma",
+            "1000 eksi 375 kaç eder?",
+            "calculate",
+            &["625"],
+            Language::Turkish,
+        ),
+        SelectionCase::tool_with_evidence(
+            "tr-hesap-indirim",
+            "500 liralık ürüne yüzde 25 indirim uygulanırsa kaç lira öderim?",
+            "calculate",
+            &["375"],
+            Language::Turkish,
+        ),
+        SelectionCase::tool_with_evidence(
+            "tr-hesap-karekok",
+            "81'in karekökü nedir?",
+            "calculate",
+            &["9"],
+            Language::Turkish,
+        ),
+        SelectionCase::tool_with_evidence(
+            "tr-hesap-ortalama",
+            "10, 20 ve 30'un ortalaması kaçtır?",
+            "calculate",
+            &["20"],
+            Language::Turkish,
+        ),
+        SelectionCase::tool_with_evidence(
+            "tr-hesap-us",
+            "2 üzeri 8 kaçtır?",
+            "calculate",
+            &["256"],
+            Language::Turkish,
+        ),
+        SelectionCase::tool_with_evidence(
+            "tr-hesap-kDV",
+            "1000 TL + %20 KDV ne kadar yapar?",
+            "calculate",
+            &["1200"],
+            Language::Turkish,
+        ),
         // --- time ---
         SelectionCase::tool("tr-saat", "Saat kaç şu an?", "time"),
         SelectionCase::tool("tr-tarih", "Bugün ayın kaçı?", "time"),
         SelectionCase::tool("tr-gun-farki", "Yılbaşına kaç gün kaldı?", "time"),
         SelectionCase::tool("tr-hafta-gunu", "Bugün günlerden ne?", "time"),
         SelectionCase::tool("tr-dogal-tarih", "Önümüzdeki salıya kaç gün var?", "time"),
-        SelectionCase::tool("tr-zaman-dakika", "Şu an saat ve dakika bilgisi verir misin?", "time"),
+        SelectionCase::tool(
+            "tr-zaman-dakika",
+            "Şu an saat ve dakika bilgisi verir misin?",
+            "time",
+        ),
         SelectionCase::tool("tr-zaman-ay", "Hangi aydayız?", "time"),
         SelectionCase::tool("tr-zaman-yil", "Hangi yıldayız?", "time"),
-        SelectionCase::tool("tr-zaman-tarih-farki", "15 Ağustos 2026 tarihine kaç gün var?", "time"),
-        SelectionCase::tool("tr-zaman-gecimis", "2026 yılbaşından bugüne kaç gün geçti?", "time"),
-
+        SelectionCase::tool(
+            "tr-zaman-tarih-farki",
+            "15 Ağustos 2026 tarihine kaç gün var?",
+            "time",
+        ),
+        SelectionCase::tool(
+            "tr-zaman-gecimis",
+            "2026 yılbaşından bugüne kaç gün geçti?",
+            "time",
+        ),
         // --- documents ---
-        SelectionCase::tool("tr-belge-olustur", "Alışveriş listemi bir excel tablosu yap", "create_document"),
-        SelectionCase::tool("tr-belge-oku", "notlar.md dosyasında ne yazıyor, özetler misin?", "read_document"),
-        SelectionCase::tool("tr-belge-duzenle", "Az önceki tabloya bir satır daha ekle", "edit_document"),
-        SelectionCase::tool("tr-belge-markdown", "Toplantı kararlarını toplantı.md adıyla kaydet", "create_document"),
-        SelectionCase::tool("tr-belge-ozet", "rapor.md belgesini oku ve özet çıkar", "read_document"),
-        SelectionCase::tool("tr-belge-satir-sil", "notlar.md dosyasındaki 3. satırı sil", "edit_document"),
-        SelectionCase::tool("tr-belge-baslik-ekle", "plan.md dosyasına yeni bir başlık ekler misin?", "edit_document"),
-        SelectionCase::tool("tr-belge-icerik-oku", "icerik.txt dosyasının tüm metnini göster", "read_document"),
-        SelectionCase::tool("tr-belge-yeni-excel", "Bütçe kalemi için bir bütçe.xlsx dosyası oluştur", "create_document"),
-
+        SelectionCase::tool(
+            "tr-belge-olustur",
+            "Alışveriş listemi bir excel tablosu yap",
+            "create_document",
+        ),
+        SelectionCase::tool(
+            "tr-belge-oku",
+            "notlar.md dosyasında ne yazıyor, özetler misin?",
+            "read_document",
+        ),
+        SelectionCase::tool(
+            "tr-belge-duzenle",
+            "Az önceki tabloya bir satır daha ekle",
+            "edit_document",
+        ),
+        SelectionCase::tool(
+            "tr-belge-markdown",
+            "Toplantı kararlarını toplantı.md adıyla kaydet",
+            "create_document",
+        ),
+        SelectionCase::tool(
+            "tr-belge-ozet",
+            "rapor.md belgesini oku ve özet çıkar",
+            "read_document",
+        ),
+        SelectionCase::tool(
+            "tr-belge-satir-sil",
+            "notlar.md dosyasındaki 3. satırı sil",
+            "edit_document",
+        ),
+        SelectionCase::tool(
+            "tr-belge-baslik-ekle",
+            "plan.md dosyasına yeni bir başlık ekler misin?",
+            "edit_document",
+        ),
+        SelectionCase::tool(
+            "tr-belge-icerik-oku",
+            "icerik.txt dosyasının tüm metnini göster",
+            "read_document",
+        ),
+        SelectionCase::tool(
+            "tr-belge-yeni-excel",
+            "Bütçe kalemi için bir bütçe.xlsx dosyası oluştur",
+            "create_document",
+        ),
         // --- files ---
-        SelectionCase::tool("tr-dosya-ara", "Bütçeyle ilgili notu hangi dosyaya yazmıştım?", "find_file"),
-        SelectionCase::tool("tr-dosya-bul", "Klasörde 'rapor' içeren dosyaları bul", "find_file"),
-        SelectionCase::tool("tr-dosya-arama-metin", "İçinde 'Lentils' geçen dosyayı bulur musun?", "find_file"),
-        SelectionCase::tool("tr-dosya-nerede", "proje_plani.pdf nerede duruyor?", "find_file"),
-        SelectionCase::tool("tr-dosya-listele", "Dizin altındaki markdown dosyalarını arat", "find_file"),
-
+        SelectionCase::tool(
+            "tr-dosya-ara",
+            "Bütçeyle ilgili notu hangi dosyaya yazmıştım?",
+            "find_file",
+        ),
+        SelectionCase::tool(
+            "tr-dosya-bul",
+            "Klasörde 'rapor' içeren dosyaları bul",
+            "find_file",
+        ),
+        SelectionCase::tool(
+            "tr-dosya-arama-metin",
+            "İçinde 'Lentils' geçen dosyayı bulur musun?",
+            "find_file",
+        ),
+        SelectionCase::tool(
+            "tr-dosya-nerede",
+            "proje_plani.pdf nerede duruyor?",
+            "find_file",
+        ),
+        SelectionCase::tool(
+            "tr-dosya-listele",
+            "Dizin altındaki markdown dosyalarını arat",
+            "find_file",
+        ),
         // --- code ---
-        SelectionCase::tool("tr-kod-calistir", "1'den 100'e kadar asal sayıları listeler misin?", "run_code"),
-        SelectionCase::tool("tr-kod-dosya", "Bana fibonacci hesaplayan bir python betiği yaz ve kaydet", "write_code"),
-        SelectionCase::tool("tr-kod-hesapla", "Python ile 1'den 50'ye kadar olan sayıların toplamını çalıştır", "run_code"),
-        SelectionCase::tool("tr-kod-kaydet", "Sıcaklık dönüşümü yapan betiği donusturucu.py adıyla kaydet", "write_code"),
-        SelectionCase::tool("tr-kod-faktoryel", "Python ile 10 faktöriyel değerini hesaplayıp ekrana yazdır", "run_code"),
-
+        SelectionCase::tool(
+            "tr-kod-calistir",
+            "1'den 100'e kadar asal sayıları listeler misin?",
+            "run_code",
+        ),
+        SelectionCase::tool(
+            "tr-kod-dosya",
+            "Bana fibonacci hesaplayan bir python betiği yaz ve kaydet",
+            "write_code",
+        ),
+        SelectionCase::tool(
+            "tr-kod-hesapla",
+            "Python ile 1'den 50'ye kadar olan sayıların toplamını çalıştır",
+            "run_code",
+        ),
+        SelectionCase::tool(
+            "tr-kod-kaydet",
+            "Sıcaklık dönüşümü yapan betiği donusturucu.py adıyla kaydet",
+            "write_code",
+        ),
+        SelectionCase::tool(
+            "tr-kod-faktoryel",
+            "Python ile 10 faktöriyel değerini hesaplayıp ekrana yazdır",
+            "run_code",
+        ),
         // --- web ---
-        SelectionCase::tool("tr-hava", "İstanbul'da yarın hava nasıl olacak?", "web_search"),
+        SelectionCase::tool(
+            "tr-hava",
+            "İstanbul'da yarın hava nasıl olacak?",
+            "web_search",
+        ),
         SelectionCase::tool("tr-haber", "Dolar kuru şu an ne durumda?", "web_search"),
-        SelectionCase::tool("tr-web-site-oku", "https://example.com sayfasında ne anlatılıyor?", "web_fetch"),
-        SelectionCase::tool("tr-web-arama", "Türkiye'nin 2026 yılı enflasyon oranı haberleri ne durumda?", "web_search"),
-        SelectionCase::tool("tr-web-link", "https://news.ycombinator.com adresindeki başlıkları al", "web_fetch"),
-        SelectionCase::tool("tr-web-guncel", "Bugünün son dakika haberlerini internette ara", "web_search"),
-
+        SelectionCase::tool(
+            "tr-web-site-oku",
+            "https://example.com sayfasında ne anlatılıyor?",
+            "web_fetch",
+        ),
+        SelectionCase::tool(
+            "tr-web-arama",
+            "Türkiye'nin 2026 yılı enflasyon oranı haberleri ne durumda?",
+            "web_search",
+        ),
+        SelectionCase::tool(
+            "tr-web-link",
+            "https://news.ycombinator.com adresindeki başlıkları al",
+            "web_fetch",
+        ),
+        SelectionCase::tool(
+            "tr-web-guncel",
+            "Bugünün son dakika haberlerini internette ara",
+            "web_search",
+        ),
         // --- memory ---
-        SelectionCase::tool("tr-hatirla", "Kardeşimin doğum günü 3 mayıs, bunu unutma", "remember"),
+        SelectionCase::tool(
+            "tr-hatirla",
+            "Kardeşimin doğum günü 3 mayıs, bunu unutma",
+            "remember",
+        ),
         SelectionCase::tool("tr-unut", "Kahve sevdiğimi unut artık", "remember"),
-        SelectionCase::tool("tr-hafiza-oku", "Benim hakkımda aklında tuttuğun notları listele", "remember"),
-        SelectionCase::tool("tr-hatirla-araba", "Arabamı 2. kat B blok park yerine koyduğumu kaydet", "remember"),
-        SelectionCase::tool("tr-hatirla-soru", "Kardeşimin doğum gününü kaydetmiştin, hatırla ne zamandı?", "remember"),
-
+        SelectionCase::tool(
+            "tr-hafiza-oku",
+            "Benim hakkımda aklında tuttuğun notları listele",
+            "remember",
+        ),
+        SelectionCase::tool(
+            "tr-hatirla-araba",
+            "Arabamı 2. kat B blok park yerine koyduğumu kaydet",
+            "remember",
+        ),
+        SelectionCase::tool(
+            "tr-hatirla-soru",
+            "Kardeşimin doğum gününü kaydetmiştin, hatırla ne zamandı?",
+            "remember",
+        ),
         // --- git ---
-        SelectionCase::tool("tr-git-durum", "Git reposunda hangi dosyalar değişti?", "git"),
-        SelectionCase::tool("tr-git-commit", "Yapılan git değişiklikleri için commit mesajı öner", "git"),
-
+        SelectionCase::tool(
+            "tr-git-durum",
+            "Git reposunda hangi dosyalar değişti?",
+            "git",
+        ),
+        SelectionCase::tool(
+            "tr-git-commit",
+            "Yapılan git değişiklikleri için commit mesajı öner",
+            "git",
+        ),
         // --- irrelevance: NOTHING must be selected ---
         SelectionCase::chat_with_language("tr-selam", "Selam, nasılsın?", Language::Turkish),
-        SelectionCase::chat_with_language("tr-tesekkur", "Çok teşekkürler, harikaydı!", Language::Turkish),
-        SelectionCase::chat_with_language("tr-sohbet", "Bugün biraz yorgunum ya", Language::Turkish),
-        SelectionCase::chat_with_language("tr-fikir", "Sence sabah sporu mu akşam sporu mu daha iyi?", Language::Turkish),
-        SelectionCase::chat_with_language("tr-kimsin", "Sen kimsin, ne iş yaparsın?", Language::Turkish),
-        SelectionCase::chat_with_language("tr-gizlilik", "Benim verilerimi başkalarıyla paylaşıyor musun?", Language::Turkish),
-        SelectionCase::chat_with_language("tr-tavsiye", "Bana güzel bir kitap önerir misin?", Language::Turkish),
-        SelectionCase::chat_with_language("tr-gorusuruz", "İyi akşamlar, sonra görüşürüz!", Language::Turkish),
-        SelectionCase::chat_with_language("tr-tebrik", "Tebrik ederim harika bir iş çıkardın", Language::Turkish),
-
+        SelectionCase::chat_with_language(
+            "tr-tesekkur",
+            "Çok teşekkürler, harikaydı!",
+            Language::Turkish,
+        ),
+        SelectionCase::chat_with_language(
+            "tr-sohbet",
+            "Bugün biraz yorgunum ya",
+            Language::Turkish,
+        ),
+        SelectionCase::chat_with_language(
+            "tr-fikir",
+            "Sence sabah sporu mu akşam sporu mu daha iyi?",
+            Language::Turkish,
+        ),
+        SelectionCase::chat_with_language(
+            "tr-kimsin",
+            "Sen kimsin, ne iş yaparsın?",
+            Language::Turkish,
+        ),
+        SelectionCase::chat_with_language(
+            "tr-gizlilik",
+            "Benim verilerimi başkalarıyla paylaşıyor musun?",
+            Language::Turkish,
+        ),
+        SelectionCase::chat_with_language(
+            "tr-tavsiye",
+            "Bana güzel bir kitap önerir misin?",
+            Language::Turkish,
+        ),
+        SelectionCase::chat_with_language(
+            "tr-gorusuruz",
+            "İyi akşamlar, sonra görüşürüz!",
+            Language::Turkish,
+        ),
+        SelectionCase::chat_with_language(
+            "tr-tebrik",
+            "Tebrik ederim harika bir iş çıkardın",
+            Language::Turkish,
+        ),
         // --- Confusable Pairs ---
-        SelectionCase::tool("tr-pair-tarih-farki", "25 Aralık tarihine kaç gün var?", "time"),
-        SelectionCase::tool_with_evidence("tr-pair-matematik", "25 ile 18'i topla", "calculate", &["43"], Language::Turkish),
-        SelectionCase::tool("tr-pair-dosya-ara", "Bütçe raporu hangi klasörde?", "find_file"),
-        SelectionCase::tool("tr-pair-dosya-oku", "Bütçe raporunun içeriğinde ne var?", "read_document"),
+        SelectionCase::tool(
+            "tr-pair-tarih-farki",
+            "25 Aralık tarihine kaç gün var?",
+            "time",
+        ),
+        SelectionCase::tool_with_evidence(
+            "tr-pair-matematik",
+            "25 ile 18'i topla",
+            "calculate",
+            &["43"],
+            Language::Turkish,
+        ),
+        SelectionCase::tool(
+            "tr-pair-dosya-ara",
+            "Bütçe raporu hangi klasörde?",
+            "find_file",
+        ),
+        SelectionCase::tool(
+            "tr-pair-dosya-oku",
+            "Bütçe raporunun içeriğinde ne var?",
+            "read_document",
+        ),
     ]
 }
 
 pub fn selection_cases() -> Vec<SelectionCase> {
     vec![
         // --- calendar ---
-        SelectionCase::tool("calendar-day", "What is on my calendar tomorrow?", "calendar"),
-        SelectionCase::tool("calendar-remind", "Remind me to call the dentist tomorrow at 9", "calendar"),
-        SelectionCase::tool("calendar-schedule", "Schedule a meeting with Alice for Friday at 3pm", "calendar"),
-        SelectionCase::tool("calendar-events", "List all my calendar events for next week", "calendar"),
-        SelectionCase::tool("calendar-next", "What is my next upcoming appointment?", "calendar"),
-        SelectionCase::tool("calendar-clear", "Clear my schedule for tomorrow morning", "calendar"),
-
+        SelectionCase::tool(
+            "calendar-day",
+            "What is on my calendar tomorrow?",
+            "calendar",
+        ),
+        SelectionCase::tool(
+            "calendar-remind",
+            "Remind me to call the dentist tomorrow at 9",
+            "calendar",
+        ),
+        SelectionCase::tool(
+            "calendar-schedule",
+            "Schedule a meeting with Alice for Friday at 3pm",
+            "calendar",
+        ),
+        SelectionCase::tool(
+            "calendar-events",
+            "List all my calendar events for next week",
+            "calendar",
+        ),
+        SelectionCase::tool(
+            "calendar-next",
+            "What is my next upcoming appointment?",
+            "calendar",
+        ),
+        SelectionCase::tool(
+            "calendar-clear",
+            "Clear my schedule for tomorrow morning",
+            "calendar",
+        ),
         // --- calculate ---
-        SelectionCase::tool_with_evidence("calculate-multiply", "What is 125 times 8?", "calculate", &["1000"], Language::English),
-        SelectionCase::tool_with_evidence("calculate-add", "Could you add 347 and 268?", "calculate", &["615"], Language::English),
-        SelectionCase::tool_with_evidence("calculate-percent", "How much is 250 lira with a 20 percent discount?", "calculate", &["200"], Language::English),
-        SelectionCase::tool_with_evidence("calculate-divide", "What is 144 divided by 12?", "calculate", &["12"], Language::English),
-        SelectionCase::tool_with_evidence("calculate-subtract", "What is 1000 minus 375?", "calculate", &["625"], Language::English),
-        SelectionCase::tool_with_evidence("calculate-power", "What is 2 to the power of 10?", "calculate", &["1024"], Language::English),
-        SelectionCase::tool_with_evidence("calculate-sqrt", "What is the square root of 144?", "calculate", &["12"], Language::English),
-        SelectionCase::tool_with_evidence("calculate-expression", "Calculate (50 + 50) * 5 / 2", "calculate", &["250"], Language::English),
-        SelectionCase::tool_with_evidence("calculate-vat", "Calculate $500 with 10% tax added", "calculate", &["550"], Language::English),
-        SelectionCase::tool_with_evidence("calculate-average", "What is the average of 15, 25, and 35?", "calculate", &["25"], Language::English),
-        SelectionCase::tool_with_evidence("calculate-discount", "Calculate 15% off $80", "calculate", &["68"], Language::English),
-
+        SelectionCase::tool_with_evidence(
+            "calculate-multiply",
+            "What is 125 times 8?",
+            "calculate",
+            &["1000"],
+            Language::English,
+        ),
+        SelectionCase::tool_with_evidence(
+            "calculate-add",
+            "Could you add 347 and 268?",
+            "calculate",
+            &["615"],
+            Language::English,
+        ),
+        SelectionCase::tool_with_evidence(
+            "calculate-percent",
+            "How much is 250 lira with a 20 percent discount?",
+            "calculate",
+            &["200"],
+            Language::English,
+        ),
+        SelectionCase::tool_with_evidence(
+            "calculate-divide",
+            "What is 144 divided by 12?",
+            "calculate",
+            &["12"],
+            Language::English,
+        ),
+        SelectionCase::tool_with_evidence(
+            "calculate-subtract",
+            "What is 1000 minus 375?",
+            "calculate",
+            &["625"],
+            Language::English,
+        ),
+        SelectionCase::tool_with_evidence(
+            "calculate-power",
+            "What is 2 to the power of 10?",
+            "calculate",
+            &["1024"],
+            Language::English,
+        ),
+        SelectionCase::tool_with_evidence(
+            "calculate-sqrt",
+            "What is the square root of 144?",
+            "calculate",
+            &["12"],
+            Language::English,
+        ),
+        SelectionCase::tool_with_evidence(
+            "calculate-expression",
+            "Calculate (50 + 50) * 5 / 2",
+            "calculate",
+            &["250"],
+            Language::English,
+        ),
+        SelectionCase::tool_with_evidence(
+            "calculate-vat",
+            "Calculate $500 with 10% tax added",
+            "calculate",
+            &["550"],
+            Language::English,
+        ),
+        SelectionCase::tool_with_evidence(
+            "calculate-average",
+            "What is the average of 15, 25, and 35?",
+            "calculate",
+            &["25"],
+            Language::English,
+        ),
+        SelectionCase::tool_with_evidence(
+            "calculate-discount",
+            "Calculate 15% off $80",
+            "calculate",
+            &["68"],
+            Language::English,
+        ),
         // --- time ---
         SelectionCase::tool("time-clock", "What time is it?", "time"),
-        SelectionCase::tool("time-day-of-month", "What day of the month is it today?", "time"),
+        SelectionCase::tool(
+            "time-day-of-month",
+            "What day of the month is it today?",
+            "time",
+        ),
         SelectionCase::tool("time-todays-date", "What is today's date?", "time"),
-        SelectionCase::tool("time-diff", "How many days are left until new year?", "time"),
+        SelectionCase::tool(
+            "time-diff",
+            "How many days are left until new year?",
+            "time",
+        ),
         SelectionCase::tool("time-weekday", "What day of the week is it today?", "time"),
-        SelectionCase::tool("time-current-month", "Which month are we in currently?", "time"),
+        SelectionCase::tool(
+            "time-current-month",
+            "Which month are we in currently?",
+            "time",
+        ),
         SelectionCase::tool("time-current-year", "What is the current year?", "time"),
-        SelectionCase::tool("time-days-to-christmas", "How many days until Christmas?", "time"),
-        SelectionCase::tool("time-days-to-date", "How many days until 15 October 2026?", "time"),
-        SelectionCase::tool("time-days-since", "How many days have passed since 1 January 2026?", "time"),
+        SelectionCase::tool(
+            "time-days-to-christmas",
+            "How many days until Christmas?",
+            "time",
+        ),
+        SelectionCase::tool(
+            "time-days-to-date",
+            "How many days until 15 October 2026?",
+            "time",
+        ),
+        SelectionCase::tool(
+            "time-days-since",
+            "How many days have passed since 1 January 2026?",
+            "time",
+        ),
         SelectionCase::tool("time-utc", "What is the current UTC time?", "time"),
-
         // --- read_document ---
-        SelectionCase::tool("read_document-content", "What does the file report.md say?", "read_document"),
-        SelectionCase::tool("read_document-summary", "Could you summarize the file budget-2026.md?", "read_document"),
-        SelectionCase::tool("read_document-full", "Show me the entire text of notes.txt", "read_document"),
-        SelectionCase::tool("read_document-table", "Read the table inside report.md", "read_document"),
-        SelectionCase::tool("read_document-preview", "Give me a preview of readme.md", "read_document"),
-        SelectionCase::tool("read_document-log", "Read the latest entries from app.log", "read_document"),
-
+        SelectionCase::tool(
+            "read_document-content",
+            "What does the file report.md say?",
+            "read_document",
+        ),
+        SelectionCase::tool(
+            "read_document-summary",
+            "Could you summarize the file budget-2026.md?",
+            "read_document",
+        ),
+        SelectionCase::tool(
+            "read_document-full",
+            "Show me the entire text of notes.txt",
+            "read_document",
+        ),
+        SelectionCase::tool(
+            "read_document-table",
+            "Read the table inside report.md",
+            "read_document",
+        ),
+        SelectionCase::tool(
+            "read_document-preview",
+            "Give me a preview of readme.md",
+            "read_document",
+        ),
+        SelectionCase::tool(
+            "read_document-log",
+            "Read the latest entries from app.log",
+            "read_document",
+        ),
         // --- create_document ---
-        SelectionCase::tool("create_document-excel", "Turn the weekly meal list into an excel file.", "create_document"),
-        SelectionCase::tool("create_document-markdown", "Create a short markdown file for me for the meeting notes.", "create_document"),
-        SelectionCase::tool("create_document-report", "Create a new document called report.md with summary content", "create_document"),
-        SelectionCase::tool("create_document-csv", "Export the product list into a spreadsheet file", "create_document"),
-        SelectionCase::tool("create_document-notes", "Save a new note file named ideas.md", "create_document"),
-        SelectionCase::tool("create_document-todo", "Make a new markdown document for my todo list", "create_document"),
-
+        SelectionCase::tool(
+            "create_document-excel",
+            "Turn the weekly meal list into an excel file.",
+            "create_document",
+        ),
+        SelectionCase::tool(
+            "create_document-markdown",
+            "Create a short markdown file for me for the meeting notes.",
+            "create_document",
+        ),
+        SelectionCase::tool(
+            "create_document-report",
+            "Create a new document called report.md with summary content",
+            "create_document",
+        ),
+        SelectionCase::tool(
+            "create_document-csv",
+            "Export the product list into a spreadsheet file",
+            "create_document",
+        ),
+        SelectionCase::tool(
+            "create_document-notes",
+            "Save a new note file named ideas.md",
+            "create_document",
+        ),
+        SelectionCase::tool(
+            "create_document-todo",
+            "Make a new markdown document for my todo list",
+            "create_document",
+        ),
         // --- edit_document ---
-        SelectionCase::tool("edit_document-row", "Add the row 'Thursday | Chickpeas' to the file report.md.", "edit_document"),
-        SelectionCase::tool("edit_document-title", "Change the title of the file budget-2026.md to 'New Budget'.", "edit_document"),
-        SelectionCase::tool("edit_document-append", "Append a new section to notes.md", "edit_document"),
-        SelectionCase::tool("edit_document-update-line", "Replace line 5 in report.md with updated figures", "edit_document"),
-        SelectionCase::tool("edit_document-header", "Insert a header line into document.md", "edit_document"),
-        SelectionCase::tool("edit_document-modify", "Modify the Wednesday row in the meal table inside report.md", "edit_document"),
-
+        SelectionCase::tool(
+            "edit_document-row",
+            "Add the row 'Thursday | Chickpeas' to the file report.md.",
+            "edit_document",
+        ),
+        SelectionCase::tool(
+            "edit_document-title",
+            "Change the title of the file budget-2026.md to 'New Budget'.",
+            "edit_document",
+        ),
+        SelectionCase::tool(
+            "edit_document-append",
+            "Append a new section to notes.md",
+            "edit_document",
+        ),
+        SelectionCase::tool(
+            "edit_document-update-line",
+            "Replace line 5 in report.md with updated figures",
+            "edit_document",
+        ),
+        SelectionCase::tool(
+            "edit_document-header",
+            "Insert a header line into document.md",
+            "edit_document",
+        ),
+        SelectionCase::tool(
+            "edit_document-modify",
+            "Modify the Wednesday row in the meal table inside report.md",
+            "edit_document",
+        ),
         // --- find_file ---
-        SelectionCase::tool("find_file-name", "Find the file about the budget.", "find_file"),
-        SelectionCase::tool("find_file-content", "Which of my files mentions 'Lentils'?", "find_file"),
-        SelectionCase::tool("find_file-where", "Where is the file architecture.md located?", "find_file"),
-        SelectionCase::tool("find_file-pattern", "Search for files with .log extension", "find_file"),
-        SelectionCase::tool("find_file-keyword", "Locate files that contain the term 'Qwen3'", "find_file"),
-        SelectionCase::tool("find_file-list", "Search my workspace for project files", "find_file"),
-
+        SelectionCase::tool(
+            "find_file-name",
+            "Find the file about the budget.",
+            "find_file",
+        ),
+        SelectionCase::tool(
+            "find_file-content",
+            "Which of my files mentions 'Lentils'?",
+            "find_file",
+        ),
+        SelectionCase::tool(
+            "find_file-where",
+            "Where is the file architecture.md located?",
+            "find_file",
+        ),
+        SelectionCase::tool(
+            "find_file-pattern",
+            "Search for files with .log extension",
+            "find_file",
+        ),
+        SelectionCase::tool(
+            "find_file-keyword",
+            "Locate files that contain the term 'Qwen3'",
+            "find_file",
+        ),
+        SelectionCase::tool(
+            "find_file-list",
+            "Search my workspace for project files",
+            "find_file",
+        ),
         // --- web_search ---
-        SelectionCase::tool("web_search-weather", "What is the weather like in Istanbul?", "web_search"),
-        SelectionCase::tool("web_search-current", "How much is the dollar today?", "web_search"),
-        SelectionCase::tool("web_search-news", "What are the latest tech news headlines today?", "web_search"),
-        SelectionCase::tool("web_search-stock", "What is the current stock price of Apple?", "web_search"),
-        SelectionCase::tool("web_search-flight", "Find flight schedules from London to Paris", "web_search"),
-        SelectionCase::tool("web_search-score", "What was the score of the match in the news yesterday?", "web_search"),
-        SelectionCase::tool("web_search-inflation", "What is the current news on the inflation rate in 2026?", "web_search"),
-
+        SelectionCase::tool(
+            "web_search-weather",
+            "What is the weather like in Istanbul?",
+            "web_search",
+        ),
+        SelectionCase::tool(
+            "web_search-current",
+            "How much is the dollar today?",
+            "web_search",
+        ),
+        SelectionCase::tool(
+            "web_search-news",
+            "What are the latest tech news headlines today?",
+            "web_search",
+        ),
+        SelectionCase::tool(
+            "web_search-stock",
+            "What is the current stock price of Apple?",
+            "web_search",
+        ),
+        SelectionCase::tool(
+            "web_search-flight",
+            "Find flight schedules from London to Paris",
+            "web_search",
+        ),
+        SelectionCase::tool(
+            "web_search-score",
+            "What was the score of the match in the news yesterday?",
+            "web_search",
+        ),
+        SelectionCase::tool(
+            "web_search-inflation",
+            "What is the current news on the inflation rate in 2026?",
+            "web_search",
+        ),
         // --- web_fetch ---
-        SelectionCase::tool("web_fetch-page", "Read the content of the page https://example.com/blog.", "web_fetch"),
-        SelectionCase::tool("web_fetch-address", "Get me the detail of the article at this address: https://example.com/article", "web_fetch"),
-        SelectionCase::tool("web_fetch-url-summary", "Summarize the website at https://rust-lang.org", "web_fetch"),
-        SelectionCase::tool("web_fetch-extract-link", "Fetch the content from https://news.ycombinator.com", "web_fetch"),
-
+        SelectionCase::tool(
+            "web_fetch-page",
+            "Read the content of the page https://example.com/blog.",
+            "web_fetch",
+        ),
+        SelectionCase::tool(
+            "web_fetch-address",
+            "Get me the detail of the article at this address: https://example.com/article",
+            "web_fetch",
+        ),
+        SelectionCase::tool(
+            "web_fetch-url-summary",
+            "Summarize the website at https://rust-lang.org",
+            "web_fetch",
+        ),
+        SelectionCase::tool(
+            "web_fetch-extract-link",
+            "Fetch the content from https://news.ycombinator.com",
+            "web_fetch",
+        ),
         // --- remember ---
-        SelectionCase::tool("remember-save", "Remember this: I drink my coffee without milk.", "remember"),
-        SelectionCase::tool("remember-list", "List the notes you keep about me.", "remember"),
-        SelectionCase::tool("remember-birthday", "Remember that my sister's birthday is May 3rd", "remember"),
-        SelectionCase::tool("remember-forget", "Remember to forget my old home address", "remember"),
-        SelectionCase::tool("remember-query", "What note did I save about my sister's birthday?", "remember"),
-        SelectionCase::tool("remember-car-park", "Remember where I parked my car", "remember"),
-
+        SelectionCase::tool(
+            "remember-save",
+            "Remember this: I drink my coffee without milk.",
+            "remember",
+        ),
+        SelectionCase::tool(
+            "remember-list",
+            "List the notes you keep about me.",
+            "remember",
+        ),
+        SelectionCase::tool(
+            "remember-birthday",
+            "Remember that my sister's birthday is May 3rd",
+            "remember",
+        ),
+        SelectionCase::tool(
+            "remember-forget",
+            "Remember to forget my old home address",
+            "remember",
+        ),
+        SelectionCase::tool(
+            "remember-query",
+            "What note did I save about my sister's birthday?",
+            "remember",
+        ),
+        SelectionCase::tool(
+            "remember-car-park",
+            "Remember where I parked my car",
+            "remember",
+        ),
         // --- run_code ---
-        SelectionCase::tool("run_code-primes", "List the prime numbers from 1 to 30 in python.", "run_code"),
-        SelectionCase::tool("run_code-fibonacci", "Produce the first 15 terms of the Fibonacci sequence.", "run_code"),
-        SelectionCase::tool("run_code-sum", "Calculate the sum of squares from 1 to 100 using python", "run_code"),
-        SelectionCase::tool("run_code-factorial", "Compute 10 factorial with a python script", "run_code"),
-
+        SelectionCase::tool(
+            "run_code-primes",
+            "List the prime numbers from 1 to 30 in python.",
+            "run_code",
+        ),
+        SelectionCase::tool(
+            "run_code-fibonacci",
+            "Produce the first 15 terms of the Fibonacci sequence.",
+            "run_code",
+        ),
+        SelectionCase::tool(
+            "run_code-sum",
+            "Calculate the sum of squares from 1 to 100 using python",
+            "run_code",
+        ),
+        SelectionCase::tool(
+            "run_code-factorial",
+            "Compute 10 factorial with a python script",
+            "run_code",
+        ),
         // --- write_code ---
-        SelectionCase::tool("write_code-script", "Write me a python script that finds prime numbers, and save it as a file.", "write_code"),
-        SelectionCase::tool("write_code-converter", "Write a script that converts temperature data from Celsius to Fahrenheit and put it in my folder.", "write_code"),
-        SelectionCase::tool("write_code-web-scraper", "Write a python web scraper script and save it to scraper.py", "write_code"),
-        SelectionCase::tool("write_code-utility", "Create a python script utility.py that renames files in batch", "write_code"),
-
+        SelectionCase::tool(
+            "write_code-script",
+            "Write me a python script that finds prime numbers, and save it as a file.",
+            "write_code",
+        ),
+        SelectionCase::tool(
+            "write_code-converter",
+            "Write a script that converts temperature data from Celsius to Fahrenheit and put it in my folder.",
+            "write_code",
+        ),
+        SelectionCase::tool(
+            "write_code-web-scraper",
+            "Write a python web scraper script and save it to scraper.py",
+            "write_code",
+        ),
+        SelectionCase::tool(
+            "write_code-utility",
+            "Create a python script utility.py that renames files in batch",
+            "write_code",
+        ),
         // --- git ---
-        SelectionCase::tool("git-status", "Which files have I changed in this git repository?", "git"),
-        SelectionCase::tool("git-commit-message", "Summarize my git changes and write me a commit message.", "git"),
-        SelectionCase::tool("git-diff", "Show me the git diff for uncommitted changes", "git"),
+        SelectionCase::tool(
+            "git-status",
+            "Which files have I changed in this git repository?",
+            "git",
+        ),
+        SelectionCase::tool(
+            "git-commit-message",
+            "Summarize my git changes and write me a commit message.",
+            "git",
+        ),
+        SelectionCase::tool(
+            "git-diff",
+            "Show me the git diff for uncommitted changes",
+            "git",
+        ),
         SelectionCase::tool("git-branch", "Which git branch am I currently on?", "git"),
-
         // --- IRRELEVANCE (No tool must be called) ---
         SelectionCase::chat_with_language("chat-greeting", "Hello", Language::English),
         SelectionCase::chat_with_language("chat-thanks", "Thank you very much.", Language::English),
         SelectionCase::chat_with_language("chat-who-are-you", "Who are you?", Language::English),
-        SelectionCase::chat_with_language("chat-how-are-you", "How are you today?", Language::English),
-        SelectionCase::chat_with_language("chat-privacy", "Are you sending my data to the cloud?", Language::English),
-        SelectionCase::chat_with_language("chat-mood", "I'm a bit tired today, feeling low.", Language::English),
-        SelectionCase::chat_with_language("chat-recommendation", "Can you recommend a good movie?", Language::English),
-        SelectionCase::chat_with_language("chat-general-knowledge-paris", "What is the capital of France?", Language::English),
-        SelectionCase::chat_with_language("chat-general-knowledge-planet", "What is the largest planet in our solar system?", Language::English),
-        SelectionCase::chat_with_language("chat-farewell-see-you", "Goodbye, see you!", Language::English),
-        SelectionCase::chat_with_language("chat-appreciation", "You did a fantastic job, thanks!", Language::English),
-        SelectionCase::chat_with_language("chat-continuation-explain", "Tell me more about your thoughts.", Language::English),
-        SelectionCase::chat_with_language("chat-opinion-sports", "Which is better, morning or evening workout?", Language::English),
-        SelectionCase::chat_with_language("chat-bored", "I'm feeling bored, tell me a joke.", Language::English),
-        SelectionCase::chat_with_language("chat-weather-general", "I love nature and fresh air.", Language::English),
-
+        SelectionCase::chat_with_language(
+            "chat-how-are-you",
+            "How are you today?",
+            Language::English,
+        ),
+        SelectionCase::chat_with_language(
+            "chat-privacy",
+            "Are you sending my data to the cloud?",
+            Language::English,
+        ),
+        SelectionCase::chat_with_language(
+            "chat-mood",
+            "I'm a bit tired today, feeling low.",
+            Language::English,
+        ),
+        SelectionCase::chat_with_language(
+            "chat-recommendation",
+            "Can you recommend a good movie?",
+            Language::English,
+        ),
+        SelectionCase::chat_with_language(
+            "chat-general-knowledge-paris",
+            "What is the capital of France?",
+            Language::English,
+        ),
+        SelectionCase::chat_with_language(
+            "chat-general-knowledge-planet",
+            "What is the largest planet in our solar system?",
+            Language::English,
+        ),
+        SelectionCase::chat_with_language(
+            "chat-farewell-see-you",
+            "Goodbye, see you!",
+            Language::English,
+        ),
+        SelectionCase::chat_with_language(
+            "chat-appreciation",
+            "You did a fantastic job, thanks!",
+            Language::English,
+        ),
+        SelectionCase::chat_with_language(
+            "chat-continuation-explain",
+            "Tell me more about your thoughts.",
+            Language::English,
+        ),
+        SelectionCase::chat_with_language(
+            "chat-opinion-sports",
+            "Which is better, morning or evening workout?",
+            Language::English,
+        ),
+        SelectionCase::chat_with_language(
+            "chat-bored",
+            "I'm feeling bored, tell me a joke.",
+            Language::English,
+        ),
+        SelectionCase::chat_with_language(
+            "chat-weather-general",
+            "I love nature and fresh air.",
+            Language::English,
+        ),
         // --- Confusable Pairs ---
-        SelectionCase::tool("pair-time-diff", "How many days until 2 December 2026?", "time"),
-        SelectionCase::tool_with_evidence("pair-calc-add", "Add 25 and 18", "calculate", &["43"], Language::English),
+        SelectionCase::tool(
+            "pair-time-diff",
+            "How many days until 2 December 2026?",
+            "time",
+        ),
+        SelectionCase::tool_with_evidence(
+            "pair-calc-add",
+            "Add 25 and 18",
+            "calculate",
+            &["43"],
+            Language::English,
+        ),
         SelectionCase::tool("pair-find-file", "Where is the budget file?", "find_file"),
-        SelectionCase::tool("pair-read-doc", "What does the budget file say?", "read_document"),
-        SelectionCase::tool("pair-web-search", "Who won the 2026 election?", "web_search"),
-        SelectionCase::tool("pair-web-fetch", "Summarize https://example.com/election-results", "web_fetch"),
-
+        SelectionCase::tool(
+            "pair-read-doc",
+            "What does the budget file say?",
+            "read_document",
+        ),
+        SelectionCase::tool(
+            "pair-web-search",
+            "Who won the 2026 election?",
+            "web_search",
+        ),
+        SelectionCase::tool(
+            "pair-web-fetch",
+            "Summarize https://example.com/election-results",
+            "web_fetch",
+        ),
         // --- MULTI-TURN ---
         SelectionCase::chain(
             "chain-document",
             &[
-                ("Turn the weekly meal list into an excel file.", "create_document"),
+                (
+                    "Turn the weekly meal list into an excel file.",
+                    "create_document",
+                ),
                 ("Show it as a table.", "read_document"),
                 ("Change Tuesday from Rice to Beans.", "edit_document"),
             ],
@@ -531,13 +1152,20 @@ pub struct StepOutcome {
     pub passed: bool,
     pub answer: String,
     pub answer_passed: bool,
+    /// DOES THIS STEP CLAIM ANYTHING ABOUT THE ANSWER — evidence that must
+    /// appear, a phrase that must not, or a language it must be written in.
+    ///
+    /// WHY THE REPORT NEEDS IT: `answer_total` counted every step, and most
+    /// steps make no claim at all, so `check_answer_quality` returned `true`
+    /// for them by having nothing to check. Those free passes went into the
+    /// denominator AND the numerator of a line printed as ANSWER QUALITY, which
+    /// therefore moved when the number of claimless cases changed and stood
+    /// still when a real claim broke. A rate over steps that assert nothing is
+    /// not a rate.
+    pub claims: bool,
 }
 
-pub fn check_answer_quality(
-    step: &SelectionStep,
-    answer: &str,
-    tool_outcomes: &[String],
-) -> bool {
+pub fn check_answer_quality(step: &SelectionStep, answer: &str, tool_outcomes: &[String]) -> bool {
     let mut pool = String::with_capacity(answer.len() + 512);
     pool.push_str(answer);
     for t in tool_outcomes {
@@ -558,30 +1186,73 @@ pub fn check_answer_quality(
         }
     }
 
-    if let Some(lang) = step.language {
-        match lang {
-            Language::Turkish => {
-                let lower = answer.to_lowercase();
-                let diacritics_or_words = [
-                    "ç", "ğ", "ı", "ö", "ş", "ü", "ve", "bir", "bu", "için", "saat", "gün", "tarih", "dosya", "not",
-                ];
-                let hits = diacritics_or_words.iter().filter(|&m| lower.contains(m)).count();
-                if hits == 0 && !answer.trim().is_empty() {
-                    return false;
-                }
-            }
-            Language::English => {
-                let lower = answer.to_lowercase();
-                let words = ["the", "is", "and", "to", "in", "for", "it", "on", "of", "with"];
-                let hits = words.iter().filter(|&m| lower.contains(m)).count();
-                if hits == 0 && !answer.trim().is_empty() {
-                    return false;
-                }
-            }
-        }
+    if let Some(lang) = step.language
+        && !speaks(lang, answer)
+    {
+        return false;
     }
 
     true
+}
+
+/// Does this answer look like it is written in `lang`.
+///
+/// WHAT WAS WRONG WITH THE OLD CHECK, and it is worth stating plainly because
+/// the number it produced was printed under the heading ANSWER QUALITY and read
+/// as if it meant something: **both language gates passed everything.** They
+/// tested `answer.to_lowercase().contains(marker)` over markers as short as two
+/// letters, with no word boundary. The Turkish marker list carried "ve", "bu"
+/// and "bir"; the English words "have", "about" and "birthday" contain them, so
+/// an answer written entirely in English satisfied the Turkish gate. It ran the
+/// other way too: the English list carried "in", "it" and "to", and the Turkish
+/// "için" contains "in". A gate that no input can fail is not a gate, and the
+/// Turkish suite had been reporting one for every case it measured.
+///
+/// WHAT REPLACES IT is two claims that a wrong-language answer cannot satisfy:
+///
+/// 1. WHOLE WORDS. The text is split into words and the function words are
+///    compared for EQUALITY. "have" is not "ve".
+/// 2. A LETTER THE OTHER LANGUAGE DOES NOT HAVE. `ç ğ ı ö ş ü` occur in Turkish
+///    and in no English word, so one of them is proof on its own — this is the
+///    half of the old list that was doing real work, kept.
+///
+/// A TEXT WITH NO WORDS IN IT IS NOT JUDGED. "1000." is not English and not
+/// Turkish; the old code failed it, which counted a correct short answer as a
+/// language defect. There is nothing there to read, so there is nothing to
+/// claim.
+fn speaks(lang: Language, answer: &str) -> bool {
+    let words: Vec<String> = answer
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.chars().any(char::is_alphabetic))
+        .map(str::to_lowercase)
+        .collect();
+    if words.is_empty() {
+        return true;
+    }
+    match lang {
+        Language::Turkish => {
+            // The letters English does not write. `İ` (dotted capital I) is in
+            // the list and plain `I` is NOT: the two look alike in a font and
+            // are different characters, and including the ASCII one would let
+            // any capitalised English sentence pass as Turkish.
+            const TURKISH_ONLY: &str = "çÇğĞıİöÖşŞüÜ";
+            if answer.chars().any(|c| TURKISH_ONLY.contains(c)) {
+                return true;
+            }
+            const TURKISH: &[&str] = &[
+                "ve", "bir", "bu", "icin", "ile", "var", "yok", "gun", "saat", "tarih", "dosya",
+                "not", "olarak", "kadar", "su", "da", "de", "sonra", "once", "kac", "ne",
+            ];
+            words.iter().any(|w| TURKISH.contains(&w.as_str()))
+        }
+        Language::English => {
+            const ENGLISH: &[&str] = &[
+                "the", "is", "and", "to", "in", "for", "it", "on", "of", "with", "a", "an", "are",
+                "you", "your", "was", "has", "have", "there", "that", "this", "days", "day",
+            ];
+            words.iter().any(|w| ENGLISH.contains(&w.as_str()))
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -646,8 +1317,12 @@ impl SelectionReport {
             for s in &c.steps {
                 r.step_total += 1;
                 r.step_passed += s.passed as usize;
-                r.answer_total += 1;
-                r.answer_passed += s.answer_passed as usize;
+                // ONLY THE STEPS THAT CLAIM SOMETHING. See `StepOutcome::claims`
+                // for what the old denominator was counting.
+                if s.claims {
+                    r.answer_total += 1;
+                    r.answer_passed += s.answer_passed as usize;
+                }
             }
         }
         r
@@ -728,7 +1403,7 @@ impl SelectionReport {
             ratio(self.step_passed, self.step_total) * 100.0
         ));
         s.push_str(&format!(
-            "ANSWER QUALITY  {}/{}  ({:.1}%)\n",
+            "ANSWER QUALITY  {}/{}  ({:.1}%)   <- of the steps that CLAIM something\n",
             self.answer_passed,
             self.answer_total,
             self.answer_rate() * 100.0
@@ -755,7 +1430,7 @@ pub fn ratio(passed: usize, total: usize) -> f64 {
 // The runner
 // ---------------------------------------------------------------------------
 
-fn selection_catalog(env: &Env, memory: &SharedMemory) -> ToolCatalog {
+pub(crate) fn selection_catalog(env: &Env, memory: &SharedMemory) -> ToolCatalog {
     let (full, _, _) =
         tacet_tools::catalog::production_catalog(&env.store, memory, Some(FIXED_EPOCH));
     let mut c = ToolCatalog::new();
@@ -788,6 +1463,44 @@ fn announce_missing_tools(catalog: &ToolCatalog) {
             );
         }
     });
+}
+
+/// THE GENERATION BUDGET THIS MEASUREMENT GIVES THE MODEL, built the way the
+/// shell builds it.
+///
+/// WHY IT IS NOT `SamplingSetting::default()` ANY MORE, and this was the eval
+/// penalising the model for a limit the app does not impose. The default caps
+/// generation at `GENERATION_SHARE` (1024 tokens) because it is the fallback
+/// for call sites that have no prompt to measure. The shell has a prompt and
+/// uses `TokenCounter::generation_cap`, which hands the unused part of the
+/// window to generation — on qwen3-4b that is roughly fourteen thousand tokens,
+/// not one. This set was calling the default.
+///
+/// MEASURED: `write_code-utility` ("Create a python script utility.py that
+/// renames files") and `write_code-web-scraper` both came back
+/// `generation was cut off halfway`. The model was writing a real script and
+/// ran out of room at 1024 tokens — in the app it would have finished. The
+/// suite was reporting a Tacet limit as a model failure, on the two cases most
+/// likely to need length.
+///
+/// THE WINDOW COMES FROM THE FILE, exactly as `engine_window` does in the
+/// shell: what the GGUF declares, capped by what the KV cache can afford on
+/// this device, floored at `CONTEXT_BUDGET`. An engine that declares nothing
+/// (FakeEngine) lands on the floor, which is the old behaviour and the safe one.
+fn generation_counter(engine: &Arc<dyn EngineProvider>) -> tacet_engine::TokenCounter {
+    let identity = engine.identity();
+    let path = std::path::Path::new(&identity.model_path);
+    let declared = engine
+        .context_length()
+        .or_else(|| tacet_engine::gguf_context_length(path));
+    let per_token = tacet_engine::gguf_kv_bytes_per_token(path);
+    let device = match identity.device.as_str() {
+        "metal" => tacet_engine::Device::Metal,
+        "cuda" => tacet_engine::Device::Cuda,
+        _ => tacet_engine::Device::Cpu,
+    };
+    let window = tacet_engine::context_budget(declared, per_token, device);
+    tacet_engine::TokenCounter::new(window, tacet_engine::GENERATION_SHARE)
 }
 
 pub fn run_selection(cases: &[SelectionCase], engine: &Arc<dyn EngineProvider>) -> SelectionReport {
@@ -853,6 +1566,9 @@ pub fn run_selection_case_with_options(
                     passed: false,
                     answer: format!("the environment could not be set up: {e}"),
                     answer_passed: false,
+                    // The host failed, not a claim. Counting it would put a
+                    // machine problem into the answer-quality denominator.
+                    claims: false,
                 }],
             };
         }
@@ -876,10 +1592,46 @@ pub fn run_selection_case_with_options(
     let mut history: Vec<Turn> = Vec::new();
     let mut step_outcomes: Vec<StepOutcome> = Vec::new();
 
+    // THE SKILL STORE, and its absence was the largest gap between this
+    // measurement and the program it claims to measure. Production attaches ONE
+    // matching skill to the turn behind a `<guidance>` fence (see the turn loop
+    // in `tacet-cli`), and that block is the thing carrying the concrete
+    // `tool(args)` shape the model imitates — the prompt module's own header
+    // says the guide sits immediately before the question because "in a small
+    // model the last blocks carry the most weight". Measuring a selection
+    // without it measured a prompt no user has ever been sent.
+    //
+    // THE REPEAT SUPPRESSION IS NOT COPIED, and that is a deliberate
+    // simplification rather than an omission: production skips re-injecting the
+    // same skill on a nearby turn, which is a CONVERSATION-length behaviour,
+    // and every case here is one or two steps long. Copying the state machine
+    // would add a way for the two to drift with nothing measuring the
+    // difference.
+    let skills = tacet_skills::SkillStore::default_set();
+    let counter = generation_counter(engine);
+
     for step in &case.steps {
         let ticket = executor.new_turn();
         traces.reset();
         let selected: ToolCatalog = router.select(&step.message, &catalog).into_iter().collect();
+        let selected_names: Vec<String> = selected.names().into_iter().map(String::from).collect();
+        let mut guide = skills
+            .matching(&step.message, Some(&selected_names))
+            .map(tacet_skills::injection_text);
+        // THE WEB NUDGE, on the same condition production uses. It is one
+        // sentence and it exists because the small model does not reach for
+        // `web_search` on its own; leaving it out of the measurement made the
+        // web cases look harder than they are in the app.
+        if tacet_tools::router::score_intent(&step.message).dominant()
+            == tacet_tools::router::IntentProfile::Web
+        {
+            const WEB_NUDGE: &str = "this question needs live information from the internet. \
+                 Call the web_search tool first; do not answer it from memory.";
+            guide = Some(match guide {
+                Some(g) => format!("{g}\n{WEB_NUDGE}"),
+                None => WEB_NUDGE.to_string(),
+            });
+        }
         let constraint = engine.vocab().map(|v| {
             if force_tool_name {
                 CallConstraint::new(&v, &selected)
@@ -924,6 +1676,9 @@ pub fn run_selection_case_with_options(
                 SYSTEM_INSTRUCTIONS.to_string()
             };
             let mut prompt = Prompt::new(&system, question).with_history(previous);
+            if let Some(g) = &guide {
+                prompt = prompt.with_guide(g);
+            }
             if !final_turn {
                 prompt = prompt.with_tools(&selected);
             }
@@ -935,7 +1690,10 @@ pub fn run_selection_case_with_options(
                         .as_ref()
                         .filter(|_| !final_turn)
                         .map(|c| c as &dyn tacet_engine::Constrainer),
-                    SamplingSetting::default(),
+                    SamplingSetting {
+                        max_tokens: counter.generation_cap(&prompt),
+                        ..Default::default()
+                    },
                 ),
             ) {
                 Ok(g) => g,
@@ -981,6 +1739,9 @@ pub fn run_selection_case_with_options(
             passed,
             answer,
             answer_passed,
+            claims: !step.evidence.is_empty()
+                || !step.forbidden.is_empty()
+                || step.language.is_some(),
         });
     }
 
@@ -1304,6 +2065,7 @@ mod tests {
                     passed: false,
                     answer: String::new(),
                     answer_passed: false,
+                    claims: false,
                 }],
             },
             SelectionOutcome {
@@ -1317,6 +2079,7 @@ mod tests {
                     passed: true,
                     answer: String::new(),
                     answer_passed: true,
+                    claims: false,
                 }],
             },
         ];
@@ -1434,6 +2197,98 @@ mod trigger_lint {
             "the accepted list no longer matches what the router does:\n  {}",
             offenders.join("\n  ")
         );
+    }
+
+    /// THE PROOF THAT THE PROMPT THIS SET BUILDS IS THE PROMPT THE APP SENDS.
+    ///
+    /// The skill guide was wired into the selection runner because production
+    /// attaches it and this measurement did not — but a wiring that silently
+    /// matches NOTHING would look identical to no wiring at all, and the run
+    /// takes twenty minutes to disprove. This is the cheap version: with the
+    /// same store and the same tool budget the runner uses, the suite's own
+    /// messages must reach real guidance.
+    #[test]
+    fn the_suite_messages_reach_the_skill_guides_production_would_attach() {
+        let env = Env::setup().expect("the sandbox is set up");
+        let memory = SharedMemory::in_memory();
+        let catalog = selection_catalog(&env, &memory);
+        let router = Router::new();
+        let skills = tacet_skills::SkillStore::default_set();
+        assert!(skills.count() > 0, "the bundled skill set is empty");
+
+        let matched = selection_cases()
+            .iter()
+            .flat_map(|c| c.steps.iter())
+            .filter(|step| {
+                let selected: Vec<String> = router
+                    .select(&step.message, &catalog)
+                    .iter()
+                    .map(|t| t.name().to_string())
+                    .collect();
+                skills.matching(&step.message, Some(&selected)).is_some()
+            })
+            .count();
+        assert!(
+            matched > 0,
+            "no message in the English suite matches any bundled skill — the guide \
+             injection is wired but inert, which measures the same prompt as not \
+             wiring it at all"
+        );
+    }
+
+    /// THE PROOF THAT THE LANGUAGE GATE MEASURES ANYTHING, written as the pair
+    /// of cases the old implementation got wrong in BOTH directions. Without
+    /// this, the gate can silently return to a substring search and every
+    /// Turkish case will go on reporting a perfect answer rate.
+    #[test]
+    fn an_answer_in_the_wrong_language_fails_the_language_gate() {
+        let turkish_step = SelectionStep::new("m", None).with_language(Language::Turkish);
+        let english_step = SelectionStep::new("m", None).with_language(Language::English);
+
+        // The exact sentence the old check passed: "have" contains "ve",
+        // "about" contains "bu".
+        assert!(
+            !check_answer_quality(&turkish_step, "I have the answer about it: 1000.", &[]),
+            "an English sentence must not satisfy the Turkish gate"
+        );
+        // And the reverse: "için" contains "in".
+        assert!(
+            !check_answer_quality(&english_step, "Bunun için sonuç 1000 çıkıyor.", &[]),
+            "a Turkish sentence must not satisfy the English gate"
+        );
+
+        // The gates still accept what they are for.
+        assert!(check_answer_quality(
+            &turkish_step,
+            "Sonuç 1000 olarak çıktı.",
+            &[]
+        ));
+        assert!(check_answer_quality(
+            &english_step,
+            "The result is 1000.",
+            &[]
+        ));
+    }
+
+    /// A NUMBER IS NOT A LANGUAGE DEFECT. "1000." is the shortest correct
+    /// answer to an arithmetic question and the old gate failed it, so a case
+    /// could lose its answer point for being brief.
+    #[test]
+    fn an_answer_with_no_words_is_not_judged_for_language() {
+        for lang in [Language::Turkish, Language::English] {
+            let step = SelectionStep::new("m", None).with_language(lang);
+            assert!(check_answer_quality(&step, "1000.", &[]));
+            assert!(check_answer_quality(&step, "", &[]));
+        }
+    }
+
+    /// A CAPITALISED ENGLISH SENTENCE IS NOT TURKISH. `I` and `İ` look alike;
+    /// only the dotted one is Turkish, and treating the ASCII letter as proof
+    /// would pass every sentence that starts with "I".
+    #[test]
+    fn the_ascii_capital_i_is_not_a_turkish_letter() {
+        let turkish = SelectionStep::new("m", None).with_language(Language::Turkish);
+        assert!(!check_answer_quality(&turkish, "I READ THE REPORT.", &[]));
     }
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "tacet-eval"
-version = "0.1.7"
+version = "0.1.8"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -18,5 +18,9 @@ tacet-tools.workspace = true
 # application's behaviour.
 tacet-grammar.workspace = true
 tacet-engine.workspace = true
+# THE SKILL GUIDE IS PART OF THE PROMPT PRODUCTION SENDS, so the measurement has
+# to build it too — see `selection_prompt` in `tool_selection.rs` for what the
+# eval was measuring before this line existed.
+tacet-skills.workspace = true
 serde.workspace = true
 serde_json.workspace = true

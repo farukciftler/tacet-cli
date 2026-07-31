@@ -48,3 +48,24 @@ jobs:
       # Runs against the deterministic mock engine: it measures the routing and
       # tool-call machinery, not a model. No weights are downloaded.
       - run: cargo run -p tacet-cli -- eval
+
+      # THE ROUTER'S OWN MEASUREMENT, and it gates because it is a LIMIT rather
+      # than a score: a tool the router leaves out of the budget is not in the
+      # prompt, so no model can call it. Every failure here is a defect in this
+      # repository, which is exactly the class of thing CI is for. It needs no
+      # weights and finishes in milliseconds.
+      #
+      # WHY IT IS WORTH A LINE IN THIS FILE: before it existed, a routing
+      # regression was invisible until somebody spent twenty minutes running
+      # `--tool-selection` on a machine with a 2 GB model, and it arrived
+      # labelled "the model got worse". The first run of this gate found
+      # `find_file` sitting at rank 7 on the sentence "Find the file about the
+      # budget."
+      - run: cargo run -p tacet-cli -- eval --routing
+
+      # THE SAME GATE WITH A SERVER CONNECTED. Thirteen tools against a budget
+      # of nine can only crowd out four; the run above is therefore nearly free
+      # to pass. Thirty-three against nine is what a machine with one MCP server
+      # looks like, and it is the only shape where a tool realistically falls
+      # out of the prompt.
+      - run: cargo run -p tacet-cli -- eval --routing --routing-pressure 20

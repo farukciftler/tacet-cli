@@ -72,7 +72,16 @@ tacet-grammar = { path = "crates/tacet-grammar", version = "0.1.2" }
 # `dominant_quant` counts TENSORS, and Gemma3's six F32 norms per layer
 # outvote its quantized body, so a q4 file is reported as `F32` and a
 # comparison matrix reads as if the model had been run unquantized.
-tacet-engine = { path = "crates/tacet-engine", version = "0.1.8" }
+# 0.1.9 CLOSES A HOLE STRAIGHT THROUGH THE HEADLINE CLAIM. The README says a
+# malformed tool call "cannot be GENERATED. Not validated after the fact:
+# unrepresentable." The grammar delivered that for every ORDINARY token and
+# never covered the one token that is not ordinary: end-of-turn was never
+# masked, so a model could simply STOP in the middle of a JSON string. Measured
+# on qwen3-4b, a `write_code` call ended on `... print(result]})` with the
+# string, the array and the object all still open, `ToolCall::parse` returned
+# `None`, and it read from the outside as the model refusing to call the tool.
+# Below this version the guarantee has an exception nothing in the code names.
+tacet-engine = { path = "crates/tacet-engine", version = "0.1.9" }
 # 0.1.3 brought the addon gates and the five tools behind them; below it,
 # `catalog.rs` has no gate to ask and `shell`/`http`/`db` do not exist at all.
 # 0.1.4 IS THE FLOOR: below it `shell` is offered on Windows, where the timeout
@@ -106,7 +115,18 @@ tacet-engine = { path = "crates/tacet-engine", version = "0.1.8" }
 # reported as created; a `remember` save without keywords is refused by the
 # store although the schema marks them optional; and a title the body already
 # carries is written twice.
-tacet-tools = { path = "crates/tacet-tools", version = "0.1.11" }
+# 0.1.12 IS THE FLOOR FOR THE ROUTER, and the defect it fixes had been silently
+# setting the ceiling on every tool-selection number this project has ever
+# recorded. A tool's score was the sum of the hint lengths matched over its NAME
+# AND DESCRIPTION GLUED TOGETHER, so it grew with the SIZE OF ITS PROSE:
+# `run_code`, whose thousand-character description correctly says it cannot open
+# a FILE, cannot see a FOLDER and must not LIST from MEMORY, outscored
+# `find_file` three to one on "Find the file about the budget." — measured with
+# the routing set added in this same change, `find_file` sat at rank 7 on its own
+# sentence. Below this version the name and the description are still one string,
+# `calendar` still outranks `time` on "what time is it", and the English word
+# for multiplication is still a WEB trigger.
+tacet-tools = { path = "crates/tacet-tools", version = "0.1.12" }
 tacet-skills = { path = "crates/tacet-skills", version = "0.1.0" }
 tacet-memory = { path = "crates/tacet-memory", version = "0.1.0" }
 # THE NETWORK MONOPOLY: a network call exists ONLY in these two crates. No
@@ -132,4 +152,18 @@ tacet-mcp = { path = "crates/tacet-mcp", version = "0.2.0" }
 # measures a prompt the product does not build. It also adds the claims that
 # found what the old ones could not: `grounded` (no number in the answer that
 # no tool produced), the call budget, and the model/Tacet attribution.
-tacet-eval = { path = "crates/tacet-eval", version = "0.1.7" }
+# 0.1.8 IS THE FLOOR FOR ANY NUMBER THAT WILL BE BELIEVED, and it carries four
+# corrections to the INSTRUMENT rather than to the thing measured:
+#   * `routing` — the router's own choice, no weights, milliseconds. It sets the
+#     ceiling on the selection number and had no measurement of its own.
+#   * The generation budget. The selection set handed the model
+#     `SamplingSetting::default()` (1024 tokens) while the shell hands it
+#     `generation_cap` (~14000 on qwen3-4b), so the two cases that ask for a real
+#     script were failing on a limit production does not impose.
+#   * The language gate PASSED EVERYTHING. It matched two-letter markers as
+#     substrings, so "have" satisfied the Turkish "ve" and "için" satisfied the
+#     English "in"; every Turkish case had been reporting a perfect answer rate
+#     against a check no input could fail.
+#   * The prompt. The set built no `<guidance>` block, so it measured a prompt
+#     the app has never sent.
+tacet-eval = { path = "crates/tacet-eval", version = "0.1.8" }

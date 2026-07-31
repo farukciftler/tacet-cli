@@ -251,14 +251,14 @@ pub fn install(color: &Color, no_approval: bool) -> Result<Outcome, String> {
     // local account dropped next to the binary).
     let _ = std::fs::remove_file(&staged);
 
-    let approval = crate::TerminalDownloadApproval {
+    let approval = crate::models::TerminalDownloadApproval {
         color: Color::setup(),
         no_approval,
         // NOT the catalog sentence: see `TOFU_NOTE_NO_PUBLISHER`. There is no
         // catalog on this path and no digest is ever compared.
-        no_digest_note: crate::TOFU_NOTE_NO_PUBLISHER,
+        no_digest_note: crate::models::TOFU_NOTE_NO_PUBLISHER,
     };
-    let progress = crate::TerminalDownloadProgress {
+    let progress = crate::models::TerminalDownloadProgress {
         color: Color::setup(),
     };
     let outcome = tacet_web::download(&plan, &approval, &progress)
@@ -566,10 +566,10 @@ mod tests {
     /// difference.
     #[test]
     fn the_update_gate_does_not_promise_a_later_verification() {
-        let note = crate::TOFU_NOTE_NO_PUBLISHER;
+        let note = crate::models::TOFU_NOTE_NO_PUBLISHER;
         assert_ne!(
             note,
-            crate::TOFU_NOTE_CATALOG,
+            crate::models::TOFU_NOTE_CATALOG,
             "the update path reuses the catalog sentence"
         );
         let lowered = note.to_lowercase();

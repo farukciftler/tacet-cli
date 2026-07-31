@@ -1260,7 +1260,13 @@ mod tests {
     /// …and a command is still a command, arguments and typos included.
     #[test]
     fn a_command_is_still_a_command_with_arguments() {
-        for line in ["/help", "/addon install http", "/plugins", "/plut", " /clear"] {
+        for line in [
+            "/help",
+            "/addon install http",
+            "/plugins",
+            "/plut",
+            " /clear",
+        ] {
             assert!(is_command(line), "should be a command: {line}");
         }
         // No leading slash at all: plainly a message.
