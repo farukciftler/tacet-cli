@@ -126,7 +126,15 @@ tacet-engine = { path = "crates/tacet-engine", version = "0.1.9" }
 # sentence. Below this version the name and the description are still one string,
 # `calendar` still outranks `time` on "what time is it", and the English word
 # for multiplication is still a WEB trigger.
-tacet-tools = { path = "crates/tacet-tools", version = "0.1.12" }
+# 0.1.13 IS THE FLOOR FOR WINDOWS, and the defect was invisible on the two
+# platforms this is developed on. The path handed to the model after a write was
+# built with `strip_prefix` against a working directory canonicalized at a
+# different moment; on Windows canonicalization adds the `\\?\` verbatim
+# prefix, so one side carried it, the other did not, the strip silently failed
+# and the model was handed a full absolute path — spelled with backslashes,
+# which it then has to escape to write back inside a JSON argument. CI had been
+# red on windows-latest for exactly this.
+tacet-tools = { path = "crates/tacet-tools", version = "0.1.13" }
 tacet-skills = { path = "crates/tacet-skills", version = "0.1.0" }
 tacet-memory = { path = "crates/tacet-memory", version = "0.1.0" }
 # THE NETWORK MONOPOLY: a network call exists ONLY in these two crates. No
@@ -166,4 +174,4 @@ tacet-mcp = { path = "crates/tacet-mcp", version = "0.2.0" }
 #     against a check no input could fail.
 #   * The prompt. The set built no `<guidance>` block, so it measured a prompt
 #     the app has never sent.
-tacet-eval = { path = "crates/tacet-eval", version = "0.1.8" }
+tacet-eval = { path = "crates/tacet-eval", version = "0.1.9" }

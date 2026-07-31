@@ -29,6 +29,54 @@ use tacet_kernel::{
 
 use crate::data_store::Table;
 
+/// THE PATH THE MODEL IS TOLD ABOUT — relative to the working directory, and
+/// spelled with forward slashes on every platform.
+///
+/// WHY IT IS A FUNCTION AND NOT A `strip_prefix` AT THE CALL SITE. It was a
+/// `strip_prefix` at the call site, and on Windows it produced a path no user
+/// would recognise and the model could not round-trip:
+///
+///     file_created (markdown): \\?\C:\Users\...\Temp\tacet-...\notes\note.md
+///
+/// Two separate things went wrong there and only one of them was visible.
+///
+/// 1. THE STRIP SILENTLY FAILED. `ctx.working_dir` and the written path are
+///    canonicalized at different moments, and on Windows canonicalization adds
+///    the `\\?\` verbatim prefix — so one side carried it, the other did not,
+///    `strip_prefix` returned `Err`, and the fallback handed over the FULL
+///    absolute path. Nothing errored; the model simply got a different kind of
+///    answer on one platform. Both sides are canonicalized here before the
+///    comparison, which is the only form in which the question "is this file
+///    inside the working directory" has one answer.
+///
+/// 2. THE SEPARATOR. Even a successful strip gives `notes\note.md` on Windows,
+///    and this string goes into the model's context and comes back inside a
+///    JSON argument, where a backslash is an ESCAPE character. The model then
+///    has to write `"notes\\note.md"` to mean what it read — one more way for a
+///    correct intention to produce an unreadable path. Forward slashes are
+///    accepted by `resolve_existing_file` on every platform this ships to, so
+///    the model is given the spelling that cannot be misread.
+///
+/// THE ABSOLUTE PATH REMAINS THE ANSWER OUTSIDE THE WORKING DIRECTORY, and
+/// that is deliberate rather than a fallback: a file written into a registered
+/// root that is not the working directory has no relative name the model could
+/// use, and handing back the bare file name is what once made
+/// `read_document` fail and the model invent the table.
+fn path_for_model(path: &Path, working_dir: &Path) -> String {
+    let base = working_dir
+        .canonicalize()
+        .unwrap_or_else(|_| working_dir.to_path_buf());
+    let full = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    match full.strip_prefix(&base) {
+        Ok(relative) => relative
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/"),
+        Err(_) => path.display().to_string(),
+    }
+}
+
 /// The folder documents are written to: the sandbox ROOT itself.
 ///
 /// IT USED TO BE A SUBFOLDER NAMED AFTER THE BRAND, AND THAT WAS WRONG: when
@@ -976,10 +1024,7 @@ impl Tool for CreateDocumentTool {
             // and the table would get made up. `resolve_existing_file` accepts an
             // absolute path inside a registered root, so the absolute form is what
             // comes back.
-            let relative = path
-                .strip_prefix(&ctx.working_dir)
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| path.display().to_string());
+            let relative = path_for_model(&path, &ctx.working_dir);
             let chip_text = format!("{} created: {name}", format.tag());
 
             ctx.update_chip(
@@ -1035,6 +1080,48 @@ mod tests {
     use std::future::Future;
     use std::sync::Arc;
     use tacet_kernel::{DataStore as CoreDataStore, SilentReporter};
+
+    /// THE SEPARATOR IS THE PRODUCT DECISION, not the operating system's.
+    ///
+    /// This asserts the property directly rather than through a tool run,
+    /// because the tool run can only observe it on the platform it happens to
+    /// be running on — and the platform where it was wrong is the one nobody
+    /// develops on. `join("/")` over the components is what makes the answer
+    /// the same everywhere; a `to_string_lossy()` on the whole relative path
+    /// would read identically here and produce `notes\note.md` on Windows.
+    #[test]
+    fn the_path_given_to_the_model_uses_forward_slashes() {
+        let root = std::env::temp_dir().join(format!(
+            "tacet-path-for-model-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let nested = root.join("notes").join("deep");
+        fs::create_dir_all(&nested).expect("the fixture directories are created");
+        let file = nested.join("note.md");
+        fs::write(&file, "hello").expect("the fixture file is written");
+
+        let shown = path_for_model(&file, &root);
+        assert_eq!(shown, "notes/deep/note.md", "{shown}");
+        assert!(
+            !shown.contains('\\'),
+            "a backslash reaching the model has to be escaped again inside a \
+             JSON argument: {shown}"
+        );
+
+        // OUTSIDE the working directory there is no relative name, and the
+        // absolute path is the only thing that round-trips.
+        let elsewhere = root.join("other");
+        fs::create_dir_all(&elsewhere).expect("the sibling directory is created");
+        let outside = path_for_model(&file, &elsewhere);
+        assert!(outside.contains("note.md"), "{outside}");
+        assert_ne!(outside, "notes/deep/note.md");
+
+        fs::remove_dir_all(&root).ok();
+    }
 
     /// There is no tokio in core; this crate must not pick an executor either.
     /// a minimal ~15 line poll loop that only ever returns `Ready` is enough (core made the same call 3 times).
@@ -1375,6 +1462,13 @@ mod tests {
         );
         // The path handed to the model must be the one `read_document` will
         // find — the divergence that made the model invent a table.
+        //
+        // FORWARD SLASHES ON EVERY PLATFORM, and this assertion is the reason
+        // the spelling is not left to the operating system: on Windows the old
+        // code produced `\\?\C:\Users\...\notes\note.md` — an absolute
+        // path with a verbatim prefix, in a string that then comes back through
+        // a JSON argument where the backslash is an escape. See
+        // `path_for_model`.
         assert!(
             outcome.to_model.contains("notes/note.md"),
             "{}",
