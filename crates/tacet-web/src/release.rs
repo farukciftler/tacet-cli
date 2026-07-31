@@ -31,6 +31,27 @@ pub struct ReleaseAsset {
     pub name: String,
     pub url: String,
     pub bytes: u64,
+    /// The SHA-256 the API publishes for this asset, lowercase hex, WITHOUT the
+    /// `sha256:` prefix the field carries.
+    ///
+    /// IT WAS THERE ALL ALONG. `tacet update` printed "no published digest for
+    /// this binary — its digest will be COMPUTED and SHOWN, NOT COMPARED … this
+    /// download rests on TLS alone" while the response being parsed three lines
+    /// above carried `"digest": "sha256:859338bf…"` for the very file being
+    /// downloaded — the same value the updater then computed and printed as
+    /// unverifiable. The gap was a field nobody read, not a missing publication.
+    ///
+    /// WHAT IT IS AND IS NOT WORTH: the digest arrives over the same TLS
+    /// connection as the download URL, so it proves the bytes are the bytes
+    /// GitHub has — it catches a truncated download, a corrupted mirror and a
+    /// swapped CDN object. It does NOT defend against a compromised publisher
+    /// account, and nothing that travels with the artefact ever could. The
+    /// `packages.json` path makes exactly the same trade.
+    ///
+    /// `None` when the field is absent — an older release, or another forge.
+    /// The trust-on-first-use path stays for that case, which is why it is not
+    /// being deleted here.
+    pub digest: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,6 +153,19 @@ pub fn parse(body: &str) -> WebResult<Release> {
                         name: a.get("name")?.as_str()?.to_string(),
                         url: a.get("browser_download_url")?.as_str()?.to_string(),
                         bytes: a.get("size").and_then(|s| s.as_u64()).unwrap_or(0),
+                        digest: a
+                            .get("digest")
+                            .and_then(|d| d.as_str())
+                            // ONLY SHA-256 IS ACCEPTED. The field is prefixed
+                            // with its algorithm, and a future `sha512:` must
+                            // read as "no digest I can check" rather than be
+                            // handed to a SHA-256 comparison that would then
+                            // fail on every download.
+                            .and_then(|d| d.strip_prefix("sha256:"))
+                            .map(|d| d.trim().to_ascii_lowercase())
+                            .filter(|d| {
+                                d.len() == 64 && d.chars().all(|c| c.is_ascii_hexdigit())
+                            }),
                     })
                 })
                 .collect()
@@ -195,6 +229,38 @@ mod tests {
         assert_eq!(release.tag, "v0.2.0");
         assert_eq!(release.assets.len(), 2);
         assert_eq!(release.assets[0].bytes, 4096);
+    }
+
+    /// THE FIELD THE UPDATER USED TO IGNORE. The payload is shaped like the real
+    /// one, which does publish `digest` for every asset — the missing digest was
+    /// a parser gap, not a publishing gap.
+    #[test]
+    fn the_published_digest_is_read_without_its_algorithm_prefix() {
+        let payload = r#"{
+            "tag_name": "v0.1.22", "html_url": "",
+            "assets": [
+                {"name": "tacet-aarch64-apple-darwin", "browser_download_url": "https://e.invalid/b",
+                 "size": 15400000,
+                 "digest": "sha256:859338BFEDB6B9556073741797D11F446FCBCD7F1E45C87AF0E13D336E66B1D3"},
+                {"name": "old-release-asset", "browser_download_url": "https://e.invalid/o", "size": 1},
+                {"name": "future-algorithm", "browser_download_url": "https://e.invalid/f", "size": 1,
+                 "digest": "sha512:abc"},
+                {"name": "not-hex", "browser_download_url": "https://e.invalid/n", "size": 1,
+                 "digest": "sha256:zzzz"}
+            ]
+        }"#;
+        let release = parse(payload).expect("payload parses");
+        // Lowercased, prefix stripped.
+        assert_eq!(
+            release.assets[0].digest.as_deref(),
+            Some("859338bfedb6b9556073741797d11f446fcbcd7f1e45c87af0e13d336e66b1d3")
+        );
+        // An asset with no digest keeps the trust-on-first-use path.
+        assert_eq!(release.assets[1].digest, None);
+        // A digest this build cannot check reads as ABSENT, never as a
+        // SHA-256 that will fail every comparison.
+        assert_eq!(release.assets[2].digest, None);
+        assert_eq!(release.assets[3].digest, None);
     }
 
     #[test]

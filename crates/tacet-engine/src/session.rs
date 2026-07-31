@@ -141,6 +141,25 @@ language, short and direct. If it does not answer, call the right tool from the 
 the same tool with the same arguments a second time. Do not repeat the tool call or its JSON as \
 the answer; do not make up the result.";
 
+/// What the LAST pass of a turn is told, in place of the call instructions.
+///
+/// WHY IT IS NOT A REMINDER BUT A STATEMENT OF FACT: taking the `<tools>` block
+/// and the grammar away on the final pass was not enough — measured 30 Jul 2026,
+/// qwen3-4b still produced `calculate(...)` a fourth time, copying the shape out
+/// of its own history, and the turn ended with nothing said. The model had no
+/// way to know that a call written there reaches nobody, because nothing had
+/// told it. So this does not ask nicely; it names the consequence.
+///
+/// AND IT IS NOT THE SAME KIND OF SENTENCE AS THE ONE THAT FAILED. The
+/// `duplicate_call` nudge competed against a tool list that was still in front of
+/// the model, and it lost. Here there IS no list and no grammar to reach it
+/// with: the sentence is not fighting an option, it is describing the only one
+/// left.
+pub const FINAL_PASS_INSTRUCTION: &str = "This is the LAST step of this turn and there are no \
+tools any more. A tool call written now runs nothing and reaches nobody. Answer the user in the \
+user's language, using what the <tool_response> blocks above already give you. If they do not \
+answer the question, say plainly what is missing — do not write a call, and do not invent a result.";
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -221,13 +221,26 @@ pub fn install(color: &Color, no_approval: bool) -> Result<Outcome, String> {
         url: asset.url.clone(),
         target: staged.clone(),
         expected_bytes: Some(asset.bytes),
-        // GitHub publishes no per-asset digest in this payload. The release
-        // carries a SHA256SUMS file, but verifying the download against a file
-        // fetched from the SAME host over the SAME connection proves only that
-        // both arrived intact — it is not an independent check, and printing
-        // "verified" for it would overstate what happened. The digest is
-        // computed and SHOWN instead.
-        expected_sha256: None,
+        // THE DIGEST THE RELEASE API PUBLISHES — see `ReleaseAsset::digest`.
+        //
+        // This line used to say `None`, and the comment above it said GitHub
+        // published no per-asset digest. That was wrong: the payload already
+        // parsed for the URL and the size carries `"digest": "sha256:…"` for
+        // every asset, and a user's transcript showed the updater printing the
+        // very same hex string as "computed, NOT verified".
+        //
+        // WHY IT IS WORTH COMPARING, given that the earlier reasoning about
+        // SHA256SUMS still holds: the digest comes from `api.github.com` and the
+        // bytes come from the redirect target that serves the asset. Two
+        // endpoints, two connections. That is not an attestation against a
+        // compromised publisher — nothing shipped alongside an artefact ever is
+        // — but it does catch a truncated transfer, a corrupted mirror and a
+        // swapped object at the download host, none of which the size check
+        // catches on its own.
+        //
+        // WHEN IT IS `None` (an older release, another forge) the
+        // trust-on-first-use path below runs exactly as it did.
+        expected_sha256: asset.digest.clone(),
     };
 
     // A LEFTOVER `.new` FROM AN EARLIER RUN MUST NOT BE INSTALLED. The
@@ -281,20 +294,30 @@ pub fn install(color: &Color, no_approval: bool) -> Result<Outcome, String> {
         current_version(),
         release.tag.trim_start_matches('v')
     );
-    // THE DIGEST IS NOT A RECEIPT. On its own this line is indistinguishable
-    // from the output of a verified download, and a user who reads it as one
-    // stops looking for the verification that never happened. There is nothing
-    // to compare against: GitHub publishes no per-asset digest here, and every
-    // release has a different digest anyway, so no stored value could ever
-    // match. The warning travels WITH the number, because the approval screen
-    // that also says this has long scrolled off.
+    // THE NUMBER TRAVELS WITH WHAT IT IS WORTH. On its own a hex string is
+    // indistinguishable from the output of a verified download, and a user who
+    // reads it as one stops looking for a verification that may not have
+    // happened — which is why the qualifier is printed here and not only on the
+    // approval screen, which has long scrolled off.
+    //
+    // Both sentences are deliberately narrow. The verified one claims a MATCH
+    // against what the release published and nothing more; it does not say the
+    // publisher is honest. The unverified one stays for releases that carry no
+    // digest at all.
     eprintln!(
         "  sha256: {}  {}",
         outcome.sha256,
-        color.paint(
-            crate::ui::YELLOW,
-            "(computed, NOT verified — no published digest to compare against)"
-        )
+        if outcome.digest_verified {
+            color.paint(
+                crate::ui::DIM,
+                "(matches the digest published with the release)",
+            )
+        } else {
+            color.paint(
+                crate::ui::YELLOW,
+                "(computed, NOT verified — no published digest to compare against)",
+            )
+        }
     );
     eprintln!("  path:   {}", current.display());
     Ok(Outcome::Updated)

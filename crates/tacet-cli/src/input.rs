@@ -200,6 +200,38 @@ fn list_needed(buffer: &str) -> bool {
     buffer.starts_with('/') && !buffer.contains(char::is_whitespace)
 }
 
+/// Is this line a slash command, or a message that happens to start with `/`?
+///
+/// THE FAILURE THAT FORCED IT, from a real session:
+///
+/// ```text
+/// › /Users/farukciftler/Desktop bu klasöre bir md dosyası oluştur
+/// (unknown command; /help)
+/// ```
+///
+/// The shell asked only `starts_with('/')`, so an absolute path — the most
+/// natural way there is to name a directory — was eaten by the command parser
+/// and never reached the model. The user's way around it was to retype the line
+/// with a `›` glued to the front, which is not a workaround anybody should have
+/// to find.
+///
+/// THE RULE IS ABOUT THE FIRST TOKEN, NOT ABOUT SPACES. `list_needed` above can
+/// demand "no whitespace" because it only decides whether to open a MENU while
+/// typing; this decides whether to dispatch, and commands take arguments
+/// (`/addon install http`), so a whitespace rule would break them.
+///
+/// WHAT SEPARATES THE TWO: a command NAME never carries a second `/`, and an
+/// absolute path always does. `/plut` therefore stays a (mistyped) command and
+/// still earns "unknown command" — the user was reaching for one — while
+/// `/Users/...`, `/tmp/notes.md` and `/etc/hosts` are messages.
+pub fn is_command(line: &str) -> bool {
+    let Some(rest) = line.trim_start().strip_prefix('/') else {
+        return false;
+    };
+    let first = rest.split_whitespace().next().unwrap_or("");
+    !first.contains('/')
+}
+
 /// The guard that closes raw mode on every exit. Even on an early return via
 /// `?` or a panic, the terminal is not left in raw mode for the user — in that
 /// state the shell is broken in practice.
@@ -1207,6 +1239,33 @@ mod tests {
         assert_eq!(g, vec!["/grammar"]);
         assert_eq!(matches("/").len(), COMMANDS.len());
         assert!(matches("/zzz").is_empty());
+    }
+
+    /// A MESSAGE STARTING WITH A PATH IS A MESSAGE.
+    ///
+    /// The regression this pins: `/Users/…/Desktop bu klasöre bir md dosyası
+    /// oluştur` was dispatched as a command and answered "(unknown command)".
+    #[test]
+    fn an_absolute_path_is_not_a_slash_command() {
+        for line in [
+            "/Users/farukciftler/Desktop bu klasöre bir md dosyası oluştur",
+            "/tmp/notes.md dosyasını özetle",
+            "/etc/hosts",
+            "  /var/log/system.log nedir",
+        ] {
+            assert!(!is_command(line), "should be a message: {line}");
+        }
+    }
+
+    /// …and a command is still a command, arguments and typos included.
+    #[test]
+    fn a_command_is_still_a_command_with_arguments() {
+        for line in ["/help", "/addon install http", "/plugins", "/plut", " /clear"] {
+            assert!(is_command(line), "should be a command: {line}");
+        }
+        // No leading slash at all: plainly a message.
+        assert!(!is_command("merhaba"));
+        assert!(!is_command(""));
     }
 
     /// Every command must have a description — an explicit condition of the

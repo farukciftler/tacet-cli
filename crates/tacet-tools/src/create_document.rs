@@ -285,6 +285,21 @@ impl TextEngine {
     }
 }
 
+/// Does the body already open with this title as its own first line?
+///
+/// The leading `#`s are stripped, so it catches both the markdown heading the
+/// model usually writes and a bare repeat of the words. The comparison is exact
+/// apart from ASCII case: folding beyond that would need Unicode casing rules,
+/// and the case worth catching is the one where the two strings are literally
+/// the same string.
+fn opens_with(body: &str, title: &str) -> bool {
+    let Some(first) = body.lines().find(|l| !l.trim().is_empty()) else {
+        return false;
+    };
+    let head = first.trim().trim_start_matches('#').trim();
+    !head.is_empty() && head.eq_ignore_ascii_case(title)
+}
+
 impl DocumentEngine for TextEngine {
     fn format(&self) -> DocumentFormat {
         self.format
@@ -297,16 +312,9 @@ impl DocumentEngine for TextEngine {
         body: Option<&str>,
         table: Option<&Table>,
     ) -> ToolResult<()> {
-        let mut content = String::new();
-        if let Some(b) = title.map(str::trim).filter(|b| !b.is_empty()) {
-            // Mark the title in markdown; it does no harm in plain text either,
-            // but it is noise, so we only print '#' in md.
-            if self.format == DocumentFormat::Markdown {
-                content.push_str("# ");
-            }
-            content.push_str(b);
-            content.push_str("\n\n");
-        }
+        // THE BODY IS BUILT FIRST, because whether the title gets written at all
+        // depends on it.
+        //
         // With no body the table is converted to markdown: changing the format
         // beats losing the data. If neither exists WE DO NOT WRITE AN EMPTY FILE —
         // an empty file reported as "created" is the costliest outcome for the user.
@@ -320,6 +328,35 @@ impl DocumentEngine for TextEngine {
                 ));
             }
         };
+
+        // THE TITLE IS NOT WRITTEN TWICE.
+        //
+        // The model fills `title` AND opens `content` with the same heading —
+        // which is the natural thing for it to do, since both fields describe the
+        // document. The file then began:
+        //
+        //     # Rastgele İçerik
+        //
+        //     # Rastgele İçerik
+        //
+        // Suppressing the field rather than rewriting the body is deliberate: the
+        // body is the user's text and this tool does not edit it. Dropping our own
+        // added line is the change that removes the duplicate without touching
+        // anything the model wrote.
+        let mut content = String::new();
+        if let Some(b) = title
+            .map(str::trim)
+            .filter(|b| !b.is_empty())
+            .filter(|b| !opens_with(&text, b))
+        {
+            // Mark the title in markdown; it does no harm in plain text either,
+            // but it is noise, so we only print '#' in md.
+            if self.format == DocumentFormat::Markdown {
+                content.push_str("# ");
+            }
+            content.push_str(b);
+            content.push_str("\n\n");
+        }
         content.push_str(&text);
         if !content.ends_with('\n') {
             content.push('\n');
@@ -768,6 +805,20 @@ impl Tool for CreateDocumentTool {
             )
             .required(),
             Field::new("title", ArgSchema::text().description("Document title (optional).")),
+            // THE FIELD THAT DID NOT EXIST, and its absence was silent. The
+            // transcript: the user opened `~/Desktop` with the workspace addon,
+            // said "create a md file in this folder /Users/…/Desktop", and the
+            // file was written to the working directory — while the model
+            // reported success. There was no way to express the destination, so
+            // the destination in the request was simply dropped.
+            Field::new(
+                "folder",
+                ArgSchema::text().description(
+                    "Destination directory (optional). Leave it out and the file goes to the \
+                     working directory. Give it only when the user named a directory; write \
+                     the path exactly as they wrote it, e.g. '/Users/me/Desktop'.",
+                ),
+            ),
             Field::new(
                 "content",
                 ArgSchema::text().description(
@@ -860,9 +911,24 @@ impl Tool for CreateDocumentTool {
                 body = None;
             }
 
-            // The sandbox gate: the output folder is now the working directory
-            // ITSELF (see `output_folder` — files go to the root, not a subfolder).
-            let folder = match output_folder(ctx) {
+            // The sandbox gate. With no `folder` the output goes to the working
+            // directory ITSELF (see `output_folder` — files go to the root, not a
+            // subfolder); that is the unchanged path and the common one.
+            //
+            // WITH a `folder` THE GATE IS THE SAME ONE THE READ PATH USES.
+            // `resolve_existing_dir` resolves every component, retests the
+            // link-free result against the workspace roots and refuses a
+            // destination outside them. So a directory the user opened works, and
+            // one they did not is a `SandboxViolation` — not a quiet write
+            // somewhere else, which is exactly the failure this field exists to
+            // end. A directory that does not exist is `FileNotFound`: the tool
+            // DOES NOT CREATE the destination, because "make me a file in
+            // /Uzers/me/Desktop" must read as a typo, not as a new tree.
+            let folder = match text_field("folder") {
+                Some(named) => crate::sandbox_path::resolve_existing_dir(ctx, &named),
+                None => output_folder(ctx),
+            };
+            let folder = match folder {
                 Ok(k) => k,
                 Err(e) => {
                     ctx.update_chip(chip, TraceUpdate::state(ToolState::Failed(e.short_error())));
@@ -901,10 +967,19 @@ impl Tool for CreateDocumentTool {
             // name still went to the model; the name and the real path diverged,
             // read_document returned "File not found" and the model MADE THE TABLE
             // UP FROM ITS OWN MEMORY. Writing to the root removes that divergence.)
+            // OUTSIDE THE WORKING DIRECTORY THE ABSOLUTE PATH IS THE ONE THAT
+            // ROUND-TRIPS. This fallback used to hand back the bare name, which
+            // was harmless only because `folder` did not exist and the branch was
+            // unreachable. Now it is reachable, and a bare name would recreate the
+            // very divergence the paragraph above describes: the model would call
+            // `read_document("note.md")`, the working directory would not hold it,
+            // and the table would get made up. `resolve_existing_file` accepts an
+            // absolute path inside a registered root, so the absolute form is what
+            // comes back.
             let relative = path
                 .strip_prefix(&ctx.working_dir)
                 .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| name.clone());
+                .unwrap_or_else(|_| path.display().to_string());
             let chip_text = format!("{} created: {name}", format.tag());
 
             ctx.update_chip(
@@ -1216,6 +1291,141 @@ mod tests {
         assert!(outcome.to_model.contains("unknown_data_ref"));
         // The file would now be written to the root (not a subfolder); it must still NEVER be written.
         assert!(!root.join("report.xlsx").exists());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// THE TITLE IS NOT PRINTED TWICE. From a real file: the model passed
+    /// `title` and opened `content` with the same heading, and both were written.
+    #[test]
+    fn a_title_the_body_already_carries_is_not_repeated() {
+        let root = temp_dir("title-dup");
+        let store = Arc::new(SharedStore::new());
+        let mut ctx = context(&root, store);
+
+        let tool = CreateDocumentTool::new();
+        let outcome = hold(tool.run(
+            serde_json::json!({
+                "format": "markdown",
+                "file_name": "rastgele_dosya",
+                "title": "Rastgele İçerik",
+                "content": "# Rastgele İçerik\n\nBu bir rastgele oluşturulan dosyadır.\n"
+            }),
+            &mut ctx,
+        ));
+        assert_eq!(outcome.state, ToolState::Written);
+        let written = fs::read_to_string(root.join("rastgele_dosya.md")).unwrap();
+        assert_eq!(
+            written.matches("Rastgele İçerik").count(),
+            1,
+            "the heading was written twice:\n{written}"
+        );
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// …and a title the body does NOT carry is still written. The fix must not
+    /// have quietly dropped the field.
+    #[test]
+    fn a_title_the_body_does_not_carry_is_still_written() {
+        let root = temp_dir("title-kept");
+        let store = Arc::new(SharedStore::new());
+        let mut ctx = context(&root, store);
+
+        let tool = CreateDocumentTool::new();
+        let outcome = hold(tool.run(
+            serde_json::json!({
+                "format": "markdown",
+                "file_name": "note",
+                "title": "Meeting Notes",
+                "content": "We agreed on the plan.\n"
+            }),
+            &mut ctx,
+        ));
+        assert_eq!(outcome.state, ToolState::Written);
+        let written = fs::read_to_string(root.join("note.md")).unwrap();
+        assert!(written.starts_with("# Meeting Notes"), "{written}");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// A NAMED DESTINATION IS HONOURED. Without the `folder` field the file
+    /// went to the working directory while the model reported success — the
+    /// user asked for `~/Desktop` and found the file in their home directory.
+    #[test]
+    fn a_named_folder_is_where_the_file_lands() {
+        let root = temp_dir("folder-named");
+        let sub = root.join("notes");
+        fs::create_dir_all(&sub).unwrap();
+        let store = Arc::new(SharedStore::new());
+        let mut ctx = context(&root, store);
+
+        let tool = CreateDocumentTool::new();
+        let outcome = hold(tool.run(
+            serde_json::json!({
+                "format": "markdown",
+                "file_name": "note",
+                "content": "Hello",
+                "folder": "notes"
+            }),
+            &mut ctx,
+        ));
+        assert_eq!(outcome.state, ToolState::Written);
+        assert!(sub.join("note.md").exists(), "not in the named folder");
+        assert!(
+            !root.join("note.md").exists(),
+            "it also landed in the working directory"
+        );
+        // The path handed to the model must be the one `read_document` will
+        // find — the divergence that made the model invent a table.
+        assert!(
+            outcome.to_model.contains("notes/note.md"),
+            "{}",
+            outcome.to_model
+        );
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// A DESTINATION THAT DOES NOT EXIST IS A TYPO, NOT A NEW TREE — and no
+    /// file is written anywhere, least of all in the working directory.
+    #[test]
+    fn a_missing_folder_writes_no_file() {
+        let root = temp_dir("folder-missing");
+        let store = Arc::new(SharedStore::new());
+        let mut ctx = context(&root, store);
+
+        let tool = CreateDocumentTool::new();
+        let outcome = hold(tool.run(
+            serde_json::json!({
+                "format": "markdown",
+                "file_name": "note",
+                "content": "Hello",
+                "folder": "nowhere"
+            }),
+            &mut ctx,
+        ));
+        assert!(matches!(outcome.state, ToolState::Failed(_)));
+        assert!(!root.join("note.md").exists());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// THE SANDBOX STILL DECIDES. A destination the user never opened is
+    /// refused; the field opens a way to NAME a directory, not a way out.
+    #[test]
+    fn a_folder_outside_the_sandbox_is_refused() {
+        let root = temp_dir("folder-escape");
+        let store = Arc::new(SharedStore::new());
+        let mut ctx = context(&root, store);
+
+        let tool = CreateDocumentTool::new();
+        let outcome = hold(tool.run(
+            serde_json::json!({
+                "format": "markdown",
+                "file_name": "note",
+                "content": "Hello",
+                "folder": "/tmp"
+            }),
+            &mut ctx,
+        ));
+        assert!(matches!(outcome.state, ToolState::Failed(_)));
+        assert!(!std::path::Path::new("/tmp/note.md").exists());
         fs::remove_dir_all(&root).ok();
     }
 

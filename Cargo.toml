@@ -65,7 +65,14 @@ tacet-grammar = { path = "crates/tacet-grammar", version = "0.1.2" }
 # from a tool result. `Plain` kept it, which made it worse than a plain bug:
 # eval runs on FakeEngine, FakeEngine is `Plain`, so the one template no model
 # ever sees was the one template the measurement covered.
-tacet-engine = { path = "crates/tacet-engine", version = "0.1.7" }
+# 0.1.8 IS THE FLOOR FOR THE TURN LOOP: below it there is no
+# `FINAL_PASS_INSTRUCTION`, so the last pass of a turn is offered tools it
+# cannot usefully call and a model that keeps calling ends the turn with
+# nothing said. It also carries the quant label fix — below it
+# `dominant_quant` counts TENSORS, and Gemma3's six F32 norms per layer
+# outvote its quantized body, so a q4 file is reported as `F32` and a
+# comparison matrix reads as if the model had been run unquantized.
+tacet-engine = { path = "crates/tacet-engine", version = "0.1.8" }
 # 0.1.3 brought the addon gates and the five tools behind them; below it,
 # `catalog.rs` has no gate to ask and `shell`/`http`/`db` do not exist at all.
 # 0.1.4 IS THE FLOOR: below it `shell` is offered on Windows, where the timeout
@@ -94,7 +101,12 @@ tacet-engine = { path = "crates/tacet-engine", version = "0.1.7" }
 # are the largest block in the prompt and until now had none — the worst
 # nine-tool selection measures 2542 tokens, 62% of the 4096-token floor window,
 # re-sent on every pass of the tool loop.
-tacet-tools = { path = "crates/tacet-tools", version = "0.1.10" }
+# 0.1.11 IS THE FLOOR: below it `create_document` has no way to NAME its
+# destination, so a file asked for in one directory is written to another and
+# reported as created; a `remember` save without keywords is refused by the
+# store although the schema marks them optional; and a title the body already
+# carries is written twice.
+tacet-tools = { path = "crates/tacet-tools", version = "0.1.11" }
 tacet-skills = { path = "crates/tacet-skills", version = "0.1.0" }
 tacet-memory = { path = "crates/tacet-memory", version = "0.1.0" }
 # THE NETWORK MONOPOLY: a network call exists ONLY in these two crates. No
@@ -104,9 +116,20 @@ tacet-memory = { path = "crates/tacet-memory", version = "0.1.0" }
 # which does not have it. 0.1.3 IS THE FLOOR NOW: below it the `http` addon's
 # host allow-list cannot read its own stored form, so a multi-host install
 # refuses every call it was configured to permit.
-tacet-web = { path = "crates/tacet-web", version = "0.1.4" }
+# 0.1.5 IS THE FLOOR FOR `tacet update`: below it the release asset's
+# published SHA-256 is never read, so every update is trust-on-first-use over
+# TLS alone — while the API response already carried the digest. It also
+# refuses a dotless host in the addon allow-list, where `merhaba` used to be
+# accepted as a hostname.
+tacet-web = { path = "crates/tacet-web", version = "0.1.5" }
 # 0.2.0 SPEAKS THE 2026-07-28 REVISION: stateless requests, the `_meta`
 # envelope, MRTR, poll-based tasks, issuer-bound OAuth. The 0.1 line speaks only
 # the frozen revision, and a `^0.1` resolve would silently put a client on it.
 tacet-mcp = { path = "crates/tacet-mcp", version = "0.2.0" }
-tacet-eval = { path = "crates/tacet-eval", version = "0.1.6" }
+# 0.1.7 IS THE FLOOR FOR ANY MEASUREMENT THAT WILL BE COMPARED: below it the
+# logic runner repeats the user's question AFTER the tool result on every
+# pass — the shape the shell removed because it caused the loop — so the set
+# measures a prompt the product does not build. It also adds the claims that
+# found what the old ones could not: `grounded` (no number in the answer that
+# no tool produced), the call budget, and the model/Tacet attribution.
+tacet-eval = { path = "crates/tacet-eval", version = "0.1.7" }
