@@ -252,6 +252,17 @@ Qwen3-4B-Instruct-2507 Q4_K_M on Metal, 184 cases in both languages, 44 min —
 the weights `tacet models download qwen3-4b` fetches, pinned by digest, with the
 fingerprint recorded in the baseline.
 
+**Six minutes on a GPU — and the model matters more than the card.** The same
+184 cases on a rented RTX 3090: 6.2 minutes with these weights, and 53.7 minutes
+with `Qwen/Qwen3-4B`, the *other* model of the same name and size, which spends a
+median of 237 generated tokens per turn against 19. Before reaching for a bigger
+card, check which file is loaded. And when you do reach for one: running several
+copies of the suite side by side wins nothing, because one stream already
+saturates the card (measured — two streams give ~28 tok/s each where one gives
+~55). Batching several sequences into a single forward pass is the thing that
+scales, and `cargo run --release --example batch_decode --features candle,cuda`
+measures where it stops: 124 tok/s at batch 1, 504 at batch 32 on that card.
+
 **Turkish scores higher than English** — 61/69 against 96/115 — which is the
 opposite of what the effort spent on Turkish defects would suggest, and it is only
 visible because the two now run together. The routing eval always measured both;
