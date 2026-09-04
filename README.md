@@ -104,8 +104,11 @@ tacet models list                 # what's on disk, which roots were searched
 tacet models download qwen3-4b    # ~2 GB, https only, sha256 checked before it lands
 ```
 
-Two models are in the built-in catalog — `qwen3-4b` (the default) and
-`qwen2.5-3b` (smaller, for machines with less to spare). Every download is over
+Two models are in the built-in catalog — `qwen3-4b` (the default:
+Qwen3-4B-Instruct-2507, Q4_K_M) and `qwen2.5-3b` (smaller, for machines with
+less to spare). The name is worth reading closely: `Qwen3-4B` and
+`Qwen3-4B-Instruct-2507` are two different models, and the catalog pins the
+second — the one every number on this page was measured on. Every download is over
 HTTPS to an address printed on screen first, and the file is rejected unless its
 sha256 matches the one compiled into the binary. Nothing is fetched until you
 ask; add your own entries in `~/.tacet/packages.json`.
@@ -245,7 +248,9 @@ tacet eval --tool-selection --model qwen3-4b --turkish   # Turkish only
 | step chain | 162/190 · 85.3% |
 | answer quality | 41/47 · 87.2% |
 
-qwen3-4b Q4_K_M on Metal, 184 cases in both languages, 44 min.
+Qwen3-4B-Instruct-2507 Q4_K_M on Metal, 184 cases in both languages, 44 min —
+the weights `tacet models download qwen3-4b` fetches, pinned by digest, with the
+fingerprint recorded in the baseline.
 
 **Turkish scores higher than English** — 61/69 against 96/115 — which is the
 opposite of what the effort spent on Turkish defects would suggest, and it is only
