@@ -443,14 +443,78 @@ fn recover_marked_call(raw: &str, catalog: &ToolCatalog) -> Option<ToolCall> {
     // `key = value` / `key: value`, the value quoted or bare up to the next
     // delimiter. Only keys the schema already declares are collected, which is
     // what keeps prose after the call from becoming an argument.
+    let args = scan_key_values(rest, fields);
+    if !fields
+        .iter()
+        .filter(|f| f.required)
+        .all(|f| args.contains_key(&f.name))
+    {
+        return None;
+    }
+    Some(ToolCall::new(name, Value::Object(args)))
+}
+
+/// THE TOOL NAME GLUED TO ITS FIRST ARGUMENT — a shape only Turkish produced.
+///
+/// MEASURED over the 184-case suite: three of the eight Turkish failures were
+///
+/// ```text
+/// find_filepattern: "bütçe"
+/// find_filepattern: "markdown", folder: "dizin")
+/// ```
+///
+/// The right tool, the right arguments, and no `(` anywhere — so the grammar
+/// never armed and `recover_marked_call` finds no marker to look behind. English
+/// never produced it in 115 cases; it appeared only once both languages ran,
+/// which is the second thing the combined suite bought.
+///
+/// WHY IT IS SAFE WITHOUT A MARKER, and this is the whole argument: the licence
+/// to look is not a delimiter here but a COINCIDENCE that prose cannot arrange —
+/// a catalog tool's name immediately followed, with nothing between them, by a
+/// field name from THAT SAME tool's schema. `find_file` next to `pattern` is a
+/// call; `find_file` next to anything else is not touched. The remaining
+/// conditions are the ones `recover_nameless_json` already argued for.
+fn recover_glued_call(raw: &str, catalog: &ToolCatalog) -> Option<ToolCall> {
+    for tool in catalog.tools() {
+        let name = tool.name();
+        let schema = tool.schema();
+        let fields = schema.fields();
+        let Some(at) = raw.find(name) else { continue };
+        let tail = &raw[at + name.len()..];
+
+        // The next characters must BE a field name of this tool, with no
+        // separator at all. A space, a paren or a quote means this is either a
+        // normal call, prose, or someone else's business.
+        if !fields.iter().any(|f| tail.starts_with(&f.name)) {
+            continue;
+        }
+        let args = scan_key_values(tail, fields);
+        if fields
+            .iter()
+            .filter(|f| f.required)
+            .all(|f| args.contains_key(&f.name))
+            && !args.is_empty()
+        {
+            return Some(ToolCall::new(name, Value::Object(args)));
+        }
+    }
+    None
+}
+
+/// `key = value` / `key: value`, quoted or bare, for keys the schema declares.
+///
+/// SHARED BY BOTH RECOVERIES ON PURPOSE. Written twice they would drift, and the
+/// drift would be silent: one shape would start accepting an argument the other
+/// rejects, and nothing would fail until a model happened to write it.
+fn scan_key_values(text: &str, fields: &[tacet_kernel::Field]) -> serde_json::Map<String, Value> {
     let mut args = serde_json::Map::new();
     for field in fields.iter() {
         for sep in ['=', ':'] {
             let needle = format!("{}{}", field.name, sep);
-            let Some(at) = rest.find(&needle) else {
+            let Some(at) = text.find(&needle) else {
                 continue;
             };
-            let tail = rest[at + needle.len()..].trim_start();
+            let tail = text[at + needle.len()..].trim_start();
             let value = if let Some(body) = tail.strip_prefix('"') {
                 body.split('"').next().unwrap_or("")
             } else {
@@ -465,16 +529,7 @@ fn recover_marked_call(raw: &str, catalog: &ToolCatalog) -> Option<ToolCall> {
             }
         }
     }
-
-    // Every required field present, or this is not that call.
-    if !fields
-        .iter()
-        .filter(|f| f.required)
-        .all(|f| args.contains_key(&f.name))
-    {
-        return None;
-    }
-    Some(ToolCall::new(name, Value::Object(args)))
+    args
 }
 
 fn strip_code_fence(raw: &str) -> &str {
@@ -757,7 +812,8 @@ impl ToolExecutor {
     ) -> Option<ExecutionOutcome> {
         let call = ToolCall::parse(raw)
             .or_else(|| recover_nameless_json(raw, &self.catalog))
-            .or_else(|| recover_marked_call(raw, &self.catalog))?;
+            .or_else(|| recover_marked_call(raw, &self.catalog))
+            .or_else(|| recover_glued_call(raw, &self.catalog))?;
         Some(self.execute(&call, ticket, ctx).await)
     }
 
@@ -1957,5 +2013,42 @@ mod tests {
             recover_marked_call("<tool_call>\nread_document\n</tool_call>", &catalog).is_none(),
             "a call with no path is not a read_document call"
         );
+    }
+
+    /// THE SHAPE ONLY TURKISH PRODUCED, and the prose that must survive it.
+    ///
+    /// Fixtures copied verbatim from the 184-case run. English never wrote this
+    /// in 115 cases; it appeared only once both languages ran together.
+    #[test]
+    fn a_tool_name_glued_to_its_argument_is_recovered() {
+        let store = std::sync::Arc::new(crate::data_store::SharedStore::new());
+        let memory = crate::memory::SharedMemory::in_memory();
+        let (catalog, _, _) =
+            crate::catalog::production_catalog_with(&store, &memory, Some(0), true);
+
+        let call = recover_glued_call("find_filepattern: \"bütçe\"", &catalog)
+            .expect("the tool name glued to its own field is a call");
+        assert_eq!(call.name, "find_file");
+        assert_eq!(
+            call.args.get("pattern").and_then(|v| v.as_str()),
+            Some("bütçe"),
+            "{:?}",
+            call.args
+        );
+
+        // NOT A CALL. The first is the same tool name in an ordinary sentence —
+        // the coincidence this recovery rests on is the field name touching the
+        // tool name, and a space breaks it. The rest are prose from the same run.
+        for raw in [
+            "I will use find_file to look for the budget report.",
+            "find_file pattern: \"budget\"",
+            "Bütçe raporu hangi klasörde?",
+            "This is a newly added section to the notes.md file.",
+        ] {
+            assert!(
+                recover_glued_call(raw, &catalog).is_none(),
+                "recovered from prose: {raw:?}"
+            );
+        }
     }
 }
