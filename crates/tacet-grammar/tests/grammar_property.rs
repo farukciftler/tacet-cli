@@ -1773,3 +1773,76 @@ fn the_free_text_fast_path_agrees_with_the_automaton_token_by_token() {
          distinguish the fast path from one that opened `plain` and stopped"
     );
 }
+
+/// THE GRAMMAR MUST NOT OFFER AN INFINITE WAY TO SAY NOTHING.
+///
+/// MEASURED, on qwen3-4b, case `calendar-remind`. The model produced a complete
+/// and correct call and then did not stop:
+///
+///   (calendar({"title":"call the dentist","when":"tomorrow 9"          …
+///
+/// followed by whitespace to the generation cap of 14 041 tokens — 12.9 minutes
+/// at the 18.2 tok/s measured on that machine, for a call that was finished
+/// after twenty tokens. Whitespace was legal at a structural position, consumed
+/// without advancing anything, and therefore legal again immediately: a cycle
+/// with no exit pressure, which a small model walked into and could not leave.
+///
+/// THE CLAIM THIS PINS IS NOT "INVALID IS IMPOSSIBLE" — that one was never
+/// violated here, every prefix above is valid JSON so far. It is the second,
+/// weaker claim nobody had written down: a valid prefix must not be able to
+/// wander forever. Unrepresentable-invalid and always-terminating are different
+/// properties.
+#[test]
+fn whitespace_cannot_run_forever_at_a_structural_position() {
+    let schema = ArgSchema::object(vec![
+        Field::new("title", ArgSchema::text()).required(),
+        Field::new("when", ArgSchema::text()).required(),
+    ]);
+    let grammar = Grammar::compile(&schema);
+
+    // The exact position the model reached: both values written, the object not
+    // yet closed.
+    let mut state = grammar.state();
+    state
+        .advance(r#"{"title":"call the dentist","when":"tomorrow 9""#)
+        .expect("the prefix the model actually produced must be legal");
+
+    // Feed spaces until the automaton refuses. It MUST refuse, and it must do so
+    // long before anything a user would wait through.
+    let mut run = 0usize;
+    while state.advance(" ").is_ok() {
+        run += 1;
+        assert!(
+            run < 1000,
+            "the automaton accepted {run} consecutive spaces — this is the \
+             non-termination that cost 12.9 minutes per case"
+        );
+    }
+    assert!(
+        run <= 16,
+        "the whitespace run is bounded at 16; {run} were accepted"
+    );
+
+    // AND THE MASK MUST AGREE. If it kept offering a space the automaton now
+    // refuses, the model would be handed a token that cannot be consumed —
+    // generation would lock up instead of running away, which is not an
+    // improvement.
+    let vocab: Vec<String> = [" ", "  ", "\t", "\n", "}", "\"", ",", "})"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let mask = TokenMask::new(&vocab);
+    let produced = mask.mask(&state);
+    for (id, text) in vocab.iter().enumerate() {
+        let accepted = state.clone().advance(text).is_ok();
+        assert_eq!(
+            produced[id], accepted,
+            "token {id} {text:?} disagrees: mask {}, automaton {}",
+            produced[id], accepted
+        );
+    }
+    assert!(
+        produced[vocab.iter().position(|t| t == "}").unwrap()],
+        "the way OUT must stay open — bounding whitespace must not strand the call"
+    );
+}

@@ -1595,6 +1595,46 @@ pub fn run_selection_with_options(
     )
 }
 
+/// THE LIVE TRACE — what the suite is doing RIGHT NOW, not what it did.
+///
+/// WHY IT GOES DOWN TO THE TURN. A per-case line answers "how far along", which
+/// is a different question from "what is it doing". The run that forced this
+/// distinction sat at 2 h 02 m against a measured 14 s/case — a 4.5x anomaly —
+/// and a per-case line would have shown the case name and then nothing for
+/// however long that case took. What was needed was the ability to see a case
+/// ENTER a turn and not leave it. So the trace fires before the work, not after:
+/// `generating` is printed BEFORE `engine.generate`, so a hang is visible as a
+/// line with no successor rather than as silence.
+///
+/// STDERR, for the same reason as `report_progress`: the report goes to stdout
+/// and gets redirected to a file by anyone comparing two runs.
+///
+/// INDENTED UNDER ITS CASE so the eye can skip it. The per-case summary lines
+/// sit at the left margin; everything a case does while it is running is
+/// indented four spaces, which makes `grep '^  \['` a clean list of results and
+/// leaves the detail for whoever is actually watching.
+fn trace(detail: &str) {
+    eprintln!("      {detail}");
+}
+
+/// The message a case sends, cut to one line.
+///
+/// THE CUT IS BY CHARACTER, NOT BYTE: the Turkish selection set is half this
+/// suite and slicing a `&str` mid-`ç` panics. It also collapses newlines — a
+/// multi-line message would otherwise break the one-line-per-event shape the
+/// trace depends on for being skimmable.
+fn truncate_for_trace(message: &str) -> String {
+    let flat: String = message
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let mut out: String = flat.chars().take(56).collect();
+    if flat.chars().count() > 56 {
+        out.push('…');
+    }
+    out
+}
+
 /// ONE LINE PER FINISHED CASE, on stderr, carrying a projection of the rest.
 ///
 /// WHY IT EXISTS, measured rather than imagined: this suite was run on real
@@ -1707,6 +1747,8 @@ pub fn run_selection_case_with_options(
 
     let mut history: Vec<Turn> = Vec::new();
     let mut step_outcomes: Vec<StepOutcome> = Vec::new();
+    let case_started = std::time::Instant::now();
+    let step_count = case.steps.len();
 
     // THE SKILL STORE, and its absence was the largest gap between this
     // measurement and the program it claims to measure. Production attaches ONE
@@ -1726,7 +1768,14 @@ pub fn run_selection_case_with_options(
     let skills = tacet_skills::SkillStore::default_set();
     let counter = generation_counter(engine);
 
-    for step in &case.steps {
+    for (step_index, step) in case.steps.iter().enumerate() {
+        trace(&format!(
+            "{} · step {}/{} · \"{}\"",
+            case.name,
+            step_index + 1,
+            step_count,
+            truncate_for_trace(&step.message)
+        ));
         let ticket = executor.new_turn();
         traces.reset();
         let selected: ToolCatalog = router.select(&step.message, &catalog).into_iter().collect();
@@ -1799,6 +1848,25 @@ pub fn run_selection_case_with_options(
                 prompt = prompt.with_tools(&selected);
             }
 
+            trace(&format!(
+                "  turn {}/{} · generating{} · cap {} tokens · {:.0}s into this case",
+                turn + 1,
+                MAX_TURNS,
+                if final_turn {
+                    " (no tools offered)"
+                } else {
+                    ""
+                },
+                counter.generation_cap(&prompt),
+                case_started.elapsed().as_secs_f64()
+            ));
+            // WHAT THE GENERATION COST, so a slow case is attributed rather than
+            // guessed at. Two very different things look identical from outside:
+            // a model producing 40 tokens slowly, and one producing 900 quickly.
+            // Only the pair (count, rate) separates them. `stop` is here because
+            // "ran into the cap" and "chose to end" take the same wall time and
+            // are completely different defects.
+            let gen_started = std::time::Instant::now();
             let generation = match wait(
                 engine.generate(
                     &prompt,
@@ -1818,15 +1886,38 @@ pub fn run_selection_case_with_options(
                     break;
                 }
             };
+            let gen_secs = gen_started.elapsed().as_secs_f64();
+            trace(&format!(
+                "  turn {}/{} · {} tokens in {:.1}s ({:.1} tok/s) · stop={:?}",
+                turn + 1,
+                MAX_TURNS,
+                generation.token_count,
+                gen_secs,
+                generation.token_count as f64 / gen_secs.max(1e-9),
+                generation.stop
+            ));
             if !generation.stop.is_complete() {
                 answer = "generation was cut off halfway".into();
                 break;
             }
+            // THE TOOL'S OWN TIME, separated from the model's. Without this the
+            // two are one number and the wrong one gets optimised: `calendar-day`
+            // reads as a 39 s case, of which 9.5 s is generation and 30 s is
+            // `osascript` talking to the Calendar app.
+            let tool_started = std::time::Instant::now();
             let Some(outcome) = wait(executor.execute_raw(&generation.text, ticket, &mut ctx))
             else {
                 answer = generation.text.clone();
                 break;
             };
+            trace(&format!(
+                "  turn {}/{} · {}() took {:.1}s · {:.0}s into this case",
+                turn + 1,
+                MAX_TURNS,
+                outcome.tool_name,
+                tool_started.elapsed().as_secs_f64(),
+                case_started.elapsed().as_secs_f64()
+            ));
             called.push(outcome.tool_name.clone());
             if outcome.reason == tacet_tools::executor::ExecutionReason::RepeatedCall {
                 must_answer = true;
@@ -2552,5 +2643,49 @@ mod progress {
         assert!((per_case - 10.0).abs() < 1e-9, "{per_case}");
         assert!((left - 1050.0).abs() < 1e-9, "{left}");
         assert_eq!(human_duration(left), "17m30s");
+    }
+}
+
+#[cfg(test)]
+mod trace_format {
+    use super::*;
+
+    /// THE TURKISH HALF OF THIS SUITE IS WHY THIS IS A CHARACTER CUT.
+    ///
+    /// `&message[..56]` would panic the moment a 56-byte boundary landed inside
+    /// a `ç` or a `ğ`, and `turkish_selection_cases()` is 65 of the cases this
+    /// trace runs over — so the crash would not be an edge case, it would be
+    /// most Tuesdays. Asserted with a string whose byte length and character
+    /// count differ, which is the only shape that can catch it.
+    #[test]
+    fn a_message_is_cut_by_character_so_turkish_does_not_panic() {
+        let turkish = "Bugünden 14 Mart'a kaç gün kaldı, çünkü şubat çekişmeli ölçüm gerektirir";
+        assert!(
+            turkish.len() > turkish.chars().count(),
+            "the fixture must be multi-byte or it measures nothing"
+        );
+
+        let cut = truncate_for_trace(turkish);
+        assert_eq!(cut.chars().count(), 57, "56 characters plus the ellipsis");
+        assert!(cut.ends_with('…'));
+        assert!(cut.starts_with("Bugünden 14 Mart'a"));
+    }
+
+    /// A short message is passed through whole and gains no ellipsis — otherwise
+    /// every line would claim to be truncated.
+    #[test]
+    fn a_short_message_is_left_alone() {
+        assert_eq!(truncate_for_trace("Add 25 and 18"), "Add 25 and 18");
+        assert!(!truncate_for_trace("Add 25 and 18").contains('…'));
+    }
+
+    /// ONE EVENT IS ONE LINE, and a message carrying a newline would break that
+    /// silently — the trace would still print, just misaligned, which is the
+    /// kind of defect nobody files.
+    #[test]
+    fn control_characters_cannot_break_the_one_line_shape() {
+        let cut = truncate_for_trace("first line\nsecond\tline\r\n");
+        assert!(!cut.contains('\n') && !cut.contains('\t') && !cut.contains('\r'));
+        assert_eq!(cut, "first line second line  ");
     }
 }

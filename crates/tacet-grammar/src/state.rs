@@ -388,11 +388,46 @@ enum Step {
 }
 
 /// The live state of constrained generation.
+/// How many whitespace characters may sit next to each other.
+///
+/// WHY A BOUND EXISTS AT ALL — a MEASURED non-termination, not a tidiness rule.
+/// JSON puts no limit on whitespace, and neither did this automaton: at a
+/// structural position `open_space` was called unconditionally and `feed_frame`
+/// consumed a space without advancing anything, so " " was legal forever. That
+/// is a cycle in the grammar with no exit pressure, and a small model walked
+/// straight into it. Measured on qwen3-4b, the case `calendar-remind`:
+///
+///   (calendar({"title":"call the dentist","when":"tomorrow 9"          …
+///
+/// The arguments are COMPLETE and CORRECT. The model then emitted spaces until
+/// the generation cap of 14 041 tokens — at 18.2 tok/s that is 12.9 minutes of a
+/// user staring at nothing, for a call that was finished after 20 tokens.
+///
+/// THE HEADLINE CLAIM SURVIVES, AND THIS IS THE GAP BESIDE IT. "An invalid call
+/// cannot be produced" was true the whole time: every prefix above is valid JSON
+/// so far. What was missing is that a VALID prefix could lead somewhere with no
+/// obligation to finish. Unrepresentable-invalid and always-terminating are two
+/// different properties, and only the first one had been argued.
+///
+/// SIXTEEN, NOT ONE. A bound of one would reject `{"a": 1}` written with an
+/// indent, and pretty-printed JSON reaching this automaton is not hypothetical —
+/// an MCP server's example arguments arrive as text. Sixteen covers a newline
+/// plus a deep indent and still turns 14 041 tokens of drift into 16.
+const MAX_SPACE_RUN: u32 = 16;
+
 #[derive(Debug, Clone)]
+
 pub struct GrammarState {
     grammar: Arc<Grammar>,
     stack: Vec<Frame>,
     position: usize,
+    /// Whitespace characters consumed since the last one that was not.
+    ///
+    /// IT IS PART OF THE STATE, so it clones with it. `advance` works on a copy
+    /// and `branch` hands out copies to the mask — a counter kept outside would
+    /// let the mask offer a space the automaton then refuses, which is the exact
+    /// drift `mask.rs` warns about.
+    spaces_run: u32,
 }
 
 impl GrammarState {
@@ -402,6 +437,7 @@ impl GrammarState {
             grammar,
             stack: vec![Frame::Value { node: root }],
             position: 0,
+            spaces_run: 0,
         }
     }
 
@@ -432,6 +468,10 @@ impl GrammarState {
     /// The characters acceptable right now.
     pub fn allowed_prefixes(&self) -> AllowedSet {
         let mut set = AllowedSet::default();
+        // The mask must not offer what `feed_char` will refuse. `open_space` is
+        // called from a dozen places below; rather than guarding each one, the
+        // exhausted run is subtracted at the end (see `spaces_spent`).
+        let spaces_spent = self.spaces_run >= MAX_SPACE_RUN;
         let mut i = self.stack.len();
         // `child_done`: if a lower frame can close without consuming, the parent
         // frame must be looked at "as if my child had finished". The only such
@@ -449,6 +489,9 @@ impl GrammarState {
                 break;
             }
             child_done = true;
+        }
+        if spaces_spent {
+            set.close_space();
         }
         set
     }
@@ -528,6 +571,23 @@ impl GrammarState {
     // ---- automaton ----
 
     fn feed_char(&mut self, c: char) -> Result<(), GrammarError> {
+        // THE RUN IS COUNTED BEFORE ANYTHING ELSE LOOKS AT `c`, because every
+        // path below that accepts a space must be bound by the same number —
+        // the frame loop, and the "JSON already closed" branch right here. A
+        // counter updated per branch would leave whichever branch was forgotten
+        // as a way back into the cycle.
+        let space = SPACES.contains(&c);
+        if space {
+            if self.spaces_run >= MAX_SPACE_RUN {
+                return Err(GrammarError::UnexpectedCharacter {
+                    character: c,
+                    position: self.position,
+                });
+            }
+            self.spaces_run += 1;
+        } else {
+            self.spaces_run = 0;
+        }
         loop {
             if self.stack.is_empty() {
                 // The JSON closed: only whitespace is accepted.

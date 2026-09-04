@@ -45,6 +45,17 @@ impl AllowedSet {
         self.space = true;
     }
 
+    /// Takes whitespace back out after the frames have offered it.
+    ///
+    /// WHY SUBTRACTED RATHER THAN NEVER ADDED: `open_space` is called from a
+    /// dozen places in `frame_allowed`, and a bound applied at each of them is a
+    /// bound one of them will be missing after the next edit — with the symptom
+    /// being a mask that offers a space the automaton refuses, which surfaces as
+    /// generation locking up rather than as a failing assert.
+    pub(crate) fn close_space(&mut self) {
+        self.space = false;
+    }
+
     pub(crate) fn open_can_finish(&mut self) {
         self.can_finish = true;
     }
