@@ -337,6 +337,34 @@ impl CallSession {
         // just fails more expensively. Model/format fit is a model-selection
         // question, not a grammar question.
 
+        // RE-MEASURED 4 SEP 2026, AND THE ANSWER IS STILL NO — for a new reason.
+        //
+        // The paragraph above rejected committing on the name because the model
+        // then "wanders inside the string the argument grammar leaves open and
+        // never closes it": 7 seconds became ten minutes. That reason has since
+        // been removed for entirely different work — consecutive whitespace is
+        // bounded (`MAX_SPACE_RUN`), a field the schema leaves open is bounded
+        // (`FREE_TEXT_CEILING`), and a constrained generation is capped at 2048
+        // tokens. So the experiment was worth re-running, and it was: masking
+        // everything but `(` once the generation is exactly a tool name.
+        //
+        // MEASURED, qwen3-4b, the six `read_document` selection cases:
+        //     off  4/6
+        //     on   1/6   five of them ending `engine error: constraint rejected
+        //                the token: 34`
+        //
+        // It no longer merely fails slowly; it BREAKS GENERATION. With the whole
+        // vocabulary closed but one character, the sampler's pick is a token the
+        // constraint refuses and the turn dies with an engine error instead of an
+        // answer. The July lesson survives its own reason being repaired: a mask
+        // can force SYNTAX, it cannot supply COMPETENCE — and a mask narrow
+        // enough to force it is narrow enough to have no legal move at all.
+        //
+        // The seven syntax failures this was meant to fix are handled where they
+        // can be handled honestly: `recover_marked_call` and `recover_glued_call`
+        // in `tacet-tools`, which read a shape the model already wrote instead of
+        // trying to prevent it from writing it.
+
         for (id, before, remainder) in &self.inner.paren_tokens {
             if *id >= logits.len() {
                 continue;
