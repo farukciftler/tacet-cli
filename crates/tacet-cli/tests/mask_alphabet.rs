@@ -415,3 +415,70 @@ fn the_empty_tokens_of_a_real_vocabulary_are_exactly_the_special_ones() {
          the fixture changed and the numbers in build_vocab's comment need re-measuring"
     );
 }
+
+/// WHAT THE MASK ACTUALLY COSTS, ON THIS VOCABULARY, PER GENERATED TOKEN.
+///
+/// WHY THIS EXISTS AND WHY IT PRINTS RATHER THAN GATES. `mask.rs`'s header
+/// carries a measurement — "structural positions 2-3 µs, free string body
+/// ~0.95 ms" — taken on a 32k vocabulary, and concludes that even the worst case
+/// is "about 3% of the budget" of a 3B model. qwen3's vocabulary is not 32k, and
+/// the conclusion is an extrapolation nobody had rerun.
+///
+/// IT ALSO SETTLES A PROFILING MISTAKE, which is the honest reason it is here. A
+/// CPU sample of a live eval showed `TokenMask::walk` above
+/// `AttentionWeights::forward`, and that is NOT evidence that the mask costs more
+/// than the model: `walk` runs on the CPU while the forward pass dispatches to
+/// the GPU and the calling thread waits, so a CPU profile systematically
+/// over-counts the mask. The only honest comparison is wall time on both, which
+/// is what this measures.
+///
+/// NO ASSERTION ON THE TIMING. A number that gates would be a flaky test on a
+/// shared laptop; a number that prints is a measurement someone can read next to
+/// the claim it checks.
+#[test]
+fn what_one_mask_step_costs_on_a_real_vocabulary() {
+    let Some(fx) = fixture() else {
+        skip_notice();
+        return;
+    };
+
+    let mask = TokenMask::new(&fx.new);
+    let grammar = tacet_grammar::Grammar::compile(&probe_schema());
+
+    // Three positions, chosen because the trie prunes them very differently:
+    // at the start only `{` is legal, at a key only the field names are, and
+    // inside a string body nearly the whole vocabulary is.
+    let positions: [(&str, &str); 3] = [
+        ("call start (one legal character)", ""),
+        ("inside a key (a handful of branches)", "{\""),
+        ("free string body (almost no pruning)", "{\"note\":\"the "),
+    ];
+
+    println!("vocabulary: {} tokens", fx.new.len());
+    for (label, prefix) in positions {
+        let mut state = grammar.state();
+        if !prefix.is_empty() && state.advance(prefix).is_err() {
+            println!("  {label:38} — prefix rejected, position not reachable");
+            continue;
+        }
+
+        // Warm the caches, then time enough iterations that the clock is not the
+        // thing being measured.
+        let _ = mask.mask(&state);
+        let rounds = 200;
+        let started = std::time::Instant::now();
+        for _ in 0..rounds {
+            std::hint::black_box(mask.mask(&state));
+        }
+        let per_step = started.elapsed().as_secs_f64() * 1000.0 / rounds as f64;
+        let open = mask.mask(&state).iter().filter(|b| **b).count();
+        println!("  {label:38} {per_step:>8.3} ms/step · {open} tokens open");
+    }
+}
+
+/// A schema with a free-text field, which is the shape that makes the walk
+/// expensive — `calendar` and `remember` both have one, and they are the slowest
+/// cases in the selection suite.
+fn probe_schema() -> ArgSchema {
+    ArgSchema::object(vec![Field::new("note", ArgSchema::text()).required()])
+}
