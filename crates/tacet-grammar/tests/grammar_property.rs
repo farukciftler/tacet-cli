@@ -1678,3 +1678,98 @@ fn reachable_number_prefixes(
     let mut written = String::new();
     walk(state, depth, &mut written, check);
 }
+
+/// THE FAST PATH MUST NOT CHANGE THE ANSWER, only the time.
+///
+/// `TokenMask::mask` starts from a precomputed `plain` set inside an unbounded
+/// string body and prunes every subtree that carries no `"`, `\` or control
+/// character. That is an optimisation over the walk, and an optimisation on a
+/// SECURITY BOUNDARY is exactly the kind that must be measured rather than
+/// argued: a mask that opens one token the automaton refuses is the drift both
+/// `mask.rs` and `call.rs` warn about, and it would show up as a malformed call
+/// long after the commit that caused it.
+///
+/// So the check is the definition itself, in both directions, over the whole
+/// vocabulary: a token is open in the mask IF AND ONLY IF feeding it to a clone
+/// of the automaton succeeds. No appeal to how either side computed it.
+///
+/// THE VOCABULARY IS BUILT TO EXERCISE THE PRUNE. It carries plain tokens (which
+/// `plain` must open), tokens holding a quote or a backslash at every position —
+/// start, middle, end — which the walk must still decide one at a time, tokens
+/// whose break character sits below several neutral ones (the case that makes
+/// `subtree_breaks` load-bearing rather than decorative), a control character,
+/// and an empty token, which stays closed however the mask was built.
+#[test]
+fn the_free_text_fast_path_agrees_with_the_automaton_token_by_token() {
+    let schema = ArgSchema::object(vec![Field::new("note", ArgSchema::text()).required()]);
+    let grammar = Grammar::compile(&schema);
+
+    let vocab: Vec<String> = [
+        "a",
+        "ab",
+        "abc",
+        "hello",
+        " the",
+        "…",
+        "ç",
+        "世界",
+        "",
+        "\"",
+        "\\",
+        "a\"",
+        "a\\",
+        "\"a",
+        "\\n",
+        "ab\"",
+        "abc\\",
+        "ab\"cd",
+        "a\\nb",
+        "\"}",
+        "\"})",
+        "\"},",
+        "}",
+        "]",
+        ",",
+        ":",
+        "{",
+        "{\"",
+        "\u{7}",
+        "a\u{7}",
+        "line\nbreak",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let mask = TokenMask::new(&vocab);
+
+    // Inside the body of an unbounded string — the only state where the fast
+    // path engages. Asserted, so the test cannot quietly measure the slow path.
+    let mut state = grammar.state();
+    state.advance("{\"note\":\"the ").expect("reachable prefix");
+
+    let produced = mask.mask(&state);
+    for (id, text) in vocab.iter().enumerate() {
+        let accepted = !text.is_empty() && state.clone().advance(text).is_ok();
+        assert_eq!(
+            produced[id], accepted,
+            "token {id} {text:?}: mask says {}, the automaton says {}",
+            produced[id], accepted
+        );
+    }
+
+    // The prune must not have swallowed the interesting half: if every token
+    // carrying a break character came out closed, the assertions above would
+    // pass while measuring nothing about the walk that is still required.
+    let open_with_break = vocab
+        .iter()
+        .enumerate()
+        .filter(|(id, t)| {
+            produced[*id] && t.chars().any(|c| c == '"' || c == '\\' || c.is_control())
+        })
+        .count();
+    assert!(
+        open_with_break > 0,
+        "no token carrying a break character is open, so this fixture cannot \
+         distinguish the fast path from one that opened `plain` and stopped"
+    );
+}
