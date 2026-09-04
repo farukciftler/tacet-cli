@@ -1846,3 +1846,67 @@ fn whitespace_cannot_run_forever_at_a_structural_position() {
         "the way OUT must stay open — bounding whitespace must not strand the call"
     );
 }
+
+/// A FIELD THE SCHEMA LEAVES UNBOUNDED IS STILL BOUNDED, and the fast path stays
+/// honest right up to the edge.
+///
+/// THE SECOND HALF OF THE SAME DEFECT. Bounding whitespace
+/// (`whitespace_cannot_run_forever_at_a_structural_position`) closed the instance
+/// a model happened to fall into; it did not close the shape. `ArgSchema::text()`
+/// produces `max_length: None`, and a free-text body then had no obligation to
+/// end at all — measured on qwen3-4b's `write_code-script`, turns 1 and 2 closed
+/// at 183 and 223 tokens while turn 3 was still generating five minutes later.
+///
+/// TWO CLAIMS, and the second is the one that could have been broken quietly by
+/// the mask's fast path: the body must close, AND at every length the mask must
+/// still agree with the automaton token for token — including inside the slack
+/// where `plain` no longer applies and the exact walk takes over.
+#[test]
+fn an_unbounded_text_field_still_has_to_end() {
+    let schema = ArgSchema::object(vec![Field::new("body", ArgSchema::text()).required()]);
+    let grammar = Grammar::compile(&schema);
+
+    let mut state = grammar.state();
+    state.advance(r#"{"body":""#).expect("the body opens");
+
+    // Fill it a kilobyte at a time. It MUST refuse before anything a model could
+    // spend a quarter of an hour on.
+    let chunk = "x".repeat(1024);
+    let mut written = 0usize;
+    while state.advance(&chunk).is_ok() {
+        written += 1024;
+        assert!(
+            written <= 65_536,
+            "the body accepted {written} characters — an unbounded field is a \
+             non-terminating path, which is what this pins"
+        );
+    }
+    assert!(
+        written >= 4096,
+        "the ceiling is meant to be far above real use; only {written} accepted"
+    );
+
+    // AT THE EDGE, THE MASK AND THE AUTOMATON MUST STILL SAY THE SAME THING. The
+    // fast path opens every token carrying no quote, backslash or control; near
+    // the ceiling those tokens stop fitting, and a mask that kept opening them
+    // would hand the model a token `advance` refuses — generation locks up.
+    let vocab: Vec<String> = ["a", "ab", "abcdefgh", "\"", "\\n", "\"}", "}"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let mask = TokenMask::new(&vocab);
+    let produced = mask.mask(&state);
+    for (id, text) in vocab.iter().enumerate() {
+        let accepted = state.clone().advance(text).is_ok();
+        assert_eq!(
+            produced[id], accepted,
+            "at the ceiling, token {id} {text:?}: mask {}, automaton {}",
+            produced[id], accepted
+        );
+    }
+    assert!(
+        produced[vocab.iter().position(|t| t == "\"").unwrap()],
+        "the closing quote must stay OPEN at the ceiling — a full field that \
+         cannot be closed is a lock-up, not a bound"
+    );
+}

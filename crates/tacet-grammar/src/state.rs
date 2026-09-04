@@ -388,6 +388,41 @@ enum Step {
 }
 
 /// The live state of constrained generation.
+/// The ceiling on ONE string body when the schema declares no bound.
+///
+/// WHY AN UNBOUNDED FIELD IS NOT ACTUALLY SAFE — the same class of defect as
+/// `MAX_SPACE_RUN`, found the same way and one round later. Bounding whitespace
+/// closed the instance the model happened to fall into; it did not close the
+/// shape. `ArgSchema::text()` produces `max_length: None`, `frame_allowed` then
+/// left `open_text_body` on forever, and a free-text field became a path with no
+/// obligation to end. Measured on qwen3-4b, `write_code-script`: turns 1 and 2
+/// finished at 183 and 223 tokens with `stop=ConstraintDone`; turn 3 was still
+/// generating FIVE MINUTES later, heading for the 13 483-token cap.
+///
+/// EIGHT THOUSAND CHARACTERS IS NOT A GUESS AT WHAT A FIELD NEEDS. It is far
+/// above anything measured — the longest legitimate call in the selection suite
+/// is ~223 tokens, and `write_code`'s own array is capped at 200 lines — and far
+/// below the 14 000 tokens a runaway can spend. A schema that genuinely needs
+/// more says so with `.max_length()`, which is respected as before; this is only
+/// what "no bound" means.
+pub(crate) const FREE_TEXT_CEILING: usize = 8192;
+
+/// How much room must be left in a free-text body before a character counts as
+/// NEUTRAL.
+///
+/// NEUTRALITY IS A CLAIM ABOUT THE FUTURE: "this character changes no later
+/// decision". Near the ceiling that is false — every character consumed brings
+/// the closing quote nearer to being the only option — so the mask's fast path
+/// (`plain` in `mask.rs`, which opens every token carrying no break character)
+/// would start opening tokens that no longer fit.
+///
+/// THE SLACK IS LARGER THAN ANY TOKEN, deliberately, because the state cannot
+/// see the vocabulary. 512 characters is beyond any real BPE token by two orders
+/// of magnitude, so while the slack holds, every token `plain` opens is short
+/// enough to fit. Under it the exact walk runs — slower, but only for the last
+/// 512 characters of a field that has already written 7 680.
+const NEUTRAL_SLACK: usize = 512;
+
 /// How many whitespace characters may sit next to each other.
 ///
 /// WHY A BOUND EXISTS AT ALL — a MEASURED non-termination, not a tidiness rule.
@@ -547,9 +582,10 @@ impl GrammarState {
             self.stack.last(),
             Some(Frame::Text {
                 node,
+                length,
                 stage: StringStage::Body,
-                ..
             }) if matches!(self.grammar.nodes[*node], Node::Text { max_length: None })
+                && *length + NEUTRAL_SLACK < FREE_TEXT_CEILING
         )
     }
 }
@@ -868,7 +904,10 @@ impl GrammarState {
                 let Node::Text { max_length } = &grammar.nodes[*node] else {
                     unreachable!("a text frame cannot be opened on a non-text node")
                 };
-                let full = max_length.is_some_and(|u| *length >= u);
+                // NO BOUND IN THE SCHEMA STILL MEANS A BOUND. See
+                // `FREE_TEXT_CEILING`: an unbounded body is a non-terminating
+                // path, and this is the one place that decides a body is full.
+                let full = max_length.map_or(*length >= FREE_TEXT_CEILING, |u| *length >= u);
                 match *stage {
                     StringStage::Body => {
                         if c == '"' {
@@ -1190,7 +1229,7 @@ impl GrammarState {
                 match *stage {
                     StringStage::Body => {
                         set.add('"');
-                        if max_length.is_none_or(|u| *length < u) {
+                        if max_length.map_or(*length < FREE_TEXT_CEILING, |u| *length < u) {
                             set.add('\\');
                             set.open_text_body();
                         }
