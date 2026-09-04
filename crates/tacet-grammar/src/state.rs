@@ -58,8 +58,48 @@ enum StringStage {
     Body,
     /// `\` consumed.
     Escape,
-    /// `\u` consumed; how many hex digits are left.
-    Hex(u8),
+    /// A HIGH surrogate (`\uD800`..`\uDBFF`) was just written: the only legal
+    /// continuation is the LOW half of the pair, so only `\` opens here.
+    LowEscape,
+    /// The `\` of the low half was consumed: only `u` opens.
+    LowU,
+    /// `\u` consumed. `value` is the hex digits written so far, `left` how many
+    /// are still owed (never 0 — the stage ends when the fourth lands), and
+    /// `low_half` says this escape must land inside `DC00..DFFF`.
+    Hex {
+        value: u32,
+        left: u8,
+        low_half: bool,
+    },
+}
+
+/// Can a `\u` escape whose first `4 - left` hex digits spell `value` still land
+/// on a code unit that is legal HERE?
+///
+/// WHY IT IS NOT ENOUGH TO ACCEPT FOUR HEX DIGITS (this is a MEASURED defect,
+/// not a hypothetical): until this check existed, `{"q":"\uD800"}` was accepted
+/// by `advance` with `is_done() == true`, and `serde_json::from_str` on the very
+/// same text answered "unexpected end of hex escape"; `{"q":"\uDC00"}` answered
+/// "lone leading surrogate in hex escape". So the grammar could GENERATE a
+/// string that is not JSON — which is exactly the claim this crate exists to
+/// make impossible. A lone surrogate has no UTF-8 encoding, so no JSON parser
+/// that produces Rust strings can accept one.
+///
+/// The reachable final values from the prefix are `[value<<4L, value<<4L + 16^L)`,
+/// so the decision is an interval intersection and the mask narrows as early as
+/// the SECOND digit: after `\uD` the escape may still become D000..DBFF, but
+/// after `\uDC` every reachable value is a lone low surrogate and `C` never opens.
+fn hex_fits(value: u32, left: u8, low_half: bool) -> bool {
+    let lo = value << (4 * left);
+    let hi = lo + (1u32 << (4 * left)) - 1;
+    if low_half {
+        // Owed the second half of a pair: only DC00..DFFF closes it.
+        hi >= 0xDC00 && lo <= 0xDFFF
+    } else {
+        // A lone LOW surrogate never decodes. A HIGH surrogate does open — but
+        // only because writing one FORCES the low half (`StringStage::LowEscape`).
+        lo < 0xDC00 || hi > 0xDFFF
+    }
 }
 
 /// JSON number grammar: `-? (0 | [1-9][0-9]*) (. [0-9]+)? ([eE][+-]?[0-9]+)?`
@@ -135,7 +175,8 @@ const NUMBER_CANDIDATES: [char; 15] = [
     '-', '+', '.', 'e', 'E', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
 ];
 
-/// Can THIS PREFIX still be completed into a number inside the range.
+/// Can THIS PREFIX still be completed into a number the layer downstream can
+/// actually hold — inside the schema's range, and representable at all.
 ///
 /// WHY PREFIX-BASED: if the range were only checked when the number closes, the
 /// model would produce `99` in the range `[1,50]` and get stuck — every
@@ -144,10 +185,18 @@ const NUMBER_CANDIDATES: [char; 15] = [
 /// every prefix that leads to something invalid must be closed before it is
 /// produced.
 ///
-/// Method: the value range reachable from the prefix is computed. If `v` is the
-/// integer part of the prefix and `k` more digits may follow, the reachable
-/// values are the union of the ranges `[v*10^k, v*10^k + 10^k)`; if one of them
-/// intersects [min, max], the prefix survives.
+/// Method: the value range reachable from the prefix is computed, and the prefix
+/// survives if that range intersects [min, max]. There are two regimes, and
+/// which one applies is decided by the stage:
+///   * the integer part is still growing — `v` is the integer part and `k` more
+///     digits may follow, so the reachable values are the union of the ranges
+///     `[v*10^k, v*10^k + 10^k)`;
+///   * a fraction has started — nothing may grow but the tail, so the reachable
+///     set is the single decade `[v, v + 10^-d)` around the WHOLE prefix.
+///
+/// The second regime is exact only because the exponent is refused outright for
+/// a bounded number; both facts were put here by measurement and both are
+/// spelled out at their site below.
 fn range_fits(
     buffer: &str,
     stage: NumberStage,
@@ -155,19 +204,88 @@ fn range_fits(
     min: Option<f64>,
     max: Option<f64>,
 ) -> bool {
+    // OVERFLOW IS CHECKED EVEN WITH NO RANGE AT ALL, and it has to be first.
+    // JSON puts no bound on the magnitude of a number, but every consumer here
+    // does: `serde_json` answers "number out of range" for anything that
+    // overflows f64, and Rust's own `f64` parse returns INFINITY rather than an
+    // error, so the close-time check saw nothing wrong. MEASURED, that gap let
+    // an unbounded `Number` produce `{"c":1e31212121212121212}` — accepted with
+    // `is_done() == true`, and `serde_json::from_str` refused the very same
+    // text. The two agree exactly on where the edge is (`1e308` and a
+    // 309-digit integer pass, `1e309` and a 310-digit integer do not), so
+    // asking Rust's parse for finiteness is not an approximation of the rule,
+    // it IS the rule.
+    //
+    // Pruning it as a PREFIX is sound because both the exponent and the integer
+    // part only ever grow: once a prefix is infinite no continuation brings it
+    // back, so the digit that tips it over is refused before it is written and
+    // the model is never stranded on it. A negative exponent shrinks towards
+    // zero and stays finite, which is why underflow needs no rule.
+    //
+    // COST, since this now runs even for an unbounded number and the masking
+    // path is hot: one short `f64` parse, MEASURED at 4ns on this machine, at
+    // most once per entry of NUMBER_CANDIDATES — roughly 60ns per allowed-set
+    // computation, against 63µs for a single 32k-vocabulary mask step at a
+    // number position. It does not show up at that scale.
+    if buffer.parse::<f64>().is_ok_and(|v| !v.is_finite()) {
+        return false;
+    }
     if min.is_none() && max.is_none() {
         return true;
     }
-    // Exponent notation can shift the value either way; no meaningful upper
-    // bound follows from the prefix. We do not prune here, the exact check at
-    // close time is enough.
+    let lo = min.unwrap_or(f64::NEG_INFINITY);
+    let hi = max.unwrap_or(f64::INFINITY);
+    // EXPONENT NOTATION IS REFUSED once the range has a finite end, and this
+    // line used to say `return true` instead — "the exact check at close time is
+    // enough". MEASURED, that claim was false in the way that matters most: with
+    // `number().range(Some(10.0), Some(20.0))` the automaton accepted `1e9`,
+    // `15e5` and `15e50`, offered `0`..`9` forever afterwards and could NEVER
+    // close. That is the lock-up this whole function exists to prevent, arrived
+    // at from the other side — not a dead mask, a mask that stays alive on a
+    // path with no exit. An exhaustive search over the reachable states of
+    // `{"n":1e9` returns no completion at all.
+    //
+    // Pruning the exponent properly would mean tracking the mantissa's reachable
+    // magnitudes decade by decade. The cheaper trade taken here: with a finite
+    // bound the exponent buys NOTHING a model writes — every value inside the
+    // range is still reachable in plain decimal (`0.51` for `5.1e-1`), only the
+    // SPELLING is gone. An unbounded number keeps `e`/`E`, which is where JSON
+    // exponents actually turn up.
     if matches!(
         stage,
         NumberStage::Exp | NumberStage::ExpSign | NumberStage::ExpDigit
     ) {
-        return true;
+        return false;
     }
     let negative = buffer.starts_with('-');
+    // A fraction has STARTED: the integer part can no longer grow, and (because
+    // the exponent is closed above) the reachable set is exactly one decade of
+    // the last digit written — `[v, v + 10^-d)` upward, `(v - 10^-d, v]`
+    // downward, where `d` is the fraction digits so far.
+    //
+    // ANCHORED ON THE WHOLE PREFIX, not on the integer part. Anchoring on the
+    // integer part is what this function did until it was measured: in the range
+    // [10,20] the prefix `20.5` was read as "int part 20, so [20,21) — fits",
+    // and `20.5` then had no completion and no way to close. The mirror case
+    // `-20.5` in [-20,-10] failed the same way.
+    if matches!(stage, NumberStage::Dot | NumberStage::FracDigit) {
+        // `"20."` parses as 20.0 in Rust, so `Dot` needs no special case.
+        let Ok(v) = buffer.parse::<f64>() else {
+            return true;
+        };
+        let digits = buffer.split_once('.').map_or(0, |(_, f)| f.len());
+        // Past ~308 fraction digits `10^-d` underflows to 0 and the interval
+        // collapses to the point `v`; f64 cannot tell finer prefixes apart
+        // either, and the close-time check compares the same f64, so the two
+        // agree. The `v >= lo` / `v <= hi` disjunct keeps a prefix that is
+        // ALREADY in range alive even then.
+        let reach = 10f64.powi(-(digits.min(308) as i32));
+        return if negative {
+            v >= lo && (v <= hi || v - reach < hi)
+        } else {
+            v <= hi && (v >= lo || v + reach > lo)
+        };
+    }
     let body = buffer.trim_start_matches('-');
     let int_part: String = body.chars().take_while(char::is_ascii_digit).collect();
     if int_part.is_empty() {
@@ -176,8 +294,6 @@ fn range_fits(
     let Ok(v) = int_part.parse::<f64>() else {
         return true;
     };
-    let lo = min.unwrap_or(f64::NEG_INFINITY);
-    let hi = max.unwrap_or(f64::INFINITY);
     // The integer part can only grow in stages that accept another digit.
     // `Zero` is excluded: after a leading zero JSON accepts no digit.
     let can_grow = matches!(stage, NumberStage::IntDigit);
@@ -685,7 +801,11 @@ impl GrammarState {
                     }
                     StringStage::Escape => {
                         if c == 'u' {
-                            *stage = StringStage::Hex(4);
+                            *stage = StringStage::Hex {
+                                value: 0,
+                                left: 4,
+                                low_half: false,
+                            };
                             Step::Consumed
                         } else if ESCAPES.contains(&c) {
                             // An escape sequence counts as ONE character: the
@@ -698,15 +818,59 @@ impl GrammarState {
                             return Err(err());
                         }
                     }
-                    StringStage::Hex(remaining) => {
-                        if !c.is_ascii_hexdigit() {
+                    // Mid-pair. The length limit is NOT consulted here: it was
+                    // consulted before the `\` that opened the pair, and a pair
+                    // half-written is not a place the model may be stranded.
+                    StringStage::LowEscape => {
+                        if c == '\\' {
+                            *stage = StringStage::LowU;
+                            Step::Consumed
+                        } else {
                             return Err(err());
                         }
-                        if remaining == 1 {
+                    }
+                    StringStage::LowU => {
+                        if c == 'u' {
+                            *stage = StringStage::Hex {
+                                value: 0,
+                                left: 4,
+                                low_half: true,
+                            };
+                            Step::Consumed
+                        } else {
+                            return Err(err());
+                        }
+                    }
+                    StringStage::Hex {
+                        value,
+                        left,
+                        low_half,
+                    } => {
+                        let Some(d) = c.to_digit(16) else {
+                            return Err(err());
+                        };
+                        let value = (value << 4) | d;
+                        let left = left - 1;
+                        if !hex_fits(value, left, low_half) {
+                            return Err(err());
+                        }
+                        if left > 0 {
+                            *stage = StringStage::Hex {
+                                value,
+                                left,
+                                low_half,
+                            };
+                        } else if (0xD800..=0xDBFF).contains(&value) {
+                            // A high surrogate is not a character yet, only the
+                            // first half of one: `length` does not move and the
+                            // string cannot close until the low half lands.
+                            *stage = StringStage::LowEscape;
+                        } else {
+                            // A whole surrogate PAIR counts as one character, the
+                            // same way `serde_json` decodes it and the same way
+                            // `ArgSchema::validate` counts it (`chars().count()`).
                             *length += 1;
                             *stage = StringStage::Body;
-                        } else {
-                            *stage = StringStage::Hex(remaining - 1);
                         }
                         Step::Consumed
                     }
@@ -935,7 +1099,7 @@ impl GrammarState {
                 let Node::Text { max_length } = &grammar.nodes[*node] else {
                     return false;
                 };
-                match stage {
+                match *stage {
                     StringStage::Body => {
                         set.add('"');
                         if max_length.is_none_or(|u| *length < u) {
@@ -947,8 +1111,25 @@ impl GrammarState {
                         set.add_all(ESCAPES);
                         set.add('u');
                     }
-                    StringStage::Hex(_) => {
-                        set.add_all(('0'..='9').chain('a'..='f').chain('A'..='F'));
+                    // Owing the low half of a surrogate pair: the string may not
+                    // close, and nothing but the pair's own `\u` opens.
+                    StringStage::LowEscape => set.add('\\'),
+                    StringStage::LowU => set.add('u'),
+                    StringStage::Hex {
+                        value,
+                        left,
+                        low_half,
+                    } => {
+                        // The hex digits are filtered by the SAME `hex_fits` the
+                        // automaton uses, for the reason `number_transition`
+                        // states: two copies of the rule drift, and a wider
+                        // allowed set means the mask opens a dead path.
+                        for c in ('0'..='9').chain('a'..='f').chain('A'..='F') {
+                            let d = c.to_digit(16).expect("hex digit");
+                            if hex_fits((value << 4) | d, left - 1, low_half) {
+                                set.add(c);
+                            }
+                        }
                     }
                 }
                 false

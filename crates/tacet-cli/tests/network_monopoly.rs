@@ -109,6 +109,18 @@ fn exactly_two_crates_declare_an_http_client() {
     );
 }
 
+/// The directories of a crate that hold Rust the workspace compiles.
+///
+/// `src` ALONE WAS THE SCOPE UNTIL IT WASN'T ENOUGH TO SAY SO. A `#[test] fn
+/// talks_to_a_local_server()` under `tests/` compiles, runs in `cargo test
+/// --workspace`, and was invisible to this audit — and the workspace has since
+/// grown ~2,700 lines of integration tests plus an `examples/` binary. Nothing
+/// was wrong when this was widened (every file below `crates/*/tests` and
+/// `crates/*/examples` was clean the day it was written, which is the right
+/// moment to widen it), but the README's sentence names no scope, so the scope
+/// had better be everything.
+const CODE_DIRS: &[&str] = &["src", "tests", "examples", "benches"];
+
 /// AND THE WAY AROUND THE MANIFEST: a crate that wants a socket without a
 /// dependency can simply use the standard library. Nothing in the manifests
 /// would show it.
@@ -123,17 +135,19 @@ fn no_crate_outside_the_monopoly_opens_a_raw_socket() {
         if ALLOWED.contains(&name.as_str()) {
             continue;
         }
-        let src = crates_dir().join(&name).join("src");
-        for file in rust_files(&src) {
-            let text = std::fs::read_to_string(&file).unwrap_or_default();
-            for line in text.lines() {
-                let line = line.trim();
-                // A mention in a comment is the rationale, not a socket.
-                if line.starts_with("//") {
-                    continue;
-                }
-                if CONNECTORS.iter().any(|c| line.contains(c)) {
-                    offenders.push(format!("{}: {}", file.display(), line));
+        for dir in CODE_DIRS {
+            for file in rust_files(&crates_dir().join(&name).join(dir)) {
+                let text = std::fs::read_to_string(&file).unwrap_or_default();
+                for line in text.lines() {
+                    let line = line.trim();
+                    // A mention in a comment is the rationale, not a socket.
+                    if line.starts_with("//") {
+                        continue;
+                    }
+                    let code = outside_string_literals(line);
+                    if CONNECTORS.iter().any(|c| code.contains(c)) {
+                        offenders.push(format!("{}: {}", file.display(), line));
+                    }
                 }
             }
         }
@@ -145,6 +159,21 @@ fn no_crate_outside_the_monopoly_opens_a_raw_socket() {
     );
 }
 
+/// The parts of a line that are NOT inside a double-quoted string.
+///
+/// NEEDED THE MOMENT `tests/` CAME INTO SCOPE, and this file is the reason: the
+/// `CONNECTORS` list two lines up writes all three type names as string
+/// literals, so scanning `crates/tacet-cli/tests` would report the audit itself
+/// as the offender. Naming a type is not opening a socket; calling one is. The
+/// split is by `"` alone — no escape handling, which can only make a line look
+/// like MORE code than it is, so the direction of the error is a false alarm a
+/// human reads, never a socket waved through.
+fn outside_string_literals(line: &str) -> String {
+    line.split('"').step_by(2).collect::<Vec<_>>().join(" ")
+}
+
+/// Every `.rs` file under `dir`, recursively. A directory that does not exist —
+/// most crates have no `examples/` — reads as empty, not as a failure.
 fn rust_files(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else {

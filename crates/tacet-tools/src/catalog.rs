@@ -14,7 +14,9 @@
 //! the tool is lost inside an `Arc` in the catalog there is no other way to reach
 //! it.
 
+use crate::archive::ArchiveTool;
 use crate::calc::CalcTool;
+use crate::checksum::ChecksumTool;
 use crate::clipboard::ClipboardTool;
 use crate::create_document::CreateDocumentTool;
 use crate::data_store::SharedStore;
@@ -248,6 +250,10 @@ pub fn production_catalog_gated(
     //     needs "remember/forget", web_fetch and http need an address, db needs a
     //     query, clipboard needs the word. With no hint, dropping them is
     //     correct, and all four are absent entirely on a default install.
+    //   * archive / checksum — AFTER those, by the same rule and more strongly:
+    //     both need the user to have named a .zip or asked for a hash. They are
+    //     unconditional (no gate, no discovery), so unlike the four above they
+    //     are what the DEFAULT install now drops when nothing matches.
     //
     // edit_document resolves in THREE STAGES (explicit path -> session watcher ->
     // most recently changed document); that order is defined in the tool itself,
@@ -354,6 +360,22 @@ pub fn production_catalog_gated(
     {
         c.add(Arc::new(tool.with_store(Arc::clone(store))));
     }
+
+    // LAST, AND UNCONDITIONAL. Both are pure local computation — no interpreter,
+    // no network, no helper binary — so neither has a discovery gate to fail;
+    // and neither is EVER the right answer to a message that carries no hint, so
+    // by the order rule above they belong at the end. Appended rather than
+    // inserted for a second reason as well: every existing tool's catalog
+    // position is the tie-break the router falls back on, and moving one of them
+    // would move an ordering that was measured.
+    //
+    // `archive` TAKES THE STORE, `checksum` DOES NOT, and the split is the
+    // difference in their output. A listing of four hundred entries is bulk data
+    // and goes in as a `Table` with a source_ref; a digest is 64 hex characters
+    // whatever the file's size, and a reference to one line is an indirection
+    // that costs the model more than it saves.
+    c.add(Arc::new(ArchiveTool::with_store(Arc::clone(store))));
+    c.add(Arc::new(ChecksumTool::new()));
 
     (c, state, diagnosis)
 }
@@ -473,14 +495,24 @@ mod tests {
         fn tokens(text: &str) -> usize {
             text.len().saturating_mul(2).div_ceil(5)
         }
-        /// MEASURED, NOT CHOSEN. The worst nine on the day this was written come
+        /// MEASURED, NOT CHOSEN. The worst nine on the day this was written came
         /// to 2542 tokens: run_code 424, write_code 402, time 388, calendar 300,
         /// remember 292, edit_document 213, create_document 184, find_file 181,
         /// web_search 158. The ceiling is that number plus a small margin.
         ///
+        /// RE-MEASURED THE DAY `archive` AND `checksum` JOINED, because the
+        /// ninth line changed hands and a list that says otherwise is a stale
+        /// measurement pretending to be a fact: run_code 424, write_code 402,
+        /// time 388, calendar 300, remember 292, edit_document 213,
+        /// create_document 190, find_file 181, **archive 167** — 2557 tokens.
+        /// `archive` DISPLACED web_search (158) from the worst nine and
+        /// `checksum` (156) did not enter it. The margin under the ceiling is
+        /// therefore 43 tokens, not 58: the next description that wants to be
+        /// long has less room than the last one did.
+        ///
         /// READ THE NUMBER BEFORE MOVING IT. On the 4096-token FLOOR window —
         /// what a model that declares nothing gets (`tacet_engine::CONTEXT_BUDGET`)
-        /// — 2542 tokens is **62% of the whole window** before the system block,
+        /// — 2557 tokens is **62% of the whole window** before the system block,
         /// the memory, the guide, the history or the question have been written,
         /// and it is re-sent on every pass of the tool loop. On a 17k window it is
         /// noise; on the floor it is the dominant cost. Bringing this down is real
@@ -532,9 +564,78 @@ mod tests {
             "web_search",
             "web_fetch",
             "remember",
+            "archive",
+            "checksum",
         ] {
             assert!(c.find(name).is_some(), "missing from the catalog: {name}");
         }
+    }
+
+    /// THE SHIELD-CONDITIONAL PAIR, AND THE ONLY TEST THAT WOULD HAVE CAUGHT THE
+    /// WAY THIS FILE WAS ACTUALLY BROKEN.
+    ///
+    /// While this work was being done, an agent hit an unused-variable warning in
+    /// `production_catalog_gated` and silenced it by replacing
+    /// `c.add(Arc::new(write));` with `let _ = write;`. That is not a warning fix:
+    /// it removes `write_code` from the catalog the model is shown, so the tool
+    /// stops being offered. It compiled and clippy was quiet.
+    ///
+    /// WHAT WAS ACTUALLY MEASURED, by making that exact edit again and running the
+    /// suite: it is NOT true that nothing objects. Two tests go red — this one, and
+    /// `the_catalog_is_larger_than_the_router_budget`. But read what that one says:
+    /// "the catalog size changed; the number in the comment and the dropped tool
+    /// count must be updated". That is an instruction to EDIT THE CONSTANT, and an
+    /// agent under a green-build requirement will follow it, which converts a
+    /// dropped tool into a smaller expected count and closes the last door. It also
+    /// cannot distinguish one tool vanishing from one vanishing while another
+    /// appears — a count is not a membership.
+    ///
+    /// So the claim this test adds is not "something notices" but "the failure
+    /// names the tool and the cause". `the_catalog_contains_the_expected_tools`
+    /// above cannot: it does not list `run_code` or `write_code`, and it must not,
+    /// for the reason in the next paragraph.
+    ///
+    /// WHY THE CLAIM IS "TOGETHER", NOT "PRESENT": both tools are built from the
+    /// one shield `RunCodeTool::discover()` verifies, so on a machine with no
+    /// sandbox BOTH are absent and that absence is the honest-refusal path this
+    /// project advertises — asserting either one is present would fail there for
+    /// the right reason and be deleted for the wrong one. What can never be true
+    /// on any machine is ONE of them: they are added on the same branch, so a
+    /// catalog holding exactly one is a dropped registration, which is the defect
+    /// above and nothing else.
+    #[test]
+    fn run_code_and_write_code_arrive_and_leave_together() {
+        let (c, state) = catalog(true);
+        let run = c.find("run_code").is_some();
+        let write = c.find("write_code").is_some();
+
+        assert_eq!(
+            run, write,
+            "run_code and write_code are built from the same verified shield and \
+             registered on the same branch, so exactly one of them in the catalog \
+             (run_code={run}, write_code={write}) means a registration was dropped"
+        );
+        assert_eq!(
+            run,
+            state.is_some(),
+            "the shield state and the two tools disagree: a verified shield must put \
+             BOTH tools in the catalog, and no shield must put NEITHER there"
+        );
+    }
+
+    /// The calendar bridge is macOS-ONLY (it speaks to Calendar/Reminders through
+    /// `osascript`), so it is deliberately NOT in the unconditional list above —
+    /// putting it there would fail on Linux and Windows for a reason that is not a
+    /// defect. Asserted separately rather than not at all: it is a registration
+    /// like any other, and an unguarded one is exactly what goes missing quietly.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn the_calendar_bridge_is_registered_on_macos() {
+        let (c, _) = catalog(true);
+        assert!(
+            c.find("calendar").is_some(),
+            "calendar is missing from the catalog on the one platform that has it"
+        );
     }
 
     /// THE ADDON GATE — the only measurable claim of this feature.
@@ -580,14 +681,49 @@ mod tests {
     /// The names are the tool layer's own (`Tool::name`), and they are repeated
     /// here ON PURPOSE: this test's whole job is to fail when a tool starts
     /// answering to a name the gate does not know about.
-    const ADDON_TOOLS: [&str; 6] = [
+    ///
+    /// `db_write` IS ON THIS LIST THOUGH THIS BUILDER NEVER ADDS IT. The
+    /// assertion holds trivially today — a tool that is not in
+    /// `production_catalog` cannot appear in a catalog built here — and that is
+    /// the point: the day somebody moves `db_write` out of `tacet-cli`'s
+    /// `session_catalog` and into this file, the closed-registry test starts
+    /// carrying it, instead of the move happening in a place no measurement
+    /// watches. `db_write_is_never_in_the_production_catalog` below states the
+    /// same absence directly.
+    const ADDON_TOOLS: [&str; 7] = [
         "web_search",
         "web_fetch",
         "shell",
         "db",
+        "db_write",
         "clipboard",
         "http",
     ];
+
+    /// ABSENCE, MEASURED WHERE IT IS DETERMINISTIC.
+    ///
+    /// `db_write` is added only by `tacet-cli::session_catalog`, so eval
+    /// (`eval_cmd.rs` builds from `production_catalog`) and every catalog unit
+    /// test are structurally unable to hold a tool that can change a file. This
+    /// is asserted with EVERY GATE OPEN, which is the strongest form of the
+    /// claim: not "the gate is closed so it is missing", but "this builder does
+    /// not know the tool at all".
+    ///
+    /// IT DOES NOT READ THE REAL REGISTRY. `production_catalog` would
+    /// (`AddonGates::read`), and catalog.rs already records why that is
+    /// forbidden here: the result would depend on the developer's own
+    /// `addons.json`, or the test would have to move a process-wide variable
+    /// and step on its neighbours.
+    #[test]
+    fn db_write_is_never_in_the_production_catalog() {
+        for gates in [AddonGates::closed(), AddonGates::all_open()] {
+            let (c, _) = gated(gates);
+            assert!(
+                c.find("db_write").is_none(),
+                "db_write reached the production catalog; eval would then hold a tool that writes"
+            );
+        }
+    }
 
     /// THE DEFAULT INSTALL CARRIES NO ADDON TOOL.
     ///
@@ -809,7 +945,7 @@ mod tests {
         let (c, state) = catalog(true);
         let n = c.names().len();
         // The two shielded tools either both arrive or neither does.
-        let expected = (if state.is_some() { 12 } else { 10 }) + usize::from(mac);
+        let expected = (if state.is_some() { 14 } else { 12 }) + usize::from(mac);
         assert_eq!(
             n, expected,
             "the catalog size changed; the number in the comment and the dropped tool count must be updated"
@@ -822,24 +958,31 @@ mod tests {
         // this; the test catches the comment going stale.
         assert_eq!(
             n - BUDGET,
-            (if state.is_some() { 3 } else { 1 }) + usize::from(mac)
+            (if state.is_some() { 5 } else { 3 }) + usize::from(mac)
         );
 
         // WITH THE ADDON OFF (the default install) the catalog is TWO tools shorter
         // and the dropped count falls by two. That is the MEASURED side effect of
-        // the gate: on a shielded machine 10 tools / budget 8 → `git` and
-        // `remember` drop (and without an explicit trigger neither is the right
-        // answer anyway, see the order note); on an unshielded machine 8 tools →
-        // nothing drops.
+        // the gate: on a shielded machine 12 tools / budget 9 → three drop, and
+        // without an explicit trigger none of the three is the right answer
+        // anyway (see the order note).
+        //
+        // THE DEFAULT INSTALL NOW CROSSES THE BUDGET FOR THE FIRST TIME, and the
+        // sentence that used to stand here — "on an unshielded machine 8 tools →
+        // nothing drops" — became FALSE the day `archive` and `checksum` were
+        // added. Unshielded and unaddoned is 10 tools (11 on macOS) against a
+        // budget of 9, so exactly ONE tool drops on a hintless message — two on
+        // macOS. Which one is decided by catalog order, and the two new tools sit
+        // last precisely so that it is one of them.
         let (closed, closed_state) = catalog(false);
         let m = closed.names().len();
         assert_eq!(
             m,
-            (if closed_state.is_some() { 10 } else { 8 }) + usize::from(mac)
+            (if closed_state.is_some() { 12 } else { 10 }) + usize::from(mac)
         );
         assert_eq!(
             m.saturating_sub(BUDGET),
-            (if closed_state.is_some() { 1 } else { 0 }) + usize::from(mac)
+            (if closed_state.is_some() { 3 } else { 1 }) + usize::from(mac)
         );
     }
 

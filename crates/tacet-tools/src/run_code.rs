@@ -129,6 +129,16 @@ pub enum NetworkShield {
     /// machine, or `--unshare-net` is refused by the kernel, the measurement
     /// fails, `discover` returns `None` and the tool IS NOT VISIBLE in the
     /// catalog — so the worst case is today's Linux behaviour, not a new silent hole.
+    ///
+    /// MEASURED IN CI SINCE 2026-09-04, which is a weaker claim than it sounds
+    /// and is stated precisely: the ubuntu leg of `.github/workflows/ci.yml`
+    /// installs `bubblewrap`, preflights it, and runs the whole suite with
+    /// `TACET_SANDBOX_MUST_RUN=1`, under which a shield that cannot be
+    /// discovered PANICS instead of printing a skip (see `SANDBOX_MUST_RUN`).
+    /// Before that, every Linux run of the execution tests passed by returning
+    /// immediately. What is still not covered: this is one kernel and one
+    /// AppArmor policy on a throwaway runner, and the author has no Linux
+    /// machine on which to reproduce a failure it reports.
     Bwrap { tool: PathBuf },
 }
 
@@ -234,8 +244,11 @@ const BWRAP_PATHS: &[&str] = &["/usr/bin/bwrap", "/bin/bwrap", "/usr/local/bin/b
 /// `--dev`/`--proc` are required for the interpreters (node wants
 /// `/dev/urandom`, python probes `/proc`); `--proc` also wants `--unshare-pid`.
 ///
-/// NOT MEASURED: there is no Linux on this machine. If it is wrong,
-/// `verify_shield` fails and the tool leaves the catalog; it does not produce a silent hole.
+/// NOT MEASURED ON THIS MACHINE: there is no Linux here. If it is wrong,
+/// `verify_shield` fails and the tool leaves the catalog; it does not produce a
+/// silent hole. What DOES run these exact arguments is the ubuntu leg of CI
+/// (see `SANDBOX_MUST_RUN`) — the argument-order test below has always checked
+/// the LIST, and only that job checks that the kernel accepts it.
 fn bwrap_args(sandbox: &Path, home: Option<&Path>) -> Vec<OsString> {
     let mut a: Vec<OsString> = vec![
         "--unshare-net".into(),
@@ -1461,6 +1474,43 @@ pub fn looks_like_python(code: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// The gate that decides whether "no sandbox here" is a skip or a failure
+// ---------------------------------------------------------------------------
+
+/// The environment variable that turns every sandbox skip in this crate into a
+/// FAILURE, and the name is shared by `run_code`'s and `write_code`'s test
+/// modules so there is exactly one spelling of it.
+///
+/// WHY IT EXISTS. `tool_or_skip()` in both files returns `None` and prints a
+/// line when the shield cannot be discovered, and every execution test then
+/// passes by doing nothing. On this machine that is right — a developer without
+/// bubblewrap should not be blocked. On a CI runner where the job has ALREADY
+/// installed bubblewrap and ALREADY run `bwrap ... /bin/echo SANDBOX_UP` as a
+/// preflight, a skip is not a skip: it is the suite reporting green for
+/// measurements it never made, which is the exact failure this repository is
+/// built to prevent.
+#[cfg(test)]
+pub(crate) const SANDBOX_MUST_RUN: &str = "TACET_SANDBOX_MUST_RUN";
+
+/// Is a skip forbidden on this run?
+///
+/// Set to `1` by the Linux leg of the `test` job in `.github/workflows/ci.yml`
+/// — and by nothing else. Empty and `0` count as unset because the workflow
+/// sets the variable for all three matrix platforms and hands macOS and Windows
+/// the empty string; on those there is no bwrap and a skip is the truth.
+///
+/// `ci_sets_the_variable_that_turns_a_skip_into_a_failure` asserts that the
+/// workflow still sets it: without that test this whole mechanism could be
+/// removed from CI by deleting three lines of YAML and nothing would go red.
+#[cfg(test)]
+pub(crate) fn sandbox_must_run() -> bool {
+    match std::env::var(SANDBOX_MUST_RUN) {
+        Ok(value) => !value.is_empty() && value != "0",
+        Err(_) => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1511,17 +1561,29 @@ mod tests {
         )
     }
 
-    /// If there is no shield/interpreter (CI, Linux) the execution tests are
-    /// SKIPPED — but not SILENTLY: if `discover` returns `None` the tool is not
-    /// in the catalog anyway and that is the right behaviour; the test passes by printing it.
+    /// If there is no shield/interpreter (a developer machine without
+    /// bubblewrap) the execution tests are SKIPPED — but not SILENTLY: if
+    /// `discover` returns `None` the tool is not in the catalog anyway and that
+    /// is the right behaviour; the test passes by printing it.
+    ///
+    /// EXCEPT WHERE A SKIP WOULD BE A LIE. Under `TACET_SANDBOX_MUST_RUN` the
+    /// same `None` is a PANIC carrying `diagnose()`'s text (see
+    /// `SANDBOX_MUST_RUN`). Until that variable existed, "CI, Linux" in the old
+    /// version of this comment was not a caveat but a description: the Linux leg
+    /// of CI had no bwrap, so EVERY test below this line returned immediately
+    /// and the suite reported green having measured nothing on the one platform
+    /// whose shield had never been run.
     fn tool_or_skip() -> Option<RunCodeTool> {
         match RunCodeTool::discover() {
             Some(a) => Some(a),
             None => {
-                eprintln!(
-                    "run_code was not discovered, the execution tests were skipped: {}",
-                    RunCodeTool::diagnose()
+                let why = RunCodeTool::diagnose();
+                assert!(
+                    !sandbox_must_run(),
+                    "{SANDBOX_MUST_RUN} is set, so this test may not skip — \
+                     the sandbox was expected to work here: {why}"
                 );
+                eprintln!("run_code was not discovered, the execution tests were skipped: {why}");
                 None
             }
         }
@@ -1643,12 +1705,20 @@ mod tests {
     /// a conditional: IF a shield AND an interpreter EXIST on this machine,
     /// discovery MUST succeed.
     ///
-    /// The strict claim holds ONLY on macOS: under `sandbox-exec` `connect`
-    /// returns `EPERM` IMMEDIATELY regardless of the state of the internet, so
-    /// the measurement is deterministic. bwrap `--unshare-net` returns
-    /// `ENETUNREACH` and cannot be told apart from an offline machine; a strict
-    /// claim there would make the test swing with the machine's network. On
-    /// Linux it is therefore only PRINTED.
+    /// The strict claim is UNCONDITIONAL on macOS: under `sandbox-exec`
+    /// `connect` returns `EPERM` IMMEDIATELY regardless of the state of the
+    /// internet, so the measurement is deterministic. bwrap `--unshare-net`
+    /// returns `ENETUNREACH`, which an offline machine also returns, and a
+    /// strict claim on every Linux would make this test swing with the
+    /// machine's network — and with the machine's kernel, since a distribution
+    /// that refuses unprivileged user namespaces cannot start bwrap at all.
+    ///
+    /// So on Linux it is strict WHERE THE ENVIRONMENT PROMISES IT SHOULD BE:
+    /// under `TACET_SANDBOX_MUST_RUN`, which is set only by a CI job that has
+    /// already installed bubblewrap and already watched `bwrap ... /bin/echo`
+    /// print `SANDBOX_UP` in a preceding step. There a failure here is a defect
+    /// in this repository, not a fact about the developer's laptop. Everywhere
+    /// else it is still only PRINTED.
     #[test]
     fn when_a_shield_and_an_interpreter_exist_discovery_must_succeed() {
         let Some(shield) = NetworkShield::find() else {
@@ -1662,7 +1732,7 @@ mod tests {
             return;
         }
         let discovered = RunCodeTool::discover().is_some();
-        if cfg!(target_os = "macos") {
+        if cfg!(target_os = "macos") || sandbox_must_run() {
             assert!(
                 discovered,
                 "a shield ({}) and an interpreter exist but discovery failed: {}",
@@ -1674,6 +1744,195 @@ mod tests {
                 "discovery failed ({}): {}",
                 shield.name(),
                 RunCodeTool::diagnose()
+            );
+        }
+    }
+
+    /// The path to `.github/workflows/ci.yml`. CARGO_MANIFEST_DIR is
+    /// `<repo>/crates/tacet-tools`, so the repository root is two parents up.
+    fn ci_workflow() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("the crate lives under crates/")
+            .join(".github/workflows/ci.yml")
+    }
+
+    /// The lines of a YAML file with their comments removed, trimmed, empties
+    /// dropped.
+    ///
+    /// WHY THIS EXISTS RATHER THAN A `contains` OVER THE WHOLE FILE: the first
+    /// version of the test below searched the raw text for
+    /// `TACET_SANDBOX_MUST_RUN` and for `bubblewrap`, and BOTH strings also
+    /// appear in the prose comment that explains the steps. Measured by deleting
+    /// the two `env:` lines from the `cargo test` step and, separately, the
+    /// `apt-get install` line: after each deletion the file still contained both
+    /// strings and the test stayed GREEN — a test named after a guarantee that
+    /// did not test the guarantee, which is the exact failure the guarantee is
+    /// about.
+    ///
+    /// IT IS CRUDER THAN YAML AND THAT DIRECTION IS THE SAFE ONE: cutting at the
+    /// first `#` would also cut a `#` inside a quoted scalar, so the worst this
+    /// can do is FAIL to see a setting that is really there — a red test, never
+    /// a green one. (ci.yml has no such scalar today; the shell `#` comments
+    /// inside `run:` blocks are exactly what this is meant to drop.)
+    fn yaml_settings(text: &str) -> Vec<String> {
+        text.lines()
+            .map(|line| line.split('#').next().unwrap_or("").trim().to_string())
+            .filter(|line| !line.is_empty())
+            .collect()
+    }
+
+    /// 4b-ii) THE GATE IS ONLY A GATE IF CI STILL SETS IT.
+    ///
+    /// `sandbox_must_run()` is what turns every `tool_or_skip()` in this crate
+    /// from a skip into a failure, and it is switched on by three lines of YAML.
+    /// Delete them — or rename the variable on one side only — and 22 tests go
+    /// back to passing without measuring anything, exactly as they did before
+    /// this work, with nothing anywhere going red. That figure is not asserted
+    /// from memory: `the_skip_count_the_documents_quote_is_the_count_in_the_source`
+    /// derives it from these two source files and pins this sentence to it.
+    ///
+    /// SO WHAT IS ASSERTED IS THE SETTING, NOT THE MENTION: the workflow's
+    /// comment lines are stripped first (`yaml_settings`), and what must survive
+    /// is an assignment of the variable to a non-empty value and an `apt-get
+    /// install` line naming the package. Both deletions were simulated while
+    /// writing this and each one turns this test red on its own.
+    ///
+    /// IT PARSES NO YAML, on purpose — the same rule as
+    /// `crates/tacet-cli/tests/network_monopoly.rs`, which polices the
+    /// zero-dependency claim without pulling in a TOML parser to do it.
+    #[test]
+    fn ci_sets_the_variable_that_turns_a_skip_into_a_failure() {
+        let workflow = ci_workflow();
+        let text = std::fs::read_to_string(&workflow)
+            .unwrap_or_else(|e| panic!("{} is unreadable: {e}", workflow.display()));
+        let settings = yaml_settings(&text);
+
+        let assignment = format!("{SANDBOX_MUST_RUN}:");
+        assert!(
+            settings.iter().any(|line| {
+                // A key with a REAL value. `TACET_SANDBOX_MUST_RUN:` alone is
+                // YAML for "null" and `: ''` is the empty string — both of which
+                // `sandbox_must_run()` reads as unset, so both would silence
+                // every sandbox test on every platform while a naive "is the
+                // name here" check stayed green. Quotes and whitespace are
+                // dropped before asking whether anything is left; the shape of
+                // the expression is deliberately NOT pinned, because a
+                // Linux-only job spelling it `1` is equally correct.
+                line.strip_prefix(&assignment).is_some_and(|value| {
+                    !value
+                        .trim()
+                        .trim_matches(|c: char| c == '\'' || c == '"' || c.is_whitespace())
+                        .is_empty()
+                })
+            }),
+            "no step in {} SETS {SANDBOX_MUST_RUN} any more (a mention in a comment is not a \
+             setting): the sandbox tests can skip green again",
+            workflow.display()
+        );
+        assert!(
+            settings
+                .iter()
+                .any(|line| line.contains("apt-get install") && line.contains("bubblewrap")),
+            "the Linux runner no longer installs bubblewrap, so {SANDBOX_MUST_RUN} would only \
+             make the job fail: {}",
+            workflow.display()
+        );
+    }
+
+    /// How many `#[test]` functions in `text` call `tool_or_skip()`, and how
+    /// many of those are macOS-only.
+    ///
+    /// A line-scanner rather than a parser: an `#[cfg(...)]` line is remembered
+    /// until the next `fn`, which is the shape every test in these two files
+    /// has. It cannot see a `cfg` written any other way, so it is a lower bound
+    /// on "macOS-only" — and a lower bound is the direction that makes the
+    /// derived Linux count too HIGH, i.e. red, never quietly right.
+    fn skipping_tests(text: &str) -> (usize, usize) {
+        let (mut total, mut macos_only) = (0usize, 0usize);
+        let mut pending_macos = false;
+        let mut in_macos_fn = false;
+        for line in text.lines().map(str::trim) {
+            if line.starts_with("#[cfg(") {
+                pending_macos |= line.contains("target_os = \"macos\"");
+            } else if line.starts_with("fn ") {
+                in_macos_fn = pending_macos;
+                pending_macos = false;
+            // THE CALL SHAPE, NOT THE NAME. Matching the name alone made the
+            // scanner count its own matcher line and every doc comment that
+            // mentions the helper — measured: 16 in this file instead of 15.
+            } else if line.starts_with("let Some(tool) =") && line.contains("tool_or_skip") {
+                total += 1;
+                if in_macos_fn {
+                    macos_only += 1;
+                }
+            }
+        }
+        (total, macos_only)
+    }
+
+    /// 4b-iii) THE NUMBER IN THE PROSE IS THE NUMBER IN THE SOURCE.
+    ///
+    /// "TWENTY-FOUR tests go back to skipping" was written in four places and
+    /// branded COUNTED rather than estimated. It was wrong: the real figure on
+    /// Linux is 22 (14 here after excluding the macOS-only
+    /// `the_clipboard_is_really_cut`, 8 in write_code.rs). A number a reader is
+    /// told was counted is the one number that must not be off, so it is no
+    /// longer typed anywhere without this test deriving it from the source and
+    /// checking the four documents that quote it. Add a sandbox test tomorrow
+    /// and this goes red naming the figure to move.
+    #[test]
+    fn the_skip_count_the_documents_quote_is_the_count_in_the_source() {
+        let (run_total, run_macos) = skipping_tests(include_str!("run_code.rs"));
+        let (write_total, write_macos) = skipping_tests(include_str!("write_code.rs"));
+        // NOT VACUOUS: a scanner that stopped matching would report zero and
+        // every containment check below would then be looking for "0".
+        assert!(
+            run_total >= 10 && write_total >= 5,
+            "the scan found {run_total}/{write_total} skipping tests, far fewer than the files \
+             hold — the scanner stopped matching"
+        );
+        let run_linux = run_total - run_macos;
+        let write_linux = write_total - write_macos;
+        let total = run_linux + write_linux;
+
+        // Three parents: the workflow is `<repo>/.github/workflows/ci.yml`.
+        let root = ci_workflow()
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .expect("the workflow lives under .github/workflows")
+            .to_path_buf();
+        let claims: [(&str, String); 6] = [
+            (".github/workflows/ci.yml", format!("{total} on Linux")),
+            (
+                ".github/workflows/ci.yml",
+                format!("{run_linux} in run_code.rs"),
+            ),
+            (
+                ".github/workflows/ci.yml",
+                format!("{write_linux} in write_code.rs"),
+            ),
+            ("README.md", format!("{total} tests that used to skip")),
+            (
+                "crates/tacet-tools/src/run_code.rs",
+                format!("and {total} tests go"),
+            ),
+            (
+                "crates/tacet-tools/src/write_code.rs",
+                format!("{write_linux} here and {run_linux} in run_code.rs on Linux"),
+            ),
+        ];
+        for (document, claim) in &claims {
+            let path = root.join(document);
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("{} is unreadable: {e}", path.display()));
+            assert!(
+                text.contains(claim.as_str()),
+                "{document} no longer says {claim:?}. Counted from the source right now: \
+                 {run_linux} skipping tests in run_code.rs that compile on Linux ({run_macos} \
+                 more are macOS-only), {write_linux} in write_code.rs, {total} in total."
             );
         }
     }
@@ -1852,17 +2111,76 @@ mod tests {
         );
     }
 
+    /// The interface names in a `/proc/net/dev` dump.
+    ///
+    /// A separate function so the parser the Linux claim below rests on can be
+    /// measured on a machine that has no `/proc` at all — see
+    /// `the_interface_parser_reads_a_real_proc_net_dev_dump`. The two header
+    /// lines carry no `:` and are dropped by `split_once` rather than by a
+    /// `skip(2)`: a kernel that adds a third header line would silently shift
+    /// a `skip` and turn a real interface into a header.
+    fn interface_names(dump: &str) -> Vec<String> {
+        dump.lines()
+            .filter_map(|line| line.split_once(':'))
+            .map(|(name, _)| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .collect()
+    }
+
+    /// 6b) The parser above, against a real dump. MEASURED on this machine
+    ///     (macOS, 2026-09-04): the text below is a verbatim `/proc/net/dev`
+    ///     from a Linux host, pasted in, because macOS has no `/proc` to read
+    ///     one from — the parse is the only half of the Linux claim that can be
+    ///     checked here at all.
+    #[test]
+    fn the_interface_parser_reads_a_real_proc_net_dev_dump() {
+        let dump = "Inter-|   Receive                                                |  Transmit\n\
+                    \x20face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n\
+                    \x20   lo:    1234      12    0    0    0     0          0         0     1234      12    0    0    0     0       0          0\n\
+                    \x20 eth0: 9876543    4321    0    0    0     0          0         0  1234567    2345    0    0    0     0       0          0\n";
+        assert_eq!(interface_names(dump), vec!["lo", "eth0"]);
+        // A namespace with nothing but loopback — what the child must report.
+        assert_eq!(interface_names("h1\nh2\n  lo: 0 0\n"), vec!["lo"]);
+        assert!(interface_names("").is_empty());
+    }
+
     /// 7) THE NETWORK IS REALLY CUT. This test passing is the only ground on
     ///    which the "NO network" sentence in `description` is a fact and not a promise.
+    ///
+    /// THE SECOND HALF, ON LINUX, ANSWERS THE OBJECTION THIS FILE ALREADY MAKES
+    /// AGAINST ITSELF (see `verify_shield`'s doc comment): `NET_BLOCKED` proves
+    /// "no connection was opened", not "the shield cut it", because bwrap's
+    /// `--unshare-net` and an unplugged cable both give `ENETUNREACH`. A
+    /// NAMESPACE FACT can tell them apart where an errno cannot — the host has a
+    /// non-`lo` interface in `/proc/net/dev` while the child sees only `lo`. An
+    /// offline machine still has `eth0`; a child outside the namespace would
+    /// still see it. The host side is read with `std::fs`, never a socket: this
+    /// crate is outside the network monopoly and
+    /// `crates/tacet-cli/tests/network_monopoly.rs` fails the build over a
+    /// `TcpStream` in `crates/*/src`.
+    ///
+    /// NOT MEASURED ON THIS MACHINE: macOS has no `/proc`, so the child prints
+    /// `IFACE_UNREADABLE` here and the whole differential is skipped. Its first
+    /// execution anywhere is the CI job that installs bubblewrap.
     #[test]
     fn the_network_is_really_cut() {
         let Some(tool) = tool_or_skip() else { return };
         let root = temp_dir("network");
         let mut ctx = context(&root);
 
+        // THE INTERFACE PROBE RUNS FIRST, AND THAT ORDER IS LOAD-BEARING: the js
+        // socket probe ends every branch in `process.exit(0)` INSIDE a callback,
+        // so anything printed after it might never run (the same rule that makes
+        // `clipboard_probe` run before `network_probe` in `measurement_script`).
         let code = match tool.interpreters()[0].key {
             "python" => {
-                "import socket\n\
+                "try:\n\
+                 \x20   for line in open('/proc/net/dev').read().splitlines():\n\
+                 \x20       if ':' in line:\n\
+                 \x20           print('IFACE:' + line.split(':')[0].strip())\n\
+                 except Exception:\n\
+                 \x20   print('IFACE_UNREADABLE')\n\
+                 import socket\n\
                  try:\n\
                  \x20   socket.create_connection(('1.1.1.1', 80), timeout=3)\n\
                  \x20   print('NET_OPEN')\n\
@@ -1870,7 +2188,11 @@ mod tests {
                  \x20   print('NET_BLOCKED')\n"
             }
             _ => {
-                "const s=require('net').connect(80,'1.1.1.1');\
+                "try{const d=require('fs').readFileSync('/proc/net/dev','utf8').split('\\n');\
+                 for(const r of d){if(r.indexOf(':')<0)continue;\
+                 const n=r.split(':')[0].trim();if(n)console.log('IFACE:'+n)}}\
+                 catch(e){console.log('IFACE_UNREADABLE')}\n\
+                 const s=require('net').connect(80,'1.1.1.1');\
                  s.on('connect',()=>{console.log('NET_OPEN');process.exit(0)});\
                  s.on('error',()=>{console.log('NET_BLOCKED');process.exit(0)});"
             }
@@ -1887,10 +2209,79 @@ mod tests {
             "unexpected output: {output} / {}",
             outcome.to_model
         );
+
+        if !cfg!(target_os = "linux") {
+            return;
+        }
+        // `cfg!` rather than `#[cfg]` so this arm is type-checked on macOS too:
+        // the one thing that must not happen to Linux-only code in a repository
+        // with no Linux is that it stops compiling without anyone noticing.
+        let host = interface_names(&std::fs::read_to_string("/proc/net/dev").unwrap_or_default());
+        let child: Vec<&str> = output
+            .lines()
+            .filter_map(|line| line.strip_prefix("IFACE:"))
+            .collect();
+        assert!(
+            !output.contains("IFACE_UNREADABLE"),
+            "`--proc /proc` did not give the child a procfs, so the differential \
+             measured nothing: {output}"
+        );
+        assert!(
+            child.contains(&"lo"),
+            "the child reported no loopback at all, so its /proc/net/dev was not \
+             parsed as expected: {output}"
+        );
+        let leaked: Vec<&&str> = child.iter().filter(|name| **name != "lo").collect();
+        assert!(
+            leaked.is_empty(),
+            "the child is in the HOST's network namespace — it can see {leaked:?}; \
+             --unshare-net did not take effect"
+        );
+        // The host half. It is only informative on a machine that itself has no
+        // interface but loopback (a container with no veth): there the two sides
+        // agree for a reason that has nothing to do with the shield, so the
+        // differential proves nothing and saying so is better than a green tick.
+        let host_has_more = host.iter().any(|name| name != "lo");
+        assert!(
+            host_has_more || !sandbox_must_run(),
+            "{SANDBOX_MUST_RUN} is set but the host has only {host:?}, so the \
+             namespace differential cannot distinguish a cut network from no \
+             network — this job is not measuring what it claims to"
+        );
+        if !host_has_more {
+            eprintln!(
+                "the host itself has only {host:?}: the interface differential degenerates here \
+                 and only the NET_BLOCKED half was measured"
+            );
+        }
     }
 
     /// 8) THE SANDBOX: the script cannot write outside and cannot read the
     ///    user's home directory; but it can write into its own folder (legitimate work must not break).
+    ///
+    /// THE HOME HALF USED TO MEASURE NOTHING, on any platform, and that is worth
+    /// writing down because it looked measured. The python branch listed
+    /// `os.path.expanduser('~')` — but `run_program` sets the child's `HOME` to
+    /// the sandbox itself (`command.env("HOME", runtime)`), so `~` named the
+    /// sandbox and the listing succeeded for a reason that has nothing to do
+    /// with the user's files. The js branch read `process.env.HOME_REAL||'/Users'`,
+    /// a variable nothing sets and a directory that does not exist on Linux, so
+    /// it threw for the wrong reason. And neither `HOME_READ_OK` nor
+    /// `HOME_READ_BLOCKED` was ever asserted on. `--tmpfs {home}` (bwrap) and
+    /// `(deny file-read* (subpath (param "HOMEDIR")))` (SBPL) were therefore
+    /// completely unmeasured; the argument-order test only proved the FLAG was
+    /// produced.
+    ///
+    /// THE CANARY FIXES IT: a file with an unguessable body is planted in the
+    /// REAL home, and its absolute path goes into the script AS A LITERAL,
+    /// because the child cannot name the user's home any other way.
+    ///
+    /// THE WRITE HALF IS ASSERTED ON THE HOST, NOT ON THE CHILD'S REPORT, and
+    /// that is the correction to the obvious guess: bwrap's `--tmpfs` is a FRESH
+    /// WRITABLE filesystem, so a write into the covered home SUCCEEDS inside the
+    /// child and is discarded with the namespace. macOS refuses the same write
+    /// outright. Two different child-visible outcomes, one guarantee — the file
+    /// must not exist on the host afterwards.
     #[test]
     fn the_sandbox_cannot_be_escaped() {
         let Some(tool) = tool_or_skip() else { return };
@@ -1899,28 +2290,90 @@ mod tests {
         let target = std::env::temp_dir().join(format!("tacet-escape-{}.txt", std::process::id()));
         std::fs::remove_file(&target).ok();
 
+        // Planted in the developer's own home directory, so it is removed on
+        // EVERY path — an assert below panicking included, which is why this is
+        // a Drop guard and not a call at the end of the function.
+        struct Canary(Vec<PathBuf>);
+        impl Drop for Canary {
+            fn drop(&mut self) {
+                for path in &self.0 {
+                    std::fs::remove_file(path).ok();
+                }
+            }
+        }
+
+        let body = format!("HOME-CANARY-BODY-{}", nonce());
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|home| home.is_absolute() && home != Path::new("/"));
+        let planted = home.as_ref().map(|home| {
+            (
+                home.join(format!(".tacet-home-canary-{}", std::process::id())),
+                home.join(format!(".tacet-home-write-{}", std::process::id())),
+            )
+        });
+        let planted = match planted {
+            Some((read_at, write_at)) => {
+                std::fs::remove_file(&write_at).ok();
+                match std::fs::write(&read_at, &body) {
+                    Ok(()) => Some((read_at, write_at)),
+                    Err(e) => {
+                        eprintln!("$HOME is not writable ({e}), the home half was not measured");
+                        None
+                    }
+                }
+            }
+            None => {
+                eprintln!("$HOME is unset or is `/`, the home half was not measured");
+                None
+            }
+        };
+        let _canary = Canary(
+            planted
+                .iter()
+                .flat_map(|(a, b)| [a.clone(), b.clone()])
+                .collect(),
+        );
+
+        let home_probe = match (&planted, tool.interpreters()[0].key) {
+            (None, _) => String::new(),
+            (Some((read_at, write_at)), "python") => format!(
+                "try:\n\
+                 \x20   print('HOME_CANARY_VISIBLE:' + open({read_at:?}).read())\n\
+                 except Exception:\n\
+                 \x20   print('HOME_CANARY_HIDDEN')\n\
+                 try:\n\
+                 \x20   open({write_at:?}, 'w').write('x')\n\
+                 \x20   print('HOME_WRITE_RETURNED_OK')\n\
+                 except Exception:\n\
+                 \x20   print('HOME_WRITE_BLOCKED')\n"
+            ),
+            (Some((read_at, write_at)), _) => format!(
+                "try{{console.log('HOME_CANARY_VISIBLE:'+require('fs')\
+                 .readFileSync({read_at:?},'utf8'))}}\
+                 catch(e){{console.log('HOME_CANARY_HIDDEN')}}\n\
+                 try{{require('fs').writeFileSync({write_at:?},'x');\
+                 console.log('HOME_WRITE_RETURNED_OK')}}\
+                 catch(e){{console.log('HOME_WRITE_BLOCKED')}}\n"
+            ),
+        };
+
         let code = match tool.interpreters()[0].key {
             "python" => format!(
-                "import os\n\
+                "{home_probe}\
                  try:\n\
                  \x20   open({target:?}, 'w').write('x')\n\
                  \x20   print('OUT_WRITE_OK')\n\
                  except Exception:\n\
                  \x20   print('OUT_WRITE_BLOCKED')\n\
-                 try:\n\
-                 \x20   os.listdir(os.path.expanduser('~'))\n\
-                 \x20   print('HOME_READ_OK')\n\
-                 except Exception:\n\
-                 \x20   print('HOME_READ_BLOCKED')\n\
                  open('inside.txt','w').write('y')\n\
                  print('IN_WRITE_OK')\n"
             ),
             _ => format!(
-                "const fs=require('fs');\
+                "{home_probe}\
+                 const fs=require('fs');\
                  try{{fs.writeFileSync({target:?},'x');console.log('OUT_WRITE_OK')}}\
                  catch(e){{console.log('OUT_WRITE_BLOCKED')}}\
-                 try{{fs.readdirSync(process.env.HOME_REAL||'/Users');console.log('HOME_READ_OK')}}\
-                 catch(e){{console.log('HOME_READ_BLOCKED')}}\
                  fs.writeFileSync('inside.txt','y');console.log('IN_WRITE_OK')"
             ),
         };
@@ -1940,6 +2393,23 @@ mod tests {
             output.contains("IN_WRITE_OK"),
             "it could not write into the sandbox: {output}"
         );
+
+        if let Some((_, write_at)) = &planted {
+            assert!(
+                !output.contains(&body),
+                "THE USER'S HOME DIRECTORY WAS READABLE — the canary's contents \
+                 came back through the model's script: {output}"
+            );
+            assert!(
+                output.contains("HOME_CANARY_HIDDEN"),
+                "the home directory was not covered: {output}"
+            );
+            assert!(
+                !write_at.exists(),
+                "a write from inside the sandbox landed in the user's home directory: {}",
+                write_at.display()
+            );
+        }
     }
 
     /// 9) AN INFINITE LOOP: on the timeout the process is KILLED and the

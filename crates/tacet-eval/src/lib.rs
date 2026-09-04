@@ -46,9 +46,14 @@ mod tests {
     #[test]
     fn the_case_set_is_wide_enough_and_the_names_are_unique() {
         let cases = all();
+        // THE FLOOR IS A RATCHET, NOT A ROUND NUMBER. It was 15 while the suite
+        // held 51, which is not a floor, it is a formality — three quarters of
+        // the cases could have vanished under it. Raised to what was measured on
+        // the day the suite reached 78. Raise it when you add cases; never lower
+        // it to make a deletion pass.
         assert!(
-            cases.len() >= 15,
-            "at least 15 cases expected, there are {}",
+            cases.len() >= 78,
+            "at least 78 cases expected, there are {}",
             cases.len()
         );
         let mut names: Vec<&str> = cases.iter().map(|c| c.name.as_str()).collect();
@@ -56,6 +61,46 @@ mod tests {
         let before = names.len();
         names.dedup();
         assert_eq!(before, names.len(), "the case names must be unique");
+    }
+
+    /// EVERY GROUP REACHES `all()`.
+    ///
+    /// WHY THE FLOOR ABOVE IS NOT ENOUGH: `all()` is a list of
+    /// `v.extend(group())` lines, and deleting one is a silent loss of a dozen
+    /// claims — the suite gets smaller, everything left still passes, and the
+    /// printed percentage goes UP. A count floor cannot see it (78 minus a group
+    /// is still comfortably over 15) and a count EQUALITY would have to be edited
+    /// on every honest addition, which is how a pin gets weakened into a
+    /// rubber stamp. The prefixes are what a group actually contributes.
+    #[test]
+    fn every_group_of_cases_reaches_the_suite() {
+        let cases = all();
+        for prefix in [
+            "chat-",
+            "calc-",
+            "time-",
+            "read-document-",
+            "create-document-",
+            "document-",
+            "channel-",
+            "gate-",
+            "grounding-",
+            "edit-document-",
+            "find-file-",
+            "search-",
+            "remember-",
+            "loop-",
+            "cancel-",
+            "archive-",
+            "checksum-",
+            "chain-",
+        ] {
+            assert!(
+                cases.iter().any(|c| c.name.starts_with(prefix)),
+                "no case named {prefix:?}* is in all() — a group was dropped from the \
+                 list, and every claim in it went with it"
+            );
+        }
     }
 
     #[test]

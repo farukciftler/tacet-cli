@@ -81,10 +81,47 @@ pub enum IntentProfile {
     Files,
     /// What the user asked to be remembered or forgotten.
     Memory,
+    /// A .zip the user received — what is inside it, and unpacking it.
+    ///
+    /// WHY IT IS NOT PART OF `Files`: an archive question uses every Files word
+    /// ("what FILES are in this", "unpack it into a FOLDER") while wanting a
+    /// tool `find_file` cannot be. Folded into Files, `archive` would have to
+    /// beat `find_file` and `read_document` on their own hint mass to be reached
+    /// at all, and the split is the same one `Repo` was given for the same
+    /// reason.
+    Archive,
+    /// Is this file what it claims to be — checksums, digests, "are these two
+    /// the same file".
+    Integrity,
 }
 
 impl IntentProfile {
-    pub const ALL: [IntentProfile; 9] = [
+    /// APPENDED, NEVER INSERTED. `dominant()` breaks a tie in favour of the
+    /// FIRST profile in this array, so a new profile at the end LOSES its ties —
+    /// the conservative direction for a table nobody has measured for a decade
+    /// of messages yet. It also keeps every existing profile's tie behaviour
+    /// exactly where the measurements that produced it left it.
+    ///
+    /// MEASURED WHEN `Archive` AND `Integrity` WERE ADDED, and it is a one-time
+    /// measurement rather than a standing test — there is no "before" left to
+    /// run once the tools are in the catalog, because `run_routing` builds its
+    /// catalog from `production_catalog`.
+    ///
+    /// `eval --routing` before the change: REACH 154/154, TOP3 153/154, MEAN
+    /// RANK 1.38. With the two tools in the catalog but no new case yet: the
+    /// SAME 154 outcomes, and a rank-by-rank diff of the two JSON reports showed
+    /// ZERO ranks moved. That was the outcome worth checking, because the
+    /// second sort key (`overlap`) orders every tool no profile scored, so two
+    /// new tools really can displace an existing one on a sentence about
+    /// something else — here they did not, on any of the 154. With the twelve
+    /// new cases added: REACH 166/166, TOP3 165/166, MEAN RANK 1.36, every new
+    /// case at rank 1, and the same single case (`tr-dosya-ara`) outside the top
+    /// three as before. Identical numbers under `--routing-pressure 20`.
+    ///
+    /// The STANDING guarantees are `every_expected_tool_reaches_the_model` and
+    /// `a_connected_server_does_not_push_the_expected_tool_out_of_the_budget`
+    /// over in `tacet_eval::routing`.
+    pub const ALL: [IntentProfile; 11] = [
         IntentProfile::Document,
         IntentProfile::DocEdit,
         IntentProfile::Clock,
@@ -94,6 +131,8 @@ impl IntentProfile {
         IntentProfile::Repo,
         IntentProfile::Files,
         IntentProfile::Memory,
+        IntentProfile::Archive,
+        IntentProfile::Integrity,
     ];
 
     pub fn name(&self) -> &'static str {
@@ -107,6 +146,8 @@ impl IntentProfile {
             IntentProfile::Repo => "repo",
             IntentProfile::Files => "files",
             IntentProfile::Memory => "memory",
+            IntentProfile::Archive => "archive",
+            IntentProfile::Integrity => "integrity",
         }
     }
 
@@ -503,6 +544,58 @@ impl IntentProfile {
                 // one word that reads as memory to a human is the one word that
                 // cannot be a trigger here.
             ],
+            IntentProfile::Archive => &[
+                // BARE "zip" WORKS ON A FILE NAME, and it was checked rather
+                // than assumed. `tacet_skills::matching::contains` requires a
+                // match to START at a term boundary, and in "backup.zip" the
+                // character before the match is '.', which is not alphanumeric —
+                // so the trigger fires. The three-character whole-term rule then
+                // keeps it out of "zipper", and out of "unzip" (preceded by
+                // 'n'), which is why the prefixed forms are listed separately.
+                //
+                // ".zip" IS DELIBERATELY NOT USED, and the reason is the same
+                // rule read the other way: in "backup.zip" the character before
+                // the '.' IS alphanumeric, so a trigger spelled ".zip" could
+                // never fire on the one string it was written for. That is
+                // quietly true of the existing ".md", ".txt", ".py", ".log" and
+                // ".js" triggers as well — a separate defect, measured while
+                // writing this list and NOT fixed here.
+                "zip",
+                "unzip",
+                "unpack",
+                "archive",
+                "compressed",
+                // "extract" WAS TRIED AND DROPPED. It also occurs in "extract
+                // the table from report.xlsx", which is a document request, and
+                // dropping it costs nothing: "unzip invoices.zip" and "what is
+                // in backup.zip" both already fire on "zip".
+            ],
+            IntentProfile::Integrity => &[
+                "checksum",
+                // BOTH SPELLINGS, AND THE HYPHEN IS THE REASON. Matching is a
+                // literal comparison after `simplify`, which folds case but not
+                // punctuation, so "sha256" cannot match the string "sha-256" and
+                // vice versa. Publishers write it both ways on the same page.
+                "sha256",
+                "sha-256",
+                "md5",
+                "digest",
+                // "hash of" AND "hash", NOT ONE OF THEM. Bare "hash" is four
+                // characters, so it matches as a PREFIX — which is what carries
+                // "hashes", "hashed" and "hash value" — and the longer phrase is
+                // there because scoring sums lengths, so the sentence that names
+                // the intent outright scores above one that merely uses the word.
+                "hash",
+                "hash of",
+                "fingerprint",
+                // THE QUESTION ASKED WITHOUT THE VOCABULARY. "Are these two the
+                // SAME FILE", "is the download CORRUPTED" — a user who does not
+                // know the word "checksum" still wants this tool, and none of
+                // these phrases occurs in any other profile's case set.
+                "same file",
+                "identical",
+                "corrupted",
+            ],
         }
     }
 
@@ -712,6 +805,27 @@ impl IntentProfile {
                 // the word next to it.
                 "kaydet",
             ],
+            IntentProfile::Archive => &[
+                // "arsiv" folds from "arşiv" — see the header of this function
+                // on why the diacritics are already gone by the time a trigger
+                // is compared.
+                "arsiv",
+                // "zipten" / "zipi": Turkish glues the case suffix onto the
+                // borrowed noun, and bare "zip" is three characters, so it has
+                // to match as a WHOLE term — "zipten" is not reachable from it.
+                // The four-character forms match as prefixes and cover the rest
+                // of the paradigm ("zipten", "zipteki", "zipi", "zipin").
+                "zipte",
+                "zipi",
+                "sikistirilmis",
+            ],
+            IntentProfile::Integrity => &[
+                "dogrula",
+                "ozet degeri",
+                "ayni dosya",
+                "ayni mi",
+                "bozulmus",
+            ],
         }
     }
 
@@ -825,6 +939,23 @@ impl IntentProfile {
             ],
             IntentProfile::DocEdit => &["edit", "change", "modify", "append", "replace", "insert"],
             IntentProfile::Memory => &["memory", "remember", "forget", "recall", "note"],
+            IntentProfile::Archive => &["archive", "zip", "unzip", "unpack", "extract"],
+            IntentProfile::Integrity => &[
+                // "checksum" AND "sha" CARRY THIS PROFILE FROM THE NAME SIDE:
+                // `checksum` is the only tool whose NAME says what it does to a
+                // file's identity, and a name match is worth `NAME_WEIGHT` times
+                // a description one.
+                "checksum",
+                "sha",
+                "hash",
+                "digest",
+                "fingerprint",
+                // "verify" IS DELIBERATELY ABSENT. The only tool in the catalog
+                // whose description contains it is `write_code`
+                // ("Writes a code file for the user, VERIFIES it"), so a hint
+                // here would score the code WRITER as an integrity tool on every
+                // sentence about a checksum.
+            ],
         }
     }
 }

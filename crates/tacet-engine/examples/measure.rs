@@ -88,7 +88,14 @@ fn main() {
         "cloning       : {:.1} ms",
         vocab_time.as_secs_f64() * 1000.0
     );
-    println!("empty texts   : {empty}  (special/control tokens)");
+    // MEASURED, and this number is now a CHECK rather than a curiosity: it must
+    // equal the number of added-special tokens. With
+    // `skip_special_tokens = false` it was 0 on every file on this machine, which
+    // meant `TokenMask` kept nothing closed and `<|im_end|>` sat in the trie as
+    // ordinary text — see the comment on `build_vocab` and
+    // tests/vocab_alphabet.rs. Expect 20 (qwen3-4b/qwen3-8b/qwen2.5-3b via their
+    // GGUF), 14 via their tokenizer.json, 9 for gemma3-4b.
+    println!("empty texts   : {empty}  (must equal the added-special count)");
     // These samples are the critical part: the grammar works character by
     // character, so if `Ġ` or `▁` shows up here the mask was set up wrongly from
     // the start.
@@ -97,13 +104,24 @@ fn main() {
             println!("  id {id:<6} -> {s:?}");
         }
     }
+    // `Ċ` JOINED THE FILTER AND THE EXPECTED VALUE IS NOT 0. This line used to
+    // read "must be 0 — decode should resolve the markers" and it was wrong on
+    // every file measured here: qwen3-4b, qwen3-8b and qwen2.5-3b each hold TWO
+    // pieces whose text genuinely IS the character U+0120 or U+010A (ids 144242
+    // and 148848, raw forms `Äł` and `ÄĬ`), and gemma3-4b holds the same two at
+    // 245237 / 247723. They are not unresolved markers. What would be a leak is a
+    // marker riding inside a LONGER piece, which is what
+    // tests/vocab_alphabet.rs asserts against; this line is the eyeball version.
     let marked = vocab
         .iter()
-        .filter(|s| s.contains('Ġ') || s.contains('▁'))
+        .filter(|s| s.contains('Ġ') || s.contains('▁') || s.contains('Ċ'))
         .count();
-    println!("BPE marked    : {marked}  (must be 0 — decode should resolve the markers)");
+    println!("BPE marked    : {marked}  (2 on every file measured — the LITERAL Ġ and Ċ pieces)");
 
-    // Do the merged tokens really exist (the risk noted in STATUS.md)?
+    // Do the merged tokens really exist? MEASURED since, in
+    // tacet-cli/tests/mask_alphabet.rs: the natural tokenization of
+    // `create_document({"format":"excel","file_name":"report.xlsx"})` on qwen3-4b
+    // is 13 tokens and the last one is `"})`.
     println!("\n== MERGED TOKENS (candidates that cross the grammar boundary) ==");
     for candidate in [
         "\"})", "\"}", "})", "\":", "\": \"", "\",", "\":\"", "({", "()",

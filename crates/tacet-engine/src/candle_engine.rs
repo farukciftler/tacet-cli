@@ -1108,17 +1108,69 @@ fn find_stop_tokens(tokenizer: &Tokenizer) -> Vec<u32> {
 /// encoding and gives the text that will really be written — the mask and the
 /// generated text MUST speak the same alphabet.
 ///
-/// An id that cannot be decoded becomes an empty string; `TokenMask` already
-/// treats tokens with empty text as "special/neutral" and keeps them closed in the
-/// mask, so special tokens cannot leak into the middle of the grammar.
+/// THE MARKER CLAIM IS NOW MEASURED AND IT HOLDS (tests/vocab_alphabet.rs,
+/// macOS arm64, 4 Sep 2026). qwen3-4b and qwen3-8b (151669 ids) and
+/// qwen2.5-3b-instruct-q4_k_m (151665), each read from BOTH sources — the
+/// tokenizer rebuilt out of the GGUF and the `tokenizer.json` lying next to it:
+/// 53021 raw forms begin with `Ġ` and ALL 53021 surfaces begin with a real
+/// U+0020. gemma3-4b (262145 ids; its GGUF carries a sentencepiece vocabulary
+/// `tokenizer_from_gguf` refuses, so only the File source is measurable): 137541
+/// raw forms begin with `▁`, all 137541 surfaces begin with a space. Not one
+/// marker survives into the surface. Two ids per Qwen file still CONTAIN a
+/// marker character — 144242 (raw `Äł`) and 148848 (raw `ÄĬ`) — and they are not
+/// leaks: their text genuinely IS the one character U+0120 / U+010A, which is
+/// what `decode` correctly produced.
 ///
-/// NOT VERIFIED: this path has NOT YET been run with a real GGUF + tokenizer pair
-/// (see STATUS.md "Known risks"). On the fake engine a code point is a token, so
-/// this conversion cannot be measured there.
+/// `skip_special_tokens` IS `true` HERE, AND IT USED TO BE `false`. THE SECOND
+/// CLAIM THIS COMMENT MADE WAS FALSE UNTIL IT WAS MEASURED. It read: "an id that
+/// cannot be decoded becomes an empty string; `TokenMask` treats tokens with
+/// empty text as special/neutral and keeps them closed in the mask, so special
+/// tokens cannot leak into the middle of the grammar." Measured with `false`:
+/// ZERO ids of 151669 / 151665 / 262145 decoded to an empty string —
+/// `unwrap_or_default` never fired once — so `TokenMask::empty_tokens()` was
+/// EMPTY and the mechanism that whole sentence rests on had never run. What a
+/// special token got instead was its literal name: `vocab[151645]` was the ten
+/// ASCII characters `<|im_end|>`, which the trie offers like any other text
+/// inside a free string value. `run_loop` then deletes them again — what it
+/// hands back is `self.decode(&produced)`, i.e. `decode(skip_special_tokens =
+/// TRUE)` — so the grammar was counting characters the answer does not contain.
+/// The stop-token mask covered exactly two of them (`<|im_end|>`,
+/// `<|endoftext|>`); the other 18 added-special ids of qwen3-4b were open.
+/// `tacet-cli/tests/mask_alphabet.rs` drives that leak on the old vocabulary and
+/// shows it closed on this one.
+///
+/// THE FLIP IS SAFE BECAUSE THE DIFFERENCE SET WAS MEASURED, not assumed: the
+/// ids whose surface changes between `false` and `true` are EXACTLY the
+/// added-special ones and no others — 20 of 151669 from the GGUF, 14 from
+/// qwen3-4b's `tokenizer.json` (the GGUF additionally marks the six FIM/repo
+/// markers CONTROL, see tests/gguf_tokenizer.rs), 9 of 262145 for gemma3-4b —
+/// and every one of them becomes empty. `<think>` is NOT among them: it is an
+/// added token but not a special one, so it keeps its text and `extract_thinking`
+/// still sees it. The sweep also got cheaper, 236 ms -> 210 ms for 151669 ids.
+///
+/// WHAT IS STILL NOT TRUE, AND CANNOT BE FIXED HERE: decoding ONE id at a time is
+/// lossy for the 1448 Qwen ids (3151 for gemma3-4b) whose raw form is a fragment
+/// of a multi-byte character. Their surface is U+FFFD, so on text that tokenizes
+/// through them — CJK, emoji ZWJ sequences — the grammar's character stream and
+/// the delivered text DIVERGE. It is BOUNDED rather than removed: of the 1457
+/// U+FFFD-carrying surfaces NOT ONE contains a JSON structural character
+/// (`{}[]":,`) and exactly one, id 94825 (` (` + U+FFFD), contains a parenthesis
+/// — so a byte fragment cannot open a structure the answer does not contain.
+/// vocab_alphabet.rs asserts that bound rather than hoping for it.
+///
+/// NO CI JOB RE-RUNS ANY OF THIS, and the dates above are therefore the whole
+/// provenance. Every measurement here needs a multi-gigabyte GGUF and the two
+/// files that check it (`tests/vocab_alphabet.rs`,
+/// `tacet-cli/tests/mask_alphabet.rs`) are `#![cfg(feature = "candle")]`, which
+/// no PR job builds; the nightly's `candle-compiles` job only proves they still
+/// COMPILE. Without weights they print SKIPPED and return. So this comment is a
+/// dated local measurement, not a standing guarantee — re-run it (the command is
+/// at the top of vocab_alphabet.rs) before trusting it against a tokenizer
+/// family that is not listed above.
 pub fn build_vocab(tokenizer: &Tokenizer) -> Vec<String> {
     let size = tokenizer.get_vocab_size(true);
     (0..size as u32)
-        .map(|id| tokenizer.decode(&[id], false).unwrap_or_default())
+        .map(|id| tokenizer.decode(&[id], true).unwrap_or_default())
         .collect()
 }
 

@@ -2108,6 +2108,7 @@ dependencies = [
  "tacet-kernel",
  "tacet-skills",
  "tacet-tools",
+ "tacet-zip",
 ]
 
 [[package]]

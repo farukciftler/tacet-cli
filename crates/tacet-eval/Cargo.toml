@@ -22,5 +22,12 @@ tacet-engine.workspace = true
 # to build it too — see `selection_prompt` in `tool_selection.rs` for what the
 # eval was measuring before this line existed.
 tacet-skills.workspace = true
+# ONLY TO BUILD A FIXTURE. `archive` is a catalog tool whose logic can be claimed
+# without a network or a platform gate, but a case for it needs a REAL .zip on
+# disk — and hand-rolling zip bytes in this file would mean the fixture and the
+# reader could drift apart, which is the one way an archive case could go green
+# while `archive` was broken. `tacet_zip::pack` is the same writer production
+# uses; it adds no external dependency (tacet-zip has none).
+tacet-zip.workspace = true
 serde.workspace = true
 serde_json.workspace = true

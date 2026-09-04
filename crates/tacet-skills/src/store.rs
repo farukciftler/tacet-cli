@@ -16,6 +16,15 @@ use std::path::Path;
 
 /// The default skills baked into the build. One line per file; adding a new
 /// skill is a deliberate decision, not dropping a file into a directory.
+/// THE ORDER IS THE TIE-BREAK, and that is why it is not alphabetical.
+///
+/// `matching` keeps the FIRST skill on an equal score (`>`, not `>=`), and
+/// `all()` yields user skills then this list in order — so position here decides
+/// a tie silently. The four original files stay at the top because their
+/// positions were the ones measured; everything added since sits below them, and
+/// `no_two_package_skills_tie_on_a_probe_message` is what says none of the new
+/// ones ever reaches a tie in the first place. A tie that the test does not
+/// cover is an order-dependent choice nobody made.
 const PACKAGE_FILES: &[(&str, &str)] = &[
     ("calc", include_str!("../skills/calc.md")),
     ("read-document", include_str!("../skills/read-document.md")),
@@ -24,6 +33,43 @@ const PACKAGE_FILES: &[(&str, &str)] = &[
         include_str!("../skills/create-document.md"),
     ),
     ("time", include_str!("../skills/time.md")),
+    // --- Added when the catalog had outgrown the four above: thirteen tools in
+    // the production catalog carried no guide at all. Each of these declares its
+    // tool in the frontmatter, so a skill for a tool this build does not ship
+    // (the addon-gated five: web_search, shell, http, db, clipboard, plus the
+    // macOS-only calendar) is filtered out by `has_tools` and can never be
+    // injected. That is the self-disabling property, not a claim that it is safe
+    // to guide a tool that is not there.
+    //
+    // WHAT THE ADDITION ACTUALLY BOUGHT, measured over the 268 messages of the
+    // English selection suite, the Turkish one and `case::all()` (4 Sep 2026):
+    // 99 of them matched a skill with the four files, 117 with these seventeen.
+    // The gain is smaller than the file count suggests, and deliberately so —
+    // this list is not trying to cover every message, it is trying to cover the
+    // ones where a guide changes the call. Part of the 18 is also offset by
+    // `what is` leaving `calc`, which stopped 700 characters of arithmetic
+    // guidance going out with "What is the capital of France?".
+    ("find-file", include_str!("../skills/find-file.md")),
+    ("edit-document", include_str!("../skills/edit-document.md")),
+    ("git", include_str!("../skills/git.md")),
+    // ONE SKILL FOR BOTH CODE TOOLS, and it is not tidiness. Written as
+    // `run-code` and `write-code` the two tied at 13 on the suite's own
+    // "Write me a python script that finds prime numbers, and save it as a
+    // file." — `prime numbers` against `python script` — and the winner was
+    // whichever came first in this list. The ambiguity is real (the same
+    // sentence names a computation AND a file), so the guide explains the
+    // choice instead of two guides fighting over it. `has_tools` demands both
+    // tools, which is safe: `catalog.rs` adds them from the SAME discovery.
+    ("code", include_str!("../skills/code.md")),
+    ("remember", include_str!("../skills/remember.md")),
+    ("calendar", include_str!("../skills/calendar.md")),
+    ("archive", include_str!("../skills/archive.md")),
+    ("checksum", include_str!("../skills/checksum.md")),
+    ("web-search", include_str!("../skills/web-search.md")),
+    ("db", include_str!("../skills/db.md")),
+    ("clipboard", include_str!("../skills/clipboard.md")),
+    ("shell", include_str!("../skills/shell.md")),
+    ("http", include_str!("../skills/http.md")),
 ];
 
 #[derive(Debug, Clone, Default)]
@@ -272,6 +318,212 @@ mod tests {
             // The core marker must NOT LEAK to the model; it is a file marker.
             assert!(!injection_text(skill).contains(crate::injection::CORE_MARKER));
         }
+    }
+
+    /// THE 700-CHARACTER CORE LIMIT, MEASURED WHERE IT CAN ACTUALLY FAIL.
+    ///
+    /// `every_package_skills_injection_stays_within_budget` above asserts that
+    /// `injection_body(...) <= INJECTION_LIMIT` — and that is true BY
+    /// CONSTRUCTION: `injection_body` cuts an over-long core at a line boundary
+    /// before returning. The assertion can never fail, and a fat core is silently
+    /// truncated, which is the exact failure `CORE_MARKER` was introduced to
+    /// prevent: the concrete `tool(args)` example and the anti-hallucination
+    /// rules live in the core, and losing the end of the core loses the reason
+    /// the file exists.
+    ///
+    /// So the claim has to be made about the CORE ITSELF, before the cut. Fatten
+    /// any core past 700 characters and this goes red while its neighbour above
+    /// stays green.
+    #[test]
+    fn no_package_skills_core_is_cut_on_its_way_to_the_model() {
+        let s = SkillStore::default_set();
+        for skill in s.all() {
+            let (core, _) = crate::injection::split_core(&skill.text);
+            assert!(
+                !core.is_empty(),
+                "{}: a package skill must be written core-first (no {} marker)",
+                skill.name,
+                crate::injection::CORE_MARKER
+            );
+            assert!(
+                core.chars().count() <= INJECTION_LIMIT,
+                "{}: the core is {} characters and would be TRUNCATED at {INJECTION_LIMIT}",
+                skill.name,
+                core.chars().count()
+            );
+            // And the core really is what goes first, whole.
+            assert!(
+                crate::injection::injection_body(&skill.text, INJECTION_LIMIT).starts_with(&core),
+                "{}: the core did not survive injection intact",
+                skill.name
+            );
+        }
+    }
+
+    /// A TRIGGER CONTAINING THE STANDALONE WORD "i" IS DEAD ON ARRIVAL.
+    ///
+    /// THE TRAP: `lowercase` maps ASCII 'I' to 'ı' (Turkish, and correct), so
+    /// "What did I copy" — an English sentence where the pronoun is ALWAYS
+    /// capitalised — becomes "what dıd ı copy". A trigger written `what did i
+    /// copy` can then never fire, on any input, ever. Two drafts of these files
+    /// used exactly that shape (for `git` and `clipboard`); both scored zero on
+    /// every probe, which is why `git` says `what changed` and not
+    /// `what did i change`.
+    ///
+    /// WHY IT IS A WORD CHECK AND NOT A ROUND TRIP. The obvious test —
+    /// `contains(&lowercase(t), t)` — cannot fail: `Skill::package` lowercases
+    /// every trigger at construction, so it is `contains(x, x)`. Round-tripping
+    /// through `to_uppercase` instead DOES catch the trap, but it also catches
+    /// every trigger merely CONTAINING an i (`how much is`, which has shipped
+    /// and works) — see the test below for that measurement. The standalone word
+    /// is the property that actually breaks ordinary typing, so it is the one
+    /// held to the build.
+    #[test]
+    fn no_trigger_contains_the_standalone_word_i() {
+        let s = SkillStore::default_set();
+        for skill in s.all() {
+            for t in &skill.triggers {
+                assert!(
+                    !t.split(|c: char| !c.is_alphanumeric()).any(|w| w == "i"),
+                    "{}: the trigger {t:?} contains the word \"i\"; a user typing the \
+                     capital pronoun produces 'ı' and this trigger can never match",
+                    skill.name
+                );
+            }
+        }
+    }
+
+    /// A MEASURED LIMITATION, PINNED RATHER THAN FIXED: an ALL-CAPS English
+    /// message matches no trigger that contains the letter i.
+    ///
+    /// `lowercase("HOW MUCH IS 250 LIRA")` is `"how much ıs 250 lıra"`, so calc's
+    /// shipped `how much is` scores zero on it. Measured here, today, on the real
+    /// matcher.
+    ///
+    /// IT IS NOT FIXED HERE AND THE REASON IS THE RULE ITSELF: 'I' -> 'ı' is the
+    /// CORRECT Turkish mapping and `matching` says so at length; undoing it would
+    /// break the language the rule was written for. Making the mapping depend on
+    /// the message's language is a product decision, not a refactor, and it needs
+    /// a language signal this layer does not have. What is cheap and honest is to
+    /// write the cost down and to have it fail if somebody "fixes" `lowercase`
+    /// without noticing the Turkish half.
+    #[test]
+    fn an_all_caps_english_message_misses_a_trigger_holding_an_i() {
+        let s = SkillStore::default_set();
+        assert!(s.matching("how much is 250 lira", None).is_some());
+        assert!(
+            s.matching("HOW MUCH IS 250 LIRA", None).is_none(),
+            "if this now matches, `lowercase` changed; check the Turkish cases in \
+             `matching` before celebrating"
+        );
+        // The mechanism, so the failure above is readable: it is the letter, not
+        // the phrase.
+        assert_eq!(lowercase("IS"), "ıs");
+    }
+
+    /// ONE SKILL IS INJECTED PER TURN, SO TWO SKILLS CLAIMING THE SAME MESSAGE IS
+    /// A DEFECT, NOT A PREFERENCE.
+    ///
+    /// A tie is decided by `>` and the order of `all()` (user skills first, then
+    /// `PACKAGE_FILES` order) — an order-dependent silent choice, and 700
+    /// characters of the wrong guide in the most expensive part of a 4096-token
+    /// window. `matching` alone cannot show it: it returns the winner and says
+    /// nothing about who tied. So this test scores every skill by hand and
+    /// asserts the runner-up is STRICTLY lower.
+    ///
+    /// The table is one probe per package skill. Tools are passed as `None` so a
+    /// skill is never excluded by the tool gate — a collision hidden because one
+    /// of the pair happened to be addon-gated is still a collision the day the
+    /// addon is installed.
+    #[test]
+    fn no_two_package_skills_tie_on_a_probe_message() {
+        let probes: &[(&str, &str)] = &[
+            ("What is the total of 1250 and 890?", "calc"),
+            ("Summarize this document for me", "read-document"),
+            ("Make an excel file of the weekly plan", "create-document"),
+            ("What is the date today?", "time"),
+            ("Which file is about the budget?", "find-file"),
+            ("Add a row to the table at the end", "edit-document"),
+            ("Show me my changes and write a commit message", "git"),
+            ("Run this code and tell me the prime numbers", "code"),
+            ("Remember that my sister is called Ayse", "remember"),
+            ("What is on my schedule tomorrow?", "calendar"),
+            ("Unzip backup.zip for me", "archive"),
+            ("What is the sha256 of this download?", "checksum"),
+            ("Search the web for the exchange rate", "web-search"),
+            ("Run a sql query against notes.sqlite", "db"),
+            ("Put this on my clipboard", "clipboard"),
+            ("Run the command ls in the terminal", "shell"),
+            ("Call the api at the users endpoint", "http"),
+        ];
+
+        let store = SkillStore::default_set();
+        assert_eq!(
+            probes.len(),
+            store.count(),
+            "every package skill needs a probe, or an untested one can collide unseen"
+        );
+
+        for (message, expected) in probes {
+            let m = lowercase(message);
+            let mut scored: Vec<(&str, usize)> = store
+                .all()
+                .map(|s| (s.name.as_str(), score(&m, &s.triggers)))
+                .filter(|(_, p)| *p > 0)
+                .collect();
+            scored.sort_by_key(|s| std::cmp::Reverse(s.1));
+
+            let (winner, top) = *scored.first().unwrap_or_else(|| {
+                panic!("{message:?} matches no skill at all; {expected} cannot be reached")
+            });
+            assert_eq!(
+                winner, *expected,
+                "{message:?} selected {winner} over {expected}; scores: {scored:?}"
+            );
+            if let Some((runner_up, second)) = scored.get(1) {
+                assert!(
+                    *second < top,
+                    "{message:?} ties {winner} and {runner_up} at {top}; the winner would \
+                     be decided by PACKAGE_FILES order, which nobody chose"
+                );
+            }
+            // And the store's own selection must agree with the hand scoring —
+            // otherwise this test measures a second implementation of the rule.
+            assert_eq!(
+                store.matching(message, None).map(|s| s.name.as_str()),
+                Some(*expected)
+            );
+        }
+    }
+
+    /// THE OVER-TRIGGER THAT WAS ALREADY THERE, and the case that proves it is
+    /// gone.
+    ///
+    /// `calc` used to carry the trigger `what is` (7 characters). "What is the
+    /// capital of France?" — the literal message of the eval suite's
+    /// `chat-general-knowledge` — therefore selected the ARITHMETIC guide, which
+    /// tells the model to "route EVERY numeric calculation to `calculate`" on a
+    /// question with no number in it. The trigger was dropped; `what is the
+    /// total` stayed, and it is what the calc probe above now scores on.
+    ///
+    /// THIS IS WHERE THE EVIDENCE HAD TO LIVE. `case.rs` cannot make it: the eval
+    /// runner builds its prompt with no `with_guide`, so no case in that file can
+    /// see which skill was chosen.
+    #[test]
+    fn a_general_knowledge_question_summons_no_skill() {
+        let s = SkillStore::default_set();
+        assert_eq!(s.matching("What is the capital of France?", None), None);
+        assert_eq!(
+            s.matching("What is the difference between a and b", None),
+            None
+        );
+        // The specific phrase still reaches calc; dropping the generic trigger
+        // did not disarm the skill.
+        assert_eq!(
+            s.matching("What is the total of these", None)
+                .map(|x| x.name.as_str()),
+            Some("calc")
+        );
     }
 
     #[test]

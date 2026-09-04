@@ -1,0 +1,855 @@
+{
+  "engine": "fake",
+  "total": 78,
+  "passed": 78,
+  "success_rate": 1.0,
+  "logic": [
+    54,
+    54
+  ],
+  "behaviour": [
+    24,
+    24
+  ],
+  "tacet_faults": 0,
+  "model_faults": 0,
+  "cases": [
+    {
+      "name": "chat-greeting",
+      "passed": true,
+      "measures": "Behaviour",
+      "called": [],
+      "faults": [],
+      "blame": null,
+      "answer": "Hello! How can I help?"
+    },
+    {
+      "name": "chat-thanks",
+      "passed": true,
+      "measures": "Behaviour",
+      "called": [],
+      "faults": [],
+      "blame": null,
+      "answer": "You're welcome."
+    },
+    {
+      "name": "chat-on-device",
+      "passed": true,
+      "measures": "Behaviour",
+      "called": [],
+      "faults": [],
+      "blame": null,
+      "answer": "No, everything stays on your device."
+    },
+    {
+      "name": "chat-identity",
+      "passed": true,
+      "measures": "Behaviour",
+      "called": [],
+      "faults": [],
+      "blame": null,
+      "answer": "I am Tacet, an on-device AI assistant."
+    },
+    {
+      "name": "chat-capabilities",
+      "passed": true,
+      "measures": "Behaviour",
+      "called": [],
+      "faults": [],
+      "blame": null,
+      "answer": "I can help with document editing, file search, calculations, and local notes."
+    },
+    {
+      "name": "chat-farewell",
+      "passed": true,
+      "measures": "Behaviour",
+      "called": [],
+      "faults": [],
+      "blame": null,
+      "answer": "Goodbye! Have a great day."
+    },
+    {
+      "name": "chat-opinion",
+      "passed": true,
+      "measures": "Behaviour",
+      "called": [],
+      "faults": [],
+      "blame": null,
+      "answer": "Both have benefits depending on your schedule and energy levels."
+    },
+    {
+      "name": "chat-continuation",
+      "passed": true,
+      "measures": "Behaviour",
+      "called": [],
+      "faults": [],
+      "blame": null,
+      "answer": "Sure, here are additional details."
+    },
+    {
+      "name": "chat-shorter",
+      "passed": true,
+      "measures": "Behaviour",
+      "called": [],
+      "faults": [],
+      "blame": null,
+      "answer": "In short: focus on consistency."
+    },
+    {
+      "name": "chat-general-knowledge",
+      "passed": true,
+      "measures": "Behaviour",
+      "called": [],
+      "faults": [],
+      "blame": null,
+      "answer": "The capital of France is Paris."
+    },
+    {
+      "name": "chat-explain-not-compute",
+      "passed": true,
+      "measures": "Behaviour",
+      "called": [],
+      "faults": [],
+      "blame": null,
+      "answer": "Multiply the price by the discount rate, then subtract that from the price."
+    },
+    {
+      "name": "chat-time-complexity",
+      "passed": true,
+      "measures": "Behaviour",
+      "called": [],
+      "faults": [],
+      "blame": null,
+      "answer": "On average it is O(n log n), and O(n squared) in the worst case."
+    },
+    {
+      "name": "chat-read-idiom",
+      "passed": true,
+      "measures": "Behaviour",
+      "called": [],
+      "faults": [],
+      "blame": null,
+      "answer": "No, I can only read files you point me at."
+    },
+    {
+      "name": "chat-remember-idiom",
+      "passed": true,
+      "measures": "Behaviour",
+      "called": [],
+      "faults": [],
+      "blame": null,
+      "answer": "Rows are lines and cells are separated by pipes, with a --- row under the header."
+    },
+    {
+      "name": "chat-no-such-capability",
+      "passed": true,
+      "measures": "Behaviour",
+      "called": [],
+      "faults": [],
+      "blame": null,
+      "answer": "I cannot send email; there is no mail tool here."
+    },
+    {
+      "name": "calc-multiply",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "calculate"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "125 x 8 = 1000."
+    },
+    {
+      "name": "calc-percent",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "calculate"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "200 lira."
+    },
+    {
+      "name": "calc-unsupported",
+      "passed": true,
+      "measures": "Behaviour",
+      "called": [],
+      "faults": [],
+      "blame": null,
+      "answer": "I cannot compute trigonometric functions."
+    },
+    {
+      "name": "calc-add",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "calculate"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "347 + 268 = 615."
+    },
+    {
+      "name": "calc-divide",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "calculate"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "144 / 12 = 12."
+    },
+    {
+      "name": "calc-float",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "calculate"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "15.5 x 4.2 = 65.1."
+    },
+    {
+      "name": "calc-complex",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "calculate"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "Result is 300."
+    },
+    {
+      "name": "calc-syntax-error",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "calculate"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "Syntax error in expression."
+    },
+    {
+      "name": "calc-zero-division",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "calculate"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "Division by zero is undefined."
+    },
+    {
+      "name": "calc-large-number",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "calculate"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "999998000001."
+    },
+    {
+      "name": "time-date",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "time"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "Today is 20 July 2026."
+    },
+    {
+      "name": "time-weekday",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "time"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "Monday."
+    },
+    {
+      "name": "time-diff",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "time"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "135 days."
+    },
+    {
+      "name": "time-unresolvable",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "time"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "I could not understand the date, could you clarify?"
+    },
+    {
+      "name": "time-clock",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "time"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "It is 14:30."
+    },
+    {
+      "name": "time-year-end",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "time"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "164 days left."
+    },
+    {
+      "name": "time-past-date",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "time"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "200 days ago."
+    },
+    {
+      "name": "time-timezone",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "time"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "The current UTC time is 12:00."
+    },
+    {
+      "name": "read-document-table",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "read_document"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "The file has a weekly meal table."
+    },
+    {
+      "name": "create-document-excel",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "create_document"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "I created the excel file."
+    },
+    {
+      "name": "create-document-markdown",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "create_document"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "The note file is ready."
+    },
+    {
+      "name": "read-document-absent",
+      "passed": true,
+      "measures": "Behaviour",
+      "called": [],
+      "faults": [],
+      "blame": null,
+      "answer": "I could not find that file."
+    },
+    {
+      "name": "document-schema-violation",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "create_document"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "Could you tell me the file name?"
+    },
+    {
+      "name": "document-empty-file",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "read_document"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "That file has no content."
+    },
+    {
+      "name": "channel-source-ref",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "read_document"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "There is a long list."
+    },
+    {
+      "name": "channel-chain",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "read_document",
+        "create_document"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "I created the file."
+    },
+    {
+      "name": "channel-unknown-ref",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "create_document"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "I could not find the source data."
+    },
+    {
+      "name": "channel-bulk-never-in-prompt",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "read_document",
+        "create_document"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "I created the file."
+    },
+    {
+      "name": "channel-preview-cap",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "read_document"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "It is a long list of filler lines."
+    },
+    {
+      "name": "channel-edit-by-ref",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "read_document",
+        "edit_document"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "I copied it across."
+    },
+    {
+      "name": "channel-edit-unknown-ref",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "edit_document"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "I could not find the source data."
+    },
+    {
+      "name": "gate-clean-session",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "send_out"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "Sent."
+    },
+    {
+      "name": "gate-tainted-session",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "read_document",
+        "send_out"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "I did not send it."
+    },
+    {
+      "name": "gate-no-retry",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "create_document"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "Created."
+    },
+    {
+      "name": "gate-tainted-approved",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "read_document",
+        "send_out"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "Sent."
+    },
+    {
+      "name": "gate-denied-stays-denied",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "read_document",
+        "send_out",
+        "send_out"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "I did not send it."
+    },
+    {
+      "name": "grounding-budget-figures",
+      "passed": true,
+      "measures": "Behaviour",
+      "called": [
+        "read_document"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "Rent 18000 TL, kitchen 9000 TL, transport 2500 TL."
+    },
+    {
+      "name": "grounding-calc-large",
+      "passed": true,
+      "measures": "Behaviour",
+      "called": [
+        "calculate"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "1234 x 7 = 8638."
+    },
+    {
+      "name": "grounding-countdown",
+      "passed": true,
+      "measures": "Behaviour",
+      "called": [
+        "time"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "12 days."
+    },
+    {
+      "name": "grounding-long-list",
+      "passed": true,
+      "measures": "Behaviour",
+      "called": [
+        "read_document"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "It is a long list of filler lines."
+    },
+    {
+      "name": "grounding-table-rows",
+      "passed": true,
+      "measures": "Behaviour",
+      "called": [
+        "read_document"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "A weekly meal table: Monday lentils, Tuesday rice, Wednesday pasta."
+    },
+    {
+      "name": "edit-document-row",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "read_document",
+        "edit_document"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "I added the row."
+    },
+    {
+      "name": "edit-document-missing",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "edit_document"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "I could not find that file."
+    },
+    {
+      "name": "find-file-by-name",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "find_file"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "budget-2026.md."
+    },
+    {
+      "name": "find-file-by-content",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "find_file"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "budget-2026.md mentions it."
+    },
+    {
+      "name": "find-file-no-match",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "find_file"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "I could not find such a file."
+    },
+    {
+      "name": "search-weather",
+      "passed": true,
+      "measures": "Behaviour",
+      "called": [
+        "web_search"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "Clear, 24 degrees."
+    },
+    {
+      "name": "search-humidity",
+      "passed": true,
+      "measures": "Behaviour",
+      "called": [
+        "web_search"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "Humidity is 54%."
+    },
+    {
+      "name": "remember-fact",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "remember"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "Noted."
+    },
+    {
+      "name": "remember-derived-keywords",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "remember"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "Noted."
+    },
+    {
+      "name": "remember-round-trip",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "remember",
+        "remember"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "I have one note about you."
+    },
+    {
+      "name": "remember-forget-no-match",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "remember"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "There was no such note."
+    },
+    {
+      "name": "remember-forget-everything",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "remember"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "Tell me which note to forget and I will remove it."
+    },
+    {
+      "name": "loop-duplicate-call",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "calculate",
+        "calculate"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "125 x 8 = 1000."
+    },
+    {
+      "name": "loop-unknown-tool",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "ferry_times"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "I do not have a tool for ferry timetables."
+    },
+    {
+      "name": "cancel-before-write",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "create_document"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "I stopped before writing anything."
+    },
+    {
+      "name": "cancel-mid-chain",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "read_document",
+        "create_document"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "I stopped before writing the file."
+    },
+    {
+      "name": "archive-listing-by-ref",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "archive"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "It holds 24 note files."
+    },
+    {
+      "name": "archive-extract-counts-not-content",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "archive"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "I unpacked 24 files."
+    },
+    {
+      "name": "checksum-digest",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "checksum"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "I computed the fingerprint of that file."
+    },
+    {
+      "name": "checksum-mismatch",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "checksum"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "No, the file does not match that checksum."
+    },
+    {
+      "name": "checksum-truncated-digest",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "checksum"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "That is not a full SHA-256; it needs all 64 characters."
+    },
+    {
+      "name": "chain-find-read-create",
+      "passed": true,
+      "measures": "Logic",
+      "called": [
+        "find_file",
+        "read_document",
+        "create_document"
+      ],
+      "faults": [],
+      "blame": null,
+      "answer": "I made the excel file."
+    }
+  ]
+}

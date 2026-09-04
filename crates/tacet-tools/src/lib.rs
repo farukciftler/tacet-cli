@@ -1,13 +1,16 @@
 //! tacet-tools: concrete Tool implementations (document, code, file...). Phase 1
 //! skeleton.
 
+pub mod archive;
 pub mod calc;
 pub mod calendar;
 pub mod catalog;
+pub mod checksum;
 pub mod clipboard;
 pub mod create_document;
 pub mod data_store;
 pub mod db;
+pub mod db_write;
 pub mod edit_document;
 pub mod executor;
 pub mod find_file;

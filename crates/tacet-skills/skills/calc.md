@@ -1,6 +1,6 @@
 ---
 name: calc
-triggers: calculate, how much is, add up, multiply, divide, times, percent, how much money, what is the total, what is
+triggers: calculate, how much is, add up, multiply, divide, times, percent, how much money, what is the total
 tools: calculate
 ---
 # Arithmetic
