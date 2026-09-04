@@ -482,21 +482,49 @@ impl GrammarState {
     /// vocabulary is valid, which would mean cloning the state on each of 32k
     /// branches. MEASURED effect: 6.1ms -> 0.2ms per step.
     pub(crate) fn is_neutral(&self, c: char) -> bool {
-        match self.stack.last() {
+        self.in_free_text_run() && !breaks_free_text(c)
+    }
+
+    /// Is the automaton inside an UNBOUNDED string body — the one place where
+    /// `is_neutral` can be true at all.
+    ///
+    /// WHY IT IS ITS OWN METHOD rather than folded into `is_neutral`: `TokenMask`
+    /// needs the question without a character, because it precomputes the answer
+    /// for the WHOLE vocabulary before it has one (see `plain` in `mask.rs`). Two
+    /// modules deciding separately what "free text" means is exactly how a mask
+    /// starts opening a token the automaton then refuses, so the definition lives
+    /// here once and `is_neutral` is written in terms of it.
+    ///
+    /// `max_length: None` IS LOAD-BEARING. With a bound, each accepted character
+    /// moves the state closer to the limit, so no character is neutral and the
+    /// precomputed set would be wrong — it would keep opening tokens after the
+    /// field was full.
+    pub(crate) fn in_free_text_run(&self) -> bool {
+        matches!(
+            self.stack.last(),
             Some(Frame::Text {
                 node,
                 stage: StringStage::Body,
                 ..
-            }) => {
-                matches!(self.grammar.nodes[*node], Node::Text { max_length: None })
-                    && c != '"'
-                    && c != '\\'
-                    && !c.is_control()
-            }
-            _ => false,
-        }
+            }) if matches!(self.grammar.nodes[*node], Node::Text { max_length: None })
+        )
     }
+}
 
+/// The characters that END a free-text run: they are the ones the automaton
+/// still has to think about inside a string body.
+///
+/// THIS IS THE SAME PREDICATE `AllowedSet::contains` APPLIES to its `text_body`
+/// branch (`permit.rs`), and the two must stay identical: `contains` decides what
+/// may be produced, this decides what may be skipped. If they ever disagreed in
+/// the direction "neutral but not allowed", the mask would open a token the
+/// automaton refuses — the drift `mask.rs` and `call.rs` both warn about.
+/// `the_neutral_class_is_a_subset_of_what_is_allowed` measures it.
+pub(crate) fn breaks_free_text(c: char) -> bool {
+    c == '"' || c == '\\' || c.is_control()
+}
+
+impl GrammarState {
     // ---- automaton ----
 
     fn feed_char(&mut self, c: char) -> Result<(), GrammarError> {

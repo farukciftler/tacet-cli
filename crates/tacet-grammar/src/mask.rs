@@ -15,12 +15,35 @@
 //! NO tokenizer dependency: the interface is `&[String]`. Whichever tokenizer is
 //! used, this crate does not change.
 //!
-//! MEASUREMENT (32k tokens, release, M-series; per step):
-//!   structural positions (object start / key / enum) ..... 2-3 µs
-//!   free string body .................................... ~0.95 ms
-//! Free text is expensive because almost the WHOLE vocabulary is valid there
-//! (~31k tokens), that is, there is no branch to prune. Since the per-step
-//! budget of a 3B model is ~33ms, even this worst case is about 3% of the budget.
+//! MEASUREMENT, REDONE ON A REAL 151k VOCABULARY (qwen3-4b, release, M-series,
+//! per step — `what_one_mask_step_costs_on_a_real_vocabulary` in tacet-cli):
+//!
+//! ```text
+//!                                 before      after     open tokens
+//! call start .................    0.072 ms    0.065 ms      439
+//! inside a key ...............    0.028 ms    0.025 ms        4
+//! free string body ...........    7.195 ms    0.137 ms  147 244
+//! ```
+//!
+//! THE OLD NUMBERS HERE WERE 32k AND THEY DID NOT SCALE. This header used to
+//! read "free string body ~0.95 ms" and conclude that even the worst case was
+//! "about 3% of the budget" of a 3B model. The cost is close to linear in the
+//! vocabulary, so on qwen3's 151k tokens it was 7.2 ms — and the conclusion, an
+//! extrapolation nobody had rerun, was wrong by the same factor. It was found by
+//! watching a selection case spend 35 s on a single generation.
+//!
+//! WHAT THE FAST PATH IS. Inside an UNBOUNDED string body the walk was not
+//! deciding anything: `is_neutral` accepts every character except `"`, `\` and
+//! the controls, so the answer is "every token carrying none of those" — a
+//! property of the vocabulary, not of the state. It is precomputed once
+//! (`plain`) and each subtree that holds no break character is skipped, which on
+//! this vocabulary is 97% of the trie. Same 147 244 tokens open, 52x less time.
+//!
+//! THE ANSWER IS UNCHANGED AND THAT IS TESTED, not argued: the property suite's
+//! `the_mask_and_the_automaton_never_disagree` compares the mask against
+//! `advance` in both directions over generated schemas, and
+//! `the_free_text_fast_path_agrees_with_the_automaton_token_by_token` does it on
+//! a vocabulary built to put break characters at every position.
 
 use crate::{AllowedSet, GrammarState};
 
@@ -32,6 +55,14 @@ struct TrieNode {
     /// The ids of the tokens that end at this node. `Vec`: there are
     /// vocabularies with two tokens that have the same text; both must be masked.
     ends: Vec<usize>,
+    /// Does ANY path below this node (including the edge into it) carry a
+    /// character that ends a free-text run — `\"`, `\\` or a control.
+    ///
+    /// This is what lets the free-text walk stop early: a subtree with no such
+    /// character contains only tokens already opened by `plain`, so descending
+    /// it would re-mark bits that are set. On this vocabulary that is 97% of the
+    /// trie.
+    subtree_breaks: bool,
 }
 
 /// The mask producer, built once over the vocabulary and reused again and again.
@@ -39,6 +70,14 @@ struct TrieNode {
 pub struct TokenMask {
     nodes: Vec<TrieNode>,
     vocab_size: usize,
+    /// The tokens whose text carries no `\"`, no `\\` and no control character.
+    ///
+    /// IN AN UNBOUNDED STRING BODY THIS IS THE ANSWER, already computed. Every
+    /// one of those tokens is reachable by a run of neutral characters, and
+    /// `GrammarState::is_neutral` accepts exactly the characters that are not in
+    /// `breaks_free_text` — so the walk would mark precisely this set and nothing
+    /// else, one trie node at a time. Built once, cloned per step.
+    plain: Vec<bool>,
     /// Tokens with empty text (special/control tokens). As far as the grammar is
     /// concerned they are neutral; they are always left closed in the mask —
     /// when special tokens such as EOS become free is the caller's decision
@@ -73,9 +112,33 @@ impl TokenMask {
             }
             nodes[current].ends.push(id);
         }
+
+        // THE TWO PRECOMPUTATIONS THE FREE-TEXT FAST PATH RESTS ON.
+        //
+        // `plain` is the answer for an unbounded string body, and it is a
+        // property of the VOCABULARY alone — no state can change which tokens
+        // carry a quote. An empty token stays closed here for the same reason it
+        // is closed everywhere else: whether EOS is free is `is_done`'s call.
+        let plain: Vec<bool> = vocab
+            .iter()
+            .map(|t| !t.is_empty() && !t.chars().any(crate::state::breaks_free_text))
+            .collect();
+
+        // `subtree_breaks` is filled in REVERSE INDEX ORDER, and that is a
+        // post-order traversal for free: a child node is always pushed after its
+        // parent above, so every child index is greater than its parent's. A
+        // recursive pass would risk the stack on a deep vocabulary; this cannot.
+        for i in (0..nodes.len()).rev() {
+            let breaks = nodes[i].children.iter().any(|(c, child)| {
+                crate::state::breaks_free_text(*c) || nodes[*child].subtree_breaks
+            });
+            nodes[i].subtree_breaks = breaks;
+        }
+
         Self {
             nodes,
             vocab_size: vocab.len(),
+            plain,
             empty_tokens,
         }
     }
@@ -121,9 +184,23 @@ impl TokenMask {
         state: &GrammarState,
         terminator: Option<char>,
     ) -> Vec<bool> {
-        let mut mask = vec![false; self.vocab_size];
+        // THE FAST PATH, and it is the difference between 7.2 ms and a memcpy on
+        // a 151k vocabulary — measured, see the module header.
+        //
+        // In an unbounded string body every token made only of neutral
+        // characters is producible, so the walk's job there is not to DECIDE
+        // anything, it is to re-derive `plain` one node at a time. Starting from
+        // `plain` and telling the walk it is covered leaves the walk exactly the
+        // work that is still a decision: the paths through `\"`, `\\` and the
+        // control characters.
+        let covered = state.in_free_text_run();
+        let mut mask = if covered {
+            self.plain.clone()
+        } else {
+            vec![false; self.vocab_size]
+        };
         let allowed = state.allowed_prefixes();
-        self.walk(0, state, &allowed, terminator, &mut mask);
+        self.walk(0, state, &allowed, terminator, &mut mask, covered);
         mask
     }
 
@@ -157,6 +234,12 @@ impl TokenMask {
     /// `allowed` is always the allowed set of `state`; it is passed as a
     /// parameter because on neutral branches the state does not change, so
     /// neither does the set — recomputing it would mean one allocation per node.
+    /// `plain_covered`: every character from the ROOT to this node was neutral,
+    /// so `mask` already holds `plain` for everything below. It is handed down
+    /// the neutral branch and reset to `false` the moment the walk takes an
+    /// advancing edge — a token like `\\nabc` carries no break character AFTER
+    /// the escape, but its path from the root does, so it is not in `plain` and
+    /// its subtree still has to be walked.
     fn walk(
         &self,
         node: usize,
@@ -164,6 +247,7 @@ impl TokenMask {
         allowed: &AllowedSet,
         terminator: Option<char>,
         mask: &mut [bool],
+        plain_covered: bool,
     ) {
         // If the grammar can close at this node, the token that ends the call is
         // legitimate too.
@@ -181,10 +265,16 @@ impl TokenMask {
             // transition is VERIFIED; `allowed` is the fast pre-filter, the
             // automaton has the final word.
             if state.is_neutral(*c) {
+                // Nothing below carries a break character, and the path here was
+                // all neutral: every token down there is in `plain`, which the
+                // mask already holds. Descending would set bits that are set.
+                if plain_covered && !self.nodes[*child].subtree_breaks {
+                    continue;
+                }
                 for id in &self.nodes[*child].ends {
                     mask[*id] = true;
                 }
-                self.walk(*child, state, allowed, terminator, mask);
+                self.walk(*child, state, allowed, terminator, mask, plain_covered);
                 continue;
             }
             let Ok(next) = state.branch(*c) else { continue };
@@ -192,7 +282,7 @@ impl TokenMask {
                 mask[*id] = true;
             }
             let next_allowed = next.allowed_prefixes();
-            self.walk(*child, &next, &next_allowed, terminator, mask);
+            self.walk(*child, &next, &next_allowed, terminator, mask, false);
         }
     }
 }
