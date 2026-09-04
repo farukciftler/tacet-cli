@@ -130,6 +130,24 @@ cargo run -p tacet-cli --features metal -- eval --tool-selection --json > after.
 cargo run -p tacet-cli -- eval --compare crates/tacet-eval/baselines/<baseline>.json after.json
 ```
 
+**Which weights, exactly.** `qwen3-4b` in the built-in catalog is
+**Qwen3-4B-Instruct-2507** Q4_K_M, 2 497 281 120 bytes, pinned by sha256. It is
+not `Qwen/Qwen3-4B` — that is the older hybrid model, it answers to the same
+short name in conversation, and for a while it was what the catalog actually
+downloaded while every number in the README came from the 2507 file. Measured on
+one GPU, one suite, one build: the hybrid model spends a median of 247 generated
+tokens per turn against 20 for the instruct model, so the two are not
+interchangeable and a report made on the wrong one is not comparable to
+anything here. `the_default_package_is_the_weights_the_baseline_was_measured_on`
+now fails the build if the catalog and the baseline drift apart again.
+
+**`--compare` refuses two reports made on different weights.** It reads
+`identity.model_fingerprint` and stops rather than warns: a sign test over paired
+cases answers whether *this change* helped, which needs the model held still, and
+a verdict printed under a warning is a wrong verdict people scroll past.
+Comparing two models is a fair thing to want — it is just a different question,
+and this command does not answer it.
+
 **A claimed model improvement arrives as a PR that updates the baseline and
 pastes the `--compare` verdict**, not as two percentages in a description. Before
 checking a model report in, replace `identity.model_path` with a bare file name:
