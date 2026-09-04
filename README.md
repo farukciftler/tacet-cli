@@ -52,6 +52,8 @@ The sentence used to read "invalid tool calls are impossible", and measuring it 
 
 **Almost no dependencies.** OOXML (`.xlsx`, `.docx`) generation, zip, deflate and CRC32 are written by hand. So is the MCP client — JSON-RPC 2.0 over Streamable HTTP with SSE, in ~430 lines with a single `use std`. The full dependency list is `serde`, `serde_json`, `thiserror`, `clap`, `crossterm`, `ureq`, plus `candle` behind an off-by-default feature. Adding to that list is an architectural decision documented at the top of the file, not a convenience.
 
+One honest note on what "the full list" means: those are the DIRECT dependencies, and they are the ones a reader can audit. Transitively, `ureq` brings `rustls`, which brings `ring` — and `ring` compiles C. Nothing here calls it and it changes no claim about what the program does, but it is what sets the build prerequisite on Windows: not the MSVC linker it looks like, but a C compiler, however you get one. Measured, with the three routes and their sizes, in [CONTRIBUTING](CONTRIBUTING.md).
+
 ## Install
 
 ```bash
