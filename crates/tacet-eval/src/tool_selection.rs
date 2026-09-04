@@ -582,6 +582,24 @@ pub fn turkish_selection_cases() -> Vec<SelectionCase> {
             "Bütçe raporunun içeriğinde ne var?",
             "read_document",
         ),
+        // --- archive / checksum ---
+        //
+        // THE TURKISH HALF IS NOT A TRANSLATION EXERCISE. Both sentences carry
+        // the word "dosya", which is a Files trigger, so each of them is also a
+        // test that the new profile beats `find_file` on its own turf — which is
+        // the failure mode a new profile actually has.
+        SelectionCase::tool("tr-zip-icerik", "backup.zip içinde ne var?", "archive"),
+        SelectionCase::tool("tr-zip-ac", "Bu sıkıştırılmış arşivi aç", "archive"),
+        SelectionCase::tool(
+            "tr-ozet-degeri",
+            "installer.dmg dosyasının sha256 özet değeri nedir?",
+            "checksum",
+        ),
+        SelectionCase::tool(
+            "tr-ayni-dosya",
+            "Bu iki dosya aynı mı, kontrol eder misin?",
+            "checksum",
+        ),
     ]
 }
 
@@ -1095,6 +1113,50 @@ pub fn selection_cases() -> Vec<SelectionCase> {
             "pair-web-fetch",
             "Summarize https://example.com/election-results",
             "web_fetch",
+        ),
+        // --- archive ---
+        //
+        // FOUR PHRASINGS, NOT TWO, AND THE LAST ONE IS THE POINT. "List the
+        // files in ..." uses the two words the Files profile is built on, so it
+        // is the case that asks whether `archive` can win a sentence that also
+        // reads as a file question — the thing a new profile is most likely to
+        // get wrong.
+        SelectionCase::tool("archive-list", "What is inside backup.zip?", "archive"),
+        SelectionCase::tool(
+            "archive-unzip",
+            "Unzip invoices.zip into a folder",
+            "archive",
+        ),
+        SelectionCase::tool("archive-unpack", "Unpack the archive photos.zip", "archive"),
+        SelectionCase::tool(
+            "archive-contents",
+            "List the files in the compressed release.zip",
+            "archive",
+        ),
+        // --- checksum ---
+        //
+        // The last two deliberately DO NOT say "checksum": a user who wants this
+        // tool often does not know the word, and a case set written only in the
+        // vocabulary of the tool measures the vocabulary, not the intent.
+        SelectionCase::tool(
+            "checksum-digest",
+            "What is the sha256 of installer.dmg?",
+            "checksum",
+        ),
+        SelectionCase::tool(
+            "checksum-verify",
+            "Check this download against the checksum they published",
+            "checksum",
+        ),
+        SelectionCase::tool(
+            "checksum-fingerprint",
+            "Give me the fingerprint of setup.exe",
+            "checksum",
+        ),
+        SelectionCase::tool(
+            "checksum-compare",
+            "Are these two files byte for byte identical?",
+            "checksum",
         ),
         // --- MULTI-TURN ---
         SelectionCase::chain(
@@ -2233,6 +2295,71 @@ mod trigger_lint {
             "no message in the English suite matches any bundled skill — the guide \
              injection is wired but inert, which measures the same prompt as not \
              wiring it at all"
+        );
+    }
+
+    /// NO MESSAGE THIS PROJECT MEASURES MAY LEAVE TWO SKILLS TIED.
+    ///
+    /// WHY IT LIVES HERE AND NOT IN `tacet-skills`. Exactly ONE skill is
+    /// injected per turn, and `SkillStore::matching` breaks a tie with `>` — the
+    /// first skill in `PACKAGE_FILES` order wins, silently, an order nobody
+    /// chose. `store.rs` has a probe table for that, one message per skill; what
+    /// it CANNOT have is the messages this suite uses, because `tacet-skills`
+    /// does not depend on `tacet-eval` (the edge runs the other way). Hand-copying
+    /// them into `store.rs` would rot the first time a case is edited — the exact
+    /// drift this project writes tests against. Here the three case lists are
+    /// iterated programmatically and cannot go stale.
+    ///
+    /// TOOLS ARE `None` ON PURPOSE: a collision hidden because one of the pair is
+    /// addon-gated today is still a collision the day the addon is installed.
+    ///
+    /// MEASURED WHEN IT WAS WRITTEN (4 Sep 2026): 268 messages across the
+    /// English selection suite, the Turkish one and `case::all()`. It found ONE
+    /// tie on the first run — `run-code` and `write-code` both scoring 13 on
+    /// "Write me a python script that finds prime numbers, and save it as a
+    /// file." (`prime numbers` against `python script`) — which is why those two
+    /// files are now the single `code` skill. That collision is exactly the class
+    /// this test exists for: both guides were reasonable, the message is
+    /// genuinely ambiguous, and the winner was decided by list order.
+    #[test]
+    fn no_suite_message_leaves_two_skills_tied() {
+        let skills = tacet_skills::SkillStore::default_set();
+        let messages: Vec<String> = selection_cases()
+            .iter()
+            .chain(turkish_selection_cases().iter())
+            .flat_map(|c| c.steps.iter().map(|s| s.message.clone()))
+            .chain(crate::case::all().iter().map(|c| c.input.clone()))
+            .collect();
+        assert!(
+            messages.len() > 100,
+            "the suites should supply hundreds of messages, got {}",
+            messages.len()
+        );
+
+        let mut ties: Vec<String> = Vec::new();
+        for message in &messages {
+            let lowered = tacet_skills::lowercase(message);
+            let mut scored: Vec<(&str, usize)> = skills
+                .all()
+                .map(|s| (s.name.as_str(), tacet_skills::score(&lowered, &s.triggers)))
+                .filter(|(_, p)| *p > 0)
+                .collect();
+            scored.sort_by_key(|s| std::cmp::Reverse(s.1));
+            // ONLY THE PAIR AT THE FRONT MATTERS: two losers tied at 5 change
+            // nothing, the guide is already decided. A tie at the TOP is the one
+            // that hands the choice to `PACKAGE_FILES` order.
+            if let [(first, top), (second, next), ..] = scored.as_slice()
+                && top == next
+            {
+                ties.push(format!(
+                    "{message:?}: {first} and {second} both score {top}"
+                ));
+            }
+        }
+        assert!(
+            ties.is_empty(),
+            "a tie is an order-dependent choice of guide:\n  {}",
+            ties.join("\n  ")
         );
     }
 

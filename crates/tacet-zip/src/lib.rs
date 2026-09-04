@@ -20,5 +20,5 @@ mod writer;
 pub use crc32::{crc32, crc32_continue};
 pub use error::{ZipError, ZipResult};
 pub use inflate::inflate;
-pub use reader::{ARCHIVE_CAP, ENTRY_CAP, open, open_map};
+pub use reader::{ARCHIVE_CAP, ENTRY_CAP, ZipListing, list, open, open_map, open_selected};
 pub use writer::{ZipEntry, pack};

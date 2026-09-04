@@ -10,7 +10,9 @@
 //! shared directory would let a `meals.xlsx` left over from a previous run be
 //! mistaken for "created" in the next one.
 
-use crate::case::{BUDGET_FILE, FIXED_EPOCH, LONG_FILE, TABLE_FILE};
+use crate::case::{
+    ARCHIVE_ENTRIES, ARCHIVE_FILE, BUDGET_FILE, EMPTY_FILE, FIXED_EPOCH, LONG_FILE, TABLE_FILE,
+};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -18,7 +20,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tacet_kernel::{
     ArgSchema, Field, Tool, ToolCatalog, ToolContext, ToolFuture, ToolOutcome, boxed,
 };
+use tacet_tools::archive::ArchiveTool;
 use tacet_tools::calc::CalcTool;
+use tacet_tools::checksum::ChecksumTool;
 use tacet_tools::create_document::CreateDocumentTool;
 use tacet_tools::data_store::SharedStore;
 use tacet_tools::edit_document::EditDocumentTool;
@@ -123,6 +127,16 @@ impl Env {
         // and still get "not found" back, and whoever reads the measurement
         // mistakes that for a selection error.
         std::fs::write(dir.join(BUDGET_FILE), BUDGET_CONTENT)?;
+        // A file that exists and is empty — see `EMPTY_FILE`. Written rather
+        // than left out: "the file is not there" and "the file is there and has
+        // nothing in it" are two different answers and the case needs the second.
+        std::fs::write(dir.join(EMPTY_FILE), "")?;
+        // PACKED WITH PRODUCTION'S OWN WRITER. `pack` cannot fail on this input
+        // (two dozen tiny entries, far under every zip32 limit), and if it ever
+        // did the error would surface here as a setup failure rather than as a
+        // mysterious `archive` case — which is why the `expect` carries the
+        // reason instead of a `?`: `ZipError` is not an `io::Error`.
+        std::fs::write(dir.join(ARCHIVE_FILE), archive_bytes())?;
 
         Ok(Self {
             dir,
@@ -152,6 +166,19 @@ impl Env {
     ///                     and schema are the production ones, the body opens no
     ///                     socket. The rule of this crate is NO NETWORK, and it is
     ///                     not bent for a measurement.
+    ///   `archive`       — pure local computation over a fixture .zip written by
+    ///                     `Env::setup`; nothing it does outlives the directory.
+    ///   `checksum`      — pure local computation, and the ONE tool in the
+    ///                     catalog whose correct answer is a value that can be
+    ///                     written down in advance (see `checksum-digest`).
+    ///
+    /// STILL DELIBERATELY ABSENT, one more since the list above was written:
+    ///   `db_write` — it is not in the PRODUCTION catalog either (see the note in
+    ///     `tacet_tools::catalog`; `tacet-cli` adds it and nobody else). It needs
+    ///     a `sqlite3` binary and a confirmation sink, so a case for it would
+    ///     pass or fail by host — the same reason `run_code` is out — and eval
+    ///     holding a tool that WRITES to the user's databases is a trade this
+    ///     crate should not make for a measurement.
     ///
     /// DELIBERATELY ABSENT, and each for a reason that is not "we forgot":
     ///   `run_code`/`write_code` — bound to a discovery gate (`sandbox-exec` on
@@ -176,6 +203,14 @@ impl Env {
             // memory file would leave the maintainer's own notes behind it.
             .add(Arc::new(MemoryTool::new(SharedMemory::in_memory())))
             .add(Arc::new(DryWebSearch(Arc::new(WebSearchTool::new()))))
+            // `archive` TAKES THE STORE and `checksum` DOES NOT — the same split
+            // as the production catalog, and for the same reason: a listing of
+            // two dozen entries is bulk data and belongs behind a `source_ref`,
+            // a digest is 64 characters whatever the file's size. Passing the
+            // store to `archive` here is what makes `archive-listing-by-ref`
+            // measure the channel rather than the fallback.
+            .add(Arc::new(ArchiveTool::with_store(Arc::clone(&self.store))))
+            .add(Arc::new(ChecksumTool::new()))
             .add(Arc::new(FakeExternalTool));
         c
     }
@@ -199,6 +234,23 @@ const TABLE_CONTENT: &str = "| Day | Meal |\n\
                              | Monday | Lentils |\n\
                              | Tuesday | Rice |\n\
                              | Wednesday | Pasta |\n";
+
+/// The bytes of `ARCHIVE_FILE`, packed by `tacet_zip::pack`.
+///
+/// DETERMINISTIC BY CONSTRUCTION: the entry names and bodies are generated from
+/// a counter, and `pack` writes no timestamp that varies (the eval run must be
+/// bit-for-bit reproducible — see `the_run_is_deterministic`).
+fn archive_bytes() -> Vec<u8> {
+    let entries: Vec<tacet_zip::ZipEntry> = (1..=ARCHIVE_ENTRIES)
+        .map(|i| {
+            tacet_zip::ZipEntry::new(
+                format!("notes/entry-{i:02}.txt"),
+                format!("entry {i} of the fixture archive\n").into_bytes(),
+            )
+        })
+        .collect();
+    tacet_zip::pack(&entries).expect("the fixture archive is far inside every zip32 limit")
+}
 
 /// Content that comfortably exceeds `TEXT_STORE_THRESHOLD` (1500 bytes) — more
 /// than twice the threshold so that triggering the bypass channel is

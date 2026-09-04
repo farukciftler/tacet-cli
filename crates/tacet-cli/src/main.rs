@@ -161,7 +161,23 @@ const DEFAULT_THRESHOLD: f64 = 1.0;
 /// correct price: the question is what the user has instead of a gate.
 ///
 /// `db` stays out: it is SQLite-only, read-only, and reaches nothing the working
-/// directory does not already expose. `clipboard` is the argued case — writing
+/// directory does not already expose.
+///
+/// `db_write` STAYS OUT TOO, AND THE `shell` ARGUMENT ABOVE IS THE REASON IT HAS
+/// TO BE ARGUED RATHER THAN ASSUMED. `shell` was left out once on the grounds
+/// that it opens no socket, and a test then put a personal file on a listener
+/// through `curl`. The same reasoning does not reach here, and the difference is
+/// checkable: `db_write` runs ONE binary, `sqlite3`, at a fixed path, with
+/// `-safe` — which is measured at discovery to refuse ATTACH, `writefile()` and
+/// every dot-command, and in this build `load_extension` is not a function at
+/// all. There is no user list of programs behind it and no way to spell a socket
+/// in SQL. Its own gate is per-call and local (`WriteConfirm`), and it is
+/// deliberately NOT this one: gate 3 fires only in a TAINTED session and caches
+/// a denial for the rest of it, so it would ask nothing on the first turn — the
+/// turn where a `DROP TABLE` is most likely — and then stop asking after the
+/// first "no".
+///
+/// `clipboard` is the argued case — writing
 /// hands text to every application on the machine, but this list matches on the
 /// TOOL NAME and not on the action, so listing it would put the question in
 /// front of READING too, and reading is what creates the taint in the first
@@ -690,6 +706,59 @@ impl ApprovalGate for TerminalApproval {
     }
 }
 
+/// Shows the MEASURED effect of a database change and asks y/n.
+///
+/// A DIFFERENT QUESTION FROM `TerminalApproval`'S, and that is why it is a
+/// different type rather than a second use of the same one. That gate asks "may
+/// this data leave the machine"; it fires only for `EXTERNAL_TOOLS`, only in a
+/// tainted session, and it remembers a "no" for the rest of the session. This
+/// one asks "may this change happen to your file", and none of those three
+/// properties fit: the first turn of a clean session is exactly when a
+/// destructive statement is most likely, and a refusal here says nothing about
+/// the NEXT statement.
+///
+/// EVERY LINE IS SANITISED HERE, AT THE POINT IT MEETS THE TERMINAL. The
+/// statement is text the MODEL wrote; a `\r` in it would rewrite the sentence
+/// describing what is about to happen and a `\n` would paint a second,
+/// friendlier prompt underneath. The same defence `TerminalApproval` writes down
+/// for its consent line, applied to a longer screen.
+struct TerminalWriteConfirm;
+
+impl tacet_tools::db_write::WriteConfirm for TerminalWriteConfirm {
+    fn confirm(&self, request: &tacet_tools::db_write::WriteRequest<'_>) -> bool {
+        let color = Color::setup();
+        eprintln!();
+        eprintln!(
+            "  {} a change to '{}' is about to be written:",
+            color.paint(YELLOW, "⚠"),
+            crate::ui::one_line(request.file)
+        );
+        eprintln!("    {}", crate::ui::one_line(request.statement));
+        eprintln!();
+        eprintln!("  {}", color.paint(DIM, "measured on a copy of the file:"));
+        for line in request.effect.lines() {
+            eprintln!("    {}", crate::ui::one_line(line));
+        }
+        eprintln!(
+            "  {}",
+            color.paint(
+                DIM,
+                &format!(
+                    "the file as it is now will be kept beside it as {}",
+                    crate::ui::one_line(request.backup)
+                )
+            )
+        );
+        eprint!("  Apply it? [y/N] ");
+        let _ = std::io::stderr().flush();
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line).is_err() {
+            return false;
+        }
+        matches!(line.trim().to_lowercase().as_str(), "y" | "yes")
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Catalog
 // ---------------------------------------------------------------------------
@@ -700,10 +769,28 @@ impl ApprovalGate for TerminalApproval {
 /// `CodeState` is handed OUT because the attempt counter must be reset ON EVERY
 /// TURN and only the shell (the side that knows the turn boundary) can do that;
 /// once the tool is lost inside an Arc in the catalog it could not be reached.
+/// `can_ask` IS "IS THERE A HUMAN AT A TERMINAL", and it decides whether
+/// `db_write` is in the catalog at all — not merely which sink answers it.
+///
+/// A TOOL THAT CAN ONLY EVER REFUSE IS A TRAP THAT COSTS A TURN; `db.rs` and
+/// `run_code.rs` both write that rule down, and a `db_write` wired to
+/// `RefuseWrite` in a piped session is exactly that shape: the model sees it,
+/// calls it, and is told no every single time. So a session with nobody to ask
+/// does not get the tool. The alternative — installing a stdin-reading
+/// confirmation everywhere — is worse in the other direction: it blocks a piped
+/// run forever on a prompt nobody can see.
+///
+/// THE DIAGNOSTIC COMMANDS PASS `true` AND DO NOT RUN ANYTHING. `tacet why`,
+/// `tacet tools` and `tacet grammar` inspect the catalog and never execute a
+/// tool, so no sink of theirs is ever called; their job is to report the
+/// catalog an ordinary session is given, which is the interactive one. The cost
+/// is stated: `tacet tools` lists `db_write` even when the chat you are about
+/// to pipe would not have it.
 fn session_catalog(
     store: &Arc<SharedStore>,
     memory: &SharedMemory,
     color: &Color,
+    can_ask: bool,
 ) -> (ToolCatalog, Option<Arc<CodeState>>) {
     // THE LIST ITSELF IS NO LONGER HERE (see tacet-tools/src/catalog.rs). The
     // shell and eval must see the same list: the tool SELECTION measurement
@@ -720,9 +807,55 @@ fn session_catalog(
     // also the one that runs again on `refresh_session` — so closing the addon
     // from inside the shell really does take the reach away.
     apply_workspace_roots(color);
-    let (c, code_state, diagnosis) = tacet_tools::catalog::production_catalog(store, memory, None);
+    let (mut c, code_state, diagnosis) =
+        tacet_tools::catalog::production_catalog(store, memory, None);
     if let Some(d) = diagnosis {
         eprintln!("{}", color.paint(DIM, &format!("({})", d.0)));
+    }
+
+    // `db_write` IS ADDED HERE AND NOWHERE ELSE — see the module note in
+    // `tacet_tools::db_write`. `production_catalog` is what eval builds from,
+    // and a measurement run must never hold a tool that can change a file; this
+    // function is the production-only path and the one that runs again on
+    // `refresh_session`, so closing the addon really does take the tool away.
+    //
+    // APPENDED LAST, which puts it past `router::MAX_TOOLS` in the catalog
+    // order: on a message with no trigger it is the first thing the router
+    // drops. That is the right end of the list for a tool that must never be
+    // reached by a message which did not ask for a change.
+    //
+    // AND ONLY WHEN THERE IS SOMEBODY TO ASK (`can_ask`) — see the note on this
+    // function. `discover()` is still what decides whether the addon, the list
+    // and the binary allow it at all; the sink is installed here rather than
+    // left to the tool's own `RefuseWrite` default so that a future caller who
+    // forgets this line refuses instead of writing.
+    if can_ask && let Some(write_tool) = tacet_tools::db_write::DbWriteTool::discover() {
+        c.add(Arc::new(
+            write_tool
+                .with_confirm(Arc::new(TerminalWriteConfirm))
+                .with_store(Arc::clone(store)),
+        ));
+    } else if can_ask
+        && tacet_web::addon::is_open(tacet_web::addon::DB)
+        && !tacet_web::addon::read()
+            .map(|r| {
+                r.find(tacet_web::addon::DB)
+                    .map(|e| e.values(tacet_web::addon::WRITABLE_KEY).is_empty())
+                    .unwrap_or(true)
+            })
+            .unwrap_or(true)
+    {
+        // AN OPEN ADDON WITH A NON-EMPTY LIST AND NO TOOL is the confusing
+        // state, the same one `catalog::addon_diagnoses` exists for: the user
+        // named a file and nothing appeared. An EMPTY list says nothing — that
+        // is the default and their own decision.
+        eprintln!(
+            "{}",
+            color.paint(
+                YELLOW,
+                &format!("({})", tacet_tools::db_write::DbWriteTool::diagnose())
+            )
+        );
     }
     // An addon the user OPENED whose tool is still missing. A closed addon says
     // nothing (that was their own decision); this is the confusing state — "I
@@ -869,7 +1002,7 @@ fn refresh_session(
     code_state: &mut Option<Arc<CodeState>>,
 ) {
     let tainted = executor.session_tainted();
-    let (mut c, cs) = session_catalog(store, memory, color);
+    let (mut c, cs) = session_catalog(store, memory, color, interactive);
     let names = mcp::feed_catalog(&mut c, mcp_load);
     let mut ex = ToolExecutor::new(c.clone());
     ex = if interactive {
@@ -1420,6 +1553,26 @@ mod tests {
         }
     }
 
+    /// `db_write` MUST NOT BE ON THAT LIST, and the reason is not "it is
+    /// harmless" — it is that gate 3 answers a different question and would
+    /// answer this one WRONGLY IN BOTH DIRECTIONS. It fires only in a tainted
+    /// session, so the first turn of a fresh session — where a `DROP TABLE` is
+    /// most likely — would be asked about not at all; and it caches a denial per
+    /// tool, so after one "no" every later statement would be refused silently
+    /// with no question. The per-call `WriteConfirm` in `tacet_tools::db_write`
+    /// is the gate, and `db_write.rs`'s own tests measure both halves.
+    ///
+    /// This is the test that fails if somebody "simplifies" the design by
+    /// reusing the outbound gate.
+    #[test]
+    fn the_database_write_gate_is_not_the_outbound_gate() {
+        assert!(
+            !EXTERNAL_TOOLS.contains(&"db_write"),
+            "db_write was added to the outbound approval list; a clean session would then write \
+             a DROP with no question at all"
+        );
+    }
+
     // The logic that stops a raw tool call leaking onto the screen is NOW in
     // `filter.rs` and its tests are there (the old `is_call` made a one-shot
     // decision, the new filter follows the whole stream).
@@ -1741,11 +1894,34 @@ mod tests {
     /// The double-quoted tokens in one text block, lowercase words only. A guide
     /// quotes argument VALUES this way (`"excel"`); prose quoting a sentence
     /// carries spaces and drops out here.
+    ///
+    /// A JSON **KEY** IS NOT A VALUE, and this used to treat it as one. The four
+    /// original guides quote values in prose and never write a whole call, so
+    /// nothing noticed; the first guide that carried a concrete
+    /// `git({"action":"status"})` example — which is exactly the shape
+    /// `injection.rs` says a core is FOR — was rejected with
+    /// `action="action", but 'git' only accepts ["status","diff","log"]`. The
+    /// claim in this test's own header is about the value the model is told to
+    /// send, and a key is the field's name, checked already by `choice_fields`
+    /// finding it at all.
+    ///
+    /// A KEY IS THE TOKEN FOLLOWED BY A COLON. That is the whole rule, and it is
+    /// deliberately syntactic: the alternative — trusting position inside the
+    /// object — breaks on the first guide that writes a value containing a colon.
+    /// Nothing else about the net is loosened; a bogus VALUE is still caught.
     fn quoted_words(block: &str) -> Vec<String> {
-        block
-            .split('"')
+        let parts: Vec<&str> = block.split('"').collect();
+        parts
+            .iter()
+            .enumerate()
             .skip(1)
             .step_by(2)
+            .filter(|(i, _)| {
+                !parts
+                    .get(i + 1)
+                    .is_some_and(|after| after.trim_start().starts_with(':'))
+            })
+            .map(|(_, t)| *t)
             .filter(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
             .map(|t| t.to_string())
             .collect()
@@ -1783,16 +1959,70 @@ mod tests {
             tacet_tools::catalog::production_catalog_with(&store, &memory, Some(0), true);
         let skills = tacet_skills::SkillStore::default_set();
 
+        // THE TOOLS AN ADDON WOULD BRING, taken from the registry's own rows.
+        //
+        // WHY THE NAME CHECK CANNOT JUST BE `catalog.find`. Five tools are addon
+        // gated (`clipboard`, `db`, `http`, `shell`, `web_search`) and three of
+        // those also have to DISCOVER themselves on the host — `db` wants a
+        // `sqlite3` whose read-only lock it has measured, `clipboard` a helper
+        // binary, `http` a non-empty host list. Opening every gate here would
+        // make the test pass or fail by machine, which measures the runner. So a
+        // skill may command a tool the catalog does not hold, PROVIDED some addon
+        // definition declares that name — a typo still fails, an unshipped tool
+        // does not.
+        //
+        // THE PRICE, stated: a gated tool's CHOICE VALUES go unchecked, because
+        // there is no schema to check them against without building the tool. The
+        // guides for those five therefore carry the weaker guarantee, and that is
+        // a limit of this seam and not something the guide files can fix.
+        let addon_tools: Vec<&str> = tacet_web::addon::DEFINITIONS
+            .iter()
+            .flat_map(|d| d.tools.iter().copied())
+            .collect();
+
+        // THE TOOLS THAT ARE CONDITIONAL ON THE HOST RATHER THAN ON AN ADDON —
+        // the same problem as the addon five, arriving through two more doors.
+        // Both doors were found by CI, one run apart, and the order is the
+        // interesting part.
+        //
+        // `run_code` and `write_code` are in the catalog only when
+        // `RunCodeTool::discover()` finds AND MEASURES a sandbox, which needs an
+        // interpreter at one of the fixed paths. On windows-latest neither node
+        // nor python3 is there, so both are absent and the `code` skill — which
+        // exists to command exactly them — failed with "neither in the catalog nor
+        // declared by any addon" (run 33863502596, 2026-09-04).
+        //
+        // `calendar` is macOS-ONLY: it speaks to Calendar/Reminders through
+        // `osascript`, so on Linux and Windows the tool is simply not registered
+        // and the `calendar` skill has nothing to name. THIS ONE WAS HIDDEN BEHIND
+        // THE FIRST TWO. In run 33863502596 the ubuntu leg never reached the tests
+        // — it stopped at the bwrap preflight — and the windows leg reported only
+        // the first failing skill. It surfaced in run 33864070108, once the
+        // AppArmor fix let Linux discover the shield and `run_code` joined the
+        // ubuntu catalog. A platform gap can mask a platform gap.
+        //
+        // THE PRICE IS THE ONE STATED ABOVE and is worth restating because it is
+        // bigger here: these three carry the weaker guarantee, so a typo in their
+        // CHOICE VALUES is caught on the platform that has them and not on the
+        // others. `calendar` is the sharpest case — exactly one leg of the matrix
+        // checks it. Not uncaught, but caught once rather than three times.
+        const HOST_CONDITIONAL: [&str; 3] = ["run_code", "write_code", "calendar"];
+
         let mut checked_values = 0;
         for skill in skills.all() {
             for name in &skill.tools {
-                let tool = catalog.find(name).unwrap_or_else(|| {
-                    panic!(
-                        "skill '{}' commands tool '{name}', which is not in the catalog: {:?}",
+                let Some(tool) = catalog.find(name) else {
+                    assert!(
+                        addon_tools.contains(&name.as_str())
+                            || HOST_CONDITIONAL.contains(&name.as_str()),
+                        "skill '{}' commands tool '{name}', which is neither in the catalog \
+                         {:?}, nor declared by any addon {addon_tools:?}, nor one of the \
+                         host-conditional {HOST_CONDITIONAL:?}",
                         skill.name,
                         catalog.names()
-                    )
-                });
+                    );
+                    continue;
+                };
                 for (field, allowed) in choice_fields(&tool.schema()) {
                     for block in paragraphs(&skill.text)
                         .iter()

@@ -93,6 +93,32 @@
 //!
 //! THE RESULT IS THE USER'S DATA, so the session is tainted and the next
 //! outgoing call meets the approval gate.
+//!
+//! ===========================================================================
+//! WHAT `-readonly` CANNOT OPEN — MEASURED, AND NOT FIXED HERE
+//! ===========================================================================
+//!
+//! A database in WAL journal mode that has no `-shm` sidecar beside it CANNOT
+//! BE OPENED READ-ONLY AT ALL. SQLite needs the shared-memory index to read a
+//! WAL database and `-readonly` forbids creating it. Measured on this machine
+//! (sqlite3 3.51.0): a file put into WAL mode and then closed cleanly answered
+//!
+//!   sqlite3 -readonly -safe -batch w.db "SELECT count(*) FROM t;"
+//!   -> Error: in prepare, unable to open database file (14), exit 14
+//!
+//! while the same query without `-readonly` printed `3` — and after that
+//! read-write open had left `w.db-shm` and `w.db-wal` behind, the read-only
+//! form worked too. So this tool answers "the query could not be run" for a WAL
+//! database at rest, which looks like a broken tool and is in fact the lock
+//! doing exactly what it says.
+//!
+//! IT IS RECORDED RATHER THAN FIXED because every fix trades the lock away:
+//! opening read-write to create the `-shm`, or passing `?immutable=1` (which
+//! tells SQLite the file cannot change and returns WRONG ANSWERS if it does).
+//! Neither is a trade this tool may make on its own. `db_write.rs` hit the same
+//! wall from the other side and works around it WITHOUT touching the user's
+//! file: it fingerprints its own scratch COPIES read-write and never opens the
+//! original for reading at all.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -131,7 +157,15 @@ const SQLITE_PATHS: &[&str] = &[
 /// `-ascii` sets the field/record separators to `0x1F`/`0x1E`, which no SQL
 /// value realistically contains, so the output parses without a quoting rule.
 /// `-header` puts the column names in the first record.
-const SAFE_ARGS: [&str; 5] = ["-readonly", "-safe", "-batch", "-ascii", "-header"];
+///
+/// `pub(crate)` SO IT CAN BE COMPARED, NOT SO IT CAN BE REUSED. `db_write.rs`
+/// keeps its own `WRITE_ARGS` (the same list MINUS `-readonly`) and a test
+/// there asserts the two constants differ in exactly that flag. The write
+/// constant deliberately does NOT live in this file: this module's doc comment
+/// is a hundred-line argument that read-only is the whole point, and a list
+/// with no `-readonly` in it sitting underneath that argument is how the two
+/// get mixed up at a call site.
+pub(crate) const SAFE_ARGS: [&str; 5] = ["-readonly", "-safe", "-batch", "-ascii", "-header"];
 
 /// ASCII unit separator — between fields.
 const FIELD_SEPARATOR: char = '\u{1f}';
@@ -169,7 +203,7 @@ const PREVIEW_ROWS: usize = 12;
 /// The cap on the text handed to the model (~500 tokens). A wide table can blow
 /// a budget with far fewer rows than `PREVIEW_ROWS`, so the character cap is
 /// enforced as well as the row cap.
-const MODEL_CAP: usize = 1400;
+pub(crate) const MODEL_CAP: usize = 1400;
 
 // ---------------------------------------------------------------------------
 // Discovery — the read-only lock is MEASURED, not assumed
@@ -179,7 +213,7 @@ const MODEL_CAP: usize = 1400;
 const UNSAFE_MARKER: &str = "TACET_SAFE_MODE_IS_OFF";
 
 /// Finds the binary. `None` = it is not in any of the known locations.
-fn find_binary() -> Option<PathBuf> {
+pub(crate) fn find_binary() -> Option<PathBuf> {
     SQLITE_PATHS
         .iter()
         .map(Path::new)
@@ -356,7 +390,7 @@ fn run_query(binary: &Path, database: &Path, query: &str) -> std::io::Result<Que
 /// inside a table — the same class of hole the chip text funnel was written to
 /// close. The separators are split on FIRST and stripped SECOND, so the
 /// stripping cannot eat the structure.
-fn parse_ascii(raw: &str) -> Table {
+pub(crate) fn parse_ascii(raw: &str) -> Table {
     let mut records = raw
         .split(RECORD_SEPARATOR)
         .filter(|r| !r.is_empty())
@@ -376,7 +410,7 @@ fn parse_ascii(raw: &str) -> Table {
 /// `tacet_kernel::reporter::single_line` makes, and for the same reason.
 /// `is_control()` covers C0, DEL and the C1 range (U+009B is a single-character
 /// CSI on a UTF-8 terminal, as good as `ESC [`).
-fn strip_control(cell: &str) -> String {
+pub(crate) fn strip_control(cell: &str) -> String {
     cell.chars()
         .map(|c| if c.is_control() { '·' } else { c })
         .collect()

@@ -301,7 +301,7 @@ pub fn chat(run: ChatRun) -> ExitCode {
     }
     let mut injection_state = InjectionState::new();
 
-    let (mut catalog, mut code_state) = session_catalog(&store, &memory, &color);
+    let (mut catalog, mut code_state) = session_catalog(&store, &memory, &color, interactive);
 
     // THE ADDON GATE'S VALUE IS READ AT SESSION START — AT THE SAME MOMENT as
     // the catalog. The catalog is set up at session start too; reading the two at

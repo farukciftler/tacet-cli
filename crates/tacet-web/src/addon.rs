@@ -68,7 +68,16 @@ pub const WORKSPACE: &str = "workspace";
 /// Plain HTTP requests to an approved host list.
 pub const HTTP: &str = "http";
 
-/// A database connection. Its setting CARRIES A PASSWORD — see `Setting::secret`.
+/// SQLite database files in the working directory.
+///
+/// THE DOC LINE HERE USED TO SAY "its setting CARRIES A PASSWORD". That was
+/// already false when it was read: the connection-string setting was removed
+/// when the tool behind this addon turned out to be SQLite-only (see the note
+/// on the `DB` row in `DEFINITIONS`), and nothing behind this name has ever had
+/// a credential to keep. It is corrected here rather than left, because the one
+/// setting this addon does carry now — `WRITABLE_KEY` — is emphatically NOT a
+/// secret, and a stale "secret" note beside it is the kind of sentence that
+/// makes the next reader mask the wrong field.
 pub const DB: &str = "db";
 
 /// The system clipboard. Asks nothing at install time.
@@ -89,6 +98,32 @@ pub const DIRECTORIES_KEY: &str = "directories";
 
 /// The allowed host list (`http`).
 pub const HOSTS_KEY: &str = "hosts";
+
+/// The database files that may be WRITTEN (`db`).
+///
+/// EMPTY IS THE DEFAULT AND IT MEANS "NO WRITE TOOL AT ALL", not "write
+/// anywhere": `Addon::values` answers a missing key with an empty list, and
+/// `tacet_tools::db_write::DbWriteTool::with_files` answers an empty list with
+/// `None`. So the `db_write` tool is ABSENT from the catalog — the model is not
+/// refused a write, it cannot emit one — which is the same rule `COMMANDS_KEY`
+/// follows and the only gate that holds when the argument is free text.
+///
+/// THE ENTRIES ARE RELATIVE PATHS, and that is decided by the RUN-TIME gate
+/// rather than by the registry's convenience. Every path this list produces is
+/// handed to `tacet_tools::sandbox_path::resolve_existing_file`, which resolves
+/// a relative path against the working directory and refuses an absolute one
+/// outright unless the `workspace` addon has registered the directory holding
+/// it. An absolute entry in a machine-wide registry would therefore be REFUSED
+/// ON EVERY CALL for anyone who has not also installed `workspace` — a
+/// prerequisite nobody would think to look for. A relative entry means "this
+/// path inside whatever project is open", which is exactly what the gate
+/// accepts.
+///
+/// WHAT THAT COSTS, said plainly: two checkouts that both contain `data/app.db`
+/// are both writable from one entry. The boundary is the path shape, not the
+/// individual file on disk. The alternative buys precision the run-time gate
+/// then throws away.
+pub const WRITABLE_KEY: &str = "writable";
 
 /// LEGACY SETTING KEY (`adres`), accepted on read for the same reason as
 /// `LEGACY_WEB_SEARCH`.
@@ -360,6 +395,17 @@ pub enum Shape {
     /// asked here (this crate does no filesystem work); the shell asks that at
     /// install time and `tacet_tools::sandbox_path` is the gate at run time.
     Directory,
+    /// A RELATIVE path to a database file — `data/app.db`, `app.sqlite`. No
+    /// leading `/`, no `~`, no `..`.
+    ///
+    /// THE OPPOSITE RULE TO `Directory`, ON PURPOSE. A `workspace` directory is
+    /// absolute because it names a place on this machine and nothing resolves
+    /// it further. A writable database path is RELATIVE because the only thing
+    /// that will ever open it is `sandbox_path::resolve_existing_file`, which
+    /// resolves relative paths against the working directory and refuses
+    /// absolute ones outside the registered roots. An absolute entry here would
+    /// pass the install screen and then be refused on every single call.
+    DatabaseFile,
     /// A host name: no scheme, no port, no path, no credential.
     Host,
 }
@@ -383,6 +429,7 @@ impl Shape {
             Shape::Address => crate::address_is_valid(v).map_err(|e| e.to_string()),
             Shape::CommandName => check_command_name(v),
             Shape::Directory => check_directory(v),
+            Shape::DatabaseFile => check_database_file(v),
             Shape::Host => check_host(v),
         }
     }
@@ -436,6 +483,50 @@ fn check_directory(v: &str) -> Result<(), String> {
     {
         return Err(format!(
             "'{v}': '..' is not allowed — write the directory you mean, not a way up out of it"
+        ));
+    }
+    Ok(())
+}
+
+/// A RELATIVE file path, with no `..` and no `~`.
+///
+/// EVERY REFUSAL HERE IS A REFUSAL THE RUN LAYER WOULD MAKE ANYWAY, which is
+/// the rule this file follows for shapes: `sandbox_path::resolve_existing_file`
+/// refuses `..` before it resolves anything (a path with two readings must not
+/// get one of them accepted) and refuses an absolute path outside the
+/// registered workspace roots. Writing the same refusals here means the
+/// registry never STORES an entry the tool would then decline, so a user
+/// reading their own `addons.json` sees a list that means what it looks like.
+///
+/// `~` IS REFUSED RATHER THAN EXPANDED. Nothing downstream expands it — a home
+/// directory is a shell convention, not a path component — so an entry starting
+/// with `~` would name a directory literally called `~` and silently match
+/// nothing.
+fn check_database_file(v: &str) -> Result<(), String> {
+    let path = Path::new(v);
+    if path.is_absolute() || v.starts_with('/') || v.starts_with('\\') {
+        return Err(format!(
+            "'{v}': a path RELATIVE to the project folder is expected (data/app.db), not an \
+             absolute one — the file gate resolves it inside the folder that is open"
+        ));
+    }
+    if v.starts_with('~') {
+        return Err(format!(
+            "'{v}': '~' is not expanded anywhere below this — write the path as it is inside the \
+             project folder"
+        ));
+    }
+    if path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(format!(
+            "'{v}': '..' is not allowed — write the file you mean, not a way up out of the folder"
+        ));
+    }
+    if v.ends_with('/') || v.ends_with('\\') || path.file_name().is_none() {
+        return Err(format!(
+            "'{v}': a FILE is expected here, not a folder — write the database file's own path"
         ));
     }
     Ok(())
@@ -593,15 +684,49 @@ pub const DEFINITIONS: &[Definition] = &[
     // disk for a reader that does not exist (`CONNECTION_KEY` was read nowhere
     // outside this file). A consent screen that describes a different product
     // than the one installed is the same failure as a half-built gate.
+    // `db_write` IS NOT LISTED IN `tools`, AND THAT IS NOT AN OVERSIGHT. This
+    // field means "the tools this addon puts in the catalog while it is open",
+    // and `db_write` does not follow from the addon being open: it needs a
+    // non-empty `writable` list AND an interactive session with somebody to ask
+    // (`tacet-cli`'s `session_catalog`). Listing it here would print a tool in
+    // `addon list` that a user with an empty list never gets — the same class of
+    // wrong sentence on a consent screen that the comment above this row
+    // records having already cost something once. The `effect` line says the
+    // conditional truth in words instead.
     Definition {
         name: DB,
         summary: "reads SQLite database files in the working directory",
         tools: &["db"],
-        effect: "the `db` tool is in the catalog.",
+        effect: "the `db` tool is in the catalog; if the writable list below is not empty, an \
+                 interactive session also gets `db_write`, which asks you before every change.",
         network: false,
-        warning: "queries are READ-ONLY and reach only `.db` files the working directory \
-                  already lets Tacet see. Needs the `sqlite3` command on this machine.",
-        settings: &[],
+        // THE OLD SENTENCE — "queries are READ-ONLY" — STAYS TRUE OF `db` AND
+        // ONLY OF `db`. It is spelled that way on purpose: the read tool's lock
+        // is `-readonly`, measured on this machine's binary at discovery, and
+        // filling in the list below does not weaken it by one flag. What the
+        // list adds is a SECOND, separate tool. Saying "queries are read-only"
+        // flat would become false for anyone who filled the list in, and a
+        // consent screen that describes a different product than the one
+        // installed is the failure this row already has a comment about.
+        warning: "`db` queries are READ-ONLY and reach only `.db` files the working directory \
+                  already lets Tacet see. Any file you list below can ALSO be CHANGED, by a \
+                  separate `db_write` tool that shows you the measured effect and waits for your \
+                  yes — allowing a file allows everything SQL can do to it, including DROP and an \
+                  UPDATE with no WHERE. Needs the `sqlite3` command on this machine.",
+        settings: &[Setting {
+            key: WRITABLE_KEY,
+            prompt: "databases that may be CHANGED (optional — empty means none)",
+            help: "one path per line, RELATIVE to the project folder: data/app.db \
+                   (empty list = no write tool at all)",
+            shape: Shape::DatabaseFile,
+            many: true,
+            secret: false,
+            // NOT REQUIRED, and this is the load-bearing half of the row. `db`
+            // must stay installable as the read-only tool it has always been;
+            // making the write list mandatory would force every user who wants
+            // to read a database to name one they are willing to have written.
+            required: false,
+        }],
     },
     Definition {
         name: HTTP,
@@ -1203,13 +1328,35 @@ mod tests {
         assert_eq!(asks(WORKSPACE), vec![DIRECTORIES_KEY]);
         assert_eq!(asks(HTTP), vec![HOSTS_KEY]);
         assert!(asks(CLIPBOARD).is_empty(), "clipboard must ask nothing");
-        assert!(asks(DB).is_empty(), "db must ask nothing");
+        // `db` ASKS EXACTLY ONE THING AND IT IS OPTIONAL. It used to ask
+        // nothing; the writable list was added when `db_write` arrived, and it
+        // is `required: false` on purpose — the read-only tool must stay
+        // installable without naming a file anyone is willing to have written.
+        assert_eq!(asks(DB), vec![WRITABLE_KEY]);
+        assert!(
+            !definition(DB)
+                .unwrap()
+                .setting(WRITABLE_KEY)
+                .unwrap()
+                .required,
+            "the writable list became required; installing `db` for reading now demands a \
+             writable file"
+        );
+        assert!(
+            !definition(DB)
+                .unwrap()
+                .setting(WRITABLE_KEY)
+                .unwrap()
+                .secret,
+            "a file path is not a credential and must not be masked on the install screen"
+        );
 
-        // The three list-shaped ones take MANY values, the two single ones do not.
+        // The four list-shaped ones take MANY values, the single one does not.
         for (name, key) in [
             (SHELL, COMMANDS_KEY),
             (WORKSPACE, DIRECTORIES_KEY),
             (HTTP, HOSTS_KEY),
+            (DB, WRITABLE_KEY),
         ] {
             assert!(
                 definition(name).unwrap().setting(key).unwrap().many,
@@ -1305,6 +1452,30 @@ mod tests {
                 .check(&format!("{absolute},drafts"))
                 .is_ok()
         );
+
+        // A writable database entry is RELATIVE and cannot climb. THE RULE IS
+        // THE MIRROR IMAGE of `Directory`'s, and deliberately so: this value is
+        // handed to `sandbox_path::resolve_existing_file`, which resolves a
+        // relative path inside the open project and refuses an absolute one
+        // outside the registered roots. An absolute entry stored here would
+        // pass this screen and then be refused on every call.
+        for bad in [
+            "/etc/passwd.db",
+            "../secrets.db",
+            "a/../../b.db",
+            "~/notes.db",
+            "data/",
+            "",
+        ] {
+            assert!(
+                Shape::DatabaseFile.check(bad).is_err(),
+                "a writable entry was accepted: {bad:?}"
+            );
+        }
+        assert!(Shape::DatabaseFile.check(absolute).is_err(), "{absolute}");
+        for good in ["app.db", "data/app.db", "var/db/orders.sqlite3", "a b.db"] {
+            assert!(Shape::DatabaseFile.check(good).is_ok(), "{good}");
+        }
 
         // A host entry is a host and nothing else.
         for bad in [

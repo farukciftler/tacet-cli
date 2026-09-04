@@ -110,14 +110,16 @@ Then:
 tacet                                  # interactive shell
 tacet chat --message "what's 125 * 8"  # one shot
 tacet tools --schema                   # the exact schema the model sees
-tacet eval                             # 21-case behavioural suite
+tacet eval                             # 78-case behavioural suite
 ```
 
 ## Tools
 
-`calculate` · `time` · `read_document` · `create_document` · `edit_document` · `find_file` · `run_code` · `write_code` · `remember` · `web_search` · `web_fetch` · `mcp`
+`calculate` · `time` · `read_document` · `create_document` · `edit_document` · `find_file` · `archive` · `checksum` · `run_code` · `write_code` · `remember` · `web_search` · `web_fetch` · `mcp`
 
 Documents are real OOXML — an `.xlsx` produced by Tacet contains a working `=SUM()`, not a pre-computed number.
+
+`archive` and `checksum` are pure local computation — no network, no helper binary. `archive` refuses a whole `.zip` rather than skip one entry: a name that would escape the destination, a symlink entry, a declared size or expansion ratio past the caps, a repeated name or a failed CRC stops the extraction before a destination directory is even created.
 
 `run_code` executes behind a sandbox that blocks the network. On macOS that is `sandbox-exec`; on Linux, `bwrap`. **If no sandbox is available, the tool is removed from the catalog rather than run unprotected** — the model is never handed an unguarded interpreter.
 

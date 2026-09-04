@@ -23,8 +23,96 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
+      # THE SANDBOX, ON THE ONE PLATFORM WHERE IT HAD NEVER RUN.
+      #
+      # `run_code` and `write_code` refuse to enter the catalog unless a shield
+      # can be found AND measured, so on a runner without bubblewrap every one of
+      # their process tests took the `tool_or_skip()` escape hatch and passed by
+      # printing a line. 22 on Linux — 14 in run_code.rs, 8 in write_code.rs: the
+      # network cut, the write confinement, the timeout kill, the output cap, the
+      # `node --check` / `python3 -m py_compile` verification path, and the
+      # discovery assert, all reporting green having executed nothing.
+      #
+      # COUNTED, not estimated — and no longer counted BY HAND, because by hand
+      # it was wrong. This comment first said TWENTY-FOUR. So
+      # `the_skip_count_the_documents_quote_is_the_count_in_the_source`
+      # (run_code.rs) now derives the three figures from the `#[test]` functions
+      # whose body calls `tool_or_skip()` — minus `the_clipboard_is_really_cut`,
+      # which is `#[cfg(target_os = "macos")]` and does not compile here at all —
+      # and fails if this line disagrees with them.
+      #
+      # One `apt-get install` is what makes those 22 real, which is why this
+      # lives in the existing matrix job rather than in a fourth job: it needs no
+      # second cold Rust build and no second cache key.
+      # The cost is entirely test time — the newly-enabled tests carry 20-25 s
+      # timeouts and each `discover()` re-runs `verify_shield` with a 15 s bound.
+      #
+      # THE RISK, PLAINLY: bwrap needs unprivileged user namespaces. GitHub's
+      # ubuntu image is a VM rather than a container and ships an AppArmor
+      # profile with the bubblewrap package that is expected to permit them, but
+      # THIS HAS NOT BEEN MEASURED BY THE AUTHOR — nobody here has a Linux
+      # machine, which is the whole reason this gap existed. If the runner
+      # refuses, the preflight below fails the job with bwrap's own message and
+      # the kernel state printed above it. That is the point: a red job naming
+      # the reason, never a green job full of skips. Do not add
+      # `continue-on-error` here. If the refusal turns out to be the AppArmor
+      # policy rather than the kernel, the one-line remedy is
+      # `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` before
+      # the preflight — and it belongs in a commit that records the date and what
+      # the job actually printed, because the runner is a throwaway VM and what
+      # is under measurement is bwrap's guarantee, not the distro's policy.
+      - name: install and preflight the Linux sandbox
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          # State FIRST, so a failure on the next line is diagnosable from the
+          # log alone rather than from a second push.
+          cat /proc/sys/user/max_user_namespaces || true
+          sysctl kernel.apparmor_restrict_unprivileged_userns || true
+          bwrap --version
+          # THE REMEDY THE COMMENT ABOVE PREDICTED, NOW MEASURED RATHER THAN
+          # GUESSED. Run 33863502596 on 2026-09-04 printed exactly this and then
+          # stopped the job:
+          #     63838
+          #     kernel.apparmor_restrict_unprivileged_userns = 1
+          #     bubblewrap 0.9.0
+          #     bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+          # So the refusal was the APPARMOR POLICY, not the kernel: 63838 user
+          # namespaces were available and bwrap installed cleanly. Ubuntu 24.04
+          # ships that restriction on by default, and `--unshare-net` needs
+          # CAP_NET_ADMIN inside the new netns to bring loopback up — a capability
+          # the userns cannot grant while the policy holds.
+          #
+          # WHAT THIS LINE DOES AND DOES NOT BUY. It relaxes a DISTRO POLICY on a
+          # throwaway VM so that bwrap's own guarantee can be measured; it does
+          # not weaken anything Tacet ships. On a user's machine the policy stays
+          # as their distro set it, and if it refuses there, `verify_shield` fails
+          # and run_code LEAVES THE CATALOG — the honest-refusal path, not a hole.
+          # The line is therefore about reaching the measurement, and the thing
+          # under measurement is still bwrap.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sysctl kernel.apparmor_restrict_unprivileged_userns
+          # The same shape `bwrap_args` builds. If this cannot start, nothing
+          # below can either, and the job must stop here.
+          bwrap --unshare-net --unshare-pid --unshare-ipc --unshare-uts \
+                --die-with-parent --ro-bind / / --dev /dev --proc /proc \
+                -- /bin/echo SANDBOX_UP
+
       - run: cargo build --workspace
+
+      # TACET_SANDBOX_MUST_RUN turns "there is no sandbox here" from a printed
+      # skip into a panic carrying `RunCodeTool::diagnose()`. It is set ONLY on
+      # Linux: macOS discovers `sandbox-exec` and needs no help, and on Windows
+      # the tools are deliberately absent, so there a skip is the truth.
+      # `runner.os == 'Linux' && '1' || ''` is the GitHub-expression form of that
+      # — the other two platforms get the empty string, which `sandbox_must_run`
+      # reads as unset. `ci_sets_the_variable_that_turns_a_skip_into_a_failure`
+      # in run_code.rs asserts this block still exists.
       - run: cargo test --workspace
+        env:
+          TACET_SANDBOX_MUST_RUN: ${{ runner.os == 'Linux' && '1' || '' }}
 
   lint:
     name: clippy + fmt

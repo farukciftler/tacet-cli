@@ -497,11 +497,23 @@ fn install_generic(
             }
             None => match ask_setting(color, spec) {
                 Some(values) => values,
-                // EOF or a cancelled prompt: nothing is written.
-                None => {
+                // EOF or a cancelled prompt on a REQUIRED setting: nothing is
+                // written. There is no install to make without the answer.
+                None if spec.required => {
                     eprintln!("{}", color.paint(DIM, "cancelled — nothing was written."));
                     return ExitCode::FAILURE;
                 }
+                // ON AN OPTIONAL SETTING, "THE PIPE ENDED" AND "I HAVE NONE" ARE
+                // THE SAME ANSWER, and it is the safe one. This branch exists
+                // because `db` gained its first setting and it is optional: with
+                // the old shape, `tacet addon install db < /dev/null` — which
+                // asked nothing at all before and worked — started reporting
+                // "cancelled". An empty list means no `db_write` tool, i.e. the
+                // state the addon had all along, so nothing is opened by
+                // reading EOF this way. The install still cannot complete
+                // silently: the approval screen below reads stdin too, and it
+                // refuses on EOF.
+                None => Vec::new(),
             },
         };
 
@@ -646,12 +658,28 @@ fn ask_setting(color: &Color, spec: &tacet_web::addon::Setting) -> Option<Vec<St
 /// * A COMMAND IS A WARNING. `PATH` is not the same in every shell and a program
 ///   installed tomorrow is a legitimate entry; refusing it would send the user
 ///   round a loop over a guess.
+/// * A DATABASE FILE IS A WARNING, and it is the same question as the command's.
+///   The entry is RELATIVE (see `addon::WRITABLE_KEY`), so it names a file
+///   inside whatever project is open — and `tacet addon install db` is very
+///   often run from somewhere else entirely, or before the database exists.
+///   Refusing here would make the answer depend on the directory the install
+///   happened to be run from, which is not what the entry means. The run layer
+///   still refuses at the moment it matters: `sandbox_path::resolve_existing_file`
+///   answers `FileNotFound` for a path that is not there.
 fn machine_check(spec: &tacet_web::addon::Setting, value: &str) -> Result<Vec<String>, String> {
     use tacet_web::addon::Shape;
     match spec.shape {
         Shape::Directory => tacet_tools::workspace::validate_root(value)
             .map(|_| Vec::new())
             .map_err(|e| e.to_string()),
+        Shape::DatabaseFile => Ok(if std::path::Path::new(value).is_file() {
+            Vec::new()
+        } else {
+            vec![format!(
+                "{value}: no such file in this folder — the entry means this path inside \
+                 whichever project is open, so this is only a note"
+            )]
+        }),
         Shape::CommandName => Ok(if on_path(value) {
             Vec::new()
         } else {

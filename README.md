@@ -31,7 +31,7 @@ Tacet is that layer, written to be read. Every non-obvious decision has a commen
 
 **Invalid tool calls are impossible, not unlikely.** Once the model emits `calculate(`, a pushdown automaton masks the logits at every step. Malformed JSON, a field that isn't in the schema, an out-of-range number, a missing required key — none of them can be *generated*. Not validated after the fact: unrepresentable. Sampling runs after masking, so no sampling strategy can escape it.
 
-**The network monopoly is checkable by eye.** Exactly two crates may open a socket, and the HTTP dependency appears in exactly those two manifests. You do not have to trust a privacy claim you cannot audit — `grep -v '^\s*#' crates/*/Cargo.toml | grep ureq` is the audit, and `cargo test -p tacet-cli --test network_monopoly` is the same audit as a failing build: it asserts that exactly those two manifests declare an HTTP client, that no other client was swapped in under a different name, and that nobody reached a socket through `std::net` instead. (One honest asterisk: if you install the `shell` addon and put `curl` on its allow-list, you have handed a program the network. That is why `shell` sits behind the approval gate — see [Addons](#addons).)
+**The network monopoly is checkable by eye.** Exactly two crates may open a socket, and the HTTP dependency appears in exactly those two manifests. You do not have to trust a privacy claim you cannot audit — `grep -v '^\s*#' crates/*/Cargo.toml | grep ureq` is the audit, and `cargo test -p tacet-cli --test network_monopoly` is the same audit as a failing build: it asserts that exactly those two manifests declare an HTTP client, that no other client was swapped in under a different name, and that nobody reached a socket through `std::net` instead — scanning every `.rs` file under `crates/*/{src,tests,examples,benches}`, not just the library code. (One honest asterisk: if you install the `shell` addon and put `curl` on its allow-list, you have handed a program the network. That is why `shell` sits behind the approval gate — see [Addons](#addons).)
 
 **Nothing leaves the device by default.** Everything with outside reach is an *addon* you install deliberately: web search against your own SearXNG, HTTP against hosts you name, a shell against programs you list. Until you install one, its tools are not merely disabled — they are **absent from the catalog the model is shown**, so it cannot call them or claim it did.
 
@@ -118,18 +118,22 @@ Then:
 tacet                                  # interactive shell
 tacet chat --message "what's 125 * 8"  # one shot
 tacet tools --schema                   # the exact schema the model sees
-tacet eval                             # 21-case behavioural suite
+tacet eval                             # 78-case behavioural suite
 ```
 
 ## Tools
 
 Out of the box, with nothing installed:
 
-`calculate` · `time` · `calendar` · `read_document` · `create_document` · `edit_document` · `find_file` · `run_code` · `write_code` · `git` · `remember`
+`calculate` · `time` · `calendar` · `read_document` · `create_document` · `edit_document` · `find_file` · `run_code` · `write_code` · `git` · `remember` · `archive` · `checksum`
 
 Documents are real OOXML — an `.xlsx` produced by Tacet contains a working `=SUM()`, not a pre-computed number.
 
 `git` is **read-only**: status, log, diff, show. It reads a diff so the model can write a commit message; it does not commit, push, or change a branch.
+
+`archive` lists or extracts a `.zip` with the workspace's own inflate. It refuses the whole archive — never one entry — when a name would escape the destination, an entry is a symlink, the declared sizes cross the caps, or a name repeats: four gates that run on the central directory, so both actions apply them. The CRC and the declared-vs-actual size are proven on **extract** only, because listing decodes nothing — which is why a listing labels its numbers "declared" rather than reporting them as sizes. Extraction always goes into a **new** directory whose name is rotated until it is free, so there is no argument through which it could overwrite something.
+
+`checksum` is SHA-256 over a file: the digest, or a comparison against a published one, or against a second file. A mismatch comes back as an answer, not an error.
 
 `run_code` executes behind a sandbox that blocks the network. On macOS that is `sandbox-exec`; on Linux, `bwrap`. **If no sandbox is available, the tool is removed from the catalog rather than run unprotected** — the model is never handed an unguarded interpreter.
 
@@ -149,7 +153,7 @@ tacet addon close shell          # keep the config, take the tool away
 | `shell` | `shell` | only the programs you list, and **no shell interpretation** |
 | `workspace` | *(no new tool)* | named directories the file tools may also reach |
 | `http` | `http` | only the exact hosts you list, HTTPS only, no redirects |
-| `db` | `db` | read-only SQLite, over the `sqlite3` binary already on your machine |
+| `db` | `db`, and `db_write` only if you list a file | read-only SQLite by default, over the `sqlite3` binary already on your machine |
 | `clipboard` | `clipboard` | reads and writes the system clipboard |
 
 Two things worth knowing before you install `shell`:
@@ -157,6 +161,12 @@ Two things worth knowing before you install `shell`:
 **There is no shell.** The command runs as `program` + a list of arguments, never through `sh -c`, so `; rm -rf /` arrives as an *argument* — nothing parses it. And the allow-list is not checked after the fact: it **is** the argument's schema, so the constrained decoder cannot generate a program name outside it.
 
 **Allowing a program allows everything that program can do.** `curl` is network access; `git` can push. So `shell` sits behind the same approval question as `web_search` and `http`: once a turn has touched personal data, every call that could carry it off the machine stops and asks you first.
+
+**Writing to a database is a second tool, not a flag.** `db` is read-only and stays read-only: its lock is `sqlite3 -readonly`, measured on your own binary before the tool is built. If you want a database changed, you name the file — `data/app.db`, relative to the project — while installing the `db` addon, and a *separate* `db_write` tool appears. Name nothing and it does not exist, which is the only gate that holds: the SQL is free text, so a model that has the tool can always spell `DROP TABLE`, and the answer is for the tool not to be there.
+
+Every `db_write` call is measured before it happens. The statement runs first against a **copy** of the file, and what you are shown is the difference that copy actually took: objects created, dropped or redefined, row counts moved, journal mode changed. Then it asks. Nothing is written until you say yes, the copy that was measured is left beside the database as `<name>.tacet-backup`, and the question is asked again for the next statement — a "no" is about one statement, not about the session.
+
+Two things it does **not** promise. It is not one statement: `sqlite3` re-parses the string it is given, so `SELECT 1; DROP TABLE t` runs both halves — measured, and the reason the effect is shown rather than the statement filtered. And allowing a file allows everything SQL can do to that file, `DROP` and a `WHERE`-less `UPDATE` included. What holds is the file boundary: `-safe` refuses `ATTACH`, `VACUUM INTO` and `writefile()`, all three measured at startup, so the statement cannot reach a second file.
 
 Third-party tools do not plug in here — they plug in through [MCP](#mcp).
 
@@ -209,7 +219,7 @@ Arrows are dependency direction. `tacet-kernel` depends on nothing, so the contr
 | Platform | State |
 |---|---|
 | macOS (arm64) | **Verified.** Full suite runs here: build, clippy `-D warnings`, tests, eval. |
-| Linux | Compiles in CI. The `bwrap` sandbox path has *not* been exercised against a real `bwrap`. |
+| Linux | **The sandbox is measured, the shell is not.** CI's ubuntu job installs `bubblewrap`, preflights it, and runs the suite with `TACET_SANDBOX_MUST_RUN=1`, which turns a skipped sandbox test into a failing one. Observed green on 2026-09-04 (run 33864851672, bwrap 0.9.0, ubuntu-24.04) with **zero skips in the log**: `the_network_is_really_cut` and `the_sandbox_cannot_be_escaped` both passed against a real `bwrap`, along with the timeout kill, the detached-child bound, the output cap and `write_code`'s syntax-check path. Before that run the `bwrap` arguments had never been handed to a `bwrap` anywhere. **One caveat, and it is the distro's, not ours:** Ubuntu 24.04 ships `kernel.apparmor_restrict_unprivileged_userns=1`, under which `--unshare-net` cannot bring loopback up (`RTM_NEWADDR: Operation not permitted`), so the CI job clears it to reach the measurement. On a machine where that policy holds, `verify_shield` fails and `run_code` **leaves the catalog** — the honest-refusal path, not a silent hole. Still unmeasured: nobody has held a conversation with the interactive shell on Linux. |
 | Windows | Compiles in CI. No runtime measurement at all: the timezone path, model roots and file-permission behaviour are unverified. |
 
 Where a guarantee holds on one platform and not another, the code says so at the point where it matters. `0600` permission stamping, for example, is deliberately not applied on Windows — there `set_permissions` only flips a read-only flag, which would produce the *appearance* of protection without the substance.
@@ -230,9 +240,11 @@ The eval suite scores *tool usage*, not answer correctness — a case can pass w
 Small changes welcome; the shape of the project is written down in
 [CONTRIBUTING.md](CONTRIBUTING.md) and takes five minutes to read.
 
-The most useful thing anyone can do right now: **run it on Linux or Windows and
-say what broke.** CI compiles and tests there, but no human has used the
-interactive shell on either — see the platform table above.
+The most useful thing anyone can do right now: **run the interactive shell on
+Linux or Windows and say what broke.** CI now exercises the Linux sandbox
+against a real `bwrap` and it passes, but nobody has held a conversation with
+tacet on either platform, and Windows has no runtime measurement at all — see
+the platform table above.
 
 ## Star History
 <a href="https://www.star-history.com/?type=date&repos=farukciftler%2Ftacet-cli">

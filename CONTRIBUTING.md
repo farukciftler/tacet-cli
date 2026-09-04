@@ -55,10 +55,14 @@ in the same terms.
 ### Claiming an improvement
 
 Two runs of the same suite differ by a case or two for no reason. Do not read
-"+3 points" off two table headers — one case is worth 3.1 points on a 32-case
-suite, and the analysis module puts the threshold at **six paired cases moving
-one way and none the other**. Produce both reports with `--json` and let the
-comparison say it:
+"+3 points" off two table headers — one case is worth 1.28 points on the 78-case
+behavioural suite and 0.54 points on the 184-case pooled selection suite, and the
+analysis module puts the threshold at **six paired cases moving one way and none
+the other**. That threshold is a property of the sign test (2 × 0.5⁶ = 0.031),
+not of the suite size, so it does not move when cases are added; what moves is
+how many POINTS six cases are worth — 7.7 on the behavioural suite, 3.3 on the
+pooled selection suite. Produce both reports with `--json` and let the comparison
+say it:
 
 ```bash
 cargo run -p tacet-cli -- eval --compare before.json after.json
@@ -66,6 +70,46 @@ cargo run -p tacet-cli -- eval --compare before.json after.json
 
 It pairs the cases by name, runs a sign test over the ones that moved, prints a
 bootstrap interval, and states a verdict. It works on any of the three reports.
+
+### The model measurement is run by a human, on purpose
+
+`eval --tool-selection` needs real weights (a 2.5 GB GGUF, `--features metal` on
+a Mac or `--features candle` elsewhere) and about twenty minutes. **It does not
+gate PRs and it is not automated in CI**, and that is a decision rather than a
+gap. On a GitHub-hosted runner the same suite would take hours of 2-vCPU CPU
+inference, would evict the build cache every PR depends on, and — worst — would
+produce a number from a build nobody ships on hardware that changes underneath
+you, so `--compare` would report a runner swap as a regression. A self-hosted
+macOS runner is the only shape that gives a readable number, and GitHub advises
+against those on public repositories because a fork's workflow can execute code
+on the machine. The reasoning is written out in full at the top of
+`.github/workflows/nightly.yml`.
+
+So the model half works like this:
+
+```bash
+# On your own machine, with the weights already on disk:
+cargo run -p tacet-cli --features metal -- eval --tool-selection --json > after.json
+cargo run -p tacet-cli -- eval --compare crates/tacet-eval/baselines/<baseline>.json after.json
+```
+
+**A claimed model improvement arrives as a PR that updates the baseline and
+pastes the `--compare` verdict**, not as two percentages in a description. Before
+checking a model report in, replace `identity.model_path` with a bare file name:
+it is the absolute path to the GGUF on your machine, and this repository is
+public. `cargo test -p tacet-eval --test baselines` refuses a baseline that
+carries one, and refuses one whose case names no longer match the suite — a
+baseline nobody can pair against still prints a verdict, which is worse than
+having none.
+
+`crates/tacet-eval/baselines/fake-engine.json` is the one baseline that needs no
+weights. It is a real `eval --json` report, byte-reproducible, and the nightly
+job pairs against it so the comparator itself is exercised. **Add a case and you
+must regenerate it in the same change:**
+
+```bash
+cargo run -p tacet-cli -- eval --json > crates/tacet-eval/baselines/fake-engine.json
+```
 
 ## Writing a tool
 

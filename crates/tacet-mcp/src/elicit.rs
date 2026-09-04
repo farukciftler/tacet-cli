@@ -210,7 +210,7 @@ mod tests {
     fn escapes_and_length_do_not_reach_the_terminal() {
         let long = "x".repeat(10_000);
         let result = json!({"questions": [
-            {"id": "a", "prompt": format!("\u{1b}[31mred\u{1b}[0m\nsecond line\u{7}")},
+            {"id": "a", "prompt": "\u{1b}[31mred\u{1b}[0m\nsecond line\u{7}"},
             {"id": "b", "prompt": long},
         ]});
         let questions = parse_questions(&result);

@@ -1,9 +1,10 @@
 //! Turning a score difference into a decision.
 //!
 //! WHY IT EXISTS: every "+3 points" claim in this project has so far been read
-//! off two table headers. With 32 English and 18 Turkish tool cases, one case
-//! is worth 3.13 and 5.56 points — so "+3 points" can mean ONE case, and one
-//! case is not evidence of anything. This module is the smallest set of
+//! off two table headers. With 115 English and 69 Turkish tool cases, one case
+//! is worth 0.87 and 1.45 points — so "+3 points" can mean two or three cases,
+//! and on the day this was written it meant ONE (the suites were 32 and 18).
+//! One case is not evidence of anything. This module is the smallest set of
 //! functions that answers "is this difference real, and how many cases would I
 //! need for it to be answerable at all".
 //!
@@ -28,9 +29,14 @@
 /// THE NUMBER WORTH REMEMBERING: with an instrument that returns the same
 /// answer on a rerun — this one does — a difference is only callable at 95%
 /// when SIX pairs move one way and none the other (2 × 0.5⁶ = 0.031). Five
-/// one-way pairs give 0.0625: suggestive, not significant. On a 50-case pooled
-/// suite six cases is 12 points, which is why "+2 points" is not a threshold
-/// anybody can meet here — see `cases_needed`.
+/// one-way pairs give 0.0625: suggestive, not significant.
+///
+/// SIX IS A PROPERTY OF THE TEST, NOT OF THE SUITE, and that distinction is the
+/// one this comment used to blur: growing the suite does not lower the threshold,
+/// it only makes six cases worth fewer POINTS. On the 184-case pooled selection
+/// suite six cases is 3.3 points (it was 12 on the 50-case suite this line was
+/// written for); on the 78-case behavioural suite it is 7.7. So "+2 points" is
+/// still not a threshold anybody can meet here — see `cases_needed`.
 pub fn sign_test(fixed: usize, broken: usize) -> f64 {
     let n = fixed + broken;
     if n == 0 {
@@ -275,11 +281,31 @@ mod tests {
         assert_eq!(cases_needed(3.0), 200);
         assert_eq!(cases_needed(2.0), 300);
         assert_eq!(cases_needed(1.0), 600);
-        // Today's pooled suite is 50 cases, so the smallest callable claim is
-        // 12 points — which is what "the gates are tighter than the instrument"
-        // means in one number.
-        assert!(cases_needed(12.0) <= 50);
-        assert!(cases_needed(11.0) > 50);
+        // THE SUITE SIZES ARE READ, NOT WRITTEN DOWN. This block used to say
+        // `cases_needed(12) <= 50` — and 50 was the pooled size ON THE DAY IT WAS
+        // WRITTEN. The suites grew to 184 and this test went on passing while the
+        // comment above it went on saying 50, which is exactly the drift the
+        // module exists to argue against. Derived from the real suites, the
+        // number in the prose and the number in the code cannot disagree again.
+        for suite in [
+            crate::all().len(),
+            crate::selection_cases().len() + crate::turkish_selection_cases().len(),
+        ] {
+            let smallest = 600.0 / suite as f64;
+            // A hair above the smallest callable effect is callable; a hair
+            // below is not. The 0.01 keeps floating point out of the claim.
+            assert!(
+                cases_needed(smallest + 0.01) <= suite,
+                "{smallest:.2} points should be callable on {suite} cases"
+            );
+            assert!(
+                cases_needed(smallest - 0.01) > suite,
+                "{smallest:.2} points is the FLOOR on {suite} cases, not a step above it"
+            );
+        }
+        // Measured today, for whoever reads the numbers in the docs: 78
+        // behavioural cases (7.7 points) and 184 pooled selection cases (3.3).
+        assert!(600.0 / crate::all().len() as f64 <= 12.0);
     }
 
     #[test]

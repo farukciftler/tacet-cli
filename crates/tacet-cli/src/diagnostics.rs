@@ -37,7 +37,10 @@ pub fn why(message: &str) -> ExitCode {
     let color = Color::setup();
     let store = Arc::new(SharedStore::new());
     let memory = SharedMemory::in_memory();
-    let (mut catalog, _) = session_catalog(&store, &memory, &color);
+    // `can_ask = true`: this command INSPECTS the catalog and never runs a
+    // tool, so no confirmation of its own is ever asked. What it must report
+    // is the catalog an ordinary session is given — see `session_catalog`.
+    let (mut catalog, _) = session_catalog(&store, &memory, &color, true);
     // The remote tools count too — they are the ones most likely to be missing
     // from a budget, since no profile knows their names.
     let mcp_load = mcp::load_from_default();
@@ -479,7 +482,10 @@ pub fn tools(print_schema: bool) -> ExitCode {
     let color = Color::setup();
     let store = Arc::new(SharedStore::new());
     let memory = SharedMemory::in_memory();
-    let (mut catalog, _) = session_catalog(&store, &memory, &color);
+    // `can_ask = true`: this command INSPECTS the catalog and never runs a
+    // tool, so no confirmation of its own is ever asked. What it must report
+    // is the catalog an ordinary session is given — see `session_catalog`.
+    let (mut catalog, _) = session_catalog(&store, &memory, &color, true);
     // MCP tools must be visible HERE TOO: this command is the verbatim source of
     // "what the prompt says"; it must not print something different from the
     // catalog chat sees.
@@ -657,7 +663,10 @@ pub fn grammar(name: &str, try_input: Option<&str>) -> ExitCode {
     let color = Color::setup();
     let store = Arc::new(SharedStore::new());
     let memory = SharedMemory::in_memory();
-    let (catalog, _) = session_catalog(&store, &memory, &color);
+    // `can_ask = true`: this command INSPECTS the catalog and never runs a
+    // tool, so no confirmation of its own is ever asked. What it must report
+    // is the catalog an ordinary session is given — see `session_catalog`.
+    let (catalog, _) = session_catalog(&store, &memory, &color, true);
     if write_grammar(name, &catalog, try_input, &color) {
         ExitCode::SUCCESS
     } else {

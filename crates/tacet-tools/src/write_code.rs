@@ -636,7 +636,20 @@ mod tests {
         )
     }
 
-    /// If there is no discovery (CI/Linux) the real-process tests are skipped — not silently.
+    /// If there is no discovery the real-process tests are skipped — not silently.
+    ///
+    /// AND NOT AT ALL under `TACET_SANDBOX_MUST_RUN`: there the skip becomes a
+    /// panic carrying `diagnose()`. The gate is defined once, in
+    /// `run_code::sandbox_must_run`, because the tests it silences are skipped
+    /// by the same absent shield and must be re-enabled by the same switch:
+    /// 8 here and 14 in run_code.rs on Linux. Those two figures are DERIVED from
+    /// the source and checked against this sentence by
+    /// `the_skip_count_the_documents_quote_is_the_count_in_the_source`; written
+    /// out by hand they were "eight and sixteen", and sixteen was wrong. The syntax-check path
+    /// these tests drive
+    /// (`node --check`,
+    /// `python3 -m py_compile` under the shield) has never run on Linux
+    /// anywhere; the CI job that sets the variable is its first execution.
     fn tool_or_skip() -> Option<WriteCodeTool> {
         match RunCodeTool::discover() {
             Some(a) => Some(WriteCodeTool::new(
@@ -645,10 +658,14 @@ mod tests {
                 a.turn_state(),
             )),
             None => {
-                eprintln!(
-                    "write_code was not discovered, the process tests were skipped: {}",
-                    RunCodeTool::diagnose()
+                let why = RunCodeTool::diagnose();
+                assert!(
+                    !crate::run_code::sandbox_must_run(),
+                    "{} is set, so this test may not skip — \
+                     the sandbox was expected to work here: {why}",
+                    crate::run_code::SANDBOX_MUST_RUN
                 );
+                eprintln!("write_code was not discovered, the process tests were skipped: {why}");
                 None
             }
         }

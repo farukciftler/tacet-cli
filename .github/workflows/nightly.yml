@@ -1,0 +1,199 @@
+name: Nightly
+
+# WHY THIS FILE DOES NOT RUN A MODEL, WRITTEN DOWN SO NOBODY HAS TO REDISCOVER IT.
+#
+# The obvious nightly is `eval --tool-selection` on real weights — the one
+# measurement CI cannot afford on a PR (~20 minutes, 2.5 GB GGUF, `--features
+# metal`). Three shapes were considered and none of them is defensible on a
+# GitHub-hosted runner:
+#
+#   (a) `schedule` + `actions/cache` on ubuntu-latest. A cached 2.5 GB restore is
+#       a minute or two, so the download is NOT the problem. The problem is the
+#       compute: 184 selection cases x up to 4 passes x ~2000-token prompts
+#       through candle on a 2-vCPU CPU runner is one to two orders of magnitude
+#       off the M4-Pro/Metal box the "~20 minutes" figure came from. The honest
+#       expectation is hours against a 6-hour job ceiling. It would also park a
+#       2.5 GB entry in a 10 GB per-repo cache and evict the `Swatinem/rust-cache`
+#       entries every PR depends on. And worst: the number would come from a
+#       build nobody ships, on hardware that changes under you, so `--compare`
+#       (which pairs by case name) would report a runner swap as a regression.
+#
+#   (b) A self-hosted macOS arm64 runner. This is the only shape that produces a
+#       readable number — `--features metal`, weights already on disk, ~20
+#       minutes, comparable to the published figures. It is NOT taken here
+#       because GitHub advises against self-hosted runners on PUBLIC
+#       repositories: a fork's workflow can execute code on that machine. If
+#       whoever owns the Mac wants it, the mitigations are not details, they are
+#       the whole thing: `on: schedule` + `workflow_dispatch` and NEVER
+#       `pull_request`, an `if: github.repository == '<owner>/tacet-cli'` guard,
+#       a dedicated OS user, and never a required check.
+#
+#   (c) `workflow_dispatch`-only on hosted runners buys nothing over (a).
+#
+# SO THE MODEL MEASUREMENT IS NOT AUTOMATED, AND THAT IS STATED RATHER THAN
+# FAKED. A nightly job that "passes" by downloading nothing and measuring nothing
+# is worse than no nightly job: it is a green tick standing in for a number
+# nobody produced. What runs below is only work that genuinely measures something
+# without weights. The model half is a documented LOCAL command plus a checked-in
+# baseline the `--compare` path pairs against — see CONTRIBUTING, "Claiming an
+# improvement".
+
+on:
+  schedule:
+    # 03:17 UTC. Off the hour on purpose: GitHub's scheduler queues heavily at
+    # :00 and a nightly that starts forty minutes late for a year is a nightly
+    # nobody trusts the timestamps of.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      report_artifact:
+        description: >-
+          Name of an uploaded artifact holding a `--tool-selection --json`
+          report produced on real weights. Leave empty to run only the jobs
+          that need no model.
+        required: false
+        default: ""
+      baseline:
+        description: >-
+          File under crates/tacet-eval/baselines/ to pair the uploaded report
+          against.
+        required: false
+        default: "fake-engine.json"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # WHAT THIS ADDS OVER ci.yml, precisely: ci.yml already runs
+  # `--routing-pressure 20`, which is the CEILING (`REMOTE_SHAPES` has exactly 20
+  # entries and pressure is `.take(pressure)`, routing.rs — measured: 20, 25 and
+  # 30 all print "33 tools in catalog" and identical results). So the
+  # contribution here is the 0 and 10 rungs: the shape of a DEFAULT install and
+  # of a machine with half an MCP server's worth of tools. A regression that only
+  # appears at low pressure is invisible to the gate.
+  deep-routing:
+    name: routing under every pressure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: pressure 0 (a default install)
+        run: cargo run -p tacet-cli -- eval --routing --routing-pressure 0
+      - name: pressure 10
+        run: cargo run -p tacet-cli -- eval --routing --routing-pressure 10
+      # 20 is the ceiling and ci.yml already gates it; repeated here so the
+      # ladder reads as a ladder in the log.
+      - name: pressure 20 (the ceiling — REMOTE_SHAPES has 20 entries)
+        run: cargo run -p tacet-cli -- eval --routing --routing-pressure 20
+
+      # DETERMINISM IS A CLAIM THIS PROJECT MAKES IN WRITING and it is cheap to
+      # check for real. `the_run_is_deterministic` compares two runs inside ONE
+      # process; this compares two whole processes, which is where an unstable
+      # hash order or a directory-name collision would show up.
+      - name: the same run twice is the same bytes
+        run: |
+          cargo run -p tacet-cli -- eval --json > /tmp/a.json
+          cargo run -p tacet-cli -- eval --json > /tmp/b.json
+          diff -u /tmp/a.json /tmp/b.json
+          cargo run -p tacet-cli -- eval --routing --json > /tmp/ra.json
+          cargo run -p tacet-cli -- eval --routing --json > /tmp/rb.json
+          diff -u /tmp/ra.json /tmp/rb.json
+
+      # THE COMPARATOR ITSELF, EXERCISED. `eval --compare` is the command every
+      # improvement claim in this project is supposed to go through, and nothing
+      # ran it. Against the checked-in baseline it needs no weights, and it fails
+      # loudly the day a case is added without the baseline being regenerated —
+      # which is the state in which `--compare` would start silently pairing on a
+      # smaller suite.
+      - name: compare today's run against the checked-in baseline
+        run: |
+          cargo run -p tacet-cli -- eval --json > /tmp/today.json
+          cargo run -p tacet-cli -- eval --compare \
+            crates/tacet-eval/baselines/fake-engine.json /tmp/today.json
+
+      # NO `--release`. ci.yml builds debug only, so a release profile here would
+      # be a SECOND large cache entry competing for the same 10 GB per-repo quota
+      # — the exact objection raised against option (a) above, and it would be
+      # inconsistent to accept it here. What this job adds over ci.yml is not a
+      # profile, it is the pressure ladder and the two checks above.
+      - run: cargo test --workspace
+
+  # THE CANDLE-GATED CODE STILL COMPILES, WHICH IS THE PART CI CAN HONESTLY DO.
+  #
+  # `crates/tacet-engine/tests/vocab_alphabet.rs` and
+  # `crates/tacet-cli/tests/mask_alphabet.rs` both start with
+  # `#![cfg(feature = "candle")]`, and nothing in ci.yml passes that feature — so
+  # `cargo test --workspace` does not even COMPILE them, and the change they pin
+  # (`build_vocab` decoding with `skip_special_tokens = true`) rests on one local
+  # run on a machine with weights. RUNNING them here would need a 2.5 GB GGUF and
+  # is refused for the reasons at the top of this file; COMPILING them costs one
+  # candle build and catches the failure mode that actually bites: code behind an
+  # off-by-default feature quietly rotting until somebody turns it on.
+  #
+  # `--no-run` ON PURPOSE. Without weights every one of those tests prints
+  # SKIPPED and returns, so running them would produce a green tick standing for
+  # no measurement — the exact thing this file's header refuses. Measured on the
+  # author's machine (macOS arm64, candle tree already built): the command binds
+  # and links both test binaries in 4.0 s. A cold CI runner pays for the candle
+  # tree itself, which is why this is nightly and not a PR gate.
+  candle-compiles:
+    name: the candle-gated tests still compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --features candle --no-run
+      - run: cargo clippy --workspace --all-targets --features candle -- -D warnings
+
+  # THE BASELINE IS STILL PAIRABLE. Split from the job above so a red tick names
+  # the reason without anybody opening the log: "baseline guard" failing means a
+  # case was added, deleted or renamed and the checked-in report was not
+  # regenerated. The test says which command does it.
+  baseline-guard:
+    name: baseline guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p tacet-eval --test baselines -- --nocapture
+
+  # THE MODEL HALF, RUN BY A HUMAN AND COMPARED BY A MACHINE.
+  #
+  # Somebody produces a `--tool-selection --json` report on their own hardware
+  # (the command is in CONTRIBUTING), uploads it as an artifact, and dispatches
+  # this job with the artifact's name. `eval --compare` reads the JSON generically
+  # and needs NO weights, so the arithmetic and the verdict are done here, in
+  # public, from two files anybody can re-read — rather than pasted into a PR
+  # description as two percentages.
+  #
+  # IT DOES NOTHING WHEN NO REPORT IS NAMED, and says so. This job is not part of
+  # the schedule above.
+  compare-uploaded-report:
+    name: compare an uploaded model report
+    if: github.event_name == 'workflow_dispatch' && inputs.report_artifact != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.report_artifact }}
+          path: uploaded
+      - name: pair it against the checked-in baseline
+        run: |
+          shopt -s nullglob
+          reports=(uploaded/*.json)
+          if [ ${#reports[@]} -eq 0 ]; then
+            echo "the artifact carried no .json report" >&2
+            exit 1
+          fi
+          # The baseline named on the command line is the maintainer's own
+          # previous model run. Until one is checked in, this compares against
+          # the fake-engine report and will refuse to pair — which is the correct
+          # and loud failure, not a green tick.
+          cargo run -p tacet-cli -- eval --compare \
+            "crates/tacet-eval/baselines/${{ inputs.baseline }}" "${reports[0]}"
