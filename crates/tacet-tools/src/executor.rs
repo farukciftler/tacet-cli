@@ -390,6 +390,93 @@ fn last_identifier(text: &str) -> &str {
 /// Strips the ```` ```json ... ``` ```` fence. The small model puts it there
 /// whether asked to or not; cleaning the fence once here is cheaper than
 /// repeating the same check at every call site.
+/// THE MARKERS A MODEL INVENTS WHEN IT MEANS "I AM CALLING A TOOL".
+///
+/// MEASURED, qwen3-4b over the 115-case selection suite: seven of the twenty-two
+/// failures were the RIGHT tool with the RIGHT arguments in a shape nobody
+/// taught it —
+///
+/// ```text
+/// ```tool
+/// read_document"path=report.md"
+/// <tool_call>
+/// read_document (path: "weekly_meal_list.xlsx")
+/// ```
+///
+/// WHY THESE THREE AND NOTHING LOOSER. The suite also produced
+/// `edit_document.new_content="…"` and `remember.list`, and an
+/// attribute-shaped recovery is exactly what `recover_nameless_json` refuses to
+/// build: scanning the same failures for `word.word` also matches
+/// `notes.md file.` and `e.g., exchange rate` out of ordinary prose. A marker is
+/// the opposite — no answer to a user contains "<tool_call>" by accident. So the
+/// marker is the whole licence to look, and the two attribute cases stay
+/// unrecovered on purpose.
+const CALL_MARKERS: [&str; 3] = ["```tool_code", "```tool", "<tool_call>"];
+
+/// Recovers a call written behind one of `CALL_MARKERS`.
+///
+/// THE SAFETY CONDITIONS ARE THE ONES ALREADY ARGUED for nameless JSON, because
+/// the risk is identical — a wrong match breaks irrelevance. The name must be a
+/// tool in the catalog, every key parsed must exist in THAT tool's schema, and
+/// every required field must be present. Anything short of that returns `None`
+/// and the text stays an answer.
+///
+/// THE VALUES ARE READ AS STRINGS AND NOTHING ELSE. A recovered call reaches
+/// `execute` and is validated against the schema there like any other, so a
+/// field wanting a number rejects `"3"` rather than silently coercing — the
+/// recovery layer is not a second, quieter validator.
+fn recover_marked_call(raw: &str, catalog: &ToolCatalog) -> Option<ToolCall> {
+    let marker = CALL_MARKERS.iter().find(|m| raw.contains(**m))?;
+    let after = raw.split_once(*marker)?.1;
+
+    // The name is the first catalog tool the text mentions after the marker; a
+    // marker with no known name behind it is not a call.
+    let (name, rest) = catalog.tools().iter().find_map(|t| {
+        let n = t.name();
+        let at = after.find(n)?;
+        Some((n.to_string(), &after[at + n.len()..]))
+    })?;
+    let tool = catalog.find(&name)?;
+    let schema = tool.schema();
+    let fields = schema.fields();
+
+    // `key = value` / `key: value`, the value quoted or bare up to the next
+    // delimiter. Only keys the schema already declares are collected, which is
+    // what keeps prose after the call from becoming an argument.
+    let mut args = serde_json::Map::new();
+    for field in fields.iter() {
+        for sep in ['=', ':'] {
+            let needle = format!("{}{}", field.name, sep);
+            let Some(at) = rest.find(&needle) else {
+                continue;
+            };
+            let tail = rest[at + needle.len()..].trim_start();
+            let value = if let Some(body) = tail.strip_prefix('"') {
+                body.split('"').next().unwrap_or("")
+            } else {
+                tail.split([',', ')', '\n', '"'])
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+            };
+            if !value.is_empty() {
+                args.insert(field.name.clone(), Value::String(value.to_string()));
+                break;
+            }
+        }
+    }
+
+    // Every required field present, or this is not that call.
+    if !fields
+        .iter()
+        .filter(|f| f.required)
+        .all(|f| args.contains_key(&f.name))
+    {
+        return None;
+    }
+    Some(ToolCall::new(name, Value::Object(args)))
+}
+
 fn strip_code_fence(raw: &str) -> &str {
     let Some(remaining) = raw.strip_prefix("```") else {
         return raw;
@@ -668,7 +755,9 @@ impl ToolExecutor {
         ticket: TurnTicket,
         ctx: &mut ToolContext,
     ) -> Option<ExecutionOutcome> {
-        let call = ToolCall::parse(raw).or_else(|| recover_nameless_json(raw, &self.catalog))?;
+        let call = ToolCall::parse(raw)
+            .or_else(|| recover_nameless_json(raw, &self.catalog))
+            .or_else(|| recover_marked_call(raw, &self.catalog))?;
         Some(self.execute(&call, ticket, ctx).await)
     }
 
@@ -1785,5 +1874,88 @@ mod tests {
         .unwrap();
         assert_eq!(s.reason, ExecutionReason::Ok);
         assert_eq!(s.to_model, "data: 42");
+    }
+
+    /// THE SEVEN SHAPES A REAL MODEL ACTUALLY WROTE, and the prose that must not
+    /// be mistaken for them.
+    ///
+    /// Every accepted fixture here is copied verbatim from the qwen3-4b run of
+    /// the 115-case selection suite, where each one was the right tool with the
+    /// right arguments and was thrown away because it did not start with
+    /// `name(`. Every rejected fixture is either prose from the same run or the
+    /// attribute shape this layer deliberately does not touch.
+    #[test]
+    fn a_marked_call_is_recovered_and_prose_is_not() {
+        let store = std::sync::Arc::new(crate::data_store::SharedStore::new());
+        let memory = crate::memory::SharedMemory::in_memory();
+        let (catalog, _, _) =
+            crate::catalog::production_catalog_with(&store, &memory, Some(0), true);
+
+        for (raw, tool, key, value) in [
+            (
+                "```tool\nread_document\"path=report.md\"\n```",
+                "read_document",
+                "path",
+                "report.md",
+            ),
+            (
+                "```tool\nread_document\"path: readme.md\"\n```",
+                "read_document",
+                "path",
+                "readme.md",
+            ),
+            (
+                "<tool_call>\nread_document (path: \"weekly_meal_list.xlsx\")\n</tool_call>",
+                "read_document",
+                "path",
+                "weekly_meal_list.xlsx",
+            ),
+        ] {
+            let call = recover_marked_call(raw, &catalog)
+                .unwrap_or_else(|| panic!("not recovered: {raw:?}"));
+            assert_eq!(call.name, tool, "wrong tool for {raw:?}");
+            assert_eq!(
+                call.args.get(key).and_then(|v| v.as_str()),
+                Some(value),
+                "wrong argument for {raw:?}: {:?}",
+                call.args
+            );
+        }
+
+        // NOT A CALL. The first two are sentences the same model wrote as
+        // ANSWERS; the third and fourth are the attribute shape, which is left
+        // alone because scanning for it also matches ordinary prose.
+        for raw in [
+            "I cannot provide the current dollar value (e.g., exchange rate between currencies).",
+            "This is a newly added section to the notes.md file.",
+            "remember.list",
+            "edit_document.new_content=\"## New Section\"",
+            // A marker with no tool name behind it.
+            "<tool_call>\nplease do the thing\n</tool_call>",
+        ] {
+            assert!(
+                recover_marked_call(raw, &catalog).is_none(),
+                "prose recovered as a call: {raw:?}"
+            );
+        }
+    }
+
+    /// A marked call MISSING a required argument is not a call.
+    ///
+    /// The same rule `recover_nameless_json` states: an incomplete match is
+    /// ambiguity, and under ambiguity this layer does nothing. Without it the
+    /// recovery would hand `execute` a call the schema then rejects, turning a
+    /// readable answer into a tool error.
+    #[test]
+    fn a_marked_call_without_its_required_argument_is_left_as_text() {
+        let store = std::sync::Arc::new(crate::data_store::SharedStore::new());
+        let memory = crate::memory::SharedMemory::in_memory();
+        let (catalog, _, _) =
+            crate::catalog::production_catalog_with(&store, &memory, Some(0), true);
+
+        assert!(
+            recover_marked_call("<tool_call>\nread_document\n</tool_call>", &catalog).is_none(),
+            "a call with no path is not a read_document call"
+        );
     }
 }

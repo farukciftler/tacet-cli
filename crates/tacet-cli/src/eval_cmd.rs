@@ -496,10 +496,25 @@ pub fn eval_tool_selection(run: SelectionRun<'_>) -> ExitCode {
         }
     };
 
+    // BOTH LANGUAGES BY DEFAULT, which is what `--routing` has always done and
+    // what this measurement did not.
+    //
+    // THE INSTRUMENT SAID SO ITSELF. Comparing two 115-case runs, `--compare`
+    // answered "NOT DISTINGUISHABLE from no change at 95% ... this instrument
+    // needs 230 paired cases to call a 2.6-point effect; this suite has 115."
+    // A suite that cannot resolve the changes people actually make is not a
+    // measurement, and the cheapest fix was sitting next to it: 65 Turkish cases
+    // that the routing eval already runs in the same breath, while this one ran
+    // one language or the other and never both.
+    //
+    // TURKISH IS NOT PADDING. Three of the defects fixed in this repository were
+    // found only in Turkish (see `analysis.rs` and the `tr-dosya-ara` routing
+    // case), because the tokenizer, the date words and the tool hints all behave
+    // differently there. Running English alone measured the easier half.
     let mut cases = if turkish {
         tacet_eval::turkish_selection_cases()
     } else {
-        tacet_eval::selection_cases()
+        tacet_eval::selection_suite()
     };
     if let Some(pattern) = only {
         cases.retain(|c| c.name.contains(pattern));
