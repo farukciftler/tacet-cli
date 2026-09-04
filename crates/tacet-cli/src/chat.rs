@@ -221,6 +221,25 @@ pub fn chat(run: ChatRun) -> ExitCode {
         }
     };
 
+    // THE NAME THE ANSWER IS SIGNED WITH, and it is not decoration.
+    //
+    // A scripted answer must be marked ON THE TURN THAT PRODUCES IT. The startup
+    // notice is not enough and never was: it is printed once, it scrolls away
+    // after a few exchanges, and `tacet chat --message ... | something` never
+    // carried it at all, because it goes to stderr while the answer goes to
+    // stdout. So the marker rides WITH the answer, in both places an answer can
+    // leave this loop — the streaming path and the piped one.
+    //
+    // REACHING IT NOW TAKES ASKING. `--engine fake` is explicit; `Auto` refuses
+    // rather than falling back (see `engine_setup::no_engine`). This label is the
+    // second half of that: having asked for the scripted engine, you are not
+    // allowed to forget you are in it.
+    let speaker = if engine.name() == "fake" {
+        "Tacet (scripted) "
+    } else {
+        "Tacet "
+    };
+
     let store = Arc::new(SharedStore::new());
 
     // MEMORY: in interactive mode PERSISTENT to memory.json in the config
@@ -1088,7 +1107,7 @@ pub fn chat(run: ChatRun) -> ExitCode {
                     visible = trimmed.to_string();
                     indicator.quiet();
                     streaming.store(true, Ordering::Relaxed);
-                    screen.write(&color.paint(DIM, "Tacet "));
+                    screen.write(&color.paint(DIM, speaker));
                     // Night theme: the answer flows in paper ink from here on;
                     // the closing RESET is written where the answer ends.
                     screen.write(paper_code());
@@ -1181,7 +1200,7 @@ pub fn chat(run: ChatRun) -> ExitCode {
             {
                 indicator.quiet();
                 streaming.store(true, Ordering::Relaxed);
-                screen.write(&color.paint(DIM, "Tacet "));
+                screen.write(&color.paint(DIM, speaker));
                 screen.write(paper_code());
             }
             if streaming.load(Ordering::Relaxed) {
@@ -1278,7 +1297,7 @@ pub fn chat(run: ChatRun) -> ExitCode {
                 // valid tool call. In both cases leaving the screen blank would
                 // mean swallowing the answer.
                 if stream_to_screen && !streaming.load(Ordering::Relaxed) {
-                    screen.write(&color.paint(DIM, "Tacet "));
+                    screen.write(&color.paint(DIM, speaker));
                     screen.write(paper_code());
                     screen.line(&format::Formatter::all(screen.tty(), answer.trim()));
                     screen.write(RESET);
@@ -1428,7 +1447,7 @@ pub fn chat(run: ChatRun) -> ExitCode {
             // In interactive mode the answer was already printed while streaming;
             // do not print it again.
             if !interactive && human {
-                println!("Tacet: {answer}");
+                println!("{}: {answer}", speaker.trim_end());
             }
         }
 

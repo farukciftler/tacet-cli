@@ -721,30 +721,77 @@ pub fn setup_engine(
                     );
                     Ok((engine, window))
                 }
-                // If the candle feature is off or loading fails: falling back to
-                // fake SILENTLY would be wrong — the user expects a real model.
+                // NO FALLBACK. This used to warn and hand back `FakeEngine`, and
+                // that was the product's worst failure mode — see `no_engine`.
                 Err(e) => {
                     eprintln!(
                         "{}",
                         color.paint(YELLOW, &format!("(the real model could not be used: {e})"))
                     );
-                    eprintln!(
-                        "{}",
-                        color.paint(DIM, "(fell back to FakeEngine — answers are fixed)")
-                    );
-                    Ok(fake(script))
+                    Err(no_engine(model_name))
                 }
             },
             None => {
                 model_not_found_report(model_name, color);
-                eprintln!(
-                    "{}",
-                    color.paint(DIM, "(FakeEngine for now — answers are fixed)")
-                );
-                Ok(fake(script))
+                Err(no_engine(model_name))
             }
         },
     }
+}
+
+/// WHY `Auto` REFUSES TO CHAT INSTEAD OF ANSWERING FROM A SCRIPT — the product's
+/// worst failure mode, and the last one that was still shipping.
+///
+/// `cargo install` DOES NOT REMEMBER `--features`. A user installs with
+/// `--features metal`, upgrades months later without the flag, and gets a binary
+/// that cannot run a model. Until this function existed that binary still
+/// started, still accepted questions, and still answered — from `FakeEngine`,
+/// which replies "Understood. (fake engine)" and a short script. There was a
+/// warning line at startup, dimmed, on stderr, printed once. Then every
+/// following turn looked exactly like a working product.
+///
+/// THAT IS THE SHAPE OF A BUG NOBODY REPORTS. The user does not conclude "my
+/// build has no inference feature"; they conclude the project does not work, and
+/// they leave. No issue is opened, because from where they sit nothing crashed.
+///
+/// THE RULE IS THE SANDBOX'S RULE, APPLIED TO THE ENGINE. `run_code` does not run
+/// unprotected when no sandbox can be verified — the tool leaves the catalog
+/// (`RunCodeTool::discover`). The same sentence with the nouns changed: when no
+/// model can be loaded, the shell does not converse. Absence is legible; a canned
+/// answer dressed as a real one is not.
+///
+/// THE SCRIPTED ENGINE IS NOT GONE, it is now something you ASK for. `--engine
+/// fake` still works and is what eval and the tests use; what it no longer is, is
+/// somewhere you arrive by accident. And when it IS asked for, every turn says so
+/// — see `FAKE_TURN_NOTICE` in `chat.rs`, because a notice printed once at
+/// startup scrolls away and a piped stdout never carried it at all.
+///
+/// THE MISSING FEATURE IS NAMED FIRST when it is missing, because that is the
+/// case the user cannot diagnose. "No model found" they can act on; "this binary
+/// cannot load one at all" reads identically from the outside and does not.
+fn no_engine(model_name: &str) -> String {
+    let mut lines =
+        vec!["no model could be loaded, so there is nothing to answer with".to_string()];
+    if cfg!(not(feature = "candle")) {
+        lines.push(
+            "THIS BINARY HAS NO INFERENCE ENGINE: it was built without `--features candle` (or \
+             `metal`), so no model file can help. `tacet --version` prints the build. Reinstall \
+             with `cargo install tacet-cli --features metal` on Apple silicon, or `--features \
+             candle` elsewhere — `cargo install` does not remember the flag from last time."
+                .to_string(),
+        );
+    } else {
+        lines.push(format!(
+            "get weights with `tacet models download {model_name}`, or point `{MODEL_VARIABLE}` \
+             at a .gguf you already have"
+        ));
+    }
+    lines.push(
+        "if you actually want the scripted engine, ask for it: `tacet --engine fake` (the answers \
+         are fixed, and every turn says so)"
+            .to_string(),
+    );
+    lines.join("\n  ")
 }
 
 /// Prints THE CATALOG when no model is found.
@@ -932,4 +979,112 @@ pub fn candle_engine_from_path(
     _tokenizer: Option<&str>,
 ) -> Result<Arc<dyn EngineProvider>, String> {
     Err("this binary was built without the `candle` feature".into())
+}
+
+#[cfg(test)]
+mod refusal {
+    use super::*;
+
+    /// THE CLAIM: a build with no inference engine says so FIRST, and names the
+    /// flag `cargo install` forgot.
+    ///
+    /// NOT VACUOUS, and this is the part worth reading: the assertion is
+    /// `cfg`-split rather than written once, because the two builds must say
+    /// DIFFERENT things and a single test that accepted either would pass on a
+    /// binary that said neither. Under `--features candle` the missing piece is
+    /// the weights, and telling that user to reinstall would be a wrong
+    /// instruction; without the feature the weights are irrelevant and telling
+    /// that user to download 2 GB would waste their afternoon and not fix it.
+    #[test]
+    fn the_refusal_names_the_thing_the_user_cannot_see() {
+        let text = no_engine("qwen3-4b");
+
+        assert!(
+            text.contains("nothing to answer with"),
+            "the refusal must say why there is no answer: {text}"
+        );
+        assert!(
+            text.contains("--engine fake"),
+            "the refusal must name the way to ASK for the scripted engine: {text}"
+        );
+
+        if cfg!(feature = "candle") {
+            assert!(
+                text.contains("tacet models download qwen3-4b") && text.contains(MODEL_VARIABLE),
+                "with an inference engine present the missing piece is the WEIGHTS, and both \
+                 routes to them must be named: {text}"
+            );
+            assert!(
+                !text.contains("cargo install"),
+                "this build CAN load a model, so telling the user to reinstall is a wrong \
+                 instruction: {text}"
+            );
+        } else {
+            assert!(
+                text.contains("NO INFERENCE ENGINE") && text.contains("--features metal"),
+                "a featureless build must name the feature, because that is the one thing the \
+                 user cannot diagnose from the outside: {text}"
+            );
+            assert!(
+                !text.contains("models download"),
+                "no weight file can help this build, so sending the user after one is a wrong \
+                 instruction: {text}"
+            );
+        }
+    }
+
+    /// The failing half of the old behaviour, pinned so it cannot come back:
+    /// `Auto` with no weights must be an `Err`, not an engine.
+    ///
+    /// WHY IT PASSES A NAME THAT CANNOT RESOLVE rather than mocking discovery:
+    /// `resolve_pair` reads the real model roots, and a name no root can hold is
+    /// the only input that means "nothing found" on every machine — including one
+    /// with a full `~/models` directory, where a plausible name would find
+    /// weights and measure nothing.
+    #[test]
+    fn auto_with_no_weights_refuses_instead_of_answering_from_a_script() {
+        let screen = Screen::setup();
+        let color = Color::setup();
+        let result = setup_engine(
+            EngineChoice::Auto,
+            Vec::new(),
+            "no-such-model-\u{1f6ab}-in-any-root",
+            &color,
+            &screen,
+            false,
+        );
+
+        let Err(message) = result else {
+            panic!(
+                "Auto fell back to an engine with no weights — this is the canned-answer bug \
+                 that shipped for months"
+            );
+        };
+        assert!(
+            message.contains("nothing to answer with"),
+            "the error must be the diagnosis, not a bare string: {message}"
+        );
+    }
+
+    /// `--engine fake` still works. The refusal above must not have taken the
+    /// scripted engine away — it only stopped it being somewhere you ARRIVE.
+    #[test]
+    fn asking_for_the_scripted_engine_still_gets_one() {
+        let screen = Screen::setup();
+        let color = Color::setup();
+        let (engine, _) = setup_engine(
+            EngineChoice::Fake,
+            vec!["Hello.".to_string()],
+            "irrelevant",
+            &color,
+            &screen,
+            false,
+        )
+        .expect("an explicit --engine fake is a request, not an accident");
+        assert_eq!(
+            engine.name(),
+            "fake",
+            "the name is what `chat` reads to decide whether to sign the answer as scripted"
+        );
+    }
 }
