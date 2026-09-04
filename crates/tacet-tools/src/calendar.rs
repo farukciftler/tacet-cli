@@ -107,11 +107,56 @@ fn reminder_script(title: &str, at: &DateTime) -> String {
     )
 }
 
-/// Runs `osascript` with a poll-based timeout: the first call can block on the
-/// OS consent prompt, and a user who walks away must get their shell back.
+/// How long ONE call may wait on the Calendar bridge.
+///
+/// IT WAS 30 SECONDS AND THAT WAS MEASURED AS THE WHOLE COST OF THE TOOL. On a
+/// machine where the bridge does not answer — no consent granted, `Calendar.app`
+/// not responding — `osascript` blocks forever, and the eval case
+/// `calendar-day` came out at 39 s: 9.5 s of model and 30.1 s of nothing but
+/// this deadline expiring. `osascript` run by hand on the same machine never
+/// returned at all.
+///
+/// EIGHT SECONDS IS A TURN, NOT A PROMPT. The old comment justified 30 s with
+/// the OS consent dialog, but a user who has to read a dialog and click it is
+/// not going to finish inside any deadline that is also acceptable to sit
+/// through when the answer is "this will never work". They get told which it was
+/// (see `BRIDGE_SILENT`) and can ask again once permission is granted.
+#[cfg(target_os = "macos")]
+const CALL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// Has the bridge already failed to answer in THIS process.
+///
+/// WHY A LATCH RATHER THAN A DEADLINE PER CALL, and it is the difference between
+/// a slow session and an unusable one: the failure is a property of the machine
+/// (permission, or an app that is not talking), not of the request. Once it has
+/// happened, every later call in the same session would pay the same wait to
+/// learn the same thing — a suite with several calendar cases pays it once per
+/// case. It is paid ONCE now, and everything after is refused immediately with
+/// the diagnosis.
+///
+/// IT IS NEVER RESET. Granting permission mid-session is possible, and the price
+/// of the latch is that the user has to start a new session for it to be
+/// noticed. That is the same trade `RunCodeTool::discover` already makes for the
+/// sandbox, and the message says so.
+#[cfg(target_os = "macos")]
+static BRIDGE_SILENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(target_os = "macos")]
+const BRIDGE_SILENT_NOTE: &str = "the calendar bridge did not answer, so it is not being asked again this session. \
+     macOS may be waiting for permission — look for a consent dialog, or grant Calendar \
+     and Reminders access in System Settings › Privacy & Security › Automation, then \
+     start a new session.";
+
+/// Runs `osascript` under `CALL_DEADLINE`, and refuses instantly once the bridge
+/// has been shown to be silent.
 #[cfg(target_os = "macos")]
 fn run_osascript(script: &str) -> Result<String, String> {
+    use std::sync::atomic::Ordering;
     use std::time::{Duration, Instant};
+
+    if BRIDGE_SILENT.load(Ordering::Relaxed) {
+        return Err(BRIDGE_SILENT_NOTE.into());
+    }
     let mut child = std::process::Command::new("/usr/bin/osascript")
         .arg("-e")
         .arg(script)
@@ -119,19 +164,22 @@ fn run_osascript(script: &str) -> Result<String, String> {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("osascript could not start: {e}"))?;
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + CALL_DEADLINE;
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
             Ok(None) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(100));
+                std::thread::sleep(Duration::from_millis(50));
             }
             Ok(None) => {
+                // KILL AND THEN REAP. `kill` only sends the signal; without the
+                // `wait` the child stays a zombie for the life of the process,
+                // and a killed eval left four of them behind on this machine —
+                // one per timed-out case.
                 let _ = child.kill();
-                return Err(
-                    "the calendar did not answer in 30s (macOS may be waiting for your permission — check for a consent dialog)"
-                        .into(),
-                );
+                let _ = child.wait();
+                BRIDGE_SILENT.store(true, Ordering::Relaxed);
+                return Err(BRIDGE_SILENT_NOTE.into());
             }
             Err(e) => return Err(format!("osascript failed: {e}")),
         }
@@ -320,5 +368,59 @@ mod tests {
         assert!(s.contains("name:\"call \\\"mum\\\" \\\\ tonight\""));
         assert!(s.contains("set hours of d1 to 15"));
         assert!(s.contains("set minutes of d1 to 30"));
+    }
+
+    /// THE LATCH, MEASURED RATHER THAN REASONED ABOUT.
+    ///
+    /// The defect it closes was measured on this machine: `osascript` asking the
+    /// Calendar bridge never returned, `run_osascript` waited out its deadline,
+    /// and the eval case `calendar-day` came out at 39 s — 9.5 s of model, 30.1 s
+    /// of expiry. With several calendar cases in a suite that cost is paid once
+    /// PER CASE, because nothing remembered the previous answer.
+    ///
+    /// WHAT IS ASSERTED IS THE SHAPE, NOT THE CLOCK. A test that timed a real
+    /// `osascript` would pass or fail by whether this particular Mac has granted
+    /// Calendar permission, which measures the machine and not the code. So the
+    /// latch is set directly and the claim is the one that matters: once the
+    /// bridge has been silent, the next call returns WITHOUT spawning anything,
+    /// and it returns the diagnosis rather than a bare error.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn once_the_bridge_is_silent_it_is_not_asked_again() {
+        use std::sync::atomic::Ordering;
+
+        let restore = BRIDGE_SILENT.load(Ordering::Relaxed);
+        BRIDGE_SILENT.store(true, Ordering::Relaxed);
+
+        let started = std::time::Instant::now();
+        let answer = run_osascript("return 1");
+        let waited = started.elapsed();
+
+        BRIDGE_SILENT.store(restore, Ordering::Relaxed);
+
+        let Err(message) = answer else {
+            panic!("the latch was set, so no call may reach osascript");
+        };
+        assert!(
+            waited < std::time::Duration::from_millis(50),
+            "the refusal took {waited:?} — the latch is meant to skip the wait, \
+             not to shorten it"
+        );
+        assert!(
+            message.contains("System Settings"),
+            "the refusal must say how to fix it, not just that it failed: {message}"
+        );
+    }
+
+    /// The budget a single call may spend. Pinned because it was 30 s and the
+    /// number is the whole cost of a failing calendar turn — a change to it is a
+    /// change to how long a user stares at nothing.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn one_call_may_not_sit_for_a_whole_turn() {
+        assert!(
+            CALL_DEADLINE <= std::time::Duration::from_secs(8),
+            "a calendar call may not out-wait the model that asked for it"
+        );
     }
 }
