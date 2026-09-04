@@ -1461,13 +1461,31 @@ mod tests {
 
     /// Builds a database with the SAME binary the tool measured, opened
     /// WRITABLE — possible only because this is the test's own invocation.
+    ///
+    /// THE SQL GOES DOWN STDIN, NOT INTO AN ARGUMENT, and that is not a style
+    /// choice. Linux caps a SINGLE argv entry at `MAX_ARG_STRLEN` — 32 pages,
+    /// 128 KiB — independently of the much larger total `ARG_MAX`, while macOS
+    /// has no per-argument cap. `forty_thousand_returned_rows_do_not_reach_the_model`
+    /// seeds ~1 MB of INSERT, so it passed here for two months and died on the
+    /// first ubuntu CI run with `Os { code: 7, ArgumentListTooLong }` (run
+    /// 33864401667, 2026-09-04). stdin has no such limit on either platform.
     fn seed(binary: &Path, file: &Path, sql: &str) {
-        let out = Command::new(binary)
+        use std::io::Write as _;
+
+        let mut child = Command::new(binary)
             .arg(file)
-            .arg(sql)
-            .stdin(Stdio::null())
-            .output()
-            .expect("seed");
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("seed spawn");
+        child
+            .stdin
+            .as_mut()
+            .expect("seed stdin")
+            .write_all(sql.as_bytes())
+            .expect("seed write");
+        let out = child.wait_with_output().expect("seed");
         assert!(
             out.status.success(),
             "seed failed: {}",
@@ -2057,11 +2075,24 @@ mod tests {
     // (5) The pragmas that change durability or rewrite the schema
     // -----------------------------------------------------------------------
 
-    /// `PRAGMA writable_schema` IS THE ONE INPUT NOTHING STRUCTURALLY REFUSES:
-    /// measured, it exits 0 under `-safe` and rewrites `sqlite_master` while
-    /// every object NAME stays the same. This test fails the moment anyone
-    /// weakens the fingerprint to names alone — and it is the reason the backup
-    /// exists at all.
+    /// `PRAGMA writable_schema` was measured HERE as the one input nothing
+    /// structurally refuses: on macOS with `/usr/bin/sqlite3 3.51.0` it exits 0
+    /// under `-safe` and rewrites `sqlite_master` while every object NAME stays
+    /// the same. That is the case this test was written for, and it fails the
+    /// moment anyone weakens the fingerprint to names alone — it is the reason
+    /// the backup exists at all.
+    ///
+    /// IT IS NOT UNIVERSAL, AND CI SAID SO. On ubuntu-latest the same statement
+    /// is refused outright, in prepare: "table sqlite_master may not be modified"
+    /// (run 33864401667, 2026-09-04). So the sentence "nothing structurally
+    /// refuses it" was true of the machine it was measured on and false one
+    /// platform over — the distro's sqlite3 is STRICTER than macOS's.
+    ///
+    /// BOTH OUTCOMES ARE ASSERTED, because both are correct and the weaker one
+    /// is the one that needs the backup. A refusal must leave the schema intact;
+    /// an acceptance must be DETECTED as a redefinition and be recoverable. What
+    /// no platform may do is accept the rewrite silently, and that is what fails
+    /// here either way.
     #[test]
     fn a_schema_rewrite_is_detected_and_recoverable() {
         let refusing = Counting::new(false);
@@ -2075,9 +2106,18 @@ mod tests {
         let sql = "PRAGMA writable_schema=ON; UPDATE sqlite_master SET sql='CREATE TABLE t(a,b)' \
                    WHERE name='t';";
 
-        let refused = tool
-            .write(&json!({"path": "app.db", "statement": sql}), &ctx)
-            .expect("a refusal is an outcome");
+        let Ok(refused) = tool.write(&json!({"path": "app.db", "statement": sql}), &ctx) else {
+            // The stricter build: sqlite3 would not prepare the statement, so the
+            // trial run never touched the file. The guarantee holds by refusal,
+            // which is strictly better than holding by detection — but the file
+            // still has to be untouched, and that is the half worth asserting.
+            assert_eq!(
+                ask(&tool.binary, &file, "SELECT sql FROM sqlite_master;"),
+                "CREATE TABLE t(a)",
+                "the statement was refused, so nothing may have changed"
+            );
+            return;
+        };
         assert!(matches!(refused.state, ToolState::NeedsPermission));
         assert!(
             refusing.effect().contains("REDEFINED: table t"),
