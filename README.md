@@ -29,7 +29,11 @@ Tacet is that layer, written to be read. Every non-obvious decision has a commen
 
 ## What makes it different
 
-**Invalid tool calls are impossible, not unlikely.** Once the model emits `calculate(`, a pushdown automaton masks the logits at every step. Malformed JSON, a field that isn't in the schema, an out-of-range number, a missing required key — none of them can be *generated*. Not validated after the fact: unrepresentable. Sampling runs after masking, so no sampling strategy can escape it.
+**A call that has started cannot be finished invalidly.** Once the model emits `calculate(`, a pushdown automaton masks the logits at every step. Malformed JSON, a field that isn't in the schema, an out-of-range number, a missing required key — none of them can be *generated*. Not validated after the fact: unrepresentable. Sampling runs after masking, so no sampling strategy can escape it.
+
+The sentence used to read "invalid tool calls are impossible", and measuring it showed that was wider than the truth: **the grammar arms after `name(`, so it says nothing about a call that never starts that way.** Running a real model over 115 cases, seven of the twenty-two failures were the right tool with the right arguments written in a shape nobody taught it — ` ```tool read_document"path=report.md" ` and `<tool_call> read_document (path: "x") </tool_call>`. Those are recovered now, by a layer that will only look behind a marker no prose contains; the underlying gap is real and is written down rather than papered over.
+
+**And a valid call has to end.** That is a second property, weaker than the first and until recently not held at all: a valid *prefix* could wander forever. A model wrote a complete, correct `calendar(…)` call and then emitted whitespace for twelve minutes, because whitespace was legal at a structural position and legal again immediately. Unrepresentable-invalid and always-terminating are different claims — the grammar now bounds consecutive whitespace and the length of a field the schema leaves open, and the engine caps a constrained generation at 2048 tokens, measured against a largest-observed legitimate call of 1523.
 
 **The network monopoly is checkable by eye.** Exactly two crates may open a socket, and the HTTP dependency appears in exactly those two manifests. You do not have to trust a privacy claim you cannot audit — `grep -v '^\s*#' crates/*/Cargo.toml | grep ureq` is the audit, and `cargo test -p tacet-cli --test network_monopoly` is the same audit as a failing build: it asserts that exactly those two manifests declare an HTTP client, that no other client was swapped in under a different name, and that nobody reached a socket through `std::net` instead — scanning every `.rs` file under `crates/*/{src,tests,examples,benches}`, not just the library code. (One honest asterisk: if you install the `shell` addon and put `curl` on its allow-list, you have handed a program the network. That is why `shell` sits behind the approval gate — see [Addons](#addons).)
 
@@ -216,6 +220,76 @@ tacet-cli ──────────► terminal shell; drives the turn loop
 ```
 
 Arrows are dependency direction. `tacet-kernel` depends on nothing, so the contract never bends under pressure from an implementation. `tacet-engine` deliberately does not know `tacet-grammar`: the `Constrainer` contract lives in the engine, its implementation in the grammar, so a run without constraints doesn't compile grammar code it never uses.
+
+## What it scores — honestly
+
+Most of this repository's green numbers come from a **mock engine**: they measure
+Tacet's own logic, deterministically, in milliseconds. That is the right tool for
+CI and the wrong one for the question people actually ask, which is whether a 4B
+model on your laptop picks the right tool. So here is that number, produced on
+real weights and checked into `crates/tacet-eval/baselines/` with the model's
+fingerprint, so the next run can be compared against it rather than against a
+memory of how things used to go:
+
+```bash
+tacet eval --tool-selection --model qwen3-4b     # both languages, ~40 min
+tacet eval --tool-selection --model qwen3-4b --turkish   # Turkish only
+```
+
+| | |
+|---|---|
+| tool selection | **133/160** · 83.1% |
+| irrelevance gate | **24/24** · 100% |
+| step chain | 162/190 · 85.3% |
+| answer quality | 41/47 · 87.2% |
+
+qwen3-4b Q4_K_M on Metal, 184 cases in both languages, 44 min.
+
+**Turkish scores higher than English** — 61/69 against 96/115 — which is the
+opposite of what the effort spent on Turkish defects would suggest, and it is only
+visible because the two now run together. The routing eval always measured both;
+this one measured one language at a time and never both, so the expensive
+measurement was looking at the easier half and calling it the score.
+
+**The irrelevance gate is the one to read first.** Twenty-four messages that must
+*not* reach a tool, and none of them did. A local assistant that reaches for a
+tool on "thanks, that's all" is worse than no assistant, and that is the failure
+this number rules out.
+
+**The failures, because a score without a diagnosis is a number to be proud of
+rather than one to act on.** They are not scattered. The largest group is the
+model writing the right call in a syntax nobody taught it, and Turkish produced a
+shape English never did:
+
+```
+find_filepattern: "bütçe"          ← the tool name glued to its first argument
+```
+
+Then: the model declining a tool it *had*, an extra `read_document` before an
+edit — arguably correct behaviour the case does not allow for — and "I cannot do
+that in one call", without trying.
+
+The six refusals turned out to be **our fault, not the model's**. The system
+prompt opened with *"an assistant that runs entirely on the device. Data never
+leaves the device"* — a true statement about the architecture that a small model
+reads as a statement about its capabilities, and then declines to use
+`web_search`, which `tacet why` confirms was sitting at rank 2 in its own prompt.
+
+**What happened when we fixed it is the most useful thing on this page.** The raw
+score moved +3. `eval --compare` ran a sign test and refused to call it:
+
+```
+fixed 8   broke 5
+delta +2.6 points   95% CI [-3.5, +8.7]
+sign test p = 0.5811
+verdict: NOT DISTINGUISHABLE from no change at 95%.
+         this instrument needs 230 paired cases to call a 2.6-point effect;
+         this suite has 115.
+```
+
+Two runs of anything differ by a case or two for no reason. If you take one number
+away from this section, take that one — and note that the instrument volunteered
+its own resolution limit rather than letting a +3 be reported as progress.
 
 ## Platform support — honestly
 
