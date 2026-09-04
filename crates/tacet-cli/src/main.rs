@@ -29,10 +29,15 @@
 //! put the tool phase and the answer phase in different files for no reason a
 //! reader could reconstruct.
 //!
-//! ENGINE SELECTION IS AUTOMATIC. `--engine auto` (the default) uses the REAL
-//! model if it finds a local model PACKAGE and the binary was built with the
-//! `candle` feature; otherwise it falls back to FakeEngine with a MEANINGFUL
-//! message — not silently.
+//! ENGINE SELECTION IS AUTOMATIC AND IT DOES NOT FALL BACK. `--engine auto` (the
+//! default) uses the REAL model if it finds a local model PACKAGE and the binary
+//! was built with the `candle` feature; otherwise it REFUSES, naming what is
+//! missing. It used to hand back `FakeEngine` and keep answering, which meant a
+//! binary installed without `--features metal` looked like a working product
+//! giving bad replies — see `engine_setup::no_engine`. Both this header and
+//! `models list` still described the old behaviour after it changed; found by
+//! running `models list` on a machine with no weights (Windows Server 2019 and
+//! Ubuntu 24.04, 4 Sep 2026), which is the only place the sentence is printed.
 //!
 //! THIS HEADER ONCE LIED, and that is why the paths are no longer written out
 //! here one by one; they derive from the `model_package` module. The variable

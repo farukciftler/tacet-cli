@@ -27,7 +27,22 @@
 //! without any of it. The real equivalent is narrowing an ACL, which needs a
 //! `windows-sys` dependency and contradicts the zero-dependency identity. On
 //! Windows the protection rests on the file's LOCATION (under the user
-//! profile). NOT MEASURED ON A WINDOWS MACHINE.
+//! profile).
+//!
+//! MEASURED ON WINDOWS SERVER 2019, 4 Sep 2026, and the reasoning above holds
+//! exactly. A file written and then given `set_readonly(true)` reports
+//! `readonly = true` — and `icacls` on the same file still reads:
+//!
+//! ```text
+//! NT AUTHORITY\SYSTEM:(I)(F)
+//! BUILTIN\Administrators:(I)(F)
+//! BUILTIN\Users:(I)(RX)
+//! ```
+//!
+//! `Users` keeps Read+Execute. So the flag makes the file look protected while
+//! every local account can still read it, which is the illusion this paragraph
+//! refused to ship. Not stamping was the right call; it is now a measurement
+//! rather than an argument.
 
 use std::path::Path;
 
