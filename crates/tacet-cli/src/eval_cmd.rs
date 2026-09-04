@@ -201,6 +201,89 @@ pub fn eval_format_gate(engine: &Arc<dyn EngineProvider>) -> ExitCode {
 /// comparator that had to be recompiled whenever a field moved would go stale
 /// the first time somebody added one. All three carry a list of named cases
 /// with a pass/fail; that is the whole contract.
+/// One case as `--compare` needs it: the name it is paired by, whether it
+/// passed, and WHICH TOOLS IT TOUCHED — the last one so a case can be set aside
+/// when the two runs did not have the same catalog.
+#[derive(Clone)]
+struct Case {
+    name: String,
+    passed: bool,
+    tools: Vec<String>,
+}
+
+/// A whole report: its cases, and the catalog the run actually had. `catalog` is
+/// `None` for a report written before it was recorded, and for the routing
+/// report, which has no catalog of its own — both must keep comparing exactly as
+/// they did.
+struct Run {
+    cases: Vec<Case>,
+    catalog: Option<Vec<String>>,
+}
+
+/// Every tool named by a case: what it EXPECTED and what was actually CALLED,
+/// across all of its steps.
+///
+/// Both shapes of report are read here. The selection report keeps steps, each
+/// with `expected` (a name or null) and `called` (a list). The routing report
+/// has `expected` on the case itself and calls nothing. A field that is not
+/// there contributes nothing rather than failing: this list is used to EXCLUDE,
+/// so reading it pessimistically would quietly shrink the suite.
+fn tools_touched(entry: &serde_json::Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |v: Option<&serde_json::Value>| {
+        if let Some(name) = v.and_then(serde_json::Value::as_str)
+            && !out.iter().any(|t| t == name)
+        {
+            out.push(name.to_string());
+        }
+    };
+    push(entry.get("expected"));
+    if let Some(steps) = entry.get("steps").and_then(|v| v.as_array()) {
+        for step in steps {
+            push(step.get("expected"));
+            if let Some(called) = step.get("called").and_then(|v| v.as_array()) {
+                for c in called {
+                    push(Some(c));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The cases the two runs cannot be fairly compared on: those touching a tool
+/// that one side's catalog did not have.
+///
+/// PURE AND SEPARATE so it can be tested by NAME rather than through an exit
+/// code. The comparator's only other outcome is pass or fail, and "which cases
+/// were set aside" is exactly the thing that must be right.
+///
+/// Empty when either report predates the `catalog` field, and empty when the two
+/// catalogs agree — in both cases every paired name goes into the test, which is
+/// the behaviour this comparator has always had.
+fn incomparable_cases(before: &Run, after: &Run) -> Vec<String> {
+    let (Some(cb), Some(ca)) = (&before.catalog, &after.catalog) else {
+        return Vec::new();
+    };
+    if cb == ca {
+        return Vec::new();
+    }
+    let common: Vec<&String> = cb.iter().filter(|t| ca.contains(t)).collect();
+    let comparable = |c: &Case| c.tools.iter().all(|t| common.contains(&t));
+    let mut out: Vec<String> = Vec::new();
+    // Only PAIRED names: a case that exists on one side alone is already
+    // reported as unpaired, and naming it twice would say the same thing in two
+    // vocabularies.
+    for (mine, theirs) in [(&before.cases, &after.cases), (&after.cases, &before.cases)] {
+        for c in mine {
+            if !comparable(c) && theirs.iter().any(|o| o.name == c.name) && !out.contains(&c.name) {
+                out.push(c.name.clone());
+            }
+        }
+    }
+    out
+}
+
 pub fn eval_compare(before_path: &str, after_path: &str) -> ExitCode {
     let color = Color::setup();
 
@@ -254,7 +337,7 @@ held still. Re-run one side against the other's weights.",
         return ExitCode::FAILURE;
     }
 
-    let load = |p: &str| -> Result<Vec<(String, bool)>, String> {
+    let load = |p: &str| -> Result<Run, String> {
         let text = std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?;
         let value: serde_json::Value =
             serde_json::from_str(&text).map_err(|e| format!("{p}: not JSON: {e}"))?;
@@ -268,7 +351,7 @@ held still. Re-run one side against the other's weights.",
             .ok_or_else(|| {
                 format!("{p}: no `cases` or `outcomes` array — is this an eval report?")
             })?;
-        let mut out = Vec::new();
+        let mut cases = Vec::new();
         for entry in list {
             let name = entry
                 .get("name")
@@ -279,9 +362,21 @@ held still. Re-run one side against the other's weights.",
                 Some(b) => b,
                 None => entry.get("rank").is_some_and(|r| !r.is_null()),
             };
-            out.push((name.to_string(), passed));
+            cases.push(Case {
+                name: name.to_string(),
+                passed,
+                tools: tools_touched(entry),
+            });
         }
-        Ok(out)
+        Ok(Run {
+            cases,
+            catalog: value.get("catalog").and_then(|c| c.as_array()).map(|a| {
+                a.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            }),
+        })
     };
 
     let (before, after) = match (load(before_path), load(after_path)) {
@@ -291,6 +386,78 @@ held still. Re-run one side against the other's weights.",
             return ExitCode::FAILURE;
         }
     };
+
+    // THE TWO RUNS MUST HAVE HAD THE SAME TOOLS, and until now nothing checked
+    // this either.
+    //
+    // MEASURED, by walking into it a second time in one evening. A CUDA run on
+    // a rented Linux box was compared against the checked-in Metal baseline —
+    // same weights this time, so the fingerprint guard above was satisfied — and
+    // the verdict read −6.0 points, twenty-one cases broken. Nineteen of the
+    // twenty-one were `calendar-*`, `run_code-*` and `write_code-*`: three tools
+    // that are DISCOVERED, not compiled in. The calendar bridge is macOS-only,
+    // and on that box `bwrap` could not cut the network, so the sandbox tools
+    // left the catalog exactly as they are designed to. The report has carried
+    // `catalog` from the start; the comparator read `cases` and nothing else, so
+    // a host difference was printed as a model regression. With those cases set
+    // aside the same two files read +3.0.
+    //
+    // IT EXCLUDES RATHER THAN REFUSES, which is the opposite of the choice made
+    // for the weights above, and the difference is worth stating: different
+    // weights make EVERY case incomparable, so there is nothing left to report.
+    // A missing tool makes exactly the cases that need it incomparable and
+    // leaves the rest sound. Refusing there would throw away a legitimate
+    // measurement of 164 cases to avoid a wrong one about 20.
+    //
+    // A CASE IS EXCLUDED IF IT TOUCHED A TOOL EITHER SIDE LACKED — `expected`
+    // (what the case is about) and `called` (what actually happened) both count.
+    // `called` matters because a model that reaches for an absent tool has been
+    // handed a different problem, not a harder one.
+    let excluded_for_tools = incomparable_cases(&before, &after);
+    let (before, after) = match (&before.catalog, &after.catalog) {
+        (Some(cb), Some(ca)) if cb != ca => {
+            let missing_after: Vec<&String> = cb.iter().filter(|t| !ca.contains(t)).collect();
+            let missing_before: Vec<&String> = ca.iter().filter(|t| !cb.contains(t)).collect();
+            let say = |which: &str, list: &[&String]| {
+                if list.is_empty() {
+                    String::new()
+                } else {
+                    let names: Vec<&str> = list.iter().map(|s| s.as_str()).collect();
+                    format!("\n  not in {which}: {}", names.join(", "))
+                }
+            };
+            eprintln!(
+                "{}",
+                color.paint(
+                    YELLOW,
+                    &format!(
+                        "these two runs did not have the same tools, so {} case(s) that \
+touch a tool one side lacked are EXCLUDED from the test below.{}{}\n\
+A tool leaves the catalog when the host cannot support it — the calendar bridge is \
+macOS-only, the sandbox tools need a working `bwrap` or `sandbox-exec` — so this is a \
+difference between the two MACHINES, and counting it would report it as a difference \
+between the two BUILDS.",
+                        excluded_for_tools.len(),
+                        say("after", &missing_after),
+                        say("before", &missing_before),
+                    )
+                )
+            );
+            let keep = |c: &&Case| !excluded_for_tools.contains(&c.name);
+            (
+                before
+                    .cases
+                    .iter()
+                    .filter(keep)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                after.cases.iter().filter(keep).cloned().collect::<Vec<_>>(),
+            )
+        }
+        _ => (before.cases, after.cases),
+    };
+    let before: Vec<(String, bool)> = before.into_iter().map(|c| (c.name, c.passed)).collect();
+    let after: Vec<(String, bool)> = after.into_iter().map(|c| (c.name, c.passed)).collect();
 
     let mut pairs: Vec<(bool, bool)> = Vec::new();
     let mut fixed_names: Vec<&str> = Vec::new();
@@ -747,5 +914,119 @@ mod compare_identity {
         let p = path.to_string_lossy().into_owned();
         assert_eq!(eval_compare(&p, &p), ExitCode::SUCCESS);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// THE TWO RUNS MUST HAVE HAD THE SAME TOOLS.
+///
+/// MEASURED BY WALKING INTO IT, on the same evening as the weights guard above.
+/// A CUDA run on a rented Linux box was compared against the checked-in Metal
+/// baseline — same weights this time, so the fingerprint guard was satisfied —
+/// and the verdict read −6.0 points with twenty-one cases broken. Nineteen of
+/// the twenty-one were `calendar-*`, `run_code-*` and `write_code-*`: tools that
+/// are DISCOVERED rather than compiled in. The calendar bridge is macOS-only,
+/// and on that box `bwrap` could not cut the network, so the sandbox tools left
+/// the catalog exactly as they are designed to. With those cases set aside the
+/// same two files read +3.0 — the sign of the answer came from the host.
+#[cfg(test)]
+mod compare_catalog {
+    use super::*;
+
+    /// A report with the given catalog and one case per (name, tool) pair.
+    fn run(catalog: Option<&[&str]>, cases: &[(&str, &str)]) -> Run {
+        Run {
+            cases: cases
+                .iter()
+                .map(|(name, tool)| Case {
+                    name: (*name).to_string(),
+                    passed: true,
+                    tools: vec![(*tool).to_string()],
+                })
+                .collect(),
+            catalog: catalog.map(|c| c.iter().map(|s| (*s).to_string()).collect()),
+        }
+    }
+
+    #[test]
+    fn a_case_needing_a_tool_the_other_side_lacked_is_set_aside() {
+        let before = run(
+            Some(&["calculate", "calendar"]),
+            &[("sums", "calculate"), ("diary", "calendar")],
+        );
+        let after = run(
+            Some(&["calculate"]),
+            &[("sums", "calculate"), ("diary", "calendar")],
+        );
+        assert_eq!(
+            incomparable_cases(&before, &after),
+            vec!["diary".to_string()],
+            "the calendar case is a difference between the machines, not the builds"
+        );
+    }
+
+    /// NOT VACUOUS. If the rule were "exclude everything when the catalogs
+    /// differ" the assertion above would pass for free and the comparator would
+    /// have nothing left to measure.
+    #[test]
+    fn the_cases_both_hosts_could_run_are_kept() {
+        let before = run(
+            Some(&["calculate", "calendar"]),
+            &[("sums", "calculate"), ("diary", "calendar")],
+        );
+        let after = run(
+            Some(&["calculate"]),
+            &[("sums", "calculate"), ("diary", "calendar")],
+        );
+        assert!(
+            !incomparable_cases(&before, &after).contains(&"sums".to_string()),
+            "a case that only needed a tool both sides had is still comparable"
+        );
+    }
+
+    /// THE TOOL A CASE ACTUALLY CALLED COUNTS, not only the one it expected. A
+    /// model that reaches for a tool the other host did not have was handed a
+    /// different problem, and pairing the two answers measures that instead of
+    /// the change.
+    #[test]
+    fn a_case_that_called_an_absent_tool_is_also_set_aside() {
+        let mut before = run(Some(&["calculate", "run_code"]), &[("sums", "calculate")]);
+        before.cases[0].tools.push("run_code".to_string());
+        let after = run(Some(&["calculate"]), &[("sums", "calculate")]);
+        assert_eq!(
+            incomparable_cases(&before, &after),
+            vec!["sums".to_string()]
+        );
+    }
+
+    /// Two runs on the same host exclude nothing — the ordinary case, and the
+    /// one every existing comparison is.
+    #[test]
+    fn matching_catalogs_exclude_nothing() {
+        let c = Some(&["calculate", "calendar"][..]);
+        let before = run(c, &[("sums", "calculate"), ("diary", "calendar")]);
+        let after = run(c, &[("sums", "calculate"), ("diary", "calendar")]);
+        assert!(incomparable_cases(&before, &after).is_empty());
+    }
+
+    /// A report written before `catalog` was recorded, and the routing report,
+    /// which has no catalog at all: both must compare exactly as they did.
+    #[test]
+    fn a_report_without_a_catalog_excludes_nothing() {
+        let before = run(None, &[("sums", "calculate"), ("diary", "calendar")]);
+        let after = run(Some(&["calculate"]), &[("sums", "calculate")]);
+        assert!(incomparable_cases(&before, &after).is_empty());
+    }
+
+    /// A case only one side ran is already reported as unpaired. Naming it here
+    /// too would say the same thing in two vocabularies and inflate the count
+    /// the warning prints.
+    #[test]
+    fn an_unpaired_case_is_not_counted_as_incomparable() {
+        let before = run(
+            Some(&["calculate", "calendar"]),
+            &[("sums", "calculate"), ("diary", "calendar")],
+        );
+        let after = run(Some(&["calculate"]), &[("sums", "calculate")]);
+        assert!(incomparable_cases(&before, &after).is_empty());
     }
 }

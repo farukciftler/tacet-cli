@@ -1611,11 +1611,21 @@ fn generation_counter(engine: &Arc<dyn EngineProvider>) -> tacet_engine::TokenCo
 /// batch-1 decode that leaves most of the card idle; it was the power draw and
 /// the memory-controller figure, not that number, that answered the question.
 ///
-/// The gain that IS available is the opposite of parallelism: a turn here emits
-/// 227-280 tokens where the same case on Metal emits ~11, and `thinking` is
-/// empty, so those are not deliberation — they are prose in front of a call the
-/// grammar does not arm until `name(` has already been written. Making the turn
-/// shorter divides the same wall clock and costs no VRAM.
+/// THE GAIN THAT IS AVAILABLE IS BATCHING, which is the opposite trade: `b`
+/// sequences in ONE forward read the weights once and produce `b` tokens, where
+/// `b` processes read them `b` times. Measured on the same card by
+/// `examples/batch_decode.rs`: 124 tok/s at batch 1 against 504 at batch 32,
+/// four times the tokens from the hardware that gave nothing to running four
+/// copies. What it costs is an engine that decodes several sequences together,
+/// with one sampler and one grammar mask each.
+///
+/// AND THE LARGER GAIN WAS NOT ABOUT THE GPU AT ALL. The run that provoked all
+/// of this was made with the wrong weights: `Qwen/Qwen3-4B` rather than the 2507
+/// instruct model every number here was measured on. The same 184 cases took
+/// 53.7 minutes on the first and 6.2 on the second, because the hybrid model
+/// spends a median of 237 tokens per turn against 19 — with `thinking` empty, so
+/// it is prose in front of a call and not deliberation. Before reaching for a
+/// bigger card, check which file is loaded.
 ///
 /// VRAM, for whoever measures this again on a bigger card, where the answer may
 /// differ: four processes at a 40960 window took 22.8 GB of 24 GB — the weights
