@@ -563,6 +563,24 @@ const O_NOFOLLOW: i32 = 0;
 /// when the path names an existing symlink — DANGLING OR NOT — so the link is
 /// refused instead of followed. `O_NOFOLLOW` is a second belt for the case where
 /// the final component is a link.
+///
+/// WINDOWS HAS ONLY THE FIRST BELT, AND IT HOLDS — measured rather than assumed.
+/// `custom_flags` is `#[cfg(unix)]`, so `O_NOFOLLOW` is never applied there (it
+/// is the `dead_code` warning a Windows build prints and no CI job fails on,
+/// because `clippy -D warnings` runs only on ubuntu). The paragraph above rested
+/// the whole guarantee on what POSIX requires, and Windows is not POSIX — so the
+/// claim covered the one platform it did not apply to.
+///
+/// MEASURED on Windows Server 2019, 4 Sep 2026: a real `SymbolicLink` at the
+/// target path, opened with exactly these options, gives
+/// `The file exists. (os error 80)` / `ErrorKind::AlreadyExists`, and the file
+/// the link pointed at is untouched afterwards. `CREATE_NEW` refuses a name that
+/// exists, and a symlink is such a name. The second belt is genuinely redundant
+/// there rather than merely absent.
+///
+/// `a_dangling_symlink_does_not_deliver_the_file_outside` in `write_code.rs` is
+/// `#[cfg(unix)]` and does not compile on Windows, so nothing in the suite states
+/// this. It is written here instead of left to the next person to re-derive.
 pub(crate) fn create_script(script: &Path, code: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let mut options = std::fs::OpenOptions::new();
@@ -942,10 +960,35 @@ impl RunCodeTool {
             );
         };
         if !verify_shield(&shield, &interpreters[0]) {
+            // THE MOST LIKELY CAUSE IS NAMED FIRST, and on the most common Linux
+            // it is not any of the three this message used to list.
+            //
+            // MEASURED on a stock Ubuntu 24.04 (Kamatera, 4 Sep 2026): as an
+            // ordinary user `bwrap --unshare-net` dies with
+            // "loopback: Failed RTM_NEWADDR: Operation not permitted", because
+            // the distro ships `kernel.apparmor_restrict_unprivileged_userns=1`.
+            // As root on the SAME machine it succeeds — root is exempt — so the
+            // failure is invisible to anyone testing with sudo. The same error
+            // had already stopped the GitHub ubuntu runner, which we had written
+            // off as a runner quirk; it is the default.
+            //
+            // WITHOUT THIS LINE the user was told the measurement failed and left
+            // to guess why, on the platform where the guess is hardest and the
+            // remedy is one command.
+            let hint = if cfg!(target_os = "linux") {
+                "\n  Most likely: this distribution restricts unprivileged user namespaces \
+                 (Ubuntu 24.04 ships `kernel.apparmor_restrict_unprivileged_userns=1`), so \
+                 `bwrap --unshare-net` cannot bring up loopback for a non-root user. Check with \
+                 `sysctl kernel.apparmor_restrict_unprivileged_userns`; allow it with \
+                 `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`. Running tacet \
+                 as root also works and is the worse answer."
+            } else {
+                ""
+            };
             return format!(
                 "run_code is off: {} was found but the measurement did not pass — either the \
                  script never ran under the shield, or the network COULD NOT BE SEEN as cut \
-                 (see verify_shield)",
+                 (see verify_shield){hint}",
                 shield.name()
             );
         }

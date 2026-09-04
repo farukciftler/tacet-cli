@@ -147,7 +147,9 @@ pub fn model_list(json: bool, selected_name: &str) -> ExitCode {
             color.paint(
                 YELLOW,
                 &format!(
-                    "the requested '{selected_name}' is not usable — chat falls back to FakeEngine"
+                    "the requested '{selected_name}' is not usable — chat will REFUSE to answer \
+                     rather than make something up (`tacet models download {selected_name}`, or \
+                     ask for the scripted engine with `--engine fake`)"
                 )
             )
         );

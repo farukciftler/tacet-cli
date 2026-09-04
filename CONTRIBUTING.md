@@ -25,6 +25,43 @@ Other good places to start:
 
 ## Before you open a PR
 
+**On Windows you need a C toolchain, and the reason is not the one it looks
+like.** A clean Windows stops at ``error: linker `link.exe` not found``, which
+reads as "install MSVC". Installing Rust's GNU toolchain instead gets past the
+linker — it carries its own — and then stops again:
+
+```
+error: failed to run custom build command for `ring v0.17.14`
+  failed to find tool "gcc.exe": program not found
+```
+
+`ureq -> rustls -> ring`, and `ring` compiles C. So the prerequisite is a C
+compiler, however you get one. Three routes, all measured on a fresh Windows
+Server 2019 on 4 Sep 2026:
+
+| route | download | note |
+|---|---|---|
+| **prebuilt binary** | ~15 MB | most people want this — see Releases; nothing is built |
+| **GNU + MinGW-w64** | ~378 MB | builds the workspace in 1 m 35 s, `eval` reads 78/78 |
+| MSVC Build Tools | ~2 GB | what CI's `windows-latest` already has |
+
+The GNU route, end to end:
+
+```powershell
+rustup toolchain install stable-x86_64-pc-windows-gnu
+# unpack a MinGW-w64 build (winlibs, MSYS2, …) and put its bin\ on PATH
+cargo +stable-x86_64-pc-windows-gnu build --workspace
+```
+
+On Windows 11 or Server 2022+ the toolchain is one line, because `winget` is
+built in — `winget install BrechtSanders.WinLibs.POSIX.UCRT.LLVM` or an MSYS2
+package. **Server 2019 has neither `winget` nor `choco`** (winget wants 1809+
+desktop or Server 2022), so there the download is manual; that is the machine
+these numbers came from.
+
+None of this is visible to CI, which is why it is written here: GitHub's runner
+ships MSVC, so the build simply works there and the prerequisite never appears.
+
 ```bash
 cargo build --workspace
 cargo clippy --workspace --all-targets -- -D warnings

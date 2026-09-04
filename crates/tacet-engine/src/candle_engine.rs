@@ -390,6 +390,32 @@ impl CandleEngine {
 
     /// Pre-checks if the GGUF quantization format is supported on CUDA before loading weights.
     fn validate_cuda_quant(quant: &str, model_path: &Path) -> EngineResult<()> {
+        // THE NAMES MUST BE THE ONES `dominant_quant` PRODUCES, and for three
+        // months they were not.
+        //
+        // `dominant_quant` formats candle's `GgmlDType` with `{:?}`, and candle
+        // spells the K-quants WITHOUT an underscore — `Q4K`, `Q6K` — while the
+        // legacy types keep theirs (`Q8_0`). This list was written with
+        // underscores throughout, so every K-quant failed the check. Q4_K_M is
+        // the most common GGUF quantisation there is, which means CUDA refused
+        // essentially every model anyone actually downloads.
+        //
+        // MEASURED on an RTX 4090, 4 Sep 2026 — the first time this code path had
+        // ever run, because `--features cuda` is not built by CI and no
+        // maintainer machine has an NVIDIA GPU:
+        //
+        //     CUDA backend does not support GGUF quantization format 'Q4K'
+        //     (Supported CUDA formats: Q4_K, Q6_K, ...)
+        //
+        // The error names the format it is rejecting and lists it as supported in
+        // the same sentence. That is what a check comparing two spellings of one
+        // thing looks like from outside.
+        //
+        // BOTH SPELLINGS ARE ACCEPTED rather than only the corrected one: the
+        // Debug name is what this code sees today, and the underscored form is
+        // what every other tool in the ecosystem prints, so a future caller
+        // passing `Q4_K` from a filename is not wrong. `the_cuda_allow_list_uses_
+        // the_names_dominant_quant_produces` is what stops the two drifting again.
         let is_supported = matches!(
             quant,
             "Q4_0"
@@ -398,6 +424,12 @@ impl CandleEngine {
                 | "Q5_1"
                 | "Q8_0"
                 | "Q8_1"
+                | "Q2K"
+                | "Q3K"
+                | "Q4K"
+                | "Q5K"
+                | "Q6K"
+                | "Q8K"
                 | "Q2_K"
                 | "Q3_K"
                 | "Q4_K"
@@ -411,7 +443,8 @@ impl CandleEngine {
         if !is_supported {
             return Err(EngineError::Inference(format!(
                 "CUDA backend does not support GGUF quantization format '{quant}' in file '{}'. \
-                 (Supported CUDA formats: Q4_K, Q6_K, Q8_0, Q4_0, Q5_0, Q5_K, Q2_K, Q3_K, Q8_K, F16, F32)",
+                 (Supported CUDA formats: Q4K, Q5K, Q6K, Q8K, Q2K, Q3K, Q4_0, Q4_1, Q5_0, Q5_1, \
+                 Q8_0, Q8_1, F16, F32, BF16)",
                 model_path.display()
             )));
         }
@@ -1264,5 +1297,67 @@ mod greedy_tests {
 
         // And an empty slice must not panic — `unwrap_or(0)` is load-bearing.
         assert_eq!(largest_index(&[]), 0);
+    }
+}
+
+#[cfg(test)]
+mod cuda_quant {
+    use super::*;
+
+    /// THE ALLOW-LIST MUST SPEAK THE NAMES `dominant_quant` PRODUCES.
+    ///
+    /// `dominant_quant` formats candle's `GgmlDType` with `{:?}`. Candle spells
+    /// the K-quants without an underscore and the legacy types with one, and the
+    /// list was written with underscores throughout — so `Q4K`, the Debug name
+    /// for the most common GGUF quantisation in existence, failed a check that
+    /// listed `Q4_K` as supported in its own error message.
+    ///
+    /// THE DRIFT SURVIVED THREE MONTHS because nothing runs it: `--features cuda`
+    /// is not built in CI and no maintainer machine has an NVIDIA GPU. It was
+    /// found on a rented RTX 4090 on the first attempt.
+    ///
+    /// THIS TEST NEEDS NEITHER. It formats the dtypes exactly as `dominant_quant`
+    /// does and asserts the validator accepts them, so the two cannot separate
+    /// again on a machine that never loads a model.
+    #[test]
+    fn the_cuda_allow_list_uses_the_names_dominant_quant_produces() {
+        use candle_core::quantized::GgmlDType;
+
+        // Everything a GGUF the CUDA backend can run is quantised as. If candle
+        // renames a variant, this fails here rather than on a user's GPU.
+        for dtype in [
+            GgmlDType::Q4_0,
+            GgmlDType::Q4_1,
+            GgmlDType::Q5_0,
+            GgmlDType::Q5_1,
+            GgmlDType::Q8_0,
+            GgmlDType::Q8_1,
+            GgmlDType::Q2K,
+            GgmlDType::Q3K,
+            GgmlDType::Q4K,
+            GgmlDType::Q5K,
+            GgmlDType::Q6K,
+            GgmlDType::Q8K,
+            GgmlDType::F16,
+            GgmlDType::F32,
+            GgmlDType::BF16,
+        ] {
+            let name = format!("{dtype:?}");
+            assert!(
+                CandleEngine::validate_cuda_quant(&name, Path::new("x.gguf")).is_ok(),
+                "the validator rejects {name:?}, which is what dominant_quant will hand it"
+            );
+        }
+    }
+
+    /// A format that is genuinely unsupported is still refused, and the message
+    /// names it. Without this the test above would pass on a validator that
+    /// accepted everything.
+    #[test]
+    fn an_unsupported_format_is_still_refused_by_name() {
+        let err = CandleEngine::validate_cuda_quant("IQ2_XXS", Path::new("weird.gguf"))
+            .expect_err("an unknown quantisation must not load on CUDA");
+        let text = format!("{err}");
+        assert!(text.contains("IQ2_XXS"), "the refusal must name it: {text}");
     }
 }

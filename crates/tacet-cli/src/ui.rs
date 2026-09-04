@@ -335,6 +335,52 @@ impl Screen {
         }
     }
 
+    /// Removes ANSI CSI sequences from text on its way to a NON-TERMINAL stdout.
+    ///
+    /// MEASURED, and it is why the interactive shell had to be run rather than
+    /// reasoned about: `tacet chat --engine fake -m hello | od -c` ended with
+    ///
+    /// ```text
+    /// f a k e   e n g i n e ) 033 [ 0 m
+    /// ```
+    ///
+    /// a raw reset in the middle of the answer. `Color::paint` already checks for
+    /// a terminal, so the coloured parts were clean — but `paper_code()` and
+    /// `RESET` are written straight through `Screen::write`, which only ever
+    /// translated line endings. Anyone redirecting the answer to a file, or
+    /// piping it to another program, got the escape as text. Measured on macOS
+    /// and on Ubuntu 24.04, 4 Sep 2026, so it is not a platform quirk.
+    ///
+    /// STRIPPED HERE RATHER THAN AT THE CALL SITES, deliberately. There are
+    /// several places that emit a reset or a theme colour and a guard at each is
+    /// a guard one of them will be missing after the next edit — this is the one
+    /// door stdout goes through. The indicator writes to STDERR by another path
+    /// and is untouched, which is correct: it is drawn for a person, and a person
+    /// is a terminal.
+    fn strip_ansi(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut chars = text.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c != '\x1b' {
+                out.push(c);
+                continue;
+            }
+            // CSI: ESC '[' … final byte in @..~. Anything else after ESC is a
+            // two-character sequence; both are dropped whole.
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for f in chars.by_ref() {
+                    if ('\x40'..='\x7e').contains(&f) {
+                        break;
+                    }
+                }
+            } else {
+                chars.next();
+            }
+        }
+        out
+    }
+
     /// Erases the indicator line, IN THE STREAM IT WAS DRAWN IN.
     ///
     /// The erase has to travel with the drawing: the cursor belongs to the
@@ -359,7 +405,13 @@ impl Screen {
         Self::wipe_indicator(&mut inner);
         let mut out = std::io::stdout().lock();
         inner.last_chip = None;
-        let _ = out.write_all(Self::translate(inner.raw, text).as_bytes());
+        let translated = Self::translate(inner.raw, text);
+        let painted = if self.tty {
+            translated
+        } else {
+            Self::strip_ansi(&translated)
+        };
+        let _ = out.write_all(painted.as_bytes());
         let _ = out.flush();
     }
 
@@ -1356,5 +1408,32 @@ mod tests {
         let ctrl_c = Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
         swallow_key(&ctrl_c, &CANCEL, &screen);
         assert!(CANCEL.load(Ordering::Relaxed), "ctrl-c must cancel");
+    }
+
+    /// A REDIRECTED ANSWER CARRIES NO ESCAPES, and a terminal still gets them.
+    ///
+    /// The defect this pins was found by running the interactive shell for the
+    /// first time (Ubuntu 24.04 and macOS, 4 Sep 2026): `tacet chat --engine fake
+    /// -m hello | od -c` ended `f a k e   e n g i n e ) 033 [ 0 m`. `Color::paint`
+    /// checks for a terminal, so the coloured spans were already clean — the leak
+    /// was `RESET` and the theme colour going straight through `Screen::write`.
+    ///
+    /// BOTH DIRECTIONS ARE ASSERTED. Stripping everything would be an easy way to
+    /// pass half this test and break the product for the person watching it work.
+    #[test]
+    fn escapes_leave_a_redirected_answer_and_stay_in_a_terminal() {
+        let painted = format!("{DIM}Tacet {RESET}hello{RESET}\n");
+
+        let stripped = Screen::strip_ansi(&painted);
+        assert_eq!(stripped, "Tacet hello\n");
+        assert!(!stripped.contains('\x1b'));
+
+        // A two-character sequence (ESC + one byte) is dropped whole, and a CSI
+        // with parameters is dropped up to its final byte — the two shapes the
+        // theme actually emits.
+        assert_eq!(Screen::strip_ansi("a\x1b[38;5;250mb"), "ab");
+        assert_eq!(Screen::strip_ansi("a\x1b7b"), "ab");
+        // Text that merely looks like a sequence is untouched.
+        assert_eq!(Screen::strip_ansi("a[0mb"), "a[0mb");
     }
 }
