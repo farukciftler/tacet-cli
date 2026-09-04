@@ -1980,25 +1980,33 @@ mod tests {
             .flat_map(|d| d.tools.iter().copied())
             .collect();
 
-        // THE SHIELD-CONDITIONAL PAIR, for the same reason as the addon five and
-        // found the same way this comment's neighbours were: by a red CI job.
+        // THE TOOLS THAT ARE CONDITIONAL ON THE HOST RATHER THAN ON AN ADDON —
+        // the same problem as the addon five, arriving through two more doors.
+        // Both doors were found by CI, one run apart, and the order is the
+        // interesting part.
         //
         // `run_code` and `write_code` are in the catalog only when
         // `RunCodeTool::discover()` finds AND MEASURES a sandbox, which needs an
         // interpreter at one of the fixed paths. On windows-latest neither node
-        // nor python3 sits at those paths, so both tools are absent and the `code`
-        // skill — which exists to command exactly them — failed this test with
-        // "neither in the catalog nor declared by any addon" (run 33863502596,
-        // 2026-09-04). It passes on macOS, where the shield is found. That is the
-        // machine-dependence this test already refuses to measure for the addon
-        // tools, arriving through a second door.
+        // nor python3 is there, so both are absent and the `code` skill — which
+        // exists to command exactly them — failed with "neither in the catalog nor
+        // declared by any addon" (run 33863502596, 2026-09-04).
         //
-        // THE PRICE IS THE SAME ONE STATED ABOVE and is worth restating, because
-        // it is bigger here: these two carry the weaker guarantee, so a typo in
-        // their CHOICE VALUES is caught on macOS and not on Windows. It is not
-        // uncaught — the macOS leg of the matrix is a real gate — but it is
-        // caught by one platform rather than three.
-        const SHIELD_CONDITIONAL: [&str; 2] = ["run_code", "write_code"];
+        // `calendar` is macOS-ONLY: it speaks to Calendar/Reminders through
+        // `osascript`, so on Linux and Windows the tool is simply not registered
+        // and the `calendar` skill has nothing to name. THIS ONE WAS HIDDEN BEHIND
+        // THE FIRST TWO. In run 33863502596 the ubuntu leg never reached the tests
+        // — it stopped at the bwrap preflight — and the windows leg reported only
+        // the first failing skill. It surfaced in run 33864070108, once the
+        // AppArmor fix let Linux discover the shield and `run_code` joined the
+        // ubuntu catalog. A platform gap can mask a platform gap.
+        //
+        // THE PRICE IS THE ONE STATED ABOVE and is worth restating because it is
+        // bigger here: these three carry the weaker guarantee, so a typo in their
+        // CHOICE VALUES is caught on the platform that has them and not on the
+        // others. `calendar` is the sharpest case — exactly one leg of the matrix
+        // checks it. Not uncaught, but caught once rather than three times.
+        const HOST_CONDITIONAL: [&str; 3] = ["run_code", "write_code", "calendar"];
 
         let mut checked_values = 0;
         for skill in skills.all() {
@@ -2006,10 +2014,10 @@ mod tests {
                 let Some(tool) = catalog.find(name) else {
                     assert!(
                         addon_tools.contains(&name.as_str())
-                            || SHIELD_CONDITIONAL.contains(&name.as_str()),
+                            || HOST_CONDITIONAL.contains(&name.as_str()),
                         "skill '{}' commands tool '{name}', which is neither in the catalog \
                          {:?}, nor declared by any addon {addon_tools:?}, nor one of the \
-                         shield-conditional {SHIELD_CONDITIONAL:?}",
+                         host-conditional {HOST_CONDITIONAL:?}",
                         skill.name,
                         catalog.names()
                     );
