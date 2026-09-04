@@ -25,6 +25,13 @@ Other good places to start:
 
 ## Before you open a PR
 
+**On Windows, one prerequisite first.** A clean Windows has no MSVC linker and
+`cargo build` stops at ``error: linker `link.exe` not found``. Install the Visual
+Studio Build Tools with the "Desktop development with C++" workload (~2 GB) —
+GitHub's `windows-latest` runner ships them, which is why CI never sees this and
+why it is written here instead. Measured on a fresh Windows Server 2019,
+4 Sep 2026.
+
 ```bash
 cargo build --workspace
 cargo clippy --workspace --all-targets -- -D warnings
