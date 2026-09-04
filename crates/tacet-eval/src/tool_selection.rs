@@ -1576,9 +1576,15 @@ pub fn run_selection_with_options(
     force_tool_name: bool,
 ) -> SelectionReport {
     let started = std::time::Instant::now();
+    let total = cases.len();
     let outcomes: Vec<SelectionOutcome> = cases
         .iter()
-        .map(|c| run_selection_case_with_options(c, engine, budget, force_tool_name))
+        .enumerate()
+        .map(|(i, c)| {
+            let outcome = run_selection_case_with_options(c, engine, budget, force_tool_name);
+            report_progress(i + 1, total, &c.name, started.elapsed());
+            outcome
+        })
         .collect();
     let catalog = production_catalog_names();
     SelectionReport::new(
@@ -1587,6 +1593,54 @@ pub fn run_selection_with_options(
         catalog,
         outcomes,
     )
+}
+
+/// ONE LINE PER FINISHED CASE, on stderr, carrying a projection of the rest.
+///
+/// WHY IT EXISTS, measured rather than imagined: this suite was run on real
+/// weights and took **1 h 37 min and counting** while printing NOTHING after
+/// "115 cases running — takes minutes". `lsof` on the process showed only two
+/// open outputs — a 0-byte stdout, because the report is serialised at the end,
+/// and a 161-byte stderr holding the three startup lines. There was no way to
+/// tell 12 cases from 112, or progress from a hang, without sampling the
+/// process's own stack. A command that can run for over an hour and cannot
+/// answer "how far along are you" is not measurable, and this repository's whole
+/// argument is that unmeasurable claims are the ones that turn out false.
+///
+/// IT GOES TO STDERR, NOT STDOUT, and that is load-bearing rather than a habit:
+/// `--json` writes the report to stdout and is redirected to a file by anyone
+/// comparing two runs. A progress line on stdout would corrupt every one of
+/// those files. stderr is also where the existing startup lines already go, so
+/// a reader sees one stream in one order.
+///
+/// THE PROJECTION IS A MEAN, AND IT IS LABELLED AS ONE. Cases are not equal —
+/// a multi-step case runs the model several times, and a case that engages the
+/// grammar pays for a `TokenMask::walk` over the whole vocabulary at every token
+/// (sampled during that same run, the mask walk was the hottest symbol in the
+/// process, above the attention forward pass). So the estimate drifts, early on
+/// especially. It is still the difference between "unknown" and "roughly an
+/// hour", which is the decision the person watching actually has to make.
+fn report_progress(done: usize, total: usize, name: &str, elapsed: std::time::Duration) {
+    let secs = elapsed.as_secs_f64();
+    let per_case = secs / done as f64;
+    let left = per_case * (total - done) as f64;
+    eprintln!(
+        "  [{done:>3}/{total}] {name} · {} elapsed · {:.0}s/case · ~{} left",
+        human_duration(secs),
+        per_case,
+        human_duration(left)
+    );
+}
+
+/// `m`/`s` rather than a bare seconds count: the numbers here reach four digits,
+/// and "4127s" is a number the reader has to convert before it means anything.
+fn human_duration(secs: f64) -> String {
+    let secs = secs.max(0.0) as u64;
+    if secs < 60 {
+        format!("{secs}s")
+    } else {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    }
 }
 
 fn production_catalog_names() -> Vec<String> {
@@ -2456,5 +2510,47 @@ mod ordering_probe {
                 .collect();
             println!("{entry}\n   {}", names.join(", "));
         }
+    }
+}
+
+#[cfg(test)]
+mod progress {
+    use super::*;
+
+    /// The unit the reader converts in their head if it is missing.
+    ///
+    /// THE 3600 CASE IS THE ONE THAT MATTERS and it is why this is not just
+    /// `secs / 60`: the run that made this function necessary passed an hour, and
+    /// "5927s left" is a number nobody reads as "an hour and a half".
+    #[test]
+    fn a_duration_is_readable_at_the_scale_this_suite_actually_reaches() {
+        assert_eq!(human_duration(0.0), "0s");
+        assert_eq!(human_duration(59.4), "59s");
+        assert_eq!(human_duration(60.0), "1m00s");
+        assert_eq!(human_duration(95.0), "1m35s");
+        assert_eq!(human_duration(3600.0), "60m00s");
+        assert_eq!(human_duration(5927.0), "98m47s");
+        // A negative can arrive from the projection when a case finishes faster
+        // than the running mean; it must not underflow into a giant number.
+        assert_eq!(human_duration(-5.0), "0s");
+    }
+
+    /// The projection is arithmetic, so it is pinned as arithmetic: after 10 of
+    /// 115 cases in 100 s, the remaining 105 are 1050 s at the same mean.
+    ///
+    /// PINNED BECAUSE THE OFF-BY-ONE HERE IS SILENT: using `total - done` where
+    /// `done` is the INDEX rather than the COUNT would over-report by one case
+    /// forever, and nothing on screen would look wrong.
+    #[test]
+    fn the_projection_is_the_running_mean_over_what_is_left() {
+        let done = 10.0_f64;
+        let total = 115.0_f64;
+        let elapsed = 100.0_f64;
+        let per_case = elapsed / done;
+        let left = per_case * (total - done);
+
+        assert!((per_case - 10.0).abs() < 1e-9, "{per_case}");
+        assert!((left - 1050.0).abs() < 1e-9, "{left}");
+        assert_eq!(human_duration(left), "17m30s");
     }
 }
