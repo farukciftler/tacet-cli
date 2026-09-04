@@ -1849,7 +1849,7 @@ pub fn run_selection_case_with_options(
             }
 
             trace(&format!(
-                "  turn {}/{} · generating{} · {:.0}s into this case",
+                "  turn {}/{} · generating{} · cap {} tokens · {:.0}s into this case",
                 turn + 1,
                 MAX_TURNS,
                 if final_turn {
@@ -1857,8 +1857,16 @@ pub fn run_selection_case_with_options(
                 } else {
                     ""
                 },
+                counter.generation_cap(&prompt),
                 case_started.elapsed().as_secs_f64()
             ));
+            // WHAT THE GENERATION COST, so a slow case is attributed rather than
+            // guessed at. Two very different things look identical from outside:
+            // a model producing 40 tokens slowly, and one producing 900 quickly.
+            // Only the pair (count, rate) separates them. `stop` is here because
+            // "ran into the cap" and "chose to end" take the same wall time and
+            // are completely different defects.
+            let gen_started = std::time::Instant::now();
             let generation = match wait(
                 engine.generate(
                     &prompt,
@@ -1878,20 +1886,36 @@ pub fn run_selection_case_with_options(
                     break;
                 }
             };
+            let gen_secs = gen_started.elapsed().as_secs_f64();
+            trace(&format!(
+                "  turn {}/{} · {} tokens in {:.1}s ({:.1} tok/s) · stop={:?}",
+                turn + 1,
+                MAX_TURNS,
+                generation.token_count,
+                gen_secs,
+                generation.token_count as f64 / gen_secs.max(1e-9),
+                generation.stop
+            ));
             if !generation.stop.is_complete() {
                 answer = "generation was cut off halfway".into();
                 break;
             }
+            // THE TOOL'S OWN TIME, separated from the model's. Without this the
+            // two are one number and the wrong one gets optimised: `calendar-day`
+            // reads as a 39 s case, of which 9.5 s is generation and 30 s is
+            // `osascript` talking to the Calendar app.
+            let tool_started = std::time::Instant::now();
             let Some(outcome) = wait(executor.execute_raw(&generation.text, ticket, &mut ctx))
             else {
                 answer = generation.text.clone();
                 break;
             };
             trace(&format!(
-                "  turn {}/{} · called {}() · {:.0}s into this case",
+                "  turn {}/{} · {}() took {:.1}s · {:.0}s into this case",
                 turn + 1,
                 MAX_TURNS,
                 outcome.tool_name,
+                tool_started.elapsed().as_secs_f64(),
                 case_started.elapsed().as_secs_f64()
             ));
             called.push(outcome.tool_name.clone());
