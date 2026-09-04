@@ -383,18 +383,52 @@ pub mod model_package {
             package(
                 "qwen3-4b",
                 [
+                    // WHICH Qwen3-4B, because there are two and this entry named
+                    // the wrong one for months.
+                    //
+                    // `Qwen/Qwen3-4B-GGUF` is the ORIGINAL hybrid model — the one
+                    // that reasons out loud before it answers. Everything this
+                    // repository has ever MEASURED was the 2507 instruct
+                    // refresh: the checked-in baseline carries its fingerprint,
+                    // the README's 133/160 was produced on it, and the skill
+                    // guides were written against what it does. So
+                    // `tacet models download qwen3-4b` handed every new user a
+                    // DIFFERENT MODEL from the one the numbers on the page
+                    // describe, under the same name.
+                    //
+                    // MEASURED 5 SEP 2026, both on one rented RTX 3090, same
+                    // suite, same build, 184 cases: the hybrid model spends a
+                    // MEDIAN OF 247 GENERATED TOKENS PER TURN against 20 for the
+                    // instruct model — twelve times the work for the same
+                    // answer, and it is not `thinking`, which comes back empty.
+                    // It is prose in front of a call.
+                    //
+                    // THE SOURCE IS `unsloth` AND NOT `Qwen`, which is a change
+                    // worth naming: there is no official Qwen GGUF repository for
+                    // 2507 (the obvious address answers 401, not a file). What is
+                    // trusted here is
+                    // not the uploader but the DIGEST — the download is rejected
+                    // unless sha256 matches, and this is the same file, byte for
+                    // byte, that produced the baseline.
                     (
                         "model.gguf",
-                        "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf",
-                        2_497_280_256,
-                        Some("7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5"),
+                        "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+                        2_497_281_120,
+                        Some("3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597"),
                     ),
                     // The tokenizer lives in the base repository, not the GGUF
                     // one: a GGUF carries its vocabulary internally, but this
                     // engine wants a `tokenizer.json` on disk.
+                    //
+                    // It moved to the 2507 repository with the weights, and that
+                    // is a RENAME AND NOT A DIFFERENT FILE: `Qwen/Qwen3-4B` and
+                    // `Qwen/Qwen3-4B-Instruct-2507` publish the same 11 422 654
+                    // bytes under the same digest, which is the one already
+                    // pinned below. The address now names the model it belongs
+                    // to instead of that model's predecessor.
                     (
                         "tokenizer.json",
-                        "https://huggingface.co/Qwen/Qwen3-4B/resolve/main/tokenizer.json",
+                        "https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507/resolve/main/tokenizer.json",
                         11_422_654,
                         Some("aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"),
                     ),
@@ -1085,6 +1119,71 @@ mod refusal {
             engine.name(),
             "fake",
             "the name is what `chat` reads to decide whether to sign the answer as scripted"
+        );
+    }
+}
+
+/// THE MODEL THIS BINARY DOWNLOADS IS THE MODEL THE NUMBERS WERE MEASURED ON.
+///
+/// The defect this exists to make impossible, because it was real: the built-in
+/// catalog pointed `qwen3-4b` at `Qwen/Qwen3-4B-GGUF` — the original hybrid
+/// model — while every measurement in this repository was made on the 2507
+/// instruct refresh. The checked-in baseline carried the right fingerprint the
+/// whole time and nothing compared the two, so `tacet models download qwen3-4b`
+/// and "133/160, qwen3-4b Q4_K_M" quietly meant different weights.
+///
+/// IT COMPARES BYTE COUNTS AND NOT DIGESTS, deliberately. The catalog pins the
+/// sha256 of the WHOLE file; the report records `EngineIdentity`'s fingerprint,
+/// which is a hash of the size and the two 1 MB edges (see `file_fingerprint` —
+/// it is cheap enough to run on every load, which is why it exists in that
+/// shape). The two are not comparable, and inventing a third hash so that they
+/// were would mean reading 2.5 GB in a unit test. The size is the field both
+/// sides already record, and it separates these two models — 2 497 281 120
+/// against 2 497 280 256, which is close enough that a glance does not catch it
+/// and a comparison always does.
+///
+/// IT READS THE BASELINE OUT OF THE SIBLING CRATE. `tacet-eval` cannot host this
+/// test, because the catalog lives here and `tacet-cli` is what depends on
+/// `tacet-eval`, not the other way round.
+#[cfg(test)]
+mod shipped_weights {
+    /// The baseline the README quotes, read from disk rather than through
+    /// `tacet-eval`: what is being checked is the FILE that is committed.
+    fn baseline() -> serde_json::Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tacet-eval/baselines/qwen3-4b-both.json");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()));
+        serde_json::from_str(&text).expect("the baseline is JSON")
+    }
+
+    #[test]
+    fn the_default_package_is_the_weights_the_baseline_was_measured_on() {
+        let measured = baseline()["identity"]["model_bytes"]
+            .as_u64()
+            .expect("the baseline records the size of the weights it ran on");
+
+        let catalog = super::model_package::embedded_catalog();
+        let default = catalog
+            .iter()
+            .find(|p| p.name == crate::DEFAULT_MODEL)
+            .unwrap_or_else(|| panic!("the catalog offers {}", crate::DEFAULT_MODEL));
+        let gguf = default
+            .files
+            .iter()
+            .find(|f| f.name == "model.gguf")
+            .expect("the default package ships weights");
+
+        assert_eq!(
+            gguf.bytes,
+            Some(measured),
+            "the catalog would download {:?} ({:?} bytes) but the baseline in \
+crates/tacet-eval/baselines/qwen3-4b-both.json was measured on {measured} bytes. \
+These are two different models under one name — the exact defect this test \
+exists for. Either point the catalog at the weights that were measured, or \
+re-measure and replace the baseline; do not leave them disagreeing.",
+            gguf.url,
+            gguf.bytes,
         );
     }
 }
