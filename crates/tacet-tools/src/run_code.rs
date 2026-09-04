@@ -942,10 +942,35 @@ impl RunCodeTool {
             );
         };
         if !verify_shield(&shield, &interpreters[0]) {
+            // THE MOST LIKELY CAUSE IS NAMED FIRST, and on the most common Linux
+            // it is not any of the three this message used to list.
+            //
+            // MEASURED on a stock Ubuntu 24.04 (Kamatera, 4 Sep 2026): as an
+            // ordinary user `bwrap --unshare-net` dies with
+            // "loopback: Failed RTM_NEWADDR: Operation not permitted", because
+            // the distro ships `kernel.apparmor_restrict_unprivileged_userns=1`.
+            // As root on the SAME machine it succeeds — root is exempt — so the
+            // failure is invisible to anyone testing with sudo. The same error
+            // had already stopped the GitHub ubuntu runner, which we had written
+            // off as a runner quirk; it is the default.
+            //
+            // WITHOUT THIS LINE the user was told the measurement failed and left
+            // to guess why, on the platform where the guess is hardest and the
+            // remedy is one command.
+            let hint = if cfg!(target_os = "linux") {
+                "\n  Most likely: this distribution restricts unprivileged user namespaces \
+                 (Ubuntu 24.04 ships `kernel.apparmor_restrict_unprivileged_userns=1`), so \
+                 `bwrap --unshare-net` cannot bring up loopback for a non-root user. Check with \
+                 `sysctl kernel.apparmor_restrict_unprivileged_userns`; allow it with \
+                 `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`. Running tacet \
+                 as root also works and is the worse answer."
+            } else {
+                ""
+            };
             return format!(
                 "run_code is off: {} was found but the measurement did not pass — either the \
                  script never ran under the shield, or the network COULD NOT BE SEEN as cut \
-                 (see verify_shield)",
+                 (see verify_shield){hint}",
                 shield.name()
             );
         }
