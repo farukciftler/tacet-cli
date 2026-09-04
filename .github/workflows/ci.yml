@@ -72,6 +72,28 @@ jobs:
           cat /proc/sys/user/max_user_namespaces || true
           sysctl kernel.apparmor_restrict_unprivileged_userns || true
           bwrap --version
+          # THE REMEDY THE COMMENT ABOVE PREDICTED, NOW MEASURED RATHER THAN
+          # GUESSED. Run 33863502596 on 2026-09-04 printed exactly this and then
+          # stopped the job:
+          #     63838
+          #     kernel.apparmor_restrict_unprivileged_userns = 1
+          #     bubblewrap 0.9.0
+          #     bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+          # So the refusal was the APPARMOR POLICY, not the kernel: 63838 user
+          # namespaces were available and bwrap installed cleanly. Ubuntu 24.04
+          # ships that restriction on by default, and `--unshare-net` needs
+          # CAP_NET_ADMIN inside the new netns to bring loopback up — a capability
+          # the userns cannot grant while the policy holds.
+          #
+          # WHAT THIS LINE DOES AND DOES NOT BUY. It relaxes a DISTRO POLICY on a
+          # throwaway VM so that bwrap's own guarantee can be measured; it does
+          # not weaken anything Tacet ships. On a user's machine the policy stays
+          # as their distro set it, and if it refuses there, `verify_shield` fails
+          # and run_code LEAVES THE CATALOG — the honest-refusal path, not a hole.
+          # The line is therefore about reaching the measurement, and the thing
+          # under measurement is still bwrap.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sysctl kernel.apparmor_restrict_unprivileged_userns
           # The same shape `bwrap_args` builds. If this cannot start, nothing
           # below can either, and the job must stop here.
           bwrap --unshare-net --unshare-pid --unshare-ipc --unshare-uts \

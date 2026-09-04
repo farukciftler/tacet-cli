@@ -1980,14 +1980,36 @@ mod tests {
             .flat_map(|d| d.tools.iter().copied())
             .collect();
 
+        // THE SHIELD-CONDITIONAL PAIR, for the same reason as the addon five and
+        // found the same way this comment's neighbours were: by a red CI job.
+        //
+        // `run_code` and `write_code` are in the catalog only when
+        // `RunCodeTool::discover()` finds AND MEASURES a sandbox, which needs an
+        // interpreter at one of the fixed paths. On windows-latest neither node
+        // nor python3 sits at those paths, so both tools are absent and the `code`
+        // skill — which exists to command exactly them — failed this test with
+        // "neither in the catalog nor declared by any addon" (run 33863502596,
+        // 2026-09-04). It passes on macOS, where the shield is found. That is the
+        // machine-dependence this test already refuses to measure for the addon
+        // tools, arriving through a second door.
+        //
+        // THE PRICE IS THE SAME ONE STATED ABOVE and is worth restating, because
+        // it is bigger here: these two carry the weaker guarantee, so a typo in
+        // their CHOICE VALUES is caught on macOS and not on Windows. It is not
+        // uncaught — the macOS leg of the matrix is a real gate — but it is
+        // caught by one platform rather than three.
+        const SHIELD_CONDITIONAL: [&str; 2] = ["run_code", "write_code"];
+
         let mut checked_values = 0;
         for skill in skills.all() {
             for name in &skill.tools {
                 let Some(tool) = catalog.find(name) else {
                     assert!(
-                        addon_tools.contains(&name.as_str()),
+                        addon_tools.contains(&name.as_str())
+                            || SHIELD_CONDITIONAL.contains(&name.as_str()),
                         "skill '{}' commands tool '{name}', which is neither in the catalog \
-                         {:?} nor declared by any addon {addon_tools:?}",
+                         {:?}, nor declared by any addon {addon_tools:?}, nor one of the \
+                         shield-conditional {SHIELD_CONDITIONAL:?}",
                         skill.name,
                         catalog.names()
                     );
