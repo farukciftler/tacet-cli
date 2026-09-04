@@ -203,6 +203,57 @@ pub fn eval_format_gate(engine: &Arc<dyn EngineProvider>) -> ExitCode {
 /// with a pass/fail; that is the whole contract.
 pub fn eval_compare(before_path: &str, after_path: &str) -> ExitCode {
     let color = Color::setup();
+
+    // THE TWO RUNS MUST BE THE SAME MODEL, and until now nothing checked.
+    //
+    // The comparator reads `cases` and nothing else, so it will pair two reports
+    // made with DIFFERENT WEIGHTS and print a sign test as though the only thing
+    // that changed was this repository. That is a number that looks authoritative
+    // and measures something else.
+    //
+    // MEASURED, by walking into it: a CUDA run on a rented RTX 3090 was compared
+    // against the checked-in Metal baseline, and the two model files differed —
+    // 2 497 280 256 bytes against 2 497 281 120, both Q4_K_M, both "qwen3-4b",
+    // 864 bytes and one declared context length apart (40960 vs 16954). The
+    // report already carried `model_fingerprint` precisely so this could be
+    // caught; nothing read it.
+    //
+    // IT REFUSES RATHER THAN WARNS. A warning above a verdict is a warning people
+    // scroll past, and the verdict below it is wrong, not approximate. Comparing
+    // across models is a legitimate thing to want — it is just not what a sign
+    // test over paired cases answers.
+    let fingerprint = |p: &str| -> Option<(String, String)> {
+        let text = std::fs::read_to_string(p).ok()?;
+        let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+        let id = v.get("identity")?;
+        Some((
+            id.get("model_fingerprint")?.as_str()?.to_string(),
+            id.get("engine")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("?")
+                .to_string(),
+        ))
+    };
+    if let (Some((fa, ea)), Some((fb, eb))) = (fingerprint(before_path), fingerprint(after_path))
+        && fa != fb
+    {
+        eprintln!(
+            "{}",
+            color.paint(
+                YELLOW,
+                &format!(
+                    "these two reports were produced by DIFFERENT WEIGHTS, so pairing \
+them measures the model as much as the change:\n  before  {ea}  {}\n  after   {eb}  {}\n\
+A sign test over paired cases answers whether THIS CHANGE helped, which needs one model \
+held still. Re-run one side against the other's weights.",
+                    &fa[..fa.len().min(16)],
+                    &fb[..fb.len().min(16)]
+                )
+            )
+        );
+        return ExitCode::FAILURE;
+    }
+
     let load = |p: &str| -> Result<Vec<(String, bool)>, String> {
         let text = std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?;
         let value: serde_json::Value =
@@ -624,5 +675,77 @@ pub fn eval_tool_selection(run: SelectionRun<'_>) -> ExitCode {
             report.irrelevance_rate()
         );
         ExitCode::FAILURE
+    }
+}
+
+#[cfg(test)]
+mod compare_identity {
+    use super::*;
+
+    /// TWO RUNS OF DIFFERENT WEIGHTS MUST NOT BE PAIRED.
+    ///
+    /// MEASURED BY WALKING INTO IT. A CUDA run on a rented RTX 3090 was compared
+    /// against the checked-in Metal baseline and the comparator answered happily
+    /// — the two model files differ: 2 497 280 256 bytes against 2 497 281 120,
+    /// both Q4_K_M, both called "qwen3-4b", 864 bytes and one declared context
+    /// length apart (40960 against 16954). The report has carried
+    /// `model_fingerprint` from the start so exactly this could be caught, and
+    /// the comparator read `cases` and nothing else.
+    ///
+    /// A sign test over paired cases answers "did this change help". That
+    /// question needs one model held still; across two it measures the weights
+    /// as much as the diff, and prints a verdict either way.
+    ///
+    /// IT REFUSES RATHER THAN WARNS, and the exit code is what the test pins: a
+    /// warning above a verdict is a warning people scroll past, and the verdict
+    /// below it is wrong rather than approximate.
+    #[test]
+    fn a_comparison_across_two_models_is_refused() {
+        let dir = std::env::temp_dir().join(format!("tacet-cmp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let write = |name: &str, fp: &str| {
+            let path = dir.join(name);
+            let body = format!(
+                r#"{{"identity":{{"engine":"candle","model_fingerprint":"{fp}"}},
+                    "cases":[{{"name":"a","passed":true}},{{"name":"b","passed":false}}]}}"#
+            );
+            std::fs::write(&path, body).expect("write");
+            path.to_string_lossy().into_owned()
+        };
+        let one = write("one.json", "aaaa0000");
+        let two = write("two.json", "bbbb1111");
+        let same = write("same.json", "aaaa0000");
+
+        assert_eq!(
+            eval_compare(&one, &two),
+            ExitCode::FAILURE,
+            "two different fingerprints must not be paired"
+        );
+        // NOT VACUOUS: the identical pair must still compare, or the guard would
+        // be "refuse everything" and pass the assertion above for free.
+        assert_eq!(
+            eval_compare(&one, &same),
+            ExitCode::SUCCESS,
+            "the same weights must still compare"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A report with no `identity` block still compares. The routing and
+    /// fake-engine reports do not carry one, and they are the two this
+    /// comparator is used on most.
+    #[test]
+    fn a_report_without_an_identity_still_compares() {
+        let dir = std::env::temp_dir().join(format!("tacet-cmp2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("plain.json");
+        std::fs::write(
+            &path,
+            r#"{"cases":[{"name":"a","passed":true},{"name":"b","passed":true}]}"#,
+        )
+        .expect("write");
+        let p = path.to_string_lossy().into_owned();
+        assert_eq!(eval_compare(&p, &p), ExitCode::SUCCESS);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

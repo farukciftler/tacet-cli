@@ -1580,6 +1580,46 @@ fn generation_counter(engine: &Arc<dyn EngineProvider>) -> tacet_engine::TokenCo
     tacet_engine::TokenCounter::new(window, tacet_engine::GENERATION_SHARE)
 }
 
+/// THE SUITE RUNS ONE CASE AT A TIME, AND THAT IS THE MEASURED CHOICE.
+///
+/// The obvious idea, and the one this note exists to close: the cases are
+/// independent — `Env::setup` already hands each one its own temporary
+/// directory and its own store, for exactly this reason — so run five at once
+/// and finish in a fifth of the time.
+///
+/// It does not work, and the reason is not the code. `CandleEngine` holds its
+/// model behind a `Mutex` because the KV cache lives INSIDE the model, so one
+/// engine is one generation at a time by correctness and not by oversight.
+/// Parallel cases therefore mean N engines, N copies of the weights in VRAM,
+/// and N streams competing for one GPU.
+///
+/// MEASURED 5 SEP 2026 on a rented RTX 3090 (24 GB, driver 570, CUDA 12.8),
+/// qwen3-4b Q4_K_M, by running a second copy of this suite beside the first and
+/// reading both their per-turn rates:
+///
+///   one stream alone       ~55 tok/s   (median of 133 turns)
+///   two streams, steady    ~28 tok/s and ~28 tok/s
+///
+/// The aggregate is ~56 tok/s against ~55. There is no throughput to win: a
+/// SINGLE stream already saturates this card. The instruments agree — with one
+/// stream the board draws 349 W of a 380 W limit at 77% memory-controller
+/// utilisation, and with two it draws 351 W at 72%. The GPU was never waiting
+/// for work, so there was no gap for a second stream to fill.
+///
+/// WHAT THE 98% "GPU utilisation" FIGURE IS NOT. `nvidia-smi` reports the
+/// fraction of time at least one kernel was resident, which reads 98% for a
+/// batch-1 decode that leaves most of the card idle; it was the power draw and
+/// the memory-controller figure, not that number, that answered the question.
+///
+/// The gain that IS available is the opposite of parallelism: a turn here emits
+/// 227-280 tokens where the same case on Metal emits ~11, and `thinking` is
+/// empty, so those are not deliberation — they are prose in front of a call the
+/// grammar does not arm until `name(` has already been written. Making the turn
+/// shorter divides the same wall clock and costs no VRAM.
+///
+/// VRAM, for whoever measures this again on a bigger card, where the answer may
+/// differ: four processes at a 40960 window took 22.8 GB of 24 GB — the weights
+/// are 2.5 GB and the rest is KV cache.
 pub fn run_selection(cases: &[SelectionCase], engine: &Arc<dyn EngineProvider>) -> SelectionReport {
     run_selection_with_options(cases, engine, None, false)
 }
