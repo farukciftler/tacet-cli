@@ -57,8 +57,11 @@ cargo install tacet-cli                    # no inference; still runs eval, tool
 ```
 
 ⚠️ **`cargo install` does not remember `--features`.** Upgrade without the flag
-and you get a binary that cannot run a model — it still starts, still answers,
-and the answers are canned. `tacet --version` prints the build it actually is:
+and you get a binary that cannot run a model. It **refuses to answer** rather
+than making something up: it names the missing feature, tells you how to
+reinstall, and exits non-zero. It used to fall back to a scripted engine and keep
+answering — which meant the failure looked like a working product giving bad
+replies, and nobody reported it. `tacet --version` prints the build it actually is:
 
 ```bash
 tacet --version        # tacet 0.1.11 (metal)  ← the part in brackets is the engine
