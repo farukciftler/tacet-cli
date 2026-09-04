@@ -58,3 +58,9 @@ required-features = ["candle"]
 [[example]]
 name = "gemma_probe"
 required-features = ["candle"]
+
+# The batch-decode measurement: same reason as `measure` — it speaks candle
+# types directly and must not be built by a default `cargo test --workspace`.
+[[example]]
+name = "batch_decode"
+required-features = ["candle"]
