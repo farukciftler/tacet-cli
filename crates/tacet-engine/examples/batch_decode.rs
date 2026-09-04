@@ -19,6 +19,41 @@
 //! arbitrary pattern, and the logits are dropped. A number that included the
 //! sampler would not answer the question the engine has to decide.
 //!
+//! MEASURED 5 SEP 2026, RTX 3090 (24 GB, CUDA 12.8), qwen3-4b Q4_K_M, 256 tokens
+//! of context, 64 timed decode steps. Two runs on two different weight files
+//! agreed to three significant figures, so the shape is the card's and not
+//! noise:
+//!
+//!     batch   decode tok/s   per stream   vs batch 1
+//!         1          124.0        124.0       1.00x
+//!         2          196.5         98.3       1.58x
+//!         4          253.2         63.3       2.04x
+//!         8          264.4         33.1       2.13x
+//!        16          437.4         27.3       3.53x
+//!        32          503.9         15.7       4.06x
+//!
+//! FOUR TIMES THE TOKENS FOR THE SAME CARD — against 1.0x for the other way of
+//! going wide, which is to run several copies of the program (measured in
+//! `run_selection`: two streams give ~28 tok/s each where one gives ~55). The
+//! difference is the whole point: `b` streams in ONE forward read the weights
+//! once, `b` processes read them `b` times.
+//!
+//! IT IS NOT LINEAR, and the plateau at 8 is reproducible rather than a bad
+//! sample. Read it as a floor on what a batched engine could give here, not a
+//! promise: this loop has no sampler, no detokenizer and no grammar mask in it,
+//! and a real engine pays those `b` times per step on the CPU.
+//!
+//! WHAT STOPS US USING IT TODAY, precisely, because "candle cannot batch" would
+//! be wrong: the quantized CUDA matmul takes `[b, m, k]` and folds `b * m` into
+//! its row count, and `quantized_qwen3`'s attention reads `b` from the input and
+//! keeps a batched KV cache. What fails is the PREFILL — `ModelWeights::forward`
+//! ends with `h.narrow(1, l - 1, 1)` to keep the last position, which for `b > 1`
+//! is one strided row per sequence, and the CUDA quantized matmul then refuses
+//! it with "dmmv only supports contiguous tensors". One `.contiguous()` inside
+//! candle closes that. The work that is genuinely ours is an engine API that
+//! decodes several sequences together, with one sampler and one grammar mask per
+//! sequence, and prompts of different lengths padded and masked.
+//!
 //! RUN IT:
 //!   cargo run --release --example batch_decode --features candle,cuda
 //!   cargo run --release --example batch_decode --features candle,metal
@@ -129,17 +164,32 @@ fn main() -> candle_core::Result<()> {
     for (i, &b) in WIDTHS.iter().enumerate() {
         model.clear();
 
-        // Prefill. Arbitrary but valid ids: token 1 repeated is enough to fill
-        // the cache, and WHAT the tokens say cannot change how many bytes a
-        // decode step moves.
-        let prefill = Tensor::ones((b, PREFILL), candle_core::DType::U32, &device)?;
-        let _ = model.forward(&prefill, 0)?;
+        // Prefill, ONE TOKEN AT A TIME AND NOT AS ONE `[b, PREFILL]` FORWARD,
+        // which is a workaround and not a preference.
+        //
+        // MEASURED: the batched prefill fails on CUDA with "dmmv only supports
+        // contiguous tensors" for every `b > 1`. It is not the quantized matmul
+        // refusing a batch — that kernel takes `[b, m, k]` and folds `b * m`
+        // into its row count. It is `ModelWeights::forward` ending with
+        // `h.narrow(1, l - 1, 1)` to keep the last position: for `b = 1` that
+        // slice is the tail of the buffer and contiguous, and for `b > 1` it is
+        // one row out of each sequence, strided — which the CUDA quantized
+        // matmul then refuses. A single `.contiguous()` inside candle would
+        // close it.
+        //
+        // Stepping the prefill keeps `l = 1`, where the narrow is the whole
+        // tensor, so the cache still ends up the same depth. It is outside the
+        // timed section either way.
+        let one = Tensor::ones((b, 1), candle_core::DType::U32, &device)?;
+        for p in 0..PREFILL {
+            let _ = model.forward(&one, p)?;
+        }
 
         // The timed loop. `to_scalar` on one element forces the queue to drain,
         // so the wall clock covers work that actually finished rather than work
         // that was merely submitted — without it a GPU measurement times the
         // enqueue and reports a number several times too good.
-        let step = Tensor::ones((b, 1), candle_core::DType::U32, &device)?;
+        let step = one;
         let started = std::time::Instant::now();
         let mut last = None;
         for s in 0..STEPS {
