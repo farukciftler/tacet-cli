@@ -631,6 +631,33 @@ impl CandleEngine {
         // answer is fine, later ones get progressively broken.
         model.clear_cache();
 
+        // A TOOL CALL IS NOT THE SIZE OF THE CONTEXT WINDOW.
+        //
+        // The comment further down already accepts that a model which will not
+        // close its arguments runs to `max_tokens` and reports "cut off
+        // halfway" — an honest failure. What was never checked is what that
+        // costs: callers pass `TokenCounter::generation_cap`, which is the whole
+        // remaining window, so on qwen3-4b it was 14 041 tokens. At the 15-18
+        // tok/s measured on this machine that honest failure takes FIFTEEN
+        // MINUTES, during which the shell shows nothing.
+        //
+        // THE NUMBER COMES FROM MEASUREMENT, not from taste. Across the 115-case
+        // selection suite the largest legitimate constrained generation was 1523
+        // tokens (`write_code-converter`, a whole python script); the next were
+        // 909 and 272. 2048 clears the largest by a third and turns the runaway
+        // from fifteen minutes into about two.
+        //
+        // ONLY WHEN CONSTRAINED. Free prose is the answer to the user and has no
+        // such natural size; it keeps the caller's budget.
+        const TOOL_CALL_CAP: usize = 2048;
+        let setting = if constraint.is_some() {
+            SamplingSetting {
+                max_tokens: setting.max_tokens.min(TOOL_CALL_CAP),
+                ..setting
+            }
+        } else {
+            setting
+        };
         let mut produced: Vec<u32> = Vec::with_capacity(setting.max_tokens);
         // Diagnostics (env-gated, read once — polling an environment variable at
         // every step of the hot loop would slow down the measurement itself).

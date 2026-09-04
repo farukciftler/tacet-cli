@@ -603,6 +603,21 @@ pub fn turkish_selection_cases() -> Vec<SelectionCase> {
     ]
 }
 
+/// THE SUITE `--tool-selection` ACTUALLY RUNS: both languages, in one list.
+///
+/// WHY IT IS A FUNCTION AND NOT TWO CALLS AT THE CALL SITE. `baselines.rs` exists
+/// to fail the build when a checked-in baseline stops pairing with the suite it
+/// came from, and it did not: it compares against `selection_cases()` and
+/// `turkish_selection_cases()` separately, so the moment the command started
+/// running BOTH, a baseline matching either half still passed the guard while
+/// pairing with no real run at all. The command and the guard now read the same
+/// function, which is the only arrangement in which they cannot drift.
+pub fn selection_suite() -> Vec<SelectionCase> {
+    let mut all = selection_cases();
+    all.extend(turkish_selection_cases());
+    all
+}
+
 pub fn selection_cases() -> Vec<SelectionCase> {
     vec![
         // --- calendar ---

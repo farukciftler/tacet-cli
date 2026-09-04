@@ -101,6 +101,13 @@ fn every_baseline_still_pairs_with_the_suite_it_came_from() {
             tacet_eval::all().iter().map(|c| c.name.clone()).collect(),
         ),
         (
+            "selection_suite()",
+            tacet_eval::selection_suite()
+                .iter()
+                .map(|c| c.name.clone())
+                .collect(),
+        ),
+        (
             "selection_cases()",
             tacet_eval::selection_cases()
                 .iter()

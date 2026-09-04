@@ -121,8 +121,8 @@ pub enum Command {
         /// model.
         #[arg(long)]
         tool_selection: bool,
-        /// With --tool-selection: run the TURKISH selection set instead of the
-        /// English one.
+        /// With --tool-selection: run ONLY the Turkish set. Without it both
+        /// languages run, the same as `--routing` has always done.
         #[arg(long)]
         turkish: bool,
         /// The local model folder (`~/models/<name>`).
