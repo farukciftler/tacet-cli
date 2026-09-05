@@ -33,8 +33,8 @@
 
 use crate::{Grammar, GrammarState, TokenMask};
 use std::sync::Arc;
-use tacet_engine::{Constrainer, ConstraintSession, EngineError};
 use tacet_kernel::ToolCatalog;
+use tacet_kernel::{Constrainer, ConstraintError, ConstraintSession};
 
 /// The immutable body of the constraint. Shared via `Arc` because
 /// `Constrainer::session` returns `Box<dyn ConstraintSession>` (that is,
@@ -236,7 +236,7 @@ impl CallSession {
     /// Processes a single character. Advancing per character is mandatory: one
     /// token carries several characters and the stage transition (seeing `(`)
     /// may happen in the MIDDLE of a token.
-    fn swallow(&mut self, c: char) -> Result<(), EngineError> {
+    fn swallow(&mut self, c: char) -> Result<(), ConstraintError> {
         let inner = Arc::clone(&self.inner);
         match &mut self.stage {
             Stage::Prefix { queue } => {
@@ -292,7 +292,7 @@ impl CallSession {
                     // Getting here means masking and advancing have drifted
                     // apart; swallowing it silently would legitimize an invalid
                     // call.
-                    EngineError::ConstraintViolation(c as u32)
+                    ConstraintError::Violation(c as u32)
                 })
             }
             Stage::Closed => Ok(()),
@@ -464,13 +464,13 @@ impl ConstraintSession for CallSession {
         }
     }
 
-    fn advance(&mut self, token: u32) -> Result<(), EngineError> {
+    fn advance(&mut self, token: u32) -> Result<(), ConstraintError> {
         let text = self
             .inner
             .vocab
             .get(token as usize)
             .cloned()
-            .ok_or(EngineError::ConstraintViolation(token))?;
+            .ok_or(ConstraintError::Violation(token))?;
         for c in text.chars() {
             self.swallow(c)?;
         }

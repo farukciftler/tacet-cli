@@ -2086,7 +2086,7 @@ dependencies = [
 
 [[package]]
 name = "tacet-engine"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "candle-core",
  "candle-transformers",
@@ -2113,17 +2113,16 @@ dependencies = [
 
 [[package]]
 name = "tacet-grammar"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "serde_json",
- "tacet-engine",
  "tacet-kernel",
  "thiserror 2.0.19",
 ]
 
 [[package]]
 name = "tacet-kernel"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "serde",
  "serde_json",

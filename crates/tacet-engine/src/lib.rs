@@ -130,7 +130,7 @@ mod tests {
                 logits[i] = f32::NEG_INFINITY;
             }
         }
-        fn advance(&mut self, _token: u32) -> EngineResult<()> {
+        fn advance(&mut self, _token: u32) -> Result<(), tacet_kernel::ConstraintError> {
             self.counter += 1;
             Ok(())
         }

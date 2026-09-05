@@ -26,6 +26,11 @@ pub enum EngineError {
     /// The constrainer rejected the incoming token despite the mask. This is a
     /// logic error (masking and advancing have drifted apart) and must not be
     /// swallowed silently.
+    ///
+    /// KEPT AS ITS OWN VARIANT even though `ConstraintSession::advance` now
+    /// returns the narrower `tacet_kernel::ConstraintError`: call sites match on
+    /// this name, and the `From` below means `s.advance(token)?` still widens
+    /// into an engine error without any of them changing.
     #[error("constraint rejected the token: {0}")]
     ConstraintViolation(u32),
 
@@ -41,3 +46,13 @@ pub enum EngineError {
 }
 
 pub type EngineResult<T> = Result<T, EngineError>;
+
+impl From<tacet_kernel::ConstraintError> for EngineError {
+    fn from(e: tacet_kernel::ConstraintError) -> Self {
+        match e {
+            tacet_kernel::ConstraintError::Violation(token) => {
+                EngineError::ConstraintViolation(token)
+            }
+        }
+    }
+}

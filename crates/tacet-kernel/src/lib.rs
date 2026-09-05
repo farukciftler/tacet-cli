@@ -26,6 +26,7 @@
 //! NO NETWORK: nowhere in this crate, or below it, is there a network call.
 
 pub mod catalog;
+pub mod constraint;
 pub mod context;
 pub mod data_store;
 pub mod env;
@@ -39,6 +40,7 @@ pub mod state;
 pub mod tool;
 
 pub use catalog::ToolCatalog;
+pub use constraint::{Constrainer, ConstraintError, ConstraintSession, FreeConstraint};
 pub use context::ToolContext;
 pub use data_store::{DataStore, InMemoryDataStore, Record, SourceRef};
 pub use env::{config_dir, config_path, env_var};

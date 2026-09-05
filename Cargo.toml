@@ -41,13 +41,13 @@ clap = { version = "4", features = ["derive"] }
 # 0.1.2 IS THE FLOOR: below it there is no `hash` module, and the MCP client's
 # PKCE challenge, the download verifier and the receipt chain would each need
 # their own SHA-256 again — three chances for one of them to be quietly wrong.
-tacet-kernel = { path = "crates/tacet-kernel", version = "0.1.4" }
+tacet-kernel = { path = "crates/tacet-kernel", version = "0.1.5" }
 tacet-zip = { path = "crates/tacet-zip", version = "0.1.0" }
 # 0.1.1 IS THE FLOOR: below it a tool that takes NO arguments cannot be called
 # at all — the prompt advertises `disk_usage()` and the grammar refuses it, so
 # the model writes something that parses as no call and the tool never runs.
 # Remote (MCP) catalogs are full of such tools.
-tacet-grammar = { path = "crates/tacet-grammar", version = "0.1.2" }
+tacet-grammar = { path = "crates/tacet-grammar", version = "0.2.0" }
 # EVERY NUMBER BELOW THAT IS NOT 0.1.0 IS A FLOOR, NOT A PREFERENCE, and each
 # one was put there by a fix that a `^0.1.0` install would have resolved away.
 # `cargo install tacet-cli` picks the newest match, but a machine with an older
@@ -91,7 +91,7 @@ tacet-grammar = { path = "crates/tacet-grammar", version = "0.1.2" }
 # vocabulary has four billion entries; it was never a token id, and the message
 # named the wrong layer. The greedy choice is now taken over the masked logits
 # we already hold on the CPU, so the answer is an index by construction.
-tacet-engine = { path = "crates/tacet-engine", version = "0.1.10" }
+tacet-engine = { path = "crates/tacet-engine", version = "0.1.11" }
 # 0.1.3 brought the addon gates and the five tools behind them; below it,
 # `catalog.rs` has no gate to ask and `shell`/`http`/`db` do not exist at all.
 # 0.1.4 IS THE FLOOR: below it `shell` is offered on Windows, where the timeout
