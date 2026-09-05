@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Trigger-matched Markdown guidance, fenced into a single turn's prompt rather than the system instruction."
+keywords = ["llm", "prompting", "skills", "agent"]
+categories = ["text-processing"]
+rust-version.workspace = true
 
 # NO NETWORK: this crate only reads local files (the bundled .md files + the
 # `skills` directory under the config dir). By rule, network calls exist only

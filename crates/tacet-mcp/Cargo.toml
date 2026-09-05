@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "A hand-written Model Context Protocol client: JSON-RPC 2.0 over Streamable HTTP with SSE."
+keywords = ["mcp", "model-context-protocol", "json-rpc", "llm"]
+categories = ["api-bindings", "network-programming"]
+rust-version.workspace = true
+readme = "README.md"
 
 # THE NETWORK MONOPOLY: no crate outside this one and `tacet-web` opens a
 # socket. So that the rule stays auditable, the HTTP dependency lives only in

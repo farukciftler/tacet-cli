@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Case-based behavioural evaluation for an assistant's tool use."
+keywords = ["benchmark", "llm", "evaluation", "tool-calling", "tool-selection"]
+categories = ["development-tools::testing"]
+rust-version.workspace = true
 
 # EVAL PULLS NO WEIGHTS: `tacet-engine` is taken with its DEFAULT features, so
 # the candle tree does not come along. All the cases run on `FakeEngine`; a real

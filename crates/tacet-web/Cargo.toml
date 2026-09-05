@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "The one crate allowed to reach the network: search against a self-hosted server, page text, verified downloads, release checks."
+keywords = ["http", "search", "ssrf", "local-first"]
+categories = ["web-programming", "network-programming"]
+rust-version.workspace = true
 
 [dependencies]
 serde_json.workspace = true

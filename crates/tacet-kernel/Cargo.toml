@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "The contract every layer of an on-device assistant agrees on: Tool, ArgSchema, ToolOutcome, DataStore, Catalog. Depends on nothing."
+keywords = ["llm", "tool-calling", "local-first", "contract", "no-std-friendly"]
+categories = ["api-bindings", "data-structures"]
+rust-version.workspace = true
 
 [dependencies]
 serde.workspace = true

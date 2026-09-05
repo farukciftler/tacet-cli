@@ -11,6 +11,7 @@ description = "A private AI assistant that lives in your terminal. Fully on-devi
 keywords = ["ai", "assistant", "llm", "offline", "privacy"]
 categories = ["command-line-utilities", "text-processing"]
 readme = "README.md"
+rust-version.workspace = true
 
 # THE BINARY IS NAMED `tacet`, the crate is named `tacet-cli`. The user types
 # `tacet` in the terminal; `cargo install --path crates/tacet-cli` puts that name

@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Notes that stay on the device and are injected into the prompt only when they are relevant."
+keywords = ["llm", "memory", "notes", "local-first"]
+categories = ["text-processing"]
+rust-version.workspace = true
 
 # NO NETWORK: memory NEVER LEAVES THE DEVICE. This crate only reads/writes
 # `memory.json` under the config directory; by rule, network calls exist only

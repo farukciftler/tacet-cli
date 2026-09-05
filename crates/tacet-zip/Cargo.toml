@@ -5,5 +5,8 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Hand-written zip, deflate and CRC32 for reading and writing OOXML (.xlsx, .docx) with no ready-made zip crate."
+keywords = ["zip", "deflate", "ooxml", "xlsx", "docx"]
+categories = ["compression", "encoding"]
+rust-version.workspace = true
 
 [dependencies]

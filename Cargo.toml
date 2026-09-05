@@ -18,6 +18,13 @@ members = [
 # "pulling in no ready-made crates" (OOXML zip/deflate/crc32 are written by
 # hand). Adding a line here is an architectural decision, not a convenience.
 [workspace.package]
+# THE FLOOR IS DECLARED, so it can be checked instead of assumed. Eleven
+# manifests carried no `rust-version`, no rust-toolchain.toml and no clippy msrv
+# key, which means "what Rust does this need" had no answer anywhere in the
+# repository and `cargo install` on an older toolchain failed with a trait error
+# rather than a version message. 1.85 is the edition-2024 floor this workspace
+# cannot go below; CI pins the exact toolchain that proves it.
+rust-version = "1.85"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"

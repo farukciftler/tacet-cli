@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Constrained generation: turns an argument schema into a pushdown automaton and token mask, so an invalid tool call cannot be generated at all."
+keywords = ["constrained-decoding", "grammar", "llm", "token-mask", "structured-output"]
+categories = ["text-processing", "algorithms"]
+rust-version.workspace = true
 
 # Almost no dependencies. A tokenizer crate is DELIBERATELY ABSENT: the masking
 # interface is defined over &[String], so this crate stays unchanged no matter

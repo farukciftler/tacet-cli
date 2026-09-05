@@ -11,8 +11,12 @@ not changed"; that exception was removed, the internal and external names are
 now the same. Not confusing the internal name with the NETWORK IDENTITY (rather
 than the external NAME) still matters: see the "Network identity" heading below.
 
-Architectural decisions: `../../../mcp-connection-spec.md` (Swift original:
-`Tacet/Services/MCPClient.swift`).
+This crate is a port. The original is the MCP client in Tacet's iOS app
+(`MCPClient.swift`), which lives in a separate, closed repository — so the design
+notes it was ported from are not reachable from here, and the two paths this
+paragraph used to name were dead links on crates.io. The reasoning that survived
+the port is in the module comments; where a decision only makes sense in terms of
+the Swift original, the comment says so at the point it matters.
 
 ## The promise
 

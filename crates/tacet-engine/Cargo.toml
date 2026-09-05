@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Prompt construction, context budget and the model contract: Prompt, ModelProvider, Constrainer, TokenCounter."
+keywords = ["llm", "inference", "prompt", "gguf", "local-first"]
+categories = ["text-processing", "api-bindings"]
+rust-version.workspace = true
 
 # DEPENDENCY DECISION: the default build pulls only core + serde/thiserror.
 # Real inference (candle) sits behind an OPTIONAL feature and is ABSENT by

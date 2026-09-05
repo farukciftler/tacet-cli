@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "The concrete tools of an on-device assistant, the four-gate executor and the router."
+keywords = ["llm", "tools", "agent", "local-first", "sandbox"]
+categories = ["command-line-utilities", "filesystem"]
+rust-version.workspace = true
 
 [dependencies]
 tacet-kernel.workspace = true
