@@ -114,6 +114,22 @@ accumulator instead found two real bugs immediately:
   two-byte Turkish letters are mapped and every other sequence is skipped whole,
   on both sides.
 
+**And a third that this check did NOT catch, which is the more useful lesson.**
+`\n`, `\r`, `\v` and `\f` were kept as characters on the C and Rust side where
+Python's `str.split` collapses them — so every multi-line message hashed to
+buckets the weights had never seen. It shipped, and it survived the check
+because **no case in `benchmarks/tasks/` contains a newline**, while
+`message_intent` exists to classify PASTED messages, where they are the rule. A
+cross-check is only as good as the shapes it is given, so `check.py` now appends
+messages carrying every shape the fold treats specially — newlines, CRLF, tabs
+and vertical tabs, upper-case Turkish, an em dash, an emoji, a non-breaking
+space, leading and trailing runs — and compares those too. Breaking the newline
+case again turns it red.
+
+Those messages travel to the C as one escaped line each and are keyed by INDEX
+rather than by their own text: keying on the message meant a newline broke the
+line-oriented output carrying it, so the harness failed where the fold was fine.
+
 ## Two models, because the negatives depend on where it runs
 
 The same generator and trainer produce a second, differently-shaped model that

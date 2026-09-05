@@ -65,7 +65,13 @@ static size_t fold(const uint8_t *in, size_t n, uint8_t *out)
             if (!m) continue;                            /* drop what we cannot fold */
         }
 
-        if (m == ' ' || m == '\t') { if (!space) { out[j++] = ' '; space = 1; } }
+        /* EVERY ASCII WHITESPACE. Python's str.split breaks on \n \r \v \f as
+         * well, and treating them as characters here feeds the model n-grams it
+         * was never fitted to. No benchmark message contains a newline, which is
+         * why the cross-check did not catch it. */
+        if (m == ' ' || m == '\t' || m == '\n' || m == '\r' || m == '\v' || m == '\f') {
+            if (!space) { out[j++] = ' '; space = 1; }
+        }
         else { out[j++] = m; space = 0; }
     }
     if (!space) out[j++] = ' ';
@@ -130,11 +136,26 @@ int main(int argc, char **argv)
     int reps = argc > 1 ? atoi(argv[1]) : 1;
     static char buf[4096][512];
     int nbuf = 0;
+    /* ONE MESSAGE PER LINE, WITH ESCAPES. A message that contains a newline is
+     * exactly the case the fold got wrong, and it cannot travel over a
+     * line-oriented stdin as itself. check.py writes \n \r \t \v \f as
+     * backslash escapes and this undoes them, so the bytes folded here are the
+     * bytes the trainer folded. */
     while (nbuf < 4096 && fgets(line, sizeof line, stdin)) {
         size_t l = strlen(line);
         while (l && (line[l-1] == '\n' || line[l-1] == '\r')) line[--l] = 0;
-        if (!l) continue;
-        strcpy(buf[nbuf++], line);
+        char *d = buf[nbuf];
+        for (size_t i = 0; i < l; i++) {
+            if (line[i] == '\\' && i + 1 < l) {
+                char n = line[++i];
+                *d++ = n == 'n' ? '\n' : n == 'r' ? '\r' : n == 't' ? '\t'
+                     : n == 'v' ? '\v' : n == 'f' ? '\f' : n == '\\' ? '\\' : n;
+            } else {
+                *d++ = line[i];
+            }
+        }
+        *d = 0;
+        nbuf++;
     }
     for (int r = 0; r < reps; r++)
         for (int i = 0; i < nbuf; i++) {
@@ -150,7 +171,12 @@ int main(int argc, char **argv)
                  * benchmark cases. A guard that survives its own defect is worth
                  * nothing, so what is compared is every accumulator — where a
                  * one-letter difference cannot hide. */
-                printf("%s\t%u", buf[i], ngrams);
+                /* THE INDEX, NOT THE TEXT. Keying the dump on the message
+                 * itself means a message containing a newline or a tab breaks
+                 * the line-oriented output that carries it — the harness fails
+                 * where the fold is fine, which is the worst kind of red. The
+                 * order is deterministic on both sides. */
+                printf("%d\t%u", i, ngrams);
                 for (int h = 0; h < NHEADS; h++)
                     for (int c = 0; c < HEAD_CLASSES[h]; c++)
                         printf("\t%d", acc[h][c]);

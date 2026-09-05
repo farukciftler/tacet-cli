@@ -90,7 +90,14 @@ fn fold(message: &str) -> String {
                 _ => continue,
             }
         };
-        if mapped == ' ' || mapped == '\t' {
+        // EVERY ASCII WHITESPACE, not just space and tab. Python's `str.split`
+        // breaks on `\n`, `\r`, `\v` and `\f` too, and keeping them as
+        // characters here fed the model n-grams it was never fitted to. It
+        // survived the cross-check because no benchmark message contains a
+        // newline — and `message_intent` exists to classify PASTED messages,
+        // where they are the rule. `is_ascii_whitespace` is not used: it omits
+        // `\v`, which `str.split` does break on.
+        if matches!(mapped, ' ' | '\t' | '\n' | '\r' | '\u{0b}' | '\u{0c}') {
             if !space {
                 out.push(' ');
                 space = true;
@@ -202,6 +209,12 @@ mod tests {
     fn the_fold_matches_the_trainer() {
         assert_eq!(fold("Çok İyi"), " cok iyi ");
         assert_eq!(fold("a  b\tc"), " a b c ");
+        // A PASTED MESSAGE HAS NEWLINES IN IT, and this is the case that was
+        // wrong in the shipped code: `\n` was kept as a character, so every
+        // multi-line message hashed to buckets the weights had never seen.
+        assert_eq!(fold("a\nb"), " a b ");
+        assert_eq!(fold("line one\r\nline two"), " line one line two ");
+        assert_eq!(fold("a\u{0b}b\u{0c}c"), " a b c ");
         // An em dash is three UTF-8 bytes and is dropped whole, not read as a
         // Turkish letter with a stray byte after it.
         assert_eq!(fold("a — b"), " a b ");
