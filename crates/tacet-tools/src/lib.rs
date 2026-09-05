@@ -13,6 +13,7 @@ pub mod db;
 pub mod db_write;
 pub mod edit_document;
 pub mod executor;
+pub mod extract;
 pub mod find_file;
 pub mod git;
 pub mod http_call;

@@ -22,6 +22,7 @@ use crate::create_document::CreateDocumentTool;
 use crate::data_store::SharedStore;
 use crate::db::DbTool;
 use crate::edit_document::EditDocumentTool;
+use crate::extract::{MessageIntentTool, SearchFilterTool};
 use crate::find_file::FindFileTool;
 use crate::git::GitTool;
 use crate::http_call::HttpCallTool;
@@ -376,6 +377,13 @@ pub fn production_catalog_gated(
     // that costs the model more than it saves.
     c.add(Arc::new(ArchiveTool::with_store(Arc::clone(store))));
     c.add(Arc::new(ChecksumTool::new()));
+    // LAST, WITH archive AND checksum, AND FOR THE SAME REASON: neither is ever
+    // the right answer to a message that gives no hint, so on a hintless request
+    // they are what the budget should drop. They are unconditional — no gate, no
+    // discovery, no network, no disk — which is what lets a benchmark built on
+    // them run identically on every machine.
+    c.add(Arc::new(SearchFilterTool));
+    c.add(Arc::new(MessageIntentTool));
 
     (c, state, diagnosis)
 }
@@ -945,7 +953,8 @@ mod tests {
         let (c, state) = catalog(true);
         let n = c.names().len();
         // The two shielded tools either both arrive or neither does.
-        let expected = (if state.is_some() { 14 } else { 12 }) + usize::from(mac);
+        // 16/14 since `search_filter` and `message_intent` joined the tail.
+        let expected = (if state.is_some() { 16 } else { 14 }) + usize::from(mac);
         assert_eq!(
             n, expected,
             "the catalog size changed; the number in the comment and the dropped tool count must be updated"
@@ -958,7 +967,7 @@ mod tests {
         // this; the test catches the comment going stale.
         assert_eq!(
             n - BUDGET,
-            (if state.is_some() { 5 } else { 3 }) + usize::from(mac)
+            (if state.is_some() { 7 } else { 5 }) + usize::from(mac)
         );
 
         // WITH THE ADDON OFF (the default install) the catalog is TWO tools shorter
@@ -974,15 +983,20 @@ mod tests {
         // budget of 9, so exactly ONE tool drops on a hintless message — two on
         // macOS. Which one is decided by catalog order, and the two new tools sit
         // last precisely so that it is one of them.
+        //
+        // `search_filter` and `message_intent` moved those numbers by two again,
+        // and they sit at the very end for the same reason `archive` and
+        // `checksum` do: neither is ever the right answer to a message that gives
+        // no hint, so on a hintless request they are what the budget should drop.
         let (closed, closed_state) = catalog(false);
         let m = closed.names().len();
         assert_eq!(
             m,
-            (if closed_state.is_some() { 12 } else { 10 }) + usize::from(mac)
+            (if closed_state.is_some() { 14 } else { 12 }) + usize::from(mac)
         );
         assert_eq!(
             m.saturating_sub(BUDGET),
-            (if closed_state.is_some() { 3 } else { 1 }) + usize::from(mac)
+            (if closed_state.is_some() { 5 } else { 3 }) + usize::from(mac)
         );
     }
 

@@ -1,0 +1,274 @@
+{
+ "name": "search_filter",
+ "requires": [
+  "search_filter"
+ ],
+ "notes": "Natural language -> a structured search filter. The measurement is SLOT FILLING: `evidence` asserts on the receipt the tool prints (`city=istanbul price=free`), so a case passes only when the model filled the right closed-vocabulary fields. Bilingual on purpose and therefore carrying no `language` field — the language claim judges one language per file, and these cases are half Turkish.",
+ "cases": [
+  {
+   "name": "istanbul-free-family",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "istanbulda çocukla gidilebilecek ücretsiz yerler",
+     "expect": "search_filter",
+     "evidence": [
+      "city=istanbul",
+      "audience=family",
+      "price=free"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ankara-kids-weekend",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "ankarada hafta sonu çocukla ne yapılır",
+     "expect": "search_filter",
+     "evidence": [
+      "city=ankara",
+      "audience=family",
+      "when=weekend"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "izmir-free-anything",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "izmirde ücretsiz gezilecek yerler neresi",
+     "expect": "search_filter",
+     "evidence": [
+      "city=izmir",
+      "price=free"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bursa-today",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "bursada bugün ne yapılır",
+     "expect": "search_filter",
+     "evidence": [
+      "city=bursa",
+      "when=today"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "adults-only-madrid",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "somewhere to go in Madrid, adults only",
+     "expect": "search_filter",
+     "evidence": [
+      "city=madrid",
+      "audience=adults"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "london-free-things",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "free things to do in London",
+     "expect": "search_filter",
+     "evidence": [
+      "city=london",
+      "price=free"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "paris-kid-friendly",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "kid friendly places to visit in Paris",
+     "expect": "search_filter",
+     "evidence": [
+      "city=paris",
+      "audience=kids"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "berlin-tomorrow",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "what is there to do in Berlin tomorrow",
+     "expect": "search_filter",
+     "evidence": [
+      "city=berlin",
+      "when=tomorrow"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "rome-premium",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "premium places to eat in Rome",
+     "expect": "search_filter",
+     "evidence": [
+      "city=rome",
+      "price=premium"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "seniors-vienna",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "places to visit in Vienna suitable for seniors",
+     "expect": "search_filter",
+     "evidence": [
+      "city=vienna",
+      "audience=seniors"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "cheap-lisbon-weekend",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "cheap things to do in Lisbon this weekend",
+     "expect": "search_filter",
+     "evidence": [
+      "city=lisbon",
+      "price=cheap",
+      "when=weekend"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "no-city-free-kids",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "free places to take the kids",
+     "expect": "search_filter",
+     "evidence": [
+      "audience=kids",
+      "price=free"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "only-city",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "things to do in Prague",
+     "expect": "search_filter",
+     "evidence": [
+      "city=prague"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "antalya-family-cheap",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "antalyada ailece gidilebilecek uygun fiyatlı yerler",
+     "expect": "search_filter",
+     "evidence": [
+      "city=antalya",
+      "audience=family",
+      "price=cheap"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "eskisehir-ucretsiz-bugun",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "eskişehirde bugün ücretsiz nereye gidebilirim",
+     "expect": "search_filter",
+     "evidence": [
+      "city=eskisehir",
+      "price=free",
+      "when=today"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "amsterdam-adults-tomorrow",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "adults only things to do in Amsterdam tomorrow",
+     "expect": "search_filter",
+     "evidence": [
+      "city=amsterdam",
+      "audience=adults",
+      "when=tomorrow"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "thanks-no-filter",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "thanks, that is all I needed"
+    }
+   ]
+  },
+  {
+   "name": "who-are-you",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "are you running on my own machine?"
+    }
+   ]
+  },
+  {
+   "name": "tesekkurler",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "teşekkürler, çok yardımcı oldun"
+    }
+   ]
+  },
+  {
+   "name": "opinion",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "do you think travelling alone is worth it?"
+    }
+   ]
+  }
+ ]
+}

@@ -1623,11 +1623,36 @@ pub fn ratio(passed: usize, total: usize) -> f64 {
 // The runner
 // ---------------------------------------------------------------------------
 
+/// TOOLS THE SUITE DELIBERATELY DOES NOT CARRY, because they have a benchmark
+/// of their own.
+///
+/// THIS IS A NARROW EXCEPTION TO A RULE THIS FILE OTHERWISE KEEPS — that eval and
+/// the shell must see the same catalog, because a selection measured over a
+/// different list measures a program nobody runs. It is made for two tools and
+/// for one reason: `search_filter` and `message_intent` exist to measure SLOT
+/// FILLING, which the suite has no way to score. The suite asks "was the right
+/// tool called"; these two are only interesting when you also ask "were the
+/// right five fields filled with values from the right closed sets", and that
+/// question lives in `benchmarks/tasks/`, where `evidence` can assert on the
+/// receipt they print.
+///
+/// The cost of NOT doing this is the reason it is done: adding them to the suite
+/// would move `tool_total` from 160 and make every number this project has
+/// published incomparable with the next one, to measure something the suite
+/// cannot see anyway.
+///
+/// `the_suite_carries_every_tool_it_is_shown` pins the list at two, so it cannot
+/// quietly become the place tools go to avoid being measured.
+pub(crate) const BENCHED_SEPARATELY: [&str; 2] = ["search_filter", "message_intent"];
+
 pub(crate) fn selection_catalog(env: &Env, memory: &SharedMemory) -> ToolCatalog {
     let (full, _, _) =
         tacet_tools::catalog::production_catalog(&env.store, memory, Some(FIXED_EPOCH));
     let mut c = ToolCatalog::new();
     for tool in full.tools() {
+        if BENCHED_SEPARATELY.contains(&tool.name()) {
+            continue;
+        }
         if TO_DRY.contains(&tool.name()) {
             c.add(Arc::new(DryTool(Arc::clone(tool))));
         } else {
@@ -3026,6 +3051,38 @@ share is proof of neither"
         for lang in Language::ALL {
             assert!(speaks(lang, "1000."));
             assert!(speaks(lang, "  "));
+        }
+    }
+}
+
+/// THE EXCLUSION LIST CANNOT QUIETLY GROW.
+///
+/// `BENCHED_SEPARATELY` is a hole in the rule that eval and the shell see the
+/// same catalog, and a hole that anyone can widen is not an exception, it is a
+/// policy. Two entries, both named, both with a benchmark file behind them.
+#[cfg(test)]
+mod suite_coverage {
+    use super::*;
+
+    #[test]
+    fn the_suite_carries_every_tool_it_is_shown() {
+        assert_eq!(
+            BENCHED_SEPARATELY.len(),
+            2,
+            "a third tool has been excluded from the suite. That is allowed only when it \
+has a benchmark of its own that measures something the suite cannot — say so here, and \
+add the file, or give it two suite cases like every other tool."
+        );
+        for name in BENCHED_SEPARATELY {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../benchmarks/tasks")
+                .join(format!("{name}.json"));
+            assert!(
+                path.exists(),
+                "{name} is excluded from the suite on the promise of a benchmark, and \
+{} does not exist",
+                path.display()
+            );
         }
     }
 }
