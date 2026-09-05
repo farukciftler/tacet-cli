@@ -644,6 +644,20 @@ pub enum BenchJob {
         #[arg(long)]
         portable: bool,
     },
+    /// Measures WHAT THE GRAMMAR IS WORTH: the same calls with the automaton
+    /// on and off, side by side — valid-call rate, correct-call rate, time to
+    /// first token and decode speed.
+    ///
+    /// Valid is syntax and correct is judgement. The constraint guarantees the
+    /// first by construction and says nothing about the second, and on a small
+    /// model the distance between the two is the finding.
+    Gap {
+        /// Path to the benchmark JSON.
+        file: String,
+        /// The local model folder (`~/models/<name>`).
+        #[arg(long)]
+        model: Option<String>,
+    },
     /// Runs the benchmark and prints the four axes and a score out of 100.
     Run {
         /// Path to the benchmark JSON.

@@ -320,6 +320,9 @@ fn main() -> ExitCode {
         }
         Command::Bench { job } => match job {
             cli::BenchJob::Check { file, portable } => bench_cmd::bench_check(&file, portable),
+            cli::BenchJob::Gap { file, model } => {
+                bench_cmd::bench_gap(&file, &model.unwrap_or_else(|| DEFAULT_MODEL.to_string()))
+            }
             cli::BenchJob::Run { file, model, json } => bench_cmd::bench_run(
                 &file,
                 &model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
