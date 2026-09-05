@@ -376,8 +376,13 @@ A file is JSON and the whole format fits on a screen:
 }
 ```
 
-`benchmarks/example.json` is a worked one. Three things about the format are
-deliberate:
+`benchmarks/example.json` is a worked one, and `benchmarks/en/` holds **314
+English cases** across eight groups — arithmetic and time, documents, files and
+archives, code and git, web, memory and calendar, 45 irrelevance cases, and 29
+multi-step chains. They were drafted by a multi-agent pass and then cut down by
+the gate below; what survived is what a fresh install can actually be asked.
+
+Three things about the format are deliberate:
 
 **`requires` is not paperwork.** It is what makes the runner *stop* when the
 machine lacks a tool, instead of scoring every case that needs it as a model
@@ -389,9 +394,22 @@ absent-tool failures as a regression.
 writes by hand: the router shows the model nine tools, so *would the expected
 tool even be among them?* A case whose tool never reaches the prompt measures the
 router and reports the model, every time it is run, forever. Checking it is free.
-(It caught two of these in the first batch of drafted questions, plus six files
-where a case expected a tool the file never declared — including an
-"irrelevance" case that expected `time`.)
+It earned its keep immediately. Over the first 321 drafted questions it found
+**22 cases whose expected tool the router never showed** — and all but seven were
+the ROUTER's fault, not the question's: seven unmistakable web questions ("is
+there a train strike going on in France?", "which stable Rust version is the
+newest one right now", "how bad is the air quality in Delhi") scored zero on
+every profile, so `web_search` was not among the nine and they would have been
+recorded as model failures forever. Those triggers are in the router now, and the
+questions stayed. Seven cases were deleted instead, because their signal is one
+the router structurally cannot read — an adversarial negation ("I don't want
+another file lying around"), or a follow-up whose subject is only in the previous
+turn ("add coffee to that list too"), which a stateless router cannot resolve.
+
+`--portable` checks against the default catalog rather than yours. It matters:
+the router shows nine tools of however many exist, so a machine with 29 MCP tools
+attached answers a different question, and a benchmark that only passes on its
+author's laptop is not a benchmark.
 
 **There is no regex, no script and no expected answer text.** `evidence` is a
 plain substring. Scoring prose against prose needs a judge, a judge is a second

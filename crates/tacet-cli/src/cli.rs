@@ -634,6 +634,15 @@ pub enum BenchJob {
     Check {
         /// Path to the benchmark JSON.
         file: String,
+        /// Check against the DEFAULT catalog instead of this machine's — the
+        /// built-in tools with the web addon open, and no MCP.
+        ///
+        /// WHY IT MATTERS FOR A BENCHMARK MEANT TO BE SHARED: the router shows
+        /// the model nine tools of however many exist, so a machine with 29 MCP
+        /// tools installed answers a different question from a fresh one. A file
+        /// that only passes on its author's laptop is not a benchmark.
+        #[arg(long)]
+        portable: bool,
     },
     /// Runs the benchmark and prints the four axes and a score out of 100.
     Run {

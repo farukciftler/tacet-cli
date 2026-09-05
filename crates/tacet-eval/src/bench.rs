@@ -233,18 +233,55 @@ called, the category is \"irrelevance\""
                 }
                 _ => {}
             }
+            // ONLY `expect`, AND THE ASYMMETRY IS THE POINT.
+            //
+            // A tool a case EXPECTS must be on the machine or the case cannot be
+            // measured at all — it scores zero for a reason that has nothing to
+            // do with the model. A tool a case FORBIDS is the opposite: if the
+            // machine does not have it, "must not call it" is satisfied for
+            // free. The case still measures its real claim, only slightly more
+            // cheaply, so refusing the file over it would be refusing a
+            // benchmark that works.
+            //
+            // MEASURED, by getting it wrong first: with both sides required, six
+            // of the first eight drafted files were rejected, and every one of
+            // them was rejected over a `forbidden` entry — a `calculate` case
+            // that says "and don't reach for run_code". The check was refusing
+            // the files for being careful. `bench check` reports an
+            // unsatisfiable-by-absence `forbidden` as the vacuous assertion it
+            // is, which is the honest place for it.
             for step in &case.steps {
-                for tool in step.expect.iter().chain(step.forbidden.iter()) {
-                    if !self.requires.iter().any(|r| r == tool) {
-                        return Err(BenchError::Undeclared {
-                            case: case.name.clone(),
-                            tool: tool.clone(),
-                        });
-                    }
+                if let Some(tool) = &step.expect
+                    && !self.requires.iter().any(|r| r == tool)
+                {
+                    return Err(BenchError::Undeclared {
+                        case: case.name.clone(),
+                        tool: tool.clone(),
+                    });
                 }
             }
         }
         Ok(())
+    }
+
+    /// Every tool named in a `forbidden` list, with the case that names it.
+    ///
+    /// Not an error and not part of `requires` — see the note in `check`. It is
+    /// here so `bench check` can say which of these assertions the running
+    /// machine cannot actually test, because a check that no input can fail is
+    /// not a check.
+    pub fn forbidden_tools(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = Vec::new();
+        for case in &self.cases {
+            for step in &case.steps {
+                for tool in &step.forbidden {
+                    if !out.iter().any(|(c, t)| c == &case.name && t == tool) {
+                        out.push((case.name.clone(), tool.clone()));
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// The tools this file needs that `catalog` does not offer.
@@ -462,6 +499,24 @@ mod tests {
                 Err(BenchError::CategoryContradicted { .. })
             ));
         }
+    }
+
+    /// THE ASYMMETRY BETWEEN `expect` AND `forbidden`, which the first version
+    /// of this check got backwards and six of eight drafted files were rejected
+    /// over. A tool a case FORBIDS need not exist: absent, the assertion is
+    /// satisfied for free and the case still measures its real claim.
+    #[test]
+    fn a_forbidden_tool_need_not_be_declared_but_an_expected_one_must_be() {
+        let forbids_something_undeclared = r#"{"name":"t","requires":["calculate"],
+            "cases":[{"name":"a","steps":[
+              {"message":"x","expect":"calculate","forbidden":["run_code"]}]}]}"#;
+        let file = BenchFile::parse(forbids_something_undeclared)
+            .expect("forbidding an undeclared tool is allowed");
+        assert_eq!(
+            file.forbidden_tools(),
+            vec![("a".to_string(), "run_code".to_string())],
+            "and `check` can still see it, to report the assertion as untestable here"
+        );
     }
 
     #[test]

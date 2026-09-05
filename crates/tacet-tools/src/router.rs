@@ -394,6 +394,37 @@ impl IntentProfile {
                 // from a source, not from memory"; they pull `web_search` forward in
                 // the budget. They do not touch greetings — irrelevance is
                 // unaffected by this list, because none of them occurs in "hello".
+                // FOUND BY DRAFTING BENCHMARK QUESTIONS, before any model ran.
+                // Nineteen unmistakable web questions were written and seven of
+                // them scored ZERO on every profile — "is there a train strike
+                // going on in France?", "which stable Rust version is the newest
+                // one right now", "how bad is the air quality in Delhi", "who
+                // won the champions league final" — so the nine tools shown were
+                // whatever sits early in catalog order and `web_search` was not
+                // among them. A tool that is not in the prompt cannot be called,
+                // so those would have been scored as model failures forever.
+                //
+                // EACH ONE IS EITHER A REQUEST TO GO AND LOOK, or a word that
+                // only makes sense about the outside world. The tempting
+                // additions that are NOT here: "most recent" and "recently",
+                // because `git` cases say "what was the most recent commit
+                // here about?" and pulling the web tools in front of `git` for
+                // that would trade one defect for another.
+                // TIME-BOUND PHRASES, and they are phrases rather than words for
+                // the usual reason: "lately" and "these days" say "the answer
+                // moves", where the bare words they contain say nothing.
+                "these days",
+                "in the last few days",
+                "lately",
+                "going for",
+                "search for",
+                "look up",
+                "online",
+                "find out",
+                "newest",
+                "strike",
+                "air quality",
+                "who won",
                 "was elected",
                 "election",
                 "in what year",

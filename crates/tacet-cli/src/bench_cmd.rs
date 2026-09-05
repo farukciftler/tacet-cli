@@ -59,7 +59,7 @@ fn host_catalog(store: &Arc<tacet_tools::data_store::SharedStore>, color: &Color
 ///      the catalog to the model, so a case whose tool falls outside those nine
 ///      is measuring the router and reporting the model. This is the check
 ///      nobody writes by hand and the one that catches the most.
-pub fn bench_check(path: &str) -> ExitCode {
+pub fn bench_check(path: &str, portable: bool) -> ExitCode {
     let color = Color::setup();
     let file = match read(path) {
         Ok(f) => f,
@@ -70,7 +70,14 @@ pub fn bench_check(path: &str) -> ExitCode {
     };
 
     let store = Arc::new(tacet_tools::data_store::SharedStore::new());
-    let catalog = host_catalog(&store, &color);
+    let catalog = if portable {
+        // The DEFAULT catalog: built-in tools with the web addon open, no MCP,
+        // no discovery of this machine's sandbox. What a fresh install sees.
+        let memory = SharedMemory::in_memory();
+        tacet_tools::catalog::production_catalog_with(&store, &memory, Some(0), true).0
+    } else {
+        host_catalog(&store, &color)
+    };
     let names: Vec<String> = catalog.names().into_iter().map(String::from).collect();
 
     println!("{}", color.paint(BOLD, &format!("  {}", file.name)));
@@ -80,12 +87,42 @@ pub fn bench_check(path: &str) -> ExitCode {
         file.requires.len(),
         file.language.as_deref().unwrap_or("no language declared")
     );
+    // WHICH CATALOG THIS ANSWER IS ABOUT. The router shows nine of however many
+    // exist, so the same file checks differently on a machine with MCP servers
+    // attached — which is not a flaw, it is the question a benchmark asks. It
+    // just has to be said out loud.
+    println!(
+        "{}",
+        color.paint(
+            DIM,
+            &format!(
+                "  checked against {} tools ({})",
+                names.len(),
+                if portable {
+                    "the default catalog — what a fresh install sees"
+                } else {
+                    "this machine, addons and MCP included; add --portable for the default"
+                }
+            )
+        )
+    );
 
     if let Some(missing) = file.missing_from(&names) {
         println!();
         eprintln!("{}", color.paint(YELLOW, &missing.to_string()));
         return ExitCode::FAILURE;
     }
+
+    // A `forbidden` ASSERTION ABOUT A TOOL THIS MACHINE DOES NOT HAVE CANNOT
+    // FAIL, so it is reported rather than silently counted as a pass. This is
+    // also what catches a benchmark that is accidentally not portable: the first
+    // drafted set forbade `serverim_disk_durumu`, an MCP tool that exists on
+    // exactly one machine.
+    let vacuous: Vec<(String, String)> = file
+        .forbidden_tools()
+        .into_iter()
+        .filter(|(_, t)| !names.iter().any(|n| n == t))
+        .collect();
 
     // THE ROUTING CHECK. `Router::select` is what decides which nine tools the
     // model is shown, and it takes no model itself, so this is free.
@@ -154,6 +191,29 @@ model takes the first plausible name on the list:",
         );
         for b in buried.iter().take(20) {
             println!("    {b}");
+        }
+    }
+
+    if !vacuous.is_empty() {
+        println!();
+        println!(
+            "{}",
+            color.paint(
+                DIM,
+                &format!(
+                    "  {} \"forbidden\" assertion(s) name a tool this machine does not have, \
+so they cannot fail here — the case still measures its real claim, but this half of it \
+is not being tested:",
+                    vacuous.len()
+                )
+            )
+        );
+        let mut shown: Vec<&str> = Vec::new();
+        for (case, tool) in vacuous.iter().take(200) {
+            if !shown.contains(&tool.as_str()) {
+                shown.push(tool);
+                println!("    {tool}  (first in {case})");
+            }
         }
     }
 

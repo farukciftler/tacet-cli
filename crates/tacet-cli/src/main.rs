@@ -319,7 +319,7 @@ fn main() -> ExitCode {
             })
         }
         Command::Bench { job } => match job {
-            cli::BenchJob::Check { file } => bench_cmd::bench_check(&file),
+            cli::BenchJob::Check { file, portable } => bench_cmd::bench_check(&file, portable),
             cli::BenchJob::Run { file, model, json } => bench_cmd::bench_run(
                 &file,
                 &model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),

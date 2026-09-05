@@ -1,0 +1,581 @@
+{
+ "name": "files-archive",
+ "language": "en",
+ "requires": [
+  "archive",
+  "checksum",
+  "find_file"
+ ],
+ "cases": [
+  {
+   "name": "locate-budget-file",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "i can't remember where i saved the budget file, can you track it down?",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "list-markdown-files",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "show me every .md file I've got in the working folder",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "file-mentioning-rent",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "which one of my files mentions rent?",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "locate-log-file",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "is there a log file sitting in this folder somewhere?",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "find-zip-on-disk",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "do I have a zip saved anywhere around here?",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "find-notes-file",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "find my notes file for me",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "search-for-word-transport",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "search through my files for the word transport",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "where-is-report",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "where's the report file saved?",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "what-files-are-here",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "what files do I have in this folder on my machine?",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "find-file-about-meals",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "one of my files has a weekly meal table in it, which one is it?",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "find-file-named-app",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "I'm looking for something called app-something on this device, can you find it?",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "list-log-extension",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "list anything with a .log extension in here",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "list-zip-contents",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "what's inside the zip in my folder?",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "unpack-archive",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "can you unpack that zip for me?",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "count-zip-entries",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "how many files are packed into that zip?",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "peek-without-extracting",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "don't unpack it, I just want the names of the entries inside the archive",
+     "expect": "archive",
+     "forbidden": [
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "extract-backup-archive",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "extract the backup archive into a folder please",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "zip-file-types",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "what kind of files are stored in that zip, text or images?",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "zip-contains-entry",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "is there anything named entry-03 inside that zip?",
+     "expect": "archive",
+     "forbidden": [
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "pull-everything-out",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "pull everything out of the backup zip",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "sha256-of-report",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "give me the sha256 of report.md",
+     "expect": "checksum",
+     "forbidden": [
+      "run_code",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "verify-published-hash",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "the site said the hash should be 3b8c0a2f9e1d4c7a5b6e8f0d2c4a6b8e0f1a3c5d7e9b1d3f5a7c9e1b3d5f7a9c, does report.md match that?",
+     "expect": "checksum",
+     "forbidden": [
+      "run_code",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "compare-two-files",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "are report.md and notes.md byte for byte the same file?",
+     "expect": "checksum",
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fingerprint-for-ticket",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "I need a fingerprint of app.log to paste into a ticket",
+     "expect": "checksum",
+     "forbidden": [
+      "run_code",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "hash-the-zip",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "hash the zip file for me, I want to make sure the copy I sent is the same one",
+     "expect": "checksum",
+     "forbidden": [
+      "archive",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "did-file-change",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "here's the hash I wrote down last week: 7f2a4d6b8c0e1a3f5d7b9c1e3a5f7d9b1c3e5a7f9d1b3c5e7a9f1d3b5c7e9a1f. has app.log changed since then?",
+     "expect": "checksum",
+     "forbidden": [
+      "run_code",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "checksum-of-budget",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "what's the checksum of budget.md",
+     "expect": "checksum",
+     "forbidden": [
+      "run_code",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "verify-download-hash",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "check whether notes.md matches this checksum: a1c3e5f7b9d1a3c5e7f9b1d3a5c7e9f1b3d5a7c9e1f3b5d7a9c1e3f5b7d9a1c3",
+     "expect": "checksum",
+     "forbidden": [
+      "run_code",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "morning-greeting",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "morning! hope you're doing alright",
+     "forbidden": [
+      "find_file",
+      "archive",
+      "checksum"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "quick-thanks",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "that was quick, thanks a lot",
+     "forbidden": [
+      "find_file",
+      "archive",
+      "checksum"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "zip-vs-targz-opinion",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "which do you prefer working with, zip or tar.gz?",
+     "forbidden": [
+      "archive",
+      "find_file",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "runs-locally-question",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "do you run entirely on my machine, or does some of this go off to a server?",
+     "forbidden": [
+      "find_file",
+      "archive",
+      "checksum",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "can-you-do-zips",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "just curious, are you able to deal with zip files at all?",
+     "forbidden": [
+      "archive",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "what-to-call-you",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "what should I call you?",
+     "forbidden": [
+      "find_file",
+      "archive",
+      "checksum",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "find-then-hash",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "can you dig up my budget file?",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search"
+     ]
+    },
+    {
+     "message": "nice, now give me its sha256",
+     "expect": "checksum",
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "list-then-extract",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "what's in the backup zip?",
+     "expect": "archive",
+     "forbidden": [
+      "read_document"
+     ]
+    },
+    {
+     "message": "ok, go ahead and unpack it",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "hash-then-compare",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "hash report.md for me",
+     "expect": "checksum",
+     "forbidden": [
+      "run_code",
+      "read_document"
+     ]
+    },
+    {
+     "message": "and is notes.md identical to it?",
+     "expect": "checksum",
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "find-then-thanks",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "which of my files mentions transport?",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search"
+     ]
+    },
+    {
+     "message": "perfect, that's the one. thanks!",
+     "forbidden": [
+      "find_file",
+      "archive",
+      "checksum"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "greet-then-find",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "hey there",
+     "forbidden": [
+      "find_file",
+      "archive",
+      "checksum"
+     ]
+    },
+    {
+     "message": "can you find the log file on here for me?",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  }
+ ],
+ "notes": "Drafted by a multi-agent pass, then cut down by : every expected tool must exist and must actually reach the model through the router."
+}

@@ -1,0 +1,671 @@
+{
+ "name": "documents",
+ "language": "en",
+ "requires": [
+  "create_document",
+  "edit_document",
+  "read_document"
+ ],
+ "cases": [
+  {
+   "name": "read-report-contents",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "what's in report.md?",
+     "expect": "read_document",
+     "forbidden": [
+      "create_document",
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "read-notes-summary",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "give me a quick summary of notes.md please",
+     "expect": "read_document",
+     "forbidden": [
+      "create_document",
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "read-report-as-table",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "show me report.md as a table right here in the chat, no need to save anything",
+     "expect": "read_document",
+     "forbidden": [
+      "create_document",
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "read-budget-categories",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "open budget.md and tell me what the categories are",
+     "expect": "read_document",
+     "forbidden": [
+      "create_document",
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "read-log-check",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "have a look at app.log and tell me if anything in there looks off",
+     "expect": "read_document",
+     "forbidden": [
+      "create_document",
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "read-notes-deadline",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "read notes.md and tell me whether a deadline is mentioned in it",
+     "expect": "read_document",
+     "forbidden": [
+      "create_document",
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "read-report-row-count",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "how many rows does report.md have?",
+     "expect": "read_document",
+     "forbidden": [
+      "create_document",
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "read-log-last-lines",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "show me the last few lines of app.log",
+     "expect": "read_document",
+     "forbidden": [
+      "create_document",
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "read-notes-action-items",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "can you open notes.md and pull the action items out of it",
+     "expect": "read_document",
+     "forbidden": [
+      "create_document",
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "create-excel-expenses",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "make me an excel file with my monthly expenses: rent 18000, food 9000, transport 2500",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "create-markdown-packing-list",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "create a markdown file called packing.md with a short checklist for a weekend trip",
+     "expect": "create_document",
+     "evidence": [
+      "packing"
+     ],
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "create-text-todo",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "save a plain text file named todo.txt with three lines: buy milk, call the dentist, pay the rent",
+     "expect": "create_document",
+     "evidence": [
+      "todo"
+     ],
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "create-quarterly-spreadsheet",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "I need a spreadsheet of the four quarters and their revenue: Q1 120000, Q2 135000, Q3 98000, Q4 150000",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "create-offsite-report",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "write up a short report about our team offsite and save it as a markdown file",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "create-convert-report-to-excel",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "turn report.md into an excel spreadsheet",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "create-copy-under-new-name",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "I want a second markdown file with the same table as report.md, but call this one menu.md and leave report.md alone",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "create-summary-of-notes",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "summarize notes.md into a brand new markdown file, don't touch the original",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "create-shopping-list-file",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "put together a shopping list file for me - eggs, bread, coffee, olive oil",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "edit-add-row-to-report",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "add a row at the bottom of report.md for Friday with soup",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "edit-delete-last-row",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "remove the last row from report.md",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "edit-change-monday-cell",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "in report.md change Monday's meal to soup",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "edit-rename-column",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "rename the Meal column in report.md to Dish",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "edit-add-empty-column",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "add a Notes column to the table in report.md and leave the cells blank for now",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "edit-title-of-notes",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "change the title at the top of notes.md to Sprint notes",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "edit-append-line-to-notes",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "stick a line at the end of notes.md that says reviewed on Friday",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "edit-delete-last-line-of-notes",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "delete the last line of notes.md, it's leftover from last week",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "edit-second-line-to-bullet",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "in notes.md turn the second line into a bullet point",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "edit-add-budget-line",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "add an internet line to budget.md, 800 a month",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "edit-add-heading-to-budget",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "put a heading at the very top of budget.md that just says Budget",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "edit-title-line-above-table",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "add a title line above the table in report.md saying Weekly meals",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "edit-read-then-remove-row",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "read report.md and then take the Wednesday row out of it",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "edit-file-that-is-not-there",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "update the heading in roadmap.md to Q4 roadmap",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "greeting-small-talk",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "morning! hope you're doing alright",
+     "forbidden": [
+      "read_document",
+      "create_document",
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "opinion-markdown-vs-word",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "do you think markdown is nicer than word for keeping notes, or is that just a dev thing?",
+     "forbidden": [
+      "read_document",
+      "create_document",
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "thanks-after-work",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "thanks, that's exactly what I needed",
+     "forbidden": [
+      "read_document",
+      "create_document",
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "question-about-assistant-editing",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "out of curiosity, can you actually change my files or do you only ever read them?",
+     "forbidden": [
+      "read_document",
+      "create_document",
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "postponing-the-task",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "no rush on any of this, I'll come back to it tomorrow",
+     "forbidden": [
+      "read_document",
+      "create_document",
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "read-then-add-row",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "what's in report.md?",
+     "expect": "read_document",
+     "forbidden": [
+      "create_document",
+      "edit_document"
+     ]
+    },
+    {
+     "message": "ok, add Friday with soup to it",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "create-then-extend",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "make me a markdown file called sprint.md with three bullet points about this week's goals",
+     "expect": "create_document",
+     "evidence": [
+      "sprint"
+     ],
+     "forbidden": [
+      "edit_document"
+     ]
+    },
+    {
+     "message": "actually add a fourth bullet about the demo on Thursday",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "summary-then-thanks",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "summarize notes.md for me",
+     "expect": "read_document",
+     "forbidden": [
+      "create_document",
+      "edit_document"
+     ]
+    },
+    {
+     "message": "nice, that's much clearer than the file itself",
+     "forbidden": [
+      "read_document",
+      "create_document",
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "read-then-save-as-excel",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "open budget.md for me",
+     "expect": "read_document",
+     "forbidden": [
+      "create_document",
+      "edit_document"
+     ]
+    },
+    {
+     "message": "now save that as an excel file",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "create-text-then-drop-line",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "create a plain text file named errands.txt with two lines: call the bank, book the flight",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document"
+     ]
+    },
+    {
+     "message": "drop the second line, I already booked it",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "hello-then-log",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "hey there",
+     "forbidden": [
+      "read_document",
+      "create_document",
+      "edit_document"
+     ]
+    },
+    {
+     "message": "could you tell me what's in app.log?",
+     "expect": "read_document",
+     "forbidden": [
+      "create_document",
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "read-edit-then-thanks",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "read notes.md",
+     "expect": "read_document",
+     "forbidden": [
+      "create_document",
+      "edit_document"
+     ]
+    },
+    {
+     "message": "change the first line to Weekly notes",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    },
+    {
+     "message": "perfect, thanks a lot",
+     "forbidden": [
+      "read_document",
+      "create_document",
+      "edit_document"
+     ]
+    }
+   ]
+  }
+ ],
+ "notes": "Drafted by a multi-agent pass, then cut down by : every expected tool must exist and must actually reach the model through the router."
+}

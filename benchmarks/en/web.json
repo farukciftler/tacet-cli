@@ -1,0 +1,547 @@
+{
+ "name": "web",
+ "language": "en",
+ "requires": [
+  "web_fetch",
+  "web_search"
+ ],
+ "cases": [
+  {
+   "name": "weather-ankara-now",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "what's the weather like in Ankara right now?",
+     "expect": "web_search",
+     "forbidden": [
+      "web_fetch",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bitcoin-price-today",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "how much is bitcoin going for today?",
+     "expect": "web_search",
+     "forbidden": [
+      "web_fetch",
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "eur-try-rate",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "what's the euro to lira rate at the moment",
+     "expect": "web_search",
+     "forbidden": [
+      "web_fetch",
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "france-train-strike",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "is there a train strike going on in France?",
+     "expect": "web_search",
+     "forbidden": [
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "apple-latest-event",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "what did Apple announce at their latest event? I missed it completely",
+     "expect": "web_search",
+     "forbidden": [
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "japan-prime-minister",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "who is the prime minister of Japan these days?",
+     "expect": "web_search",
+     "forbidden": [
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "newest-rust-version",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "which stable Rust version is the newest one right now",
+     "expect": "web_search",
+     "forbidden": [
+      "web_fetch",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "petrol-price-germany",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "roughly what does a litre of petrol cost in Germany these days?",
+     "expect": "web_search",
+     "forbidden": [
+      "web_fetch",
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "recent-earthquakes",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "have there been any big earthquakes reported in the last few days",
+     "expect": "web_search",
+     "forbidden": [
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "delhi-air-quality",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "how bad is the air quality in Delhi right now?",
+     "expect": "web_search",
+     "forbidden": [
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fed-rate-decision",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "did the Fed change interest rates at their last meeting or leave them alone",
+     "expect": "web_search",
+     "forbidden": [
+      "web_fetch",
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "champions-league-winner",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "who won the champions league final this season?",
+     "expect": "web_search",
+     "forbidden": [
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "used-model3-price",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "what are used Tesla Model 3s going for in Turkey lately",
+     "expect": "web_search",
+     "forbidden": [
+      "web_fetch",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fetch-rust-blog-post",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "can you summarize this for me https://blog.rust-lang.org/2024/02/08/Rust-1.76.0.html",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fetch-hn-thread",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "https://news.ycombinator.com/item?id=38907802 what's the gist of that discussion?",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fetch-wikipedia-kalman",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "pull up https://en.wikipedia.org/wiki/Kalman_filter and tell me what the thing is actually used for",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fetch-bbc-tech-www",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "read www.bbc.com/news/technology and tell me what the top story is",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fetch-tokio-releases",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "here's the changelog https://github.com/tokio-rs/tokio/releases - what changed in the newest one?",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "git"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fetch-asyncio-docs",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "grab the text from https://docs.python.org/3/library/asyncio.html, I just want a short summary of it",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fetch-arxiv-abstract",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "a friend sent me this link https://arxiv.org/abs/2301.00001 - is it worth my time?",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fetch-reuters-business",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "open https://www.reuters.com/business/ and give me the headlines from it",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fetch-k8s-pods",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "https://kubernetes.io/docs/concepts/workloads/pods/ explain this page to me in plain words please",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fetch-raw-readme",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "what does https://raw.githubusercontent.com/rust-lang/rust/master/README.md say about building from source?",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "read_document",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fetch-fowler-microservices",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "i saved this for later https://martinfowler.com/articles/microservices.html - can you boil it down to a few bullets",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fetch-nasa-news",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "take a look at https://www.nasa.gov/news/ and tell me what's new over there",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fetch-postgres-docs-page",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "https://www.postgresql.org/docs/current/sql-createindex.html tell me which index types this page lists",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "db"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fetch-recipe-link",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "my sister sent me this recipe, what do i need to buy? https://www.seriouseats.com/classic-pancakes-recipe",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fetch-mdn-fetch-api",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "read through https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API and tell me how error handling works there",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fetch-changelog-blog",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "http://example.org/blog/release-notes what's on this page?",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "greeting-morning",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "morning!",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "thanks-helpful",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "thanks, that was actually really helpful",
+     "forbidden": [
+      "web_search",
+      "web_fetch",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "asks-about-assistant",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "do you ever get tired of answering questions, or is that a silly thing to ask",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "pineapple-opinion",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "pineapple on pizza is underrated and i will die on this hill",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "never-mind",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "ah forget it, never mind",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "small-talk-monday",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "long day. anyway, good chatting with you",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fetch-then-thanks",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "can you skim https://en.wikipedia.org/wiki/Ada_Lovelace for me",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "read_document"
+     ]
+    },
+    {
+     "message": "perfect, that's all I needed",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "search-then-fetch-link",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "what's the latest news on the Artemis moon programme?",
+     "expect": "web_search",
+     "forbidden": [
+      "web_fetch"
+     ]
+    },
+    {
+     "message": "ok now read this specific one and tell me the launch plan: https://www.nasa.gov/artemis/",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fetch-then-chitchat",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "https://www.gnu.org/licenses/gpl-3.0.html can you tell me what this obliges me to do if I ship a binary",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "read_document"
+     ]
+    },
+    {
+     "message": "haha ok. legal text is exhausting, don't you think",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  }
+ ],
+ "notes": "Drafted by a multi-agent pass, then cut down by : every expected tool must exist and must actually reach the model through the router."
+}
