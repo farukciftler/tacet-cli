@@ -1,0 +1,682 @@
+{
+ "name": "core-es",
+ "language": "es",
+ "requires": [
+  "archive",
+  "calculate",
+  "checksum",
+  "create_document",
+  "edit_document",
+  "find_file",
+  "read_document",
+  "remember",
+  "time",
+  "web_fetch",
+  "web_search"
+ ],
+ "cases": [
+  {
+   "name": "cuenta-cena-entre-siete",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "La cuenta de la cena salió 238 euros y somos 7. ¿Cuánto pone cada uno?",
+     "expect": "calculate",
+     "evidence": [
+      "34"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "iva-veintiuno-por-ciento",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "¿Me sacas el 21 % de 400? Es para el IVA de una factura y no me quiero equivocar.",
+     "expect": "calculate",
+     "evidence": [
+      "84"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "dos-elevado-a-nueve",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "¿Cuánto es 2 elevado a 9? Nunca me acuerdo, dímelo.",
+     "expect": "calculate",
+     "evidence": [
+      "512"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "cajas-de-tornillos",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Tengo 47 cajas y en cada una vienen 18 tornillos. ¿Cuántos tornillos tengo en total?",
+     "expect": "calculate",
+     "evidence": [
+      "846"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "que-hora-es-ahora",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "¿Qué hora es? Se me ha parado el reloj de la cocina.",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "que-dia-de-la-semana-cae-hoy",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "¿Qué día de la semana cae hoy? Llevo tres días de vacaciones y ya no me entero.",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fecha-para-firmar-papel",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Dígame la fecha de hoy, por favor, que tengo que firmar un papel y no me quiero equivocar.",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "cuantos-dias-faltan-navidad",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "¿Cuántos días faltan para Navidad?",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "resumir-report-md",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Ábreme report.md y resúmemelo en tres puntos, que no tengo tiempo de leerlo entero.",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "que-pone-en-budget",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "¿Qué pone en budget.md? Léemelo tal cual, sin adornos.",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "notas-de-la-reunion",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Échale un ojo a notes.md y dime si ahí apunté algo sobre la reunión del jueves.",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "crear-lista-compra",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Créame un markdown que se llame lista-compra.md con la compra de esta semana: leche, huevos, pan, café y fruta.",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document",
+      "write_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "excel-de-inventario",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "¿Me puedes hacer un Excel llamado inventario.xlsx con tres columnas: producto, cantidad y precio? Ponme dos filas de ejemplo.",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document",
+      "write_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "archivo-de-texto-con-ideas",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Guárdame estas tres ideas en un archivo de texto que se llame ideas.txt: cambiar el logo, subir los precios un poco y llamar al de la imprenta.",
+     "expect": "create_document",
+     "forbidden": [
+      "remember",
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "cambiar-linea-en-notes",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "En notes.md hay una línea que pone 'pendiente: llamar al fontanero'. Cámbiamela por 'hecho: ya llamé al fontanero'.",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "quitar-parrafo-de-report",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Quítale a report.md el último párrafo y déjame el archivo guardado con el resto igual.",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "buscar-archivo-del-presupuesto",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "No me acuerdo de cómo llamé al archivo donde apunté lo del presupuesto. ¿Me lo buscas?",
+     "expect": "find_file",
+     "forbidden": [
+      "read_document",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "que-archivo-menciona-zaragoza",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "¿Cuál de mis archivos menciona Zaragoza? Búscamelo por dentro, no por el nombre.",
+     "expect": "find_file",
+     "forbidden": [
+      "read_document",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tengo-algun-log-por-aqui",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "¿Tengo por aquí algún archivo con extensión .log? Búscamelo en la carpeta de trabajo.",
+     "expect": "find_file",
+     "forbidden": [
+      "read_document",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "que-trae-el-zip-dentro",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Tengo un zip en la carpeta. ¿Me dices qué archivos trae dentro sin descomprimirlo?",
+     "expect": "archive",
+     "forbidden": [
+      "find_file",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "descomprimeme-el-zip",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Descomprímeme el zip de la carpeta, por favor, que lo necesito abierto.",
+     "expect": "archive",
+     "forbidden": [
+      "find_file",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "sha256-de-report",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Sácame el SHA-256 de report.md, que se lo tengo que pasar a un compañero.",
+     "expect": "checksum",
+     "forbidden": [
+      "read_document",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "son-identicos-byte-a-byte",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "¿report.md y notes.md son idénticos byte a byte? Compáramelos, que creo que guardé el mismo dos veces.",
+     "expect": "checksum",
+     "forbidden": [
+      "read_document",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "verificar-hash-que-me-pasaron",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Me pasaron este hash para comprobar app.log: 9f2b41c7de08a5613bb0c2f4a7e19d3c5f80a6b2d4e7c19f3a5b8d0e2c4f6a81. ¿Coincide o no?",
+     "expect": "checksum",
+     "forbidden": [
+      "read_document",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "recuerda-alergia-frutos-secos",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Acuérdate de que soy alérgico a los frutos secos, que luego me vas y me recomiendas turrón.",
+     "expect": "remember",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "olvida-que-trabajo-en-madrid",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Olvida eso que te dije de que trabajo en Madrid, que me mudé el mes pasado.",
+     "expect": "remember",
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "que-tienes-apuntado-de-mi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "¿Qué cosas tienes apuntadas sobre mí? Enséñamelas todas.",
+     "expect": "remember",
+     "forbidden": [
+      "read_document",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tiempo-manana-en-valencia",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "¿Qué tiempo va a hacer mañana en Valencia? Es que tengo que decidir si saco la moto.",
+     "expect": "web_search",
+     "forbidden": [
+      "find_file",
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "quien-gano-el-ultimo-balon-de-oro",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "¿Quién ganó el último Balón de Oro? Me lo acaban de preguntar y me he quedado en blanco.",
+     "expect": "web_search",
+     "forbidden": [
+      "find_file",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "resumeme-esta-direccion",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Léeme esto y resúmemelo en cuatro líneas: https://es.wikipedia.org/wiki/Acueducto_de_Segovia",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "irr-ahi-hay-ay",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "¿Me explicas de una vez la diferencia entre 'ahí', 'hay' y 'ay'? Con un ejemplo de cada una.",
+     "forbidden": [
+      "web_search",
+      "find_file",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "irr-por-y-para",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Explícame la diferencia entre 'por' y 'para', que mi cuñado alemán me lo pregunta cada Navidad y nunca sé qué decirle.",
+     "forbidden": [
+      "web_search",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "irr-cielo-azul",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "¿Por qué el cielo es azul? Explícamelo como si tuviera diez años, porfa.",
+     "forbidden": [
+      "web_search",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "irr-chiste-corto",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Cuéntame un chiste corto, anda, que llevo un día horrible.",
+     "forbidden": [
+      "web_search",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "irr-haiku-lluvia",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Escríbeme aquí un haiku sobre la lluvia. Nada de guardarlo, solo dímelo.",
+     "forbidden": [
+      "create_document",
+      "write_code",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "irr-nombres-para-el-gato",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Necesito nombre para mi gato: es negro y dormilón como él solo. Suéltame cinco.",
+     "forbidden": [
+      "web_search",
+      "create_document",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "irr-estar-en-las-nubes",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "¿Qué significa exactamente la expresión 'estar en las nubes'?",
+     "forbidden": [
+      "web_search",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "irr-guitarra-o-piano",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "¿Usted qué cree, es mejor empezar por la guitarra o por el piano? Deme su opinión, no me busque estudios.",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "irr-cena-rapida",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Dame tres ideas de cena rápida con lo que hay en cualquier despensa normal. Se me ha hecho tardísimo.",
+     "forbidden": [
+      "web_search",
+      "create_document",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "irr-freir-u-horno",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "En general, ¿qué es más sano, freír o hacer al horno? Explícamelo por encima, sin tecnicismos.",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "irr-gracias-en-japones",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "¿Cómo se dice 'gracias' en japonés? Y dime cómo se pronuncia, que lo voy a decir en voz alta.",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "irr-madrugar-sirve",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "¿Tú qué opinas, madrugar mucho sirve de algo o es una tontería que nos han vendido?",
+     "forbidden": [
+      "web_search",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "irr-motor-cuatro-tiempos",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Explíqueme cómo funciona un motor de cuatro tiempos, pero en cristiano, que no soy mecánico.",
+     "forbidden": [
+      "web_search",
+      "run_code",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "mt-leer-y-anadir-linea",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Léeme notes.md, a ver qué tenía apuntado ahí.",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    },
+    {
+     "message": "Vale. Añádele al final una línea que ponga 'comprar bombillas' y déjamelo guardado.",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "mt-buscar-y-abrir",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "¿Cuál de mis archivos habla del presupuesto? Búscamelo, que no me acuerdo del nombre.",
+     "expect": "find_file",
+     "forbidden": [
+      "read_document",
+      "web_search"
+     ]
+    },
+    {
+     "message": "Ese mismo. Ábremelo y dime qué partidas hay.",
+     "expect": "read_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "mt-calcular-y-recordar",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "¿Cuánto es 12 por 48?",
+     "expect": "calculate",
+     "evidence": [
+      "576"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    },
+    {
+     "message": "Perfecto. Apúntate que mi presupuesto mensual para la compra es ese número en euros.",
+     "expect": "remember",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  }
+ ],
+ "notes": "Authored natively in this language, not translated. Gated by ."
+}

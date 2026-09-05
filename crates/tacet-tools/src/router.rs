@@ -732,6 +732,39 @@ impl IntentProfile {
                 "donusum",
             ],
             IntentProfile::Web => &[
+                // THE OTHER FIVE LANGUAGES, added when a natively-authored
+                // benchmark in each of them was gated and the SAME FOUR TOOLS
+                // fell out of the nine in every one: `remember`, `web_search`,
+                // `archive` and `checksum`. That is not a coincidence — the
+                // catalog puts exactly those four LAST, because none of them is
+                // ever the right answer without an explicit trigger, and this
+                // list had triggers in two languages only. In a third language
+                // they could not be reached at all.
+                //
+                // SPELLED AS `simplify` LEAVES THEM. That function folds the
+                // Turkish letters and lowercases, and touches nothing else — so
+                // German "über" must be written "uber" here, while Cyrillic and
+                // Chinese pass through untouched and French "météo" keeps its
+                // accent. A trigger spelled the other way is a dead trigger, of
+                // which this file has already had one.
+                "el tiempo en",
+                "qué tiempo",
+                "que tiempo",
+                "cotizacion",
+                "quién ganó",
+                "quien gano",
+                "quel temps",
+                "换多少",
+                "meteo",
+                "météo",
+                "prix du",
+                "wetter",
+                "wechselkurs",
+                "погода",
+                "курс",
+                "посмотри в интернете",
+                "天气",
+                "汇率",
                 // THE CURRENT-INFORMATION MARKERS, in Turkish.
                 //
                 // "kuru", NOT "kur" — AND THE REASON IS THE INTERESTING PART.
@@ -822,6 +855,54 @@ impl IntentProfile {
                 "hangi dosya",
             ],
             IntentProfile::Memory => &[
+                // THE OTHER FIVE LANGUAGES, added when a natively-authored
+                // benchmark in each of them was gated and the SAME FOUR TOOLS
+                // fell out of the nine in every one: `remember`, `web_search`,
+                // `archive` and `checksum`. That is not a coincidence — the
+                // catalog puts exactly those four LAST, because none of them is
+                // ever the right answer without an explicit trigger, and this
+                // list had triggers in two languages only. In a third language
+                // they could not be reached at all.
+                //
+                // SPELLED AS `simplify` LEAVES THEM. That function folds the
+                // Turkish letters and lowercases, and touches nothing else — so
+                // German "über" must be written "uber" here, while Cyrillic and
+                // Chinese pass through untouched and French "météo" keeps its
+                // accent. A trigger spelled the other way is a dead trigger, of
+                // which this file has already had one.
+                // es / fr / de / ru / zh
+                "recuerda",
+                // ACCENTED AND BARE, because `simplify` folds the Turkish
+                // letters and NOTHING ELSE: "acuérdate" keeps its é, so a
+                // trigger spelled without it can never fire on the sentence it
+                // was written for.
+                "acuérdate",
+                "acuerdate",
+                "apúntate",
+                "apunta",
+                "sobre mí",
+                "记一下",
+                "记下",
+                "忘掉",
+                "olvida",
+                "apuntado",
+                "retiens",
+                "souviens",
+                "oublie",
+                "sur moi",
+                "merk dir",
+                "merke dir",
+                "gemerkt",
+                "vergiss",
+                "uber mich",
+                "запомни",
+                "запомнил",
+                "забудь",
+                "обо мне",
+                "记住",
+                "记得",
+                "忘了",
+                "关于我",
                 // MEMORY, the way it is asked: "unutma" (do not forget) and
                 // "unut" (forget) point at the SAME tool — one writes a note,
                 // the other removes it, and both are `remember`.
@@ -837,6 +918,33 @@ impl IntentProfile {
                 "kaydet",
             ],
             IntentProfile::Archive => &[
+                // THE OTHER FIVE LANGUAGES, added when a natively-authored
+                // benchmark in each of them was gated and the SAME FOUR TOOLS
+                // fell out of the nine in every one: `remember`, `web_search`,
+                // `archive` and `checksum`. That is not a coincidence — the
+                // catalog puts exactly those four LAST, because none of them is
+                // ever the right answer without an explicit trigger, and this
+                // list had triggers in two languages only. In a third language
+                // they could not be reached at all.
+                //
+                // SPELLED AS `simplify` LEAVES THEM. That function folds the
+                // Turkish letters and lowercases, and touches nothing else — so
+                // German "über" must be written "uber" here, while Cyrillic and
+                // Chinese pass through untouched and French "météo" keeps its
+                // accent. A trigger spelled the other way is a dead trigger, of
+                // which this file has already had one.
+                "arsiv",
+                "comprimido",
+                "descomprim",
+                "decompress",
+                "entpack",
+                "dézipper",
+                "dezipper",
+                "archiv",
+                "архив",
+                "распакуй",
+                "压缩包",
+                "解压",
                 // "arsiv" folds from "arşiv" — see the header of this function
                 // on why the diacritics are already gone by the time a trigger
                 // is compared.
@@ -851,6 +959,36 @@ impl IntentProfile {
                 "sikistirilmis",
             ],
             IntentProfile::Integrity => &[
+                // THE OTHER FIVE LANGUAGES, added when a natively-authored
+                // benchmark in each of them was gated and the SAME FOUR TOOLS
+                // fell out of the nine in every one: `remember`, `web_search`,
+                // `archive` and `checksum`. That is not a coincidence — the
+                // catalog puts exactly those four LAST, because none of them is
+                // ever the right answer without an explicit trigger, and this
+                // list had triggers in two languages only. In a third language
+                // they could not be reached at all.
+                //
+                // SPELLED AS `simplify` LEAVES THEM. That function folds the
+                // Turkish letters and lowercases, and touches nothing else — so
+                // German "über" must be written "uber" here, while Cyrillic and
+                // Chinese pass through untouched and French "météo" keeps its
+                // accent. A trigger spelled the other way is a dead trigger, of
+                // which this file has already had one.
+                "birebir ayni",
+                "identico",
+                "idéntico",
+                "byte a byte",
+                "identique",
+                "octet pour octet",
+                "empreinte",
+                "一模一样",
+                "identisch",
+                "prufsumme",
+                "контрольн",
+                "байт в байт",
+                "одинаковые",
+                "校验",
+                "一样吗",
                 "dogrula",
                 "ozet degeri",
                 "ayni dosya",

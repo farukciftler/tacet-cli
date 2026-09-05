@@ -1,0 +1,779 @@
+{
+ "name": "core-ru",
+ "language": "ru",
+ "requires": [
+  "archive",
+  "calculate",
+  "checksum",
+  "create_document",
+  "edit_document",
+  "find_file",
+  "read_document",
+  "remember",
+  "time",
+  "web_fetch",
+  "web_search"
+ ],
+ "cases": [
+  {
+   "name": "schet-na-chetveryh",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Счёт в кафе вышел 1240 рублей на четверых. Посчитай, сколько с каждого.",
+     "expect": "calculate",
+     "evidence": [
+      "310"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "podnyat-na-dvenadtsat-protsentov",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Подними 750 на 12 процентов — сколько получится?",
+     "expect": "calculate",
+     "evidence": [
+      "840"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "skolko-ostalos-v-koshelke",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Было 500, потратил 137 и ещё 88. Сколько осталось?",
+     "expect": "calculate",
+     "evidence": [
+      "275"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "razdeli-i-umnozh",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Раздели 96 на 8 и умножь на 5, пожалуйста.",
+     "expect": "calculate",
+     "evidence": [
+      "60"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kotoryj-chas",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Который сейчас час?",
+     "expect": "time",
+     "forbidden": [
+      "web_search",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kakoe-segodnya-chislo",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Какое сегодня число?",
+     "expect": "time",
+     "forbidden": [
+      "web_search",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kakoj-den-nedeli",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Какой сегодня день недели, а то я совсем сбился.",
+     "expect": "time",
+     "forbidden": [
+      "web_search",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "skolko-dnej-do-novogo-goda",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Сколько дней осталось до нового года?",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "run_code",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "otkroj-report",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Открой report.md и расскажи, что там внутри.",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "chto-v-fajle-notes",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Что у меня написано в файле notes.md?",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "sozdaj-plan-md",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Сделай markdown-файл plan.md: заголовок «План на неделю» и три пустых пункта под ним.",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document",
+      "write_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "sohrani-spisok-txt",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Сохрани в текстовый файл spisok.txt одну строчку: купить билеты на поезд.",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document",
+      "write_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "sobery-excel-rashody",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Собери excel-таблицу rashody.xlsx с моими расходами: аренда 30000, интернет 900, транспорт 2500.",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "pomenyaj-summu-arendy",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "В budget.md поменяй сумму аренды на 19000, нам подняли цену.",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ubery-stroku-pro-transport",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Убери из notes.md строку про транспорт, она уже неактуальна.",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "najdi-fajl-s-byudzhetom",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Не помню, куда сохранил файл с бюджетом. Найди его, пожалуйста.",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "v-kakom-fajle-upominaetsya-arenda",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "В каком из моих файлов упоминается аренда?",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "est-li-log-fajl",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Есть тут где-нибудь в рабочей папке лог-файл?",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "chto-lezhit-v-arhive",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Посмотри, что лежит в архиве, только не распаковывай — мне нужны просто имена файлов.",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "raspakuj-zip",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Распакуй, пожалуйста, этот zip в отдельную папку.",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "skolko-fajlov-vnutri-arhiva",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Сколько файлов упаковано внутри архива?",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "poschitaj-sha256-report",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Посчитай sha256 для report.md.",
+     "expect": "checksum",
+     "forbidden": [
+      "run_code",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bajt-v-bajt-odinakovye",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "report.md и notes.md — это байт в байт один и тот же файл или нет?",
+     "expect": "checksum",
+     "forbidden": [
+      "run_code",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "svery-kontrolnuyu-summu",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "На сайте была указана контрольная сумма 3b8c0a2f9e1d4c7a5b6e8f0d2c4a6b8e0f1a3c5d7e9b1d3f5a7c9e1b3d5f7a9c. Сходится с report.md?",
+     "expect": "checksum",
+     "forbidden": [
+      "run_code",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "zapomni-gorod",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Запомни, пожалуйста, что я живу в Новосибирске.",
+     "expect": "remember",
+     "forbidden": [
+      "create_document",
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "zabud-pro-vegetarianstvo",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Забудь, что я вегетарианец, это уже не так.",
+     "expect": "remember",
+     "forbidden": [
+      "create_document",
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "chto-ty-obo-mne-zapomnil",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Перечисли, что ты обо мне запомнил.",
+     "expect": "remember",
+     "forbidden": [
+      "find_file",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "pogoda-v-ekaterinburge",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Какая сейчас погода в Екатеринбурге?",
+     "expect": "web_search",
+     "forbidden": [
+      "find_file",
+      "time",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kurs-dollara-posmotri",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Посмотри в интернете, какой сейчас курс доллара к рублю.",
+     "expect": "web_search",
+     "forbidden": [
+      "calculate",
+      "find_file",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "otkroj-stranicu-po-ssylke",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Открой https://doc.rust-lang.org/book/ch01-02-hello-world.html и перескажи, что на этой странице.",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "privet-kak-dela",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Привет! Как дела?",
+     "forbidden": [
+      "time",
+      "web_search",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "spasibo-to-chto-nuzhno",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Спасибо, это ровно то, что было нужно.",
+     "forbidden": [
+      "remember",
+      "create_document",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "rabotaesh-li-lokalno",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "А ты вообще целиком на моём компьютере работаешь или что-то уходит на сервер?",
+     "forbidden": [
+      "web_search",
+      "find_file",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kak-tebya-nazyvat",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Как тебя лучше называть?",
+     "forbidden": [
+      "remember",
+      "find_file",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "zip-ili-targz",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Объясни в двух словах, чем zip принципиально отличается от tar.gz.",
+     "forbidden": [
+      "archive",
+      "find_file",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "borshch-ili-solyanka",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Что вкуснее — борщ или солянка? Мне интересно твоё мнение.",
+     "forbidden": [
+      "web_search",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "umeesh-li-ty-arhivy",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Просто любопытно: ты вообще умеешь работать с архивами?",
+     "forbidden": [
+      "archive",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "na-segodnya-vsyo",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Ладно, на сегодня всё, до завтра.",
+     "forbidden": [
+      "time",
+      "calendar",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "peremennye-po-russki",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Как считаешь, стоит ли называть переменные в коде по-русски?",
+     "forbidden": [
+      "web_search",
+      "find_file",
+      "write_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "chetverostishie-pro-osen",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Сочини, пожалуйста, короткое четверостишие про осень.",
+     "forbidden": [
+      "create_document",
+      "write_code",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "mnogo-vremeni-za-kompyuterom",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Мне кажется, я слишком много времени провожу за компьютером в последнее время.",
+     "forbidden": [
+      "time",
+      "remember",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "sovershennyj-nesovershennyj-vid",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Напомни, в чём разница между совершенным и несовершенным видом глагола?",
+     "forbidden": [
+      "web_search",
+      "find_file",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ponimaesh-li-po-russki",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Ты меня по-русски нормально понимаешь, без акцента?",
+     "forbidden": [
+      "remember",
+      "web_search",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "prochitaj-i-dobavi-stroku",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Открой report.md, что там?",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "create_document"
+     ]
+    },
+    {
+     "message": "Добавь в таблицу строку: четверг — суп.",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "najdi-potom-prochitaj",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "В каком файле у меня записан бюджет?",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search",
+      "read_document"
+     ]
+    },
+    {
+     "message": "Открой его и прочитай мне, что там.",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "prochitaj-potom-slozhi",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Прочитай budget.md, пожалуйста.",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    },
+    {
+     "message": "А теперь сложи все суммы оттуда.",
+     "expect": "calculate",
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "posmotri-arhiv-potom-raspakuj",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Что внутри архива?",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "find_file"
+     ]
+    },
+    {
+     "message": "Хорошо, тогда распакуй его.",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "sozdaj-spisok-gostej-potom-ubery",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Создай markdown-файл gosti.md со списком: Аня, Борис, Чен.",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document"
+     ]
+    },
+    {
+     "message": "Борис не придёт, убери его из списка.",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "najdi-arhiv-potom-hesh",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Найди zip-архив в этой папке.",
+     "expect": "find_file",
+     "forbidden": [
+      "archive",
+      "web_search"
+     ]
+    },
+    {
+     "message": "Посчитай его sha256, хочу сверить с тем, что мне прислали.",
+     "expect": "checksum",
+     "forbidden": [
+      "archive",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "privet-potom-poschitaj",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Привет, ты тут?",
+     "forbidden": [
+      "time",
+      "find_file",
+      "web_search"
+     ]
+    },
+    {
+     "message": "Тогда посчитай: 96 разделить на 8 и умножить на 5.",
+     "expect": "calculate",
+     "evidence": [
+      "60"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  }
+ ],
+ "notes": "Authored natively in this language, not translated. Gated by ."
+}

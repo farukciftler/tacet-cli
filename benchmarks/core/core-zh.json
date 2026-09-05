@@ -1,0 +1,700 @@
+{
+ "name": "core-zh",
+ "language": "zh",
+ "requires": [
+  "archive",
+  "calculate",
+  "checksum",
+  "create_document",
+  "edit_document",
+  "find_file",
+  "read_document",
+  "remember",
+  "time",
+  "web_fetch",
+  "web_search"
+ ],
+ "cases": [
+  {
+   "name": "aa-zhi-fan-qian",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "刚才吃饭一共 348 块，我们三个人 AA，每人得给多少呀？",
+     "expect": "calculate",
+     "evidence": [
+      "116"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bi-ji-ben-da-zhe",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "这台笔记本原价 6980，店里说打八五折，那算下来多少钱呢？",
+     "expect": "calculate",
+     "evidence": [
+      "5933"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kuang-quan-shui-xiang-shu",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "我订了 12 箱矿泉水，一箱 24 瓶，一共几瓶？",
+     "expect": "calculate",
+     "evidence": [
+      "288"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "wu-xian-yi-jin-kou-chu",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "税前 18500，扣掉 22% 的五险一金，到手还剩多少啊？",
+     "expect": "calculate",
+     "evidence": [
+      "14430"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "er-de-shi-ci-fang",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "2 的 10 次方是多少来着？",
+     "expect": "calculate",
+     "evidence": [
+      "1024"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "xian-chu-hou-jia",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "帮我把 1500 除以 8，再加上 375，等于几？",
+     "expect": "calculate",
+     "evidence": [
+      "562.5"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "jin-tian-xing-qi-ji",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "今天星期几呀？我都糊涂了。",
+     "expect": "time",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "xian-zai-ji-dian",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "现在几点了？",
+     "expect": "time",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "li-yuan-dan-duo-shao-tian",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "离元旦还有多少天呢？",
+     "expect": "time",
+     "forbidden": [
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "jin-tian-ji-hao",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "今天几号来着？",
+     "expect": "time",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kan-kan-report",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "帮我打开 report.md 看看，里面主要说的是什么？",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "app-log-you-mei-you-bao-cuo",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "app.log 你瞧一眼吧，后面是不是报错了？",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "notes-li-ji-le-shen-me",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "notes.md 里我都记了些什么？你念给我听听吧。",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "jian-ge-zhou-bao-wen-jian",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "帮我建一个 markdown 文件，就叫 zhoubao，把这周的三件事写进去：上线新版本、面试两个人、跟客户对接口。",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document",
+      "write_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "zuo-yi-zhang-xiao-shou-biao",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "做一张 excel 表格吧，把四个季度的销售额分开列，文件名叫 sales。",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "zhi-jie-huan-diao-notes",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "不用读了，直接把 notes.md 的内容整个换成这一行：明天上午十点开周会。",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "zhao-yu-suan-de-wen-jian",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "我记得有个文件里写着预算的事儿，帮我找一下是哪个。",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "na-fen-dai-ri-zhi-de",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "上次那份存日志的文件放哪儿去了？你帮我翻翻看。",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "na-ge-wen-jian-ti-dao-qian-yi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "哪个文件里提到了“服务器迁移”这四个字？找出来。",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ya-suo-bao-li-you-shen-me",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "那个压缩包里都装了些什么？先列个目录给我看，别解压啊。",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ba-zip-jie-ya-chu-lai",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "把那个 zip 解压出来吧。",
+     "expect": "archive",
+     "forbidden": [
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "suan-ge-sha256",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "刚下下来的那个文件，帮我算一下它的 SHA-256 校验值。",
+     "expect": "checksum",
+     "forbidden": [
+      "run_code",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "liang-ge-wen-jian-yi-yang-ma",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "report.md 跟 notes.md 这两个文件是不是一模一样的？你比对一下。",
+     "expect": "checksum",
+     "forbidden": [
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ji-zhu-bu-chi-xiang-cai",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "记一下啊，我不吃香菜。",
+     "expect": "remember",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "yi-hou-yong-zhong-wen",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "以后跟我说话都用中文，你记住吧。",
+     "expect": "remember",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ni-ji-zhu-le-wo-na-xie-shi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "你都记住了我哪些事儿？列出来我瞅瞅。",
+     "expect": "remember",
+     "forbidden": [
+      "read_document",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ba-shou-ji-hao-wang-le",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "我之前跟你说的那个手机号，忘掉吧，别再记着了。",
+     "expect": "remember",
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "mei-yuan-hui-lv",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "现在一美元能换多少人民币啊？",
+     "expect": "web_search",
+     "forbidden": [
+      "calculate",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "da-kai-zhe-ge-wang-zhi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "https://example.com/notice 这个页面上写的什么？帮我看看。",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "du-yi-xia-zheng-wen",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "www.example.org/blog/2019-summary 这一页的正文你读一下吧。",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ni-hao-zai-ma",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "你好呀，在吗？"
+    }
+   ]
+  },
+  {
+   "name": "xie-xie-ni-a",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "谢谢你啊，这回帮了大忙了。"
+    }
+   ]
+  },
+  {
+   "name": "ni-neng-gan-ma",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "你都能干些什么呀？简单说说吧。",
+     "forbidden": [
+      "find_file",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "huan-ge-shuo-fa",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "刚才那句我没听明白，你换个说法再讲一遍吧。"
+    }
+   ]
+  },
+  {
+   "name": "cha-bu-duo-zen-me-shuo",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "“差不多”这个词用英语怎么说才自然呢？",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "qiu-tian-xiao-shi",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "写首关于秋天的四行小诗吧。",
+     "forbidden": [
+      "create_document",
+      "write_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "xin-qing-bu-hao",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "今天心情不太好，你陪我聊两句吧。",
+     "forbidden": [
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "de-di-de-qu-bie",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "“的”“地”“得”这三个到底怎么区分啊？",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "gei-xiao-mao-qi-ming",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "帮我想三个适合小猫的名字吧。",
+     "forbidden": [
+      "create_document",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ni-shi-shui-zuo-de",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "你是谁做出来的呀？",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "suan-le-bu-nong-le",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "算了，刚才说的那事儿先不弄了。"
+    }
+   ]
+  },
+  {
+   "name": "shuo-de-ke-qi-dian",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "把这句话改得客气一点：“明天之前给我”。",
+     "forbidden": [
+      "edit_document",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kai-hui-kai-chang",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "开会的时候怎么开场比较自然？给我出出主意吧。",
+     "forbidden": [
+      "web_search",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "du-report-zai-gai-duan",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "report.md 里都写了些啥？先给我看看。",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    },
+    {
+     "message": "第一段太啰嗦了，你把它压成一句话吧。",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "jian-cai-gou-dan-zai-bu-yi-hang",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "帮我建个 markdown 文件叫 caigou，先写上三样要买的：打印纸、订书钉、白板笔。",
+     "expect": "create_document"
+    },
+    {
+     "message": "再加一行，把咖啡豆也补上吧。",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "zhao-dao-zai-du",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "哪个文件里写着预算的？帮我找一下。",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search"
+     ]
+    },
+    {
+     "message": "就是它了，打开念给我听听。",
+     "expect": "read_document"
+    }
+   ]
+  },
+  {
+   "name": "lie-zip-zai-suan-hash",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "那个 zip 里有几个文件呀？列一下我看看。",
+     "expect": "archive",
+     "forbidden": [
+      "read_document"
+     ]
+    },
+    {
+     "message": "行，那你顺手再给这个压缩包算个 sha256 吧。",
+     "expect": "checksum",
+     "forbidden": [
+      "archive"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tuan-jian-fen-tan-zai-cun-dang",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "这回团建一共花了 4260，六个人平摊，每人多少？",
+     "expect": "calculate",
+     "evidence": [
+      "710"
+     ]
+    },
+    {
+     "message": "把这个结果写成一个 markdown 文件吧，就叫 tuanjian。",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "wen-ri-qi-zai-ji-fang-zu",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "今天几号啦？",
+     "expect": "time",
+     "forbidden": [
+      "web_search"
+     ]
+    },
+    {
+     "message": "记一下，我每个月的这一天要交房租。",
+     "expect": "remember",
+     "forbidden": [
+      "calendar",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "du-budget-zai-jia-qi-lai",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "budget.md 里的开销明细你先看一下。",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    },
+    {
+     "message": "那把 1280 和 460 这两项加起来是多少？",
+     "expect": "calculate",
+     "evidence": [
+      "1740"
+     ]
+    }
+   ]
+  }
+ ],
+ "notes": "Authored natively in this language, not translated. Gated by ."
+}

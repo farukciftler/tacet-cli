@@ -1,0 +1,731 @@
+{
+ "name": "core-tr",
+ "language": "tr",
+ "requires": [
+  "archive",
+  "calculate",
+  "checksum",
+  "create_document",
+  "edit_document",
+  "find_file",
+  "read_document",
+  "remember",
+  "time",
+  "web_fetch",
+  "web_search"
+ ],
+ "cases": [
+  {
+   "name": "market-domates-hesabi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Markette 3 kilo domates aldım, kilosu 42 lira. Kaç para etti bu?",
+     "expect": "calculate",
+     "evidence": [
+      "126"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "maasa-zam-orani",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Şu an 48000 alıyorum, %15 zam gelecekmiş. Yeni maaşım ne olur hocam?",
+     "expect": "calculate",
+     "evidence": [
+      "55200"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kirayi-uce-bolmek",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Kira 22500, üç kişi bölüşüyoruz. Kişi başı kaç lira düşüyor söylesene.",
+     "expect": "calculate",
+     "evidence": [
+      "7500"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "faturaya-kdv-eklemek",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "1250 liralık faturaya %20 KDV binince toplam kaç oluyor?",
+     "expect": "calculate",
+     "evidence": [
+      "1500"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "carpimi-hesaplayiver",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "17 ile 23'ü çarpıver bakayım, kafamdan yapamadım.",
+     "expect": "calculate",
+     "evidence": [
+      "391"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "saat-kac-oldu",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Saat kaç oldu acaba, dalmışım yine.",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bugun-ayin-kaci",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Bugün ayın kaçı ya? Formu doldururken tarihi yazmam lazım.",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "gunlerden-ne",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Bugün günlerden ne? Salı mı çarşamba mı, karıştırdım iyice.",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "yilbasina-kac-gun",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Yılbaşına kaç gün kaldı, sayıver şunu.",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "raporu-acip-oku",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "report.md'yi bir aç da içinde ne yazıyormuş bakalım.",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "butceyi-ozetle",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "budget.md dosyasında neler var, kısaca özetleyiver bana.",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "notlari-goster",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "notes.md'de ne yazmışım ben, gösterir misiniz?",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "market-listesi-dosyasi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Bana alisveris.md diye bir markdown dosyası oluşturuver, içine haftalık market listemi yaz.",
+     "expect": "create_document",
+     "evidence": [
+      "alisveris"
+     ],
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ceyrek-gelir-tablosu",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Şu üç ayın gelirini excel yapar mısın: Ocak 12000, Şubat 15500, Mart 9800",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "toplanti-metin-dosyasi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "toplanti.txt adında düz metin bir dosya açıp içine üç madde yazsana: gündem, katılımcılar, kararlar.",
+     "expect": "create_document",
+     "evidence": [
+      "toplanti"
+     ],
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "notlarin-basligini-degistir",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "notes.md'nin en üstündeki başlığı Haftalık Notlar yap.",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "butceye-internet-satiri",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "budget.md'ye en alta bir satır daha ekle, internet 450 lira olacak.",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "butce-dosyasi-nerede",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Bütçeyle ilgili dosyayı nereye kaydettim ya, bulabilir misin?",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kira-gecen-dosya",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Dosyalarımın içinde kira geçen bir tane var mıydı, arayıver bakalım.",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "adinda-not-gecen-dosya",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Geçen hafta tuttuğum notların dosyasının adını hatırlamıyorum, adında not geçiyordu. Bulur musunuz?",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "zipin-icinde-ne-var",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Şu zip dosyasının içinde ne var, açmadan söyleyebilir misin?",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "arsivi-cikart",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Zip dosyasını klasöre çıkartıver, içindekilere bakacağım.",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "raporun-ozeti-sha",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "report.md'nin SHA-256 özetini alır mısınız?",
+     "expect": "checksum",
+     "forbidden": [
+      "read_document",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "iki-dosya-ayni-mi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "notes.md ile budget.md birebir aynı dosya mı, kontrol ediver.",
+     "expect": "checksum",
+     "forbidden": [
+      "read_document",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "vejetaryenim-aklinda-tut",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Ben vejetaryenim, bunu aklında tut lütfen, bir daha söylemeyeyim.",
+     "expect": "remember",
+     "forbidden": [
+      "create_document",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "hakkimda-ne-kaydettin",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Benim hakkımda neler kaydetmişsin, bir listeler misin?",
+     "expect": "remember",
+     "forbidden": [
+      "find_file",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "dolar-kuru",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Doların bugünkü kuru ne kadar acaba?",
+     "expect": "web_search",
+     "forbidden": [
+      "calculate",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "adresteki-sayfayi-oku",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Şu sayfayı bir okuyup özetler misin: https://example.com/duyuru",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "wikipedia-sayfasini-ac",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "https://tr.wikipedia.org/wiki/Ankara adresindeki yazıyı aç bakalım ne diyormuş.",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "selam-nasil-gidiyor",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Selam, nasıl gidiyor bakalım?"
+    }
+   ]
+  },
+  {
+   "name": "gunaydin-dilek",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Günaydın, umarım günün güzel geçiyordur.",
+     "forbidden": [
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "eyvallah-tam-istedigim",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Eyvallah, tam da istediğim buydu."
+    }
+   ]
+  },
+  {
+   "name": "sagol-yardimci-oldun",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Sağ ol be, çok yardımcı oldun gerçekten."
+    }
+   ]
+  },
+  {
+   "name": "yorgunum-motivasyon-yok",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Bugün çok yorgunum, hiç motivasyonum yok ya.",
+     "forbidden": [
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "neler-yapabiliyorsun",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Sen neler yapabiliyorsun anlat bakalım.",
+     "forbidden": [
+      "find_file",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fikra-anlatsana",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Bana bir fıkra anlatsana, moralim düzelsin.",
+     "forbidden": [
+      "web_search",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bosver-onemli-degil",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Boş ver, önemli değil, kafana takma."
+    }
+   ]
+  },
+  {
+   "name": "kusura-bakma-yanlis-yazdim",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Kusura bakmayın, yanlış yazmışım.",
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "canim-hicbir-sey-istemiyor",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Bugün canım hiçbir şey yapmak istemiyor ya, öylece oturuyorum."
+    }
+   ]
+  },
+  {
+   "name": "kedi-mi-kopek-mi",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Sence kedi mi köpek mi daha iyi arkadaş?",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "iyi-geceler-yatiyorum",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "İyi geceler, ben yatıyorum artık.",
+     "forbidden": [
+      "time",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "haklisin-oyle-dusunmemistim",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Haklısın aslında, ben öyle düşünmemiştim hiç."
+    }
+   ]
+  },
+  {
+   "name": "raporu-oku-sonra-satir-ekle",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "report.md'de ne var, bir bakıver.",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "create_document"
+     ]
+    },
+    {
+     "message": "Tabloya perşembe diye bir satır daha ekle, yemek çorba olsun.",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "dosya-olustur-sonra-madde-ekle",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "sprint.md diye bir markdown dosyası yap, içine bu haftanın üç hedefini madde madde yaz.",
+     "expect": "create_document",
+     "evidence": [
+      "sprint"
+     ],
+     "forbidden": [
+      "edit_document"
+     ]
+    },
+    {
+     "message": "Bir de perşembeki demo için dördüncü bir madde ekleyiver.",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "dosyayi-bul-sonra-oku",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "İçinde kira geçen bir dosya var mıydı klasörde, bulur musun?",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search"
+     ]
+    },
+    {
+     "message": "Tamam, o dosyayı aç da içinde ne yazdığını gör bakalım.",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "zipi-listele-sonra-cikar",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Zip dosyasının içinde neler varmış, listeleyiver.",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "find_file"
+     ]
+    },
+    {
+     "message": "İyiymiş, hepsini klasöre çıkart o zaman.",
+     "expect": "archive",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "hesapla-sonra-dosyaya-yaz",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "36000 liranın %25'i ne kadar ediyor?",
+     "expect": "calculate",
+     "evidence": [
+      "9000"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    },
+    {
+     "message": "Bunu pay.md adında bir markdown dosyasına yazıver.",
+     "expect": "create_document",
+     "evidence": [
+      "pay"
+     ],
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ozet-al-sonra-karsilastir",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "report.md'nin sha256 özetini alsana.",
+     "expect": "checksum",
+     "forbidden": [
+      "read_document",
+      "run_code"
+     ]
+    },
+    {
+     "message": "Peki notes.md ile aynı mı, ona da bakıver.",
+     "expect": "checksum",
+     "forbidden": [
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bul-sonra-ozetini-al",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Bütçe dosyam klasörde duruyor mu, bir arar mısın?",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    },
+    {
+     "message": "Bulduğun dosyanın sha256 özetini de alıver, yedeğimle karşılaştıracağım.",
+     "expect": "checksum",
+     "forbidden": [
+      "read_document"
+     ]
+    }
+   ]
+  }
+ ],
+ "notes": "Authored natively in this language, not translated. Gated by ."
+}

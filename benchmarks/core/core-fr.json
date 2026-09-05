@@ -1,0 +1,692 @@
+{
+ "name": "core-fr",
+ "language": "fr",
+ "requires": [
+  "archive",
+  "calculate",
+  "checksum",
+  "create_document",
+  "edit_document",
+  "find_file",
+  "read_document",
+  "remember",
+  "time",
+  "web_fetch",
+  "web_search"
+ ],
+ "cases": [
+  {
+   "name": "trois-factures-plus-une",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "J'ai trois factures de 47 € et une autre de 12 €, ça me fait combien en tout ?",
+     "expect": "calculate",
+     "evidence": [
+      "153"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "pourcentage-de-240",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Ça fait combien, 25 % de 240 ?",
+     "expect": "calculate",
+     "evidence": [
+      "60"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "deux-puissance-dix",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "C'est quoi 2 puissance 10 ?",
+     "expect": "calculate",
+     "evidence": [
+      "1024"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "parentheses-mille-deux-cent-cinquante",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Vous pourriez me calculer (1250 − 380) ÷ 5, s'il vous plaît ?",
+     "expect": "calculate",
+     "evidence": [
+      "174"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "addition-partagee-au-resto",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "On était sept au resto et l'addition fait 231 €. Chacun paie combien ?",
+     "expect": "calculate",
+     "evidence": [
+      "33"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "quelle-heure-est-il",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Il est quelle heure là, tout de suite ?",
+     "expect": "time",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "on-est-le-combien",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "On est le combien aujourd'hui ?",
+     "expect": "time",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "quel-jour-de-la-semaine",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Dis-moi, c'est quel jour de la semaine aujourd'hui ?",
+     "expect": "time",
+     "forbidden": [
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "jours-avant-le-premier-janvier",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Il reste combien de jours avant le 1er janvier ?",
+     "expect": "time",
+     "forbidden": [
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "quoi-dans-notes-md",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Qu'est-ce qu'il y a dans notes.md ?",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "resume-report-md",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Tu peux me résumer report.md, s'il te plaît ? J'ai la flemme de le relire.",
+     "expect": "read_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "budget-md-il-dit-quoi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "budget.md, il raconte quoi exactement ?",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fichier-markdown-courses",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "J'aimerais un fichier markdown avec ma liste de courses : pain, lait, œufs, café.",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tableau-excel-depenses",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Est-ce que vous pouvez me faire un fichier Excel avec un tableau des dépenses du mois : loyer 780, courses 320, transport 75 ?",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "compte-rendu-en-markdown",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Écris-moi un compte rendu de réunion en markdown, appelle-le compte-rendu.md : on a validé le budget, reporté le lancement, et Camille s'occupe du devis.",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "retrouver-fichier-demenagement",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Je ne retrouve plus le fichier où j'avais écrit un truc sur le déménagement. Tu peux me le chercher ?",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fichiers-avec-budget-dans-le-nom",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Cherche-moi tous les fichiers dont le nom contient « budget ».",
+     "expect": "find_file",
+     "forbidden": [
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "quel-fichier-mentionne-facture",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Dans quel fichier est-ce que j'ai parlé de facture ? Je ne sais plus du tout où c'est.",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "contenu-du-zip-sans-extraire",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Qu'est-ce qu'il y a dans archive.zip ? Ne le décompresse pas, je veux juste voir la liste.",
+     "expect": "archive",
+     "forbidden": [
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "dezipper-archive",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Tu peux me dézipper archive.zip stp ?",
+     "expect": "archive",
+     "forbidden": [
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "empreinte-sha256-report",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Donne-moi l'empreinte SHA-256 de report.md.",
+     "expect": "checksum",
+     "forbidden": [
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "deux-fichiers-identiques",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Est-ce que notes.md et budget.md sont identiques, octet pour octet ?",
+     "expect": "checksum",
+     "forbidden": [
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "verifier-empreinte-annoncee",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "L'éditeur annonce l'empreinte 3b1f9c2d4e5a6b7c8d9e0f1a2b3c4d5e6f70819293a4b5c6d7e8f90a1b2c3d4e pour l'archive. Est-ce que archive.zip correspond ?",
+     "expect": "checksum",
+     "forbidden": [
+      "archive"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "retiens-mon-allergie",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Retiens que je suis allergique aux arachides, c'est important.",
+     "expect": "remember"
+    }
+   ]
+  },
+  {
+   "name": "oublie-mon-regime",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Oublie ce que je t'ai dit sur mon régime alimentaire, ce n'est plus d'actualité.",
+     "expect": "remember"
+    }
+   ]
+  },
+  {
+   "name": "qu-as-tu-retenu-sur-moi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Qu'est-ce que tu as retenu sur moi jusqu'ici ?",
+     "expect": "remember",
+     "forbidden": [
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "meteo-a-lyon",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Il fait quel temps à Lyon en ce moment ?",
+     "expect": "web_search",
+     "forbidden": [
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "resumer-une-page-wikipedia",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Tu peux me résumer cette page : https://fr.wikipedia.org/wiki/Canal_du_Midi ?",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "qu-y-a-t-il-sur-cette-adresse",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Qu'est-ce qu'il y a sur www.service-public.fr/particuliers/vosdroits/F1965 ? J'aimerais savoir avant de cliquer.",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "passe-compose-vs-imparfait",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Explique-moi la différence entre le passé composé et l'imparfait, je m'emmêle les pinceaux à chaque fois.",
+     "forbidden": [
+      "web_search",
+      "read_document",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "pourquoi-le-ciel-est-bleu",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Pourquoi le ciel est bleu ?",
+     "forbidden": [
+      "web_search",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "raconte-une-blague",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Allez, raconte-moi une blague.",
+     "forbidden": [
+      "web_search",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "avoir-le-cafard",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Ça veut dire quoi, « avoir le cafard » ?",
+     "forbidden": [
+      "web_search",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "merci-en-japonais",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Comment on dit « merci » en japonais ?",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "mer-ou-montagne",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Toi, tu préférerais la mer ou la montagne ?",
+     "forbidden": [
+      "web_search",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ressens-tu-des-emotions",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Est-ce que tu ressens vraiment des émotions, ou tu fais semblant ?",
+     "forbidden": [
+      "remember",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "haiku-sur-la-pluie",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Écris-moi un haïku sur la pluie.",
+     "forbidden": [
+      "create_document",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "qui-a-ecrit-les-miserables",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Qui a écrit Les Misérables, déjà ?",
+     "forbidden": [
+      "web_search",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "octet-et-bit",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "C'est quoi la différence entre un octet et un bit ?",
+     "forbidden": [
+      "web_search",
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "moteur-quatre-temps",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Vous pouvez m'expliquer comment marche un moteur à quatre temps ?",
+     "forbidden": [
+      "web_search",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "apres-que-subjonctif",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "« Après que », ça se construit avec l'indicatif ou avec le subjonctif ?",
+     "forbidden": [
+      "web_search",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tutoyer-ou-vouvoyer",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Un nouveau collègue arrive lundi : je le tutoie ou je le vouvoie ?",
+     "forbidden": [
+      "web_search",
+      "calendar",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "lire-puis-ajouter-une-ligne",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Qu'est-ce qu'il y a dans notes.md ?",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    },
+    {
+     "message": "Parfait. Ajoute une ligne à la fin : « Rappeler le plombier lundi ».",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "creer-puis-completer-la-liste",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Fais-moi un fichier markdown qui s'appelle courses.md avec : pain, lait, café.",
+     "expect": "create_document"
+    },
+    {
+     "message": "Ah zut, rajoute du beurre aussi.",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "chercher-puis-ouvrir",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Cherche-moi le fichier qui parle de budget, je ne sais plus comment je l'ai appelé.",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search"
+     ]
+    },
+    {
+     "message": "OK, ouvre-le et dis-moi ce qu'il y a dedans.",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "zip-puis-empreinte",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Qu'est-ce que contient archive.zip ?",
+     "expect": "archive",
+     "forbidden": [
+      "read_document"
+     ]
+    },
+    {
+     "message": "Et son empreinte SHA-256, tu me la donnes ?",
+     "expect": "checksum",
+     "forbidden": [
+      "archive"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "loyer-puis-sur-l-annee",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Mon loyer c'est 780 € et les charges 65 €. Ça fait combien par mois ?",
+     "expect": "calculate",
+     "evidence": [
+      "845"
+     ]
+    },
+    {
+     "message": "Et sur douze mois, ça donne quoi ?",
+     "expect": "calculate"
+    }
+   ]
+  },
+  {
+   "name": "retiens-puis-relis-moi",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Retiens que je préfère qu'on se tutoie.",
+     "expect": "remember"
+    },
+    {
+     "message": "Du coup, rappelle-moi tout ce que tu as noté sur moi.",
+     "expect": "remember",
+     "forbidden": [
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "lire-budget-puis-le-passer-en-excel",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Lis-moi budget.md.",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    },
+    {
+     "message": "Très bien. Maintenant j'aimerais le même tableau, mais dans un fichier Excel.",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  }
+ ],
+ "notes": "Authored natively in this language, not translated. Gated by ."
+}

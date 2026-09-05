@@ -1,0 +1,752 @@
+{
+ "name": "core-de",
+ "language": "de",
+ "requires": [
+  "archive",
+  "calculate",
+  "checksum",
+  "create_document",
+  "edit_document",
+  "find_file",
+  "read_document",
+  "remember",
+  "time",
+  "web_fetch",
+  "web_search"
+ ],
+ "cases": [
+  {
+   "name": "winterjacke-rabatt-ausrechnen",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Die Winterjacke kostet 240 Euro und im Schlussverkauf gibt es 15 Prozent Rabatt. Rechne mir bitte aus, wie viel Euro ich da spare.",
+     "expect": "calculate",
+     "evidence": [
+      "36"
+     ],
+     "forbidden": [
+      "web_search",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kassenzettel-zusammenzaehlen",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Zähl mir die drei Beträge vom Kassenzettel zusammen: 129, 76 und 41.",
+     "expect": "calculate",
+     "evidence": [
+      "246"
+     ],
+     "forbidden": [
+      "run_code",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "abendessen-rechnung-aufteilen",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Wir waren zu siebt beim Abendessen und die Rechnung lag bei 245 Euro. Teil das mal durch sieben auf.",
+     "expect": "calculate",
+     "evidence": [
+      "35"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "zweierpotenz-siezen",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Rechnen Sie mir bitte 2 hoch 10 aus.",
+     "expect": "calculate",
+     "evidence": [
+      "1024"
+     ],
+     "forbidden": [
+      "run_code",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "wie-spaet-ist-es",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Wie spät ist es gerade?",
+     "expect": "time",
+     "forbidden": [
+      "calendar",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "welcher-wochentag-heute",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Sag mal, welcher Wochentag ist heute eigentlich?",
+     "expect": "time",
+     "forbidden": [
+      "calendar",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tage-bis-silvester",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Wie viele Tage sind es noch bis Silvester?",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "heutiges-datum-siezen",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Sagen Sie mir bitte das heutige Datum, ich muss es aufs Formular schreiben.",
+     "expect": "time",
+     "forbidden": [
+      "calendar",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bericht-aufmachen",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Mach mal report.md auf und sag mir, was da drinsteht.",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "haushaltsbuch-zusammenfassen",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Fass mir budget.md bitte kurz zusammen.",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "logdatei-anschauen",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Schau dir app.log an und gib mir wieder, was darin steht.",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "einkaufsliste-anlegen",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Leg mir bitte eine Markdown-Datei mit meiner Einkaufsliste an: Brot, Milch, Kaffee und Äpfel.",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "urlaubsplanung-tabelle-erstellen",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Erstell mir eine Excel-Tabelle für die Urlaubsplanung, mit den Spalten Name, Abteilung und Zeitraum.",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "sitzungsprotokoll-anlegen-siezen",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Schreiben Sie mir bitte ein neues Textdokument sitzungsprotokoll mit den drei Tagesordnungspunkten Budget, Personal und Termine.",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ueberschrift-umschreiben",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "In notes.md steht ganz oben eine Überschrift. Schreib die bitte in Wochennotizen um.",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "transportzeile-rausstreichen",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Streich in budget.md die Zeile mit dem Transport raus, die brauche ich nicht mehr.",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "haushaltsdatei-raussuchen",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Ich finde meine Haushaltsdatei nicht mehr. Such die Datei bitte im Arbeitsordner.",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "welche-datei-erwaehnt-miete",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "In welcher von meinen Dateien kommt eigentlich die Miete vor?",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "logdatei-aufspueren",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Liegt hier irgendwo eine Logdatei rum? Such bitte im Arbeitsordner danach.",
+     "expect": "find_file",
+     "forbidden": [
+      "read_document",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "zip-inhalt-auflisten",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Was steckt eigentlich in dem Zip-Archiv drin? Zeig mir die Einträge, ohne es auszupacken.",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "zip-auspacken",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Pack mir das Zip-Archiv bitte aus.",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "pruefsumme-vom-bericht",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Bilde mir bitte die SHA-256-Prüfsumme von report.md.",
+     "expect": "checksum",
+     "forbidden": [
+      "read_document",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "zwei-dateien-byteweise-vergleichen",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Sind report.md und notes.md byte-für-byte identisch? Vergleich die beiden mal.",
+     "expect": "checksum",
+     "forbidden": [
+      "read_document",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "pruefsumme-logdatei",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Wie lautet die SHA-256-Prüfsumme der Datei app.log? Die will ich im Ticket hinterlegen.",
+     "expect": "checksum",
+     "forbidden": [
+      "read_document",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kaffeegewohnheit-merken",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Merk dir bitte: Ich trinke meinen Kaffee immer ohne Zucker.",
+     "expect": "remember",
+     "forbidden": [
+      "create_document",
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "gemerktes-aufzaehlen",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Was hast du dir bisher alles über mich gemerkt? Zähl mir das mal auf.",
+     "expect": "remember",
+     "forbidden": [
+      "read_document",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "wetter-in-hamburg",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Schau bitte im Internet nach, wie das Wetter in Hamburg gerade ist.",
+     "expect": "web_search",
+     "forbidden": [
+      "find_file",
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bahnstreik-nachschauen",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Läuft gerade ein Bahnstreik? Such bitte im Internet nach aktuellen Nachrichten dazu.",
+     "expect": "web_search",
+     "forbidden": [
+      "find_file",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "seite-zusammenfassen-lassen",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Fass mir bitte die Seite https://example.com/notizen zusammen.",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "adresse-aufmachen",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Mach mal www.example.org/preise auf und sag mir, was da steht.",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "gruss-moin",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Moin, alles klar bei dir?"
+    }
+   ]
+  },
+  {
+   "name": "kurzer-dank",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Danke dir, so passt das."
+    }
+   ]
+  },
+  {
+   "name": "smalltalk-langes-wochenende",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Puh, war das ein langes Wochenende.",
+     "forbidden": [
+      "time",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "lob-weiter-so",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Du machst das wirklich gut, weiter so."
+    }
+   ]
+  },
+  {
+   "name": "frage-nach-letztem-gespraech",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Kannst du dich eigentlich noch an unser letztes Gespräch erinnern?",
+     "forbidden": [
+      "remember",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "witz-erzaehlen",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Erzähl mir mal einen Witz.",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "lieblingsfarbe",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Was magst du eigentlich lieber, Blau oder Grün?",
+     "forbidden": [
+      "web_search",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "vertippt-vergiss-es",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Sorry, ich habe mich vertippt, vergiss die letzte Nachricht einfach.",
+     "forbidden": [
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "feierabend-tschuess",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Okay, ich mach für heute Schluss. Tschüss!",
+     "forbidden": [
+      "time",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "wie-geht-es-dir",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Und, wie geht es dir so?"
+    }
+   ]
+  },
+  {
+   "name": "muede-schlecht-geschlafen",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Ich bin heute echt müde, ich habe schlecht geschlafen.",
+     "forbidden": [
+      "time",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "idee-morgen-ausprobieren",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Gute Idee, das probiere ich morgen mal aus.",
+     "forbidden": [
+      "calendar",
+      "time",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "wetterspruch-ohne-frage",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Bei dem Wetter bleibt man am liebsten drin, oder?",
+     "forbidden": [
+      "web_search",
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "lesen-dann-zeile-anhaengen",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Mach mal report.md auf.",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "create_document"
+     ]
+    },
+    {
+     "message": "Häng unten noch eine Zeile für Donnerstag an, als Gericht Suppe.",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "suchen-dann-vorlesen",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Wo liegt noch mal meine Budget-Datei? Such sie mir raus.",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search"
+     ]
+    },
+    {
+     "message": "Alles klar, dann lies sie mir jetzt vor.",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "lesen-dann-betraege-zusammenzaehlen",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Was steht in budget.md drin?",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    },
+    {
+     "message": "Zähl mir die drei Posten zusammen: 18000 plus 9000 plus 2500.",
+     "expect": "calculate",
+     "evidence": [
+      "29500"
+     ],
+     "forbidden": [
+      "read_document",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "anlegen-dann-eintrag-rausnehmen",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Erstell mir eine Markdown-Datei packliste mit Zahnbürste, Ladekabel und Regenjacke.",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document"
+     ]
+    },
+    {
+     "message": "Nimm die Regenjacke da wieder raus.",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "archiv-auflisten-dann-pruefsumme",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Was ist in dem Zip-Archiv drin?",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "find_file"
+     ]
+    },
+    {
+     "message": "Und rechne mir bitte noch die SHA-256-Prüfsumme von dem Archiv aus.",
+     "expect": "checksum",
+     "forbidden": [
+      "archive",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "uhrzeit-dann-tage-bis-weihnachten",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Wie spät ist es bei mir gerade?",
+     "expect": "time",
+     "forbidden": [
+      "calendar",
+      "web_search"
+     ]
+    },
+    {
+     "message": "Und wie viele Tage sind es noch bis Weihnachten?",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "seite-aufmachen-dann-tarif-merken",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Mach mal https://example.com/tarife auf und sag mir, was da steht.",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search"
+     ]
+    },
+    {
+     "message": "Merk dir bitte, dass ich den kleinen Tarif nehme.",
+     "expect": "remember",
+     "forbidden": [
+      "create_document",
+      "web_fetch"
+     ]
+    }
+   ]
+  }
+ ],
+ "notes": "Authored natively in this language, not translated. Gated by ."
+}
