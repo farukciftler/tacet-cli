@@ -417,6 +417,41 @@ the safety axis is heaviest on purpose; an axis with no cases is left out, not z
 /// would measure the cap.
 const GAP_CAP: usize = 256;
 
+/// Did a generation actually BEGIN a tool call?
+///
+/// The grammar arms once a call has begun, so a generation that never begins one
+/// is a generation the automaton was never given a chance to constrain. Without
+/// this distinction the valid-call rate reads as a refutation of the guarantee
+/// when it is really a count of how often a small model answers in prose.
+///
+/// `name(` ALONE WAS NOT ENOUGH, and getting it wrong put a finding on the front
+/// page that sat there as "unexplained" for a day. An unconstrained Qwen3-0.6B
+/// does not answer in prose OR call a tool; about a third of its turns PARROT THE
+/// SIGNATURE back:
+///
+/// ```text
+/// (time(kind: "clock", target?: "what time it is"))
+/// calendar(kind: 'date', target?: text).
+/// ```
+///
+/// The `?:` is copied straight out of the tool description. That is not a call
+/// and never becomes one, but it contains `time(`, so a substring test counted it
+/// as a start — and counted it only in the unconstrained column, because the mask
+/// forbids that shape. The measurement was reading "the grammar stopped the model
+/// parroting the schema" as "the grammar stopped the model calling a tool", and
+/// reported the 0.6B starting 15 points FEWER calls with the grammar on.
+///
+/// Requiring the brace separates them: Tacet's call format is `name({...})`, and
+/// no echo of a signature reaches it. Whitespace between the paren and the brace
+/// is allowed because a model that writes `calculate( {"expression":"2+2"})` has
+/// begun a call by any reading; a newline there is the same.
+fn started_a_call(text: &str, names: &[&str]) -> bool {
+    names.iter().any(|name| {
+        text.match_indices(&format!("{name}("))
+            .any(|(i, m)| text[i + m.len()..].trim_start().starts_with('{'))
+    })
+}
+
 pub fn bench_gap(path: &str, model_name: &str) -> ExitCode {
     let color = Color::setup();
     let file = match read(path) {
@@ -502,17 +537,25 @@ pub fn bench_gap(path: &str, model_name: &str) -> ExitCode {
                     us => std::time::Duration::from_micros(us),
                 };
                 let call = tacet_tools::executor::ToolCall::parse(&produced.text);
-                // DID A CALL EVEN START. The grammar arms after `name(`, so a
-                // generation that never writes those characters is one the
-                // automaton was never given a chance to constrain. Without this
-                // line the valid-call rate reads as a refutation of the
-                // guarantee when it is really a count of how often a small model
-                // answers in prose instead — MEASURED: Qwen3-0.6B starts a call
-                // in one turn out of five.
-                let started = selected
-                    .tools()
-                    .iter()
-                    .any(|t| produced.text.contains(&format!("{}(", t.name())));
+                let names: Vec<&str> = selected.tools().iter().map(|t| t.name()).collect();
+                let started = started_a_call(&produced.text, &names);
+                // A DIAGNOSTIC, not a feature: `TACET_GAP_DUMP=<n>` prints the
+                // first n generations of each column. It is kept because it is
+                // what found the signature-echo artefact above. Two rounds of
+                // reasoning about the mask and the sampler produced nothing; the
+                // cause was visible in the first screen of raw output. When a
+                // rate cannot be explained, read the generations.
+                if let Some(n) = tacet_kernel::env_var("TACET_GAP_DUMP")
+                    .and_then(|v| v.to_string_lossy().parse::<usize>().ok())
+                    && rows.iter().filter(|r| r.armed == label).count() < n
+                {
+                    eprintln!(
+                        "\n--- [{label}] {} | started={started} valid={} ---\n{}",
+                        case.name,
+                        call.is_some(),
+                        produced.text.chars().take(280).collect::<String>()
+                    );
+                }
                 rows.push(GapRow {
                     armed: label,
                     started,
@@ -544,12 +587,24 @@ pub fn bench_gap(path: &str, model_name: &str) -> ExitCode {
         let correct = 100.0 * r.iter().filter(|r| r.correct).count() as f64 / n;
         let ttft = r.iter().map(|r| r.ttft_ms).sum::<f64>() / n;
         let toks: usize = r.iter().map(|r| r.tokens).sum();
+        // MEAN TOKENS PER GENERATION, because "started a call" moving between
+        // the two columns has to be explained by something, and the first
+        // candidate is that one column simply stops sooner.
+        let mean_tokens = toks as f64 / n;
         let secs: f64 = r.iter().map(|r| r.decode_s).sum();
         let rate = if secs > 0.0 { toks as f64 / secs } else { 0.0 };
-        (started, valid, valid_given_started, correct, ttft, rate)
+        (
+            started,
+            valid,
+            valid_given_started,
+            correct,
+            ttft,
+            rate,
+            mean_tokens,
+        )
     };
-    let (s_off, v_off, g_off, c_off, t_off, r_off) = summarise("off");
-    let (s_on, v_on, g_on, c_on, t_on, r_on) = summarise("on");
+    let (s_off, v_off, g_off, c_off, t_off, r_off, m_off) = summarise("off");
+    let (s_on, v_on, g_on, c_on, t_on, r_on, m_on) = summarise("on");
 
     println!();
     println!(
@@ -591,6 +646,10 @@ pub fn bench_gap(path: &str, model_name: &str) -> ExitCode {
     );
     println!("  time to 1st token  {t_off:>8.0}ms   {t_on:>8.0}ms");
     println!("  decode             {r_off:>6.1} tok/s   {r_on:>6.1} tok/s");
+    println!(
+        "  tokens per answer  {m_off:>9.0}    {m_on:>9.0}    {:>+6.0}",
+        m_on - m_off
+    );
     match peak_memory_mib() {
         Some(mib) => println!("  peak resident      {mib} MiB"),
         None => println!(
@@ -637,4 +696,61 @@ fn peak_memory_mib() -> Option<u64> {
         .find_map(|l| l.strip_prefix("VmHWM:"))
         .and_then(|v| v.split_whitespace().next()?.parse::<u64>().ok())
         .map(|kib| kib / 1024)
+}
+
+#[cfg(test)]
+mod gap_tests {
+    use super::started_a_call;
+
+    /// THE GENERATIONS THAT BROKE THE MEASUREMENT, kept verbatim. Every string
+    /// here was produced by an unconstrained Qwen3-0.6B on
+    /// `benchmarks/en/arithmetic-time.json` and counted as a started call by the
+    /// `name(`-only test that produced the retracted 46% → 26% figure.
+    #[test]
+    fn a_parroted_signature_is_not_a_started_call() {
+        let names = ["time", "calendar", "calculate"];
+        for echo in [
+            "(time(kind: \"clock\", target?: \"what time it is\"))",
+            "<time(kind=\"date\", target:\"today\")>",
+            "calendar(kind: 'date', target?: text).",
+            "You would use calculate(expression) for that.",
+            "calculate(\"84 + 12\")",
+        ] {
+            assert!(
+                !started_a_call(echo, &names),
+                "a signature echo counted as a call start: {echo}"
+            );
+        }
+    }
+
+    /// And the other direction, which is the half that can rot silently: if this
+    /// ever returns false the `started` column collapses to zero and the gap
+    /// table reads as though no model calls anything.
+    #[test]
+    fn a_real_call_is_a_started_call() {
+        let names = ["time", "calculate"];
+        for call in [
+            "calculate({\"expression\":\"45*1.2\"})",
+            "Sure — calculate({\"expression\":\"84 + (84 * 0.15)\"})",
+            "calculate( {\"expression\":\"2+2\"})",
+            "calculate(\n  {\"expression\":\"2+2\"})",
+            "time({})",
+        ] {
+            assert!(
+                started_a_call(call, &names),
+                "a real call was missed: {call}"
+            );
+        }
+    }
+
+    /// A call to a tool that is not in the catalog is not this catalog's call.
+    /// `selected.tools()` is what the model was shown, and counting a name it
+    /// invented would credit the model for reaching a tool that does not exist.
+    #[test]
+    fn a_tool_outside_the_catalog_does_not_count() {
+        assert!(!started_a_call(
+            "weather({\"city\":\"istanbul\"})",
+            &["time", "calculate"]
+        ));
+    }
 }

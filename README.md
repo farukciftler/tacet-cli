@@ -457,32 +457,65 @@ the finding; the score was not worth the rent.
 
 `tacet bench gap` runs the same calls twice, with the automaton on and off. Same
 prompt, same sampler, both columns capped at 256 tokens so only the mask differs.
+The 39 calls of `benchmarks/en/arithmetic-time.json`, on a rented RTX 3090,
+5 Sep 2026.
 
 | model | started a call | valid **if** started | correct call |
 |---|---|---|---|
-| Qwen3-4B | 97.4% → 97.4% | 78.9% → **100.0%** | 76.9% → **97.4%** |
-| Qwen3-0.6B | 46.2% → 25.6% | 55.6% → **100.0%** | 17.9% → 17.9% |
+| Qwen3-4B | 76.9% → **97.4%** | 86.7% → **100.0%** | 66.7% → **97.4%** |
+| Qwen3-0.6B | 20.5% → 23.1% | 100.0% → 100.0% | 7.7% → 10.3% |
 | FunctionGemma-270M | 0% → 0% | — | 0% → 0% |
 
 **`valid if started` reaching exactly 100% is the front-page claim, measured.**
-Without the automaton a 4B writes a malformed call one time in five and a 0.6B
-almost one in two; with it, neither ever does. Three independent runs, same
-answer.
+Unconstrained, the 4B writes a malformed call roughly one time in seven; with the
+automaton it never does — 38 calls of 38 here, and 100% in every earlier run of
+this command as well.
 
-**And the limit is just as clear.** On the 4B the guarantee converts into
-correctness — +20.5 points — because when that model starts a call it usually
-had the right tool in mind. On the 0.6B the correct rate does not move at all:
-the automaton fixes the syntax of a call to the wrong tool as faithfully as it
-fixes a right one. *Valid is syntax, correct is judgement*, and this is what that
-sentence costs.
+**The 4B also STARTS twenty points more calls with the grammar on, and that is
+the mask working rather than an oddity.** The automaton arms at `name(` — so a
+generation that was drifting towards a signature echo instead of a call gets the
+brace forced on it and lands as a real call. Constraint is not only rejecting the
+invalid here; it is pulling a near-miss over the line. That is where the 4B's
++30.7 points of correct calls come from.
 
-One number in that table is **unexplained and left in**: with the grammar on, the
-0.6B *starts* fewer calls (46% → 26%). It reproduces across Metal and CUDA, so it
-is not noise, and we do not yet know why.
+**The 0.6B says almost nothing, and the honest reading is that it is too small to
+be asked.** It starts 8 calls of 39 unconstrained and 9 of 39
+constrained. Eight is not enough to measure a rate against, and both columns being 100% valid means this suite never
+caught it writing bad syntax at all — not that the guarantee is unnecessary. What
+it does show is the limit: +2.6 points of correct calls. *Valid is syntax,
+correct is judgement*, and the automaton was only ever the first.
 
-Speed and memory, from the same runs: time to first token 340 ms (4B) / 200 ms
-(0.6B) / 122 ms (270M) on a 3090; decode 73 / 78 / 99 tok/s; peak resident 695 MiB
-for the 0.6B and 1622 MiB for the 270M at F16.
+**These numbers replace an earlier table, and the correction is worth more than
+the table.** That version had the 0.6B *starting fewer* calls with the grammar on
+(46% → 26%), a result printed on this page as "unexplained and left in". It was
+an artefact of the measurement. `bench gap` decided a call had started by looking
+for `name(` in the output, and an unconstrained Qwen3-0.6B spends about a third
+of its turns parroting the tool signature back:
+
+```
+(time(kind: "clock", target?: "what time it is"))
+calendar(kind: 'date', target?: text).
+```
+
+The `?:` is copied straight out of the tool description. That is not a call and
+never becomes one — but it contains `time(`, so it counted as a start, and only
+ever in the unconstrained column, because the mask forbids that shape. The
+measurement was reading *"the grammar stopped the model parroting the schema"* as
+*"the grammar stopped the model calling a tool"*. Requiring the brace that
+Tacet's call format demands (`name({...})`) separates them, and the gap closes to
++2.6. It cost the 4B's unconstrained column twenty points too: that model echoes
+signatures as well, just less often.
+
+Two things ruled it out before the dump was read, and both are worth recording
+because they are the cheap checks: the mask intervenes **19 times in 16,402
+tokens** and never before token 30, so it cannot be steering the opening; and
+forcing both columns through one identical argmax changed the result **not at
+all**. When the intervention is that rare and the sampler is not the difference,
+the remaining suspect is what the metric counts.
+
+Speed and memory from the same runs: time to first token 392 ms (4B) / 135 ms
+(0.6B); decode 64 / 128 tok/s; peak resident 933 MiB for the 4B at Q4_K_M and
+706 MiB for the 0.6B.
 
 ### Distilling a tool-caller
 
