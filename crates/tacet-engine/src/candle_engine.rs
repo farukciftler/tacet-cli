@@ -30,7 +30,9 @@ use candle_transformers::generation::{LogitsProcessor, Sampling};
 // llama, and llama's `forward_attn` DOES NOT ADD the bias. What changed is that
 // THREE different architectures are now supported; which one is loaded is READ
 // from the GGUF metadata, not assumed.
-use candle_transformers::models::{quantized_gemma3, quantized_qwen2, quantized_qwen3};
+use candle_transformers::models::{
+    quantized_gemma3, quantized_llama, quantized_qwen2, quantized_qwen3,
+};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tokenizers::Tokenizer;
@@ -105,6 +107,7 @@ pub enum Architecture {
     Qwen2,
     Qwen3,
     Gemma3,
+    Llama,
 }
 
 impl Architecture {
@@ -121,9 +124,16 @@ impl Architecture {
             "qwen2" => Ok(Architecture::Qwen2),
             "qwen3" => Ok(Architecture::Qwen3),
             "gemma3" => Ok(Architecture::Gemma3),
+            // `llama` IS A FAMILY, NOT A FORMAT, and that is why it is the one
+            // architecture whose template is CHECKED at load rather than read
+            // off this table. SmolLM2 and TinyLlama speak ChatML; Llama-3 has a
+            // header format of its own. Guessing between them is exactly what
+            // the note above this function forbids, so `verify_chatml` refuses a
+            // llama GGUF that does not carry the ChatML tokens.
+            "llama" => Ok(Architecture::Llama),
             other => Err(EngineError::Inference(format!(
                 "unsupported GGUF architecture: '{other}' \
-                 (supported: qwen2, qwen3, gemma3)"
+                 (supported: qwen2, qwen3, gemma3, llama)"
             ))),
         }
     }
@@ -133,7 +143,7 @@ impl Architecture {
     /// model stops emitting a stop token and falls into rambling.
     pub fn template(self) -> Template {
         match self {
-            Architecture::Qwen2 | Architecture::Qwen3 => Template::ChatML,
+            Architecture::Qwen2 | Architecture::Qwen3 | Architecture::Llama => Template::ChatML,
             Architecture::Gemma3 => Template::Gemma,
         }
     }
@@ -143,6 +153,7 @@ impl Architecture {
             Architecture::Qwen2 => "qwen2",
             Architecture::Qwen3 => "qwen3",
             Architecture::Gemma3 => "gemma3",
+            Architecture::Llama => "llama",
         }
     }
 }
@@ -158,6 +169,7 @@ enum ArchitectureModel {
     Qwen2(quantized_qwen2::ModelWeights),
     Qwen3(quantized_qwen3::ModelWeights),
     Gemma3(quantized_gemma3::ModelWeights),
+    Llama(quantized_llama::ModelWeights),
 }
 
 impl ArchitectureModel {
@@ -166,6 +178,7 @@ impl ArchitectureModel {
             ArchitectureModel::Qwen2(m) => m.forward(input, position),
             ArchitectureModel::Qwen3(m) => m.forward(input, position),
             ArchitectureModel::Gemma3(m) => m.forward(input, position),
+            ArchitectureModel::Llama(m) => m.forward(input, position),
         }
     }
 
@@ -187,6 +200,10 @@ impl ArchitectureModel {
             ArchitectureModel::Qwen2(m) => m.clear_kv_cache(),
             ArchitectureModel::Qwen3(m) => m.clear_kv_cache(),
             ArchitectureModel::Gemma3(_) => {}
+            // READ FROM THE SOURCE like the others: `quantized_llama` keeps a
+            // `Cache` per layer and appends to it unconditionally, so it is on
+            // the Qwen side of this distinction and the clear is mandatory.
+            ArchitectureModel::Llama(m) => m.clear_kv_cache(),
         }
     }
 }
@@ -341,6 +358,10 @@ impl CandleEngine {
                 quantized_gemma3::ModelWeights::from_gguf(content, &mut file, &device)
                     .map(ArchitectureModel::Gemma3)
             }
+            Architecture::Llama => {
+                quantized_llama::ModelWeights::from_gguf(content, &mut file, &device)
+                    .map(ArchitectureModel::Llama)
+            }
         }
         .map_err(|e| {
             EngineError::Inference(format!(
@@ -358,6 +379,29 @@ impl CandleEngine {
         };
 
         let vocab = build_vocab(&tokenizer);
+
+        // THE ONE ARCHITECTURE WHOSE TEMPLATE IS CHECKED RATHER THAN LOOKED UP.
+        // `llama` names a family, not a wire format: SmolLM2 and TinyLlama were
+        // trained on ChatML, Llama-3 on a header format of its own. Loading one
+        // with the other's template does not error — it makes the role
+        // boundaries invisible, the model stops emitting a stop token and
+        // rambles, and the user reads that as a bad model. So the ChatML tokens
+        // have to be THERE, in this file's own vocabulary, or the load fails
+        // with a sentence that says what is wrong.
+        // ASKED OF THE TOKENIZER, NOT OF `vocab`: `build_vocab` decodes each id
+        // with `skip_special_tokens = true`, so every ChatML marker comes back as
+        // an empty string and a check against that list can never fire. Measured
+        // by writing it that way first and watching SmolLM2 — which does speak
+        // ChatML — be refused.
+        if architecture == Architecture::Llama && tokenizer.token_to_id("<|im_start|>").is_none() {
+            return Err(EngineError::Inference(format!(
+                "{}: this is a `llama` GGUF whose vocabulary has no `<|im_start|>`, so it \
+was not trained on ChatML — and ChatML is the only chat format this engine can speak for \
+that architecture. Loading it anyway would produce fluent nonsense rather than an error. \
+SmolLM2 and TinyLlama work; a Llama-3 chat model needs its own template first.",
+                setting.model_path.display()
+            )));
+        }
 
         let identity = EngineIdentity {
             engine: "candle".into(),
