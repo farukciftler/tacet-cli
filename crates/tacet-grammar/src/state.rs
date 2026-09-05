@@ -506,7 +506,10 @@ impl GrammarState {
         // The mask must not offer what `feed_char` will refuse. `open_space` is
         // called from a dozen places below; rather than guarding each one, the
         // exhausted run is subtracted at the end (see `spaces_spent`).
-        let spaces_spent = self.spaces_run >= MAX_SPACE_RUN;
+        // THE SAME PREDICATE THE AUTOMATON USES. `feed_char` stops counting
+        // inside a string body, so closing the space here would be the mirror of
+        // the bug it fixes: the mask refusing what the automaton would accept.
+        let spaces_spent = self.spaces_run >= MAX_SPACE_RUN && !self.in_string_body();
         let mut i = self.stack.len();
         // `child_done`: if a lower frame can close without consuming, the parent
         // frame must be looked at "as if my child had finished". The only such
@@ -577,6 +580,22 @@ impl GrammarState {
     /// moves the state closer to the limit, so no character is neutral and the
     /// precomputed set would be wrong — it would keep opening tokens after the
     /// field was full.
+    /// Is the next character content inside a string rather than structure?
+    ///
+    /// NARROWER THAN `in_free_text_run`, deliberately. That one asks whether the
+    /// neutral token set can be reused (so it also demands an unbounded field
+    /// with headroom); this one asks only "is a space here content", which is
+    /// true of a bounded field and of a field close to its ceiling too.
+    pub(crate) fn in_string_body(&self) -> bool {
+        matches!(
+            self.stack.last(),
+            Some(Frame::Text {
+                stage: StringStage::Body,
+                ..
+            })
+        )
+    }
+
     pub(crate) fn in_free_text_run(&self) -> bool {
         matches!(
             self.stack.last(),
@@ -608,12 +627,29 @@ impl GrammarState {
 
     fn feed_char(&mut self, c: char) -> Result<(), GrammarError> {
         // THE RUN IS COUNTED BEFORE ANYTHING ELSE LOOKS AT `c`, because every
-        // path below that accepts a space must be bound by the same number —
-        // the frame loop, and the "JSON already closed" branch right here. A
-        // counter updated per branch would leave whichever branch was forgotten
-        // as a way back into the cycle.
+        // STRUCTURAL path below that accepts a space must be bound by the same
+        // number — the frame loop, and the "JSON already closed" branch right
+        // here. A counter updated per branch would leave whichever branch was
+        // forgotten as a way back into the cycle.
+        //
+        // BUT NOT INSIDE A STRING, and that exception is a fix rather than a
+        // subtlety. Counting content spaces made the automaton refuse the 17th
+        // space of an indented line while `allowed_prefixes` still offered it
+        // through the free-text path — mask and automaton disagreeing, which is
+        // the one thing `ConstraintError::Violation` exists to catch. Measured:
+        // a `write_code` call carrying a Python line indented past sixteen
+        // columns died mid-generation.
+        //
+        // The bound loses nothing by stepping aside here. The non-termination it
+        // was written for happened at a STRUCTURAL position — the arguments were
+        // complete, the automaton had a cycle with no exit pressure, and the
+        // model drifted for 14 041 tokens. Inside a string the call is not
+        // complete (the quote is still open), and a model that wants to run
+        // forever can emit any character it likes; bounding one of them buys
+        // nothing. Length is bounded there by `max_length` and the free-text
+        // ceiling, which is the right instrument for it.
         let space = SPACES.contains(&c);
-        if space {
+        if space && !self.in_string_body() {
             if self.spaces_run >= MAX_SPACE_RUN {
                 return Err(GrammarError::UnexpectedCharacter {
                     character: c,
@@ -621,7 +657,7 @@ impl GrammarState {
                 });
             }
             self.spaces_run += 1;
-        } else {
+        } else if !space {
             self.spaces_run = 0;
         }
         loop {

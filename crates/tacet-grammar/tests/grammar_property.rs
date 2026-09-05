@@ -263,7 +263,11 @@ impl Xorshift64Star {
     }
 
     fn chance(&mut self, one_in: u64) -> bool {
-        self.draw().is_multiple_of(one_in)
+        // `%` RATHER THAN `is_multiple_of`, which is stable only since 1.87.
+        // The workspace declares 1.85 — the floor edition 2024 imposes — and
+        // clippy checks that declaration on every run, so a convenience method
+        // in a test is not worth raising the bar every adopter has to clear.
+        self.draw() % one_in == 0
     }
 }
 
