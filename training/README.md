@@ -12,7 +12,7 @@ take a dependency on, and `cargo test` must never try to run any of it.
 
 ```bash
 python3 training/split.py benchmarks /somewhere/split 25
-# train 498 cases / test 165 cases
+# train 569 cases / test 189 cases
 ```
 
 **THE FIRST RUN OF THIS RECIPE DID NOT DO THIS, AND ITS NUMBERS WERE WRONG.**
@@ -51,8 +51,8 @@ Every step that PASSES writes `{"case", "prompt", "completion"}` as JSONL. A ste
 that called the wrong tool, or called nothing when it should have called
 something, contributes nothing — its prompt is exactly the input where the
 student must *not* copy the teacher. "Correct" is the benchmark's own pass/fail,
-never a judge model. Measured: Qwen3-4B over the 498 train cases gave **764
-pairs**, 750 of them usable.
+never a judge model. Measured: Qwen3-4B over the 569 train cases gave **865
+pairs**, 851 of them usable.
 
 ## What is actually in the set, and how to count it wrong
 
@@ -61,15 +61,15 @@ lesson:
 
 | | | rows |
 |---|---|---|
-| `TOOL` | a call to an ordinary tool | 262 |
-| `ANSWER` | the last step of a turn: a tool result is already in the prompt, and the right answer is prose | 304 |
-| `ABSTAIN` | tools were offered and calling none was correct | 171 |
-| `SLOT` | a call to `search_filter` or `message_intent`, where the arguments are the whole task | 13 |
+| `TOOL` | a call to an ordinary tool | 261 |
+| `ANSWER` | the last step of a turn: a tool result is already in the prompt, and the right answer is prose | 346 |
+| `ABSTAIN` | tools were offered and calling none was correct | 186 |
+| `SLOT` | a call to `search_filter` or `message_intent`, where the arguments are the whole task | 58 |
 
 **COUNTING `ABSTAIN` IS WHERE THIS GOES WRONG.** The obvious test — does the
-prompt contain `<tool_response>` — matches **all 750 rows**, because the system
+prompt contain `<tool_response>` — matches **every row**, because the system
 prompt names the tag while explaining it (*"If a `<tool_response>` block answers
-what was asked…"*). It reports 0 abstentions where there are 171, and a balancing
+what was asked…"*). It reports 0 abstentions where there are 186, and a balancing
 pass built on that number oversamples answer-composition turns 4x while believing
 it is teaching restraint, which is the exact opposite of the intended repair. A
 tool result is only real when a **user turn opens with the tag**, so the marker
@@ -78,21 +78,16 @@ cannot contain.
 
 | marker | ANSWER | ABSTAIN | TOOL | SLOT |
 |---|---|---|---|---|
-| `<tool_response>` | 475 | **0** | 262 | 13 |
-| user turn + the tag | 304 | **171** | 262 | 13 |
+| `<tool_response>` | 532 | **0** | 261 | 58 |
+| user turn + the tag | 346 | **186** | 261 | 58 |
 
-**`SLOT` is 13 rows and no weighting fixes that.** The teacher passes 13 of the
-27 argument-extraction cases in the train half, so tripling them is 39. Slot
-filling is a data problem — more cases have to be written — and pretending
-otherwise by oversampling thirteen rows until the score moves is how a benchmark
-stops meaning anything.
-
-> **These counts are from a 36-case `benchmarks/tasks/`, and it now holds 131.**
-> The set was widened on 5 Sep 2026 for exactly the reason above; the
-> distillation has NOT been re-run against it, so every number on this page is
-> the older, smaller suite. Re-running it needs a GPU and a teacher pass, and
-> until that happens the honest reading of the table below is "measured on the
-> suite as it stood", not "measured on what is in the repository".
+**`SLOT` WAS 13 ROWS AND NO WEIGHTING FIXED IT.** That number is why
+`benchmarks/tasks/` went from 36 cases to 131 and why the router got a learned
+gate: the teacher can only contribute a row for a case it passes, and it can only
+pass a case whose tool the router actually shows it. Widening the suite and
+carrying the teacher to those tools on 102 of 105 requests instead of 47 took
+`SLOT` from **13 to 58**. Neither change alone would have done it, and no amount
+of oversampling thirteen rows would have done it at all.
 
 ## The one constraint that is easy to miss
 
@@ -107,35 +102,39 @@ family that does not agree on a template.
 
 ## What it bought, on cases the student never saw
 
-165 held-out cases, RTX 3090, 5 Sep 2026. Training is 164 s unweighted and 300 s
+189 held-out cases, RTX 3090, 5 Sep 2026. Training is 292 s unweighted and 362 s
 composed.
 
 | SmolLM2-135M | base | defaults | `W_ABSTAIN=2 W_SLOT=3 CAP_ANSWER=1` |
 |---|---|---|---|
-| composite | 47.7 | 54.9 | **62.4** |
-| irrelevance | **36/38** | 28/38 | 34/38 |
-| tool selection | 6/101 | 39/101 | 39/101 |
-| correct call | 0.0% | 36.4% | 36.4% |
-| `search_filter` tool / answer | 0/5 · 0/5 | 1/5 · 0/5 | **4/5** · 1/5 |
-| `message_intent` | 0/4 | 0/4 | 0/4 |
-| decode | 132 tok/s | 130–134 | 131–134 |
-| peak resident | 528 MiB | 528 MiB | 528 MiB |
-| training | — | 218 s | 300 s |
+| composite | 46.4 | **59.9** | 60.0 |
+| irrelevance | **41/44** | 36/44 | 36/44 |
+| tool selection | 6/119 | 51/119 | **52/119** |
+| correct call | 0.0% | **36.4%** | 27.3% |
+| `search_filter` tool / answer | 0/17 · 0/17 | 15/17 · 1/17 | **16/17** · **3/17** |
+| `message_intent` tool | 0/10 | 1/10 | 2/10 |
+| decode | 130 tok/s | 120–127 | 123–126 |
+| peak resident | 529 MiB | 528 MiB | 529 MiB |
+| training | — | 292 s | 362 s |
 
-**Composing the set is worth more than the training run.** Same pairs, same
-optimiser, same three epochs: pouring all 750 rows in gives 54.9 and loses eight
-irrelevance cases; composing them gives 62.4, loses four, and takes
-`search_filter` from 1/5 to 4/5.
+**COMPOSING THE SET HAS STOPPED BEING WORTH MUCH, AND THAT IS THE RESULT.** On
+the older set — 36 task cases, 13 slot rows, 750 pairs — the same weighting was
+worth 7.5 points of composite (54.9 against 62.4). Here it is worth 0.1. It was
+compensating for a set with a hole in it; fill the hole and the compensation is
+noise. Prefer fixing data over tuning knobs.
 
-**The weights are a dial between reaching and restraint.** A run that capped the
-answer turns WITHOUT weighting the abstentions reached more tools — 48/101 — and
-lost more of the gate, 27/38, for a composite of 57.9. There is no setting that
-gives both; the composite is what decides the trade, and it weights irrelevance
-at 0.40 for exactly this reason.
+**The cost of teaching a small model to reach is still there**: irrelevance
+41/44 to 36/44, and `W_ABSTAIN=2` no longer recovers it. That is why the
+composite weights irrelevance at 0.40.
 
-**Slot filling is the limit, and it is a data problem.** The student learns
-*which* tool (`search_filter` 5/5) and not *what to put in it* (answer 1/5). No
-weighting fixes 13 rows. More argument-extraction cases have to be written.
+**`message_intent` is the wall.** 1 and 2 of 10 tool selections and 0 of 10 on
+the arguments, from a base of 0. Classifying a quoted message and pulling a date
+out of it is harder than filling three closed fields, and 58 slot rows across
+both tools is not enough for the second.
+
+**Slot filling moved for the first time, and data is what moved it.**
+`search_filter` goes 0/17 to 16/17 on the tool and 0/17 to 3/17 on the arguments.
+Three of seventeen is not a good number; it is the first one above zero.
 
 ## The run
 
