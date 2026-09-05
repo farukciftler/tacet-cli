@@ -87,6 +87,13 @@ filling is a data problem — more cases have to be written — and pretending
 otherwise by oversampling thirteen rows until the score moves is how a benchmark
 stops meaning anything.
 
+> **These counts are from a 36-case `benchmarks/tasks/`, and it now holds 131.**
+> The set was widened on 5 Sep 2026 for exactly the reason above; the
+> distillation has NOT been re-run against it, so every number on this page is
+> the older, smaller suite. Re-running it needs a GPU and a teacher pass, and
+> until that happens the honest reading of the table below is "measured on the
+> suite as it stood", not "measured on what is in the repository".
+
 ## The one constraint that is easy to miss
 
 **The prompt is stored RENDERED, so teacher and student must share a chat

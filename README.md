@@ -554,6 +554,11 @@ contributes nothing — that prompt is exactly where the student must not copy t
 teacher. "Correct" is the benchmark's own pass/fail, not a judge model. Qwen3-4B
 over the 498 train cases gave 764 pairs.
 
+**This table is measured against `benchmarks/tasks/` as it stood at 36 cases.**
+It now holds 131 — widened precisely because slot filling was starved of them —
+and the distillation has not been re-run since. The numbers are what they were
+measured on, not what a run today would give.
+
 **THE COST IS THE ROW TO READ, and it is four times what this page used to
 claim.** Teaching a 135M model to reach for tools costs it restraint: irrelevance
 falls from 36/38 to 28/38 — eight messages that must not reach a tool now do. The
@@ -599,9 +604,9 @@ four — an argmax over a handful of classes, where the guarantee the automaton
 buys on a GPU is free because there is nothing to emit from.
 
 So the same job, as hashed character n-grams into one int8 weight per class.
-Trained on generated examples, scored on the 36 human-written cases in
-`benchmarks/tasks/`, against the distilled 135M on the held-out cases it was
-scored on:
+Trained on generated examples, scored on the 131 human-written cases in
+`benchmarks/tasks/` — 95 of them written after the model was trained. Against the
+distilled 135M, on the held-out cases it was scored on:
 
 | | SmolLM2-135M | classifier |
 |---|---|---|

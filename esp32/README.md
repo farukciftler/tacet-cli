@@ -44,18 +44,27 @@ cannot add.
 
 ## Measured
 
-Trained on 1,894 generated examples, scored on the **36 human-written cases** in
+Trained on 1,894 generated examples, scored on the **131 human-written cases** in
 `benchmarks/tasks/`. The generator's templates are deliberately not the benchmark
-sentences, so this is generalisation to another hand's phrasing, not memorisation.
+sentences, so this is generalisation to another hand's phrasing, not
+memorisation — and **95 of those cases were written after this model was
+trained**, without looking at what it gets wrong.
 
 | head | correct | size |
 |---|---|---|
-| `gate` | 35/36 | 8 KiB |
-| `tool` | 35/36 | 12 KiB |
-| `audience` | 34/36 | 20 KiB |
-| `price` | 36/36 | 16 KiB |
-| `when` | 35/36 | 16 KiB |
-| `intent` | 34/36 | 20 KiB |
+| `gate` | 124/131 | 8 KiB |
+| `tool` | 119/131 | 12 KiB |
+| `audience` | 123/131 | 20 KiB |
+| `price` | 118/131 | 16 KiB |
+| `when` | 123/131 | 16 KiB |
+| `intent` | 116/131 | 20 KiB |
+
+For scale on the `tool` row: Tacet's own router reaches these two tools on
+**87 of the 105** cases that expect one, using a hand-written list of substring
+triggers. The comparison is not fair — the router picks nine tools out of
+forty-seven where this picks one of three — but it is the reason the last
+section of [the main README](../README.md) calls the learned gate the direction
+rather than a longer list of triggers.
 
 Against the distilled 135M from [training/](../training/), on the same held-out
 task cases it was scored on:
@@ -82,8 +91,8 @@ here has been run on a board.
 | 2.5 | 46 µs | likely: int8 load and add, no SIMD |
 | 5.0 | 91 µs | pessimistic: loop overhead and misses |
 
-Bucket count is the dial: 1024 buckets is 23 KiB, 4096 is 92 KiB, 8192 is 184 KiB
-and buys `gate` its last case.
+Bucket count is the dial: 1024 buckets is 23 KiB, 4096 is 92 KiB, 8192 is
+184 KiB.
 
 ## The trainer and the device must compute the same thing
 

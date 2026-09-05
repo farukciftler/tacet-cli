@@ -269,6 +269,763 @@
      "message": "do you think travelling alone is worth it?"
     }
    ]
+  },
+  {
+   "name": "konya-kids-cheap",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "konyada akşamüstü çocuklarla gidilebilecek ucuz bir yer var mı",
+     "expect": "search_filter",
+     "evidence": [
+      "city=konya",
+      "audience=kids",
+      "price=cheap"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "adana-family-weekend",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "adanada hafta sonu ailece kahvaltı yapılacak yerler",
+     "expect": "search_filter",
+     "evidence": [
+      "city=adana",
+      "audience=family",
+      "when=weekend"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "mersin-free-today",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "mersinde bugün bedava gezilecek müze var mı",
+     "expect": "search_filter",
+     "evidence": [
+      "city=mersin",
+      "price=free",
+      "when=today"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "trabzon-seniors-tomorrow",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "trabzonda yarın yaşlı annemle gezebileceğim sakin yerler",
+     "expect": "search_filter",
+     "evidence": [
+      "city=trabzon",
+      "audience=seniors",
+      "when=tomorrow"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "samsun-premium",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "samsunda lüks bir restoran önerir misin",
+     "expect": "search_filter",
+     "evidence": [
+      "city=samsun",
+      "price=premium"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "denizli-mid",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "denizlide orta fiyatlı oteller hangileri",
+     "expect": "search_filter",
+     "evidence": [
+      "city=denizli",
+      "price=mid"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "sivas-adults",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "sivasta sadece yetişkinlerin gideceği mekanlar",
+     "expect": "search_filter",
+     "evidence": [
+      "city=sivas",
+      "audience=adults"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "malatya-kids-free",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "malatyada ücretsiz çocuk parkı var mı",
+     "expect": "search_filter",
+     "evidence": [
+      "city=malatya",
+      "audience=kids",
+      "price=free"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "erzurum-weekend",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "erzurumda hafta sonu kayak dışında ne yapılır",
+     "expect": "search_filter",
+     "evidence": [
+      "city=erzurum",
+      "when=weekend"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "van-cheap-today",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "vanda bugün açık olan ucuz lokantalar",
+     "expect": "search_filter",
+     "evidence": [
+      "city=van",
+      "price=cheap",
+      "when=today"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "edirne-family-tomorrow",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "edirnede yarın ailecek gezilecek yerler",
+     "expect": "search_filter",
+     "evidence": [
+      "city=edirne",
+      "audience=family",
+      "when=tomorrow"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "rize-seniors",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "rizede yaşlılara uygun yürüyüş parkurları",
+     "expect": "search_filter",
+     "evidence": [
+      "city=rize",
+      "audience=seniors"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ordu-cheap",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "orduda pahalı olmayan konaklama arıyorum",
+     "expect": "search_filter",
+     "evidence": [
+      "city=ordu",
+      "price=cheap"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bolu-premium-weekend",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "boluda hafta sonu için lüks bungalov",
+     "expect": "search_filter",
+     "evidence": [
+      "city=bolu",
+      "price=premium",
+      "when=weekend"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "izmir-adults-today",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "izmirde bu akşam yetişkinlere yönelik etkinlik",
+     "expect": "search_filter",
+     "evidence": [
+      "city=izmir",
+      "audience=adults",
+      "when=today"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bursa-kids-free-tomorrow",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "bursada yarın çocuklarla ücretsiz ne yapabiliriz",
+     "expect": "search_filter",
+     "evidence": [
+      "city=bursa",
+      "audience=kids",
+      "price=free",
+      "when=tomorrow"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ankara-mid",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "ankarada orta bütçeli bir akşam yemeği nerede yenir",
+     "expect": "search_filter",
+     "evidence": [
+      "city=ankara",
+      "price=mid"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "istanbul-family-weekend",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "istanbulda tüm ailenin keyif alacağı hafta sonu planı",
+     "expect": "search_filter",
+     "evidence": [
+      "city=istanbul",
+      "audience=family",
+      "when=weekend"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "izmir-kids-free-weekend",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "izmirde bu hafta sonu çocuklarla gidebileceğimiz ücretsiz bir etkinlik var mı acaba",
+     "expect": "search_filter",
+     "evidence": [
+      "city=izmir",
+      "audience=kids",
+      "price=free",
+      "when=weekend"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ankara-cheap-today",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "arkadaşlarla bu akşam ankarada takılacak uygun fiyatlı mekan",
+     "expect": "search_filter",
+     "evidence": [
+      "city=ankara",
+      "price=cheap",
+      "when=today"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "istanbul-adults-cheap-tomorrow",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "yarın istanbulda yetişkin arkadaş grubuyla pahalı olmayan bir yer",
+     "expect": "search_filter",
+     "evidence": [
+      "city=istanbul",
+      "audience=adults",
+      "price=cheap",
+      "when=tomorrow"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "konya-family-mid-today",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "konyada bugün ailecek gidilecek orta fiyatlı restoran",
+     "expect": "search_filter",
+     "evidence": [
+      "city=konya",
+      "audience=family",
+      "price=mid",
+      "when=today"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "antalya-adults-premium-weekend",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "antalyada hafta sonu yetişkinler için lüks bir spa",
+     "expect": "search_filter",
+     "evidence": [
+      "city=antalya",
+      "audience=adults",
+      "price=premium",
+      "when=weekend"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "dublin-cheap-weekend",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "any cheap museums in Dublin this weekend",
+     "expect": "search_filter",
+     "evidence": [
+      "city=dublin",
+      "price=cheap",
+      "when=weekend"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "porto-seniors",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "where can I take my parents in Porto, they are quite old",
+     "expect": "search_filter",
+     "evidence": [
+      "city=porto",
+      "audience=seniors"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "krakow-free-tomorrow",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "free walking routes around Krakow tomorrow",
+     "expect": "search_filter",
+     "evidence": [
+      "city=krakow",
+      "price=free",
+      "when=tomorrow"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "oslo-premium-today",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "upscale dinner spots in Oslo tonight",
+     "expect": "search_filter",
+     "evidence": [
+      "city=oslo",
+      "price=premium",
+      "when=today"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "athens-mid",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "mid range hotels in Athens",
+     "expect": "search_filter",
+     "evidence": [
+      "city=athens",
+      "price=mid"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "copenhagen-family-weekend",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "family outing ideas in Copenhagen for the weekend",
+     "expect": "search_filter",
+     "evidence": [
+      "city=copenhagen",
+      "audience=family",
+      "when=weekend"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "hamburg-adults-tomorrow",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "adults only bars in Hamburg tomorrow night",
+     "expect": "search_filter",
+     "evidence": [
+      "city=hamburg",
+      "audience=adults",
+      "when=tomorrow"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "naples-kids-cheap-today",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "budget friendly things for kids in Naples today",
+     "expect": "search_filter",
+     "evidence": [
+      "city=naples",
+      "audience=kids",
+      "price=cheap",
+      "when=today"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "seville-free",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "no cost attractions in Seville",
+     "expect": "search_filter",
+     "evidence": [
+      "city=seville",
+      "price=free"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bruges-seniors",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "somewhere quiet for elderly visitors in Bruges",
+     "expect": "search_filter",
+     "evidence": [
+      "city=bruges",
+      "audience=seniors"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "lyon-premium-weekend",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "expensive tasting menus in Lyon this weekend",
+     "expect": "search_filter",
+     "evidence": [
+      "city=lyon",
+      "price=premium",
+      "when=weekend"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "helsinki-kids-tomorrow",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "what can children do in Helsinki tomorrow",
+     "expect": "search_filter",
+     "evidence": [
+      "city=helsinki",
+      "audience=kids",
+      "when=tomorrow"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "turin-mid",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "reasonably priced lunch in Turin",
+     "expect": "search_filter",
+     "evidence": [
+      "city=turin",
+      "price=mid"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "warsaw-free-today",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "free events in Warsaw today",
+     "expect": "search_filter",
+     "evidence": [
+      "city=warsaw",
+      "price=free",
+      "when=today"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "berlin-kids-free-today",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "i have my nephews with me, anything free in Berlin today",
+     "expect": "search_filter",
+     "evidence": [
+      "city=berlin",
+      "audience=kids",
+      "price=free",
+      "when=today"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "rome-seniors-cheap-weekend",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "planning a weekend in Rome with my elderly father, nothing too pricey",
+     "expect": "search_filter",
+     "evidence": [
+      "city=rome",
+      "audience=seniors",
+      "price=cheap",
+      "when=weekend"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "lisbon-kids-cheap",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "cheap kid friendly places in Lisbon",
+     "expect": "search_filter",
+     "evidence": [
+      "city=lisbon",
+      "audience=kids",
+      "price=cheap"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "nocity-kids-free",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "ücretsiz ve çocuklara uygun bir şeyler arıyorum",
+     "expect": "search_filter",
+     "evidence": [
+      "audience=kids",
+      "price=free"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "nocity-cheap-weekend",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "hafta sonu için ucuz bir kaçamak",
+     "expect": "search_filter",
+     "evidence": [
+      "price=cheap",
+      "when=weekend"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "nocity-seniors-today",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "yaşlılar için bugün yapılacak sakin aktiviteler",
+     "expect": "search_filter",
+     "evidence": [
+      "audience=seniors",
+      "when=today"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "nocity-adults-premium",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "somewhere premium for adults, no kids please",
+     "expect": "search_filter",
+     "evidence": [
+      "audience=adults",
+      "price=premium"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "nocity-family-free-tomorrow",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "free things for the family tomorrow",
+     "expect": "search_filter",
+     "evidence": [
+      "audience=family",
+      "price=free",
+      "when=tomorrow"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fav-city",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "do you have a favourite city yourself?"
+    }
+   ]
+  },
+  {
+   "name": "gezmeyi-sever",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "gezmeyi sever misin sen?"
+    }
+   ]
+  },
+  {
+   "name": "travel-thoughts",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "I am thinking about travelling more next year, any thoughts?"
+    }
+   ]
+  },
+  {
+   "name": "moral-bozuk",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "bugün moralim biraz bozuk"
+    }
+   ]
+  },
+  {
+   "name": "siir-yaz",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "bir şiir yazsana bana"
+    }
+   ]
+  },
+  {
+   "name": "sonra-yazarim",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "teşekkür ederim, sonra tekrar yazarım"
+    }
+   ]
+  },
+  {
+   "name": "helpful-today",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "you have been really helpful today"
+    }
+   ]
+  },
+  {
+   "name": "sohbet-guzel",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "seninle sohbet etmek güzel"
+    }
+   ]
+  },
+  {
+   "name": "ucuz-felsefe",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "ucuz yaşamak mı iyidir pahalı yaşamak mı sence?"
+    }
+   ]
+  },
+  {
+   "name": "hangi-sehir",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "sence hangi şehirde yaşamak daha güzel, merak ettim"
+    }
+   ]
   }
  ]
 }

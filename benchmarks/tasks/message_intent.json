@@ -196,6 +196,498 @@
      "message": "should I just forgive the debt, what would you do?"
     }
    ]
+  },
+  {
+   "name": "tr-promise-wednesday",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Müşteri 'önümüzdeki çarşamba havale edeceğim' yazdı, ne anlama geliyor?",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=promised_date"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "en-promise-fifth",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "He wrote: 'I'll clear the balance on the 5th'. What is this?",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=promised_date"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tr-promise-salary",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'Maaşım yatar yatmaz ödeyeceğim' demiş, bunu nasıl kaydedeyim?",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=promised_date"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "en-promise-friday",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "the reply says 'give me until Friday and it is done'",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=promised_date"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tr-promise-monthend",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'Ay sonunu bekleyin, hallolacak' yazmış. Ne demek bu?",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=promised_date"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "en-promise-scheduled",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "customer says: 'payment scheduled for next Monday'",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=promised_date"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tr-promise-fifteen",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'15 gün içinde borcumu kapatacağım' mesajı geldi, ne diyor?",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=promised_date"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "en-promise-tomorrow",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "they wrote 'the transfer goes out tomorrow morning'",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=promised_date"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tr-dispute-service",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'Ben böyle bir hizmet almadım, faturayı kabul etmiyorum' demiş",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=dispute"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "en-dispute-records",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "reply was: 'this charge is not mine, check your records'",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=dispute"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tr-dispute-contract",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'Sözleşmede bu kalem yoktu, ödemem' yazdı. Bu ne?",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=dispute"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "en-dispute-half",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "he says 'I only agreed to half of that amount'",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=dispute"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tr-dispute-wrongperson",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'Yanlış kişiye yazıyorsunuz, benim borcum yok' cevabı geldi",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=dispute"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "en-dispute-cancelled",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "the message reads 'I cancelled this order in March'",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=dispute"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tr-dispute-fahis",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'Bu tutar fahiş, itiraz ediyorum' demiş müşteri",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=dispute"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tr-paid-yesterday",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'Dün akşam havaleyi yaptım, kontrol eder misiniz' yazmış",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=paid"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "en-paid-receipt",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "they replied 'it was settled last week, I have the receipt'",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=paid"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tr-paid-card",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'Kartla ödedim zaten, dekont elimde' diyor",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=paid"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "en-paid-third",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "message says 'the money left my account on the 3rd'",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=paid"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tr-paid-bank",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'Ödemesini yaptım, bankadan sorabilirsiniz' cevabı geldi",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=paid"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "en-paid-update",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "he wrote 'already paid, please update your system'",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=paid"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tr-paid-lastmonth",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'Geçen ay kapattım o hesabı' yazmış, ne demek istiyor?",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=paid"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tr-irr-kolaygelsin",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'Kolay gelsin, iyi çalışmalar' yazmış sadece. Ne demek istiyor?",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=irrelevant"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "en-irr-birthday",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "the only reply was 'happy birthday!' — what is this?",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=irrelevant"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tr-irr-bayram",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'Bayramınız kutlu olsun' mesajı geldi, nasıl sınıflandırayım?",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=irrelevant"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "en-irr-launch",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "they sent 'congratulations on the launch', what is this?",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=irrelevant"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tr-irr-gecmisolsun",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'Geçmiş olsun, umarım iyileşirsiniz' yazmış. Bu ne?",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=irrelevant"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "en-irr-meeting",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "reply: 'see you at the meeting next week' — classify it",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=irrelevant"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "amount-monday",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'4500 TL'yi pazartesi yollayacağım' yazmış. Ne diyor?",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=promised_date",
+      "amount=4500"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "amount-en-transfer",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "they wrote 'I will transfer 1200 euros on the 9th'",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=promised_date",
+      "amount=1200"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "date-cuma",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'Cuma ödeyeceğim' demiş, tarihi de not al",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=promised_date",
+      "promised_date=cuma"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "amount-paid",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'Geçen hafta 900 lira ödedim' yazmış",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=paid",
+      "amount=900"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "intent-nasil-calisir",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "sen bu mesajları nasıl anlıyorsun, biraz anlatsana"
+    }
+   ]
+  },
+  {
+   "name": "intent-borc-felsefe",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "borç almak kötü bir şey midir sence?"
+    }
+   ]
+  },
+  {
+   "name": "intent-thanks-again",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "thanks again, I will get back to you"
+    }
+   ]
+  },
+  {
+   "name": "intent-weather",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "hava bugün çok güzel değil mi"
+    }
+   ]
+  },
+  {
+   "name": "intent-who-built",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "who built you, and when?"
+    }
+   ]
+  },
+  {
+   "name": "intent-tavsiye",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "müşterilerle iletişimde genel bir tavsiyen var mı?"
+    }
+   ]
+  },
+  {
+   "name": "intent-gunaydin",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "günaydın, umarım iyi bir gün geçirirsin"
+    }
+   ]
+  },
+  {
+   "name": "intent-joke",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "tell me a joke about accountants"
+    }
+   ]
   }
  ]
 }

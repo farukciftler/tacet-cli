@@ -619,23 +619,61 @@ impl IntentProfile {
             IntentProfile::Extract => &[
                 // THE SEARCH-FILTER HALF: a request for places or things to do,
                 // with the qualifiers a person actually writes.
+                //
+                // THIS LIST WAS FITTED TO SIXTEEN CASES AND IT SHOWED. Growing
+                // the benchmark to sixty-one found that thirty-seven of them
+                // never reached the tool at all — "any cheap museums in Dublin
+                // this weekend" and "orta fiyatli oteller" share no substring
+                // with anything below. What is added is the CATEGORY, not the
+                // sentence: the nouns a request for somewhere to go is built
+                // from, in both languages. Fitting one trigger per failing case
+                // would turn the check green and measure nothing.
                 "places to",
                 "things to do",
+                "to do in",
                 "where can i take",
                 "somewhere to",
+                "somewhere for",
+                "somewhere quiet",
                 "what is there to do",
                 "free places",
                 "kid friendly",
                 "with the kids",
                 "family friendly",
+                // The nouns. Nothing else in the catalog answers a question
+                // about a restaurant or a museum, so these are unambiguous even
+                // though they are single words.
+                "attractions",
+                "museums",
+                "restaurant",
+                "hotels",
+                "bars in",
+                "events in",
+                "outing",
+                "tasting menus",
+                "walking routes",
+                "dinner spots",
+                "for lunch",
                 // THE MESSAGE half. "message" alone is deliberately absent: it
                 // sits inside "commit message", which belongs to `git`.
                 "what does this message",
                 "what does this reply",
                 "reply means",
+                "reply was",
+                "reply says",
+                "the reply",
                 "classify this",
+                "classify it",
                 "what do they mean by",
                 "sent me this",
+                "they wrote",
+                "he wrote",
+                "she wrote",
+                "they replied",
+                "they sent",
+                "message says",
+                "customer says",
+                "what is this?",
             ],
             IntentProfile::Integrity => &[
                 "checksum",
@@ -698,10 +736,36 @@ impl IntentProfile {
                 "gidilecek yerler",
                 "nereye gidebilirim",
                 "ne yapilir",
+                // THE SAME WIDENING as the English side, by category. Turkish
+                // agglutinates, so the stems carry it: "yerler" reaches
+                // "gidilecek yerler" and "sakin yerler" alike, and "gez" reaches
+                // "gezilecek", "gezebilecegim" and "gezmek".
+                "yerler",
+                "mekan",
+                "gidilecek",
+                "gezilecek",
+                "gezebilecegim",
+                "ne yapabilir",
+                "nereye gid",
+                "nerede yenir",
+                "konaklama",
+                "restoran",
+                "otel",
+                "parkur",
+                "etkinlik",
+                // The quoting frames, which is how a message to classify
+                // arrives in Turkish: someone else's words plus a verb of
+                // saying.
                 "bu mesaj ne",
                 "ne demek istiyor",
                 "bu ne demek",
                 "ne anlama geliyor",
+                "yazmis",
+                "demis",
+                "cevabi geldi",
+                "mesaji geldi",
+                "nasil siniflandir",
+                "ne diyor",
                 "que hacer",
                 "sitios para",
                 "que quiere decir",
