@@ -423,6 +423,85 @@ accuracy, and a test asserts it cannot. An axis with no cases is left out and th
 rest renormalised, not scored as zero — a benchmark made only of irrelevance
 cases is a legitimate benchmark.
 
+### The model table
+
+Four models, the same 184-case suite, one rented RTX 3090 each, Q4_K_M unless
+noted. **Score is out of 100** with the weights above — irrelevance 0.40, tool
+0.30, step 0.20, answer 0.10.
+
+| model | score | tool selection | irrelevance gate | step chain | answer | wall |
+|---|---|---|---|---|---|---|
+| **Qwen3-4B-Instruct-2507** | **91.1** | 133/160 · 83.1% | **24/24** | 162/190 | 43/47 | 6.4 min |
+| Qwen3-8B | 81.3 | 128/160 · 80.0% | **20/24** | 153/190 | 37/47 | 54.6 min |
+| Qwen3-0.6B (Q8_0) | 64.0 | 52/160 · 32.5% | **24/24** | 79/190 | 28/47 | 21.3 min |
+| FunctionGemma-270M (F16) | 47.4 | **0/160** | **24/24** | 24/190 | 23/47 | 28.6 min |
+
+**Read the score with its floor in mind.** A model that never calls anything
+still passes every irrelevance case, and 0.40 of the weight is exactly that — so
+**40 is the floor, not zero**. FunctionGemma's 47.4 is a model that cannot call a
+single tool in this format; the number to read beside it is the 0/160.
+
+**The 8B is worse than the 4B, and the axis it loses on is the safety one.**
+Twenty of twenty-four on the irrelevance gate means four messages that must not
+reach a tool did. Bigger did not mean better here, and it cost eight times the
+wall clock.
+
+**gemma-3-12b is absent because it does not terminate.** On the same card and the
+same suite it emitted a median of **2048 tokens per turn** — exactly the
+constrained ceiling — against Qwen3-8B's 280, with three of five sampled turns
+stopping on `Length` rather than on a finished call. At 18 tok/s against the 8B's
+47 that is 124 seconds per case, and a full run is six hours. The verbosity is
+the finding; the score was not worth the rent.
+
+### What the grammar is worth
+
+`tacet bench gap` runs the same calls twice, with the automaton on and off. Same
+prompt, same sampler, both columns capped at 256 tokens so only the mask differs.
+
+| model | started a call | valid **if** started | correct call |
+|---|---|---|---|
+| Qwen3-4B | 97.4% → 97.4% | 78.9% → **100.0%** | 76.9% → **97.4%** |
+| Qwen3-0.6B | 46.2% → 25.6% | 55.6% → **100.0%** | 17.9% → 17.9% |
+| FunctionGemma-270M | 0% → 0% | — | 0% → 0% |
+
+**`valid if started` reaching exactly 100% is the front-page claim, measured.**
+Without the automaton a 4B writes a malformed call one time in five and a 0.6B
+almost one in two; with it, neither ever does. Three independent runs, same
+answer.
+
+**And the limit is just as clear.** On the 4B the guarantee converts into
+correctness — +20.5 points — because when that model starts a call it usually
+had the right tool in mind. On the 0.6B the correct rate does not move at all:
+the automaton fixes the syntax of a call to the wrong tool as faithfully as it
+fixes a right one. *Valid is syntax, correct is judgement*, and this is what that
+sentence costs.
+
+One number in that table is **unexplained and left in**: with the grammar on, the
+0.6B *starts* fewer calls (46% → 26%). It reproduces across Metal and CUDA, so it
+is not noise, and we do not yet know why.
+
+Speed and memory, from the same runs: time to first token 340 ms (4B) / 200 ms
+(0.6B) / 122 ms (270M) on a 3090; decode 73 / 78 / 99 tok/s; peak resident 695 MiB
+for the 0.6B and 1622 MiB for the 270M at F16.
+
+### Seven languages
+
+The same Qwen3-4B against the natively-authored cores in `benchmarks/core/`
+(~50 cases each, `--skip-missing` for the two web cases the rented box could not
+serve):
+
+| | en | ru | es | fr | zh | de | tr |
+|---|---|---|---|---|---|---|---|
+| score | 91.1 | **94.4** | 94.1 | 91.8 | 91.0 | 88.5 | **84.5** |
+| tool | 133/160 | 31/34 | 28/30 | 29/33 | 28/34 | 26/32 | 23/33 |
+| irrelevance | 24/24 | 13/13 | 13/13 | 13/13 | 13/13 | 13/13 | 13/13 |
+
+**The irrelevance gate holds in all seven** — 91 of 91 across the six cores. What
+moves is tool selection, and Turkish is now the weakest rather than the
+strongest, which is the reverse of what the English/Turkish suite shows. The two
+are not the same cases: these were written natively per language, and the
+comparison to make is across this row, not against the older suite.
+
 ## Platform support — honestly
 
 | Platform | State |

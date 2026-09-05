@@ -242,7 +242,6 @@ pub fn bench_run(path: &str, model_name: &str, json: bool, skip_missing: bool) -
     let probe = host_catalog(&probe_store, &color);
     let names: Vec<String> = probe.names().into_iter().map(String::from).collect();
     let mut file = file;
-    let mut skipped = 0usize;
     if let Some(missing) = file.missing_from(&names) {
         if !skip_missing {
             eprintln!("{}", color.paint(YELLOW, &missing.to_string()));
@@ -259,7 +258,7 @@ pub fn bench_run(path: &str, model_name: &str, json: bool, skip_missing: bool) -
                     .is_some_and(|t| absent.iter().any(|m| m == t))
             })
         });
-        skipped = before - file.cases.len();
+        let skipped = before - file.cases.len();
         file.requires.retain(|r| !absent.iter().any(|m| m == r));
         eprintln!(
             "{}",
@@ -560,6 +559,19 @@ pub fn bench_gap(path: &str, model_name: &str) -> ExitCode {
             &format!("  {} · {model_name} · {cases} calls", file.name)
         )
     );
+    // A FILE WITH NOTHING TO MEASURE SAYS SO. `bench gap` only looks at steps
+    // that EXPECT a tool, so an irrelevance file holds no calls at all — and
+    // printing 0.0% on every row for that is a lie in the shape of a result.
+    if cases == 0 {
+        println!(
+            "{}",
+            color.paint(
+                DIM,
+                "  no step in this file expects a tool, so there is no call for the grammar to constrain and nothing to measure. `bench gap` reads tool cases; `bench run` is what scores an irrelevance file."
+            )
+        );
+        return ExitCode::SUCCESS;
+    }
     println!("                     grammar OFF   grammar ON    gap");
     println!(
         "  started a call     {s_off:>9.1}%   {s_on:>9.1}%   {:>+6.1}",
