@@ -59,12 +59,11 @@ trained**, without looking at what it gets wrong.
 | `when` | 123/131 | 16 KiB |
 | `intent` | 116/131 | 20 KiB |
 
-For scale on the `tool` row: Tacet's own router reaches these two tools on
+For scale on the `tool` row: Tacet's own router reached these two tools on
 **87 of the 105** cases that expect one, using a hand-written list of substring
-triggers. The comparison is not fair — the router picks nine tools out of
-forty-seven where this picks one of three — but it is the reason the last
-section of [the main README](../README.md) calls the learned gate the direction
-rather than a longer list of triggers.
+triggers. It now reaches **102** — the difference is a 48 KiB head of this same
+model, wired in as an additional signal and measured to cost the routing eval
+nothing. See below.
 
 Against the distilled 135M from [training/](../training/), on the same held-out
 task cases it was scored on:
@@ -115,17 +114,48 @@ accumulator instead found two real bugs immediately:
   two-byte Turkish letters are mapped and every other sequence is skipped whole,
   on both sides.
 
+## Two models, because the negatives depend on where it runs
+
+The same generator and trainer produce a second, differently-shaped model that
+ships inside Tacet's router as `crates/tacet-tools/src/slot_gate.bin`. The
+difference is one switch, and it is worth understanding before regenerating
+either.
+
+**A device whose only job is these two requests never sees "open report.docx".**
+Training on such negatives costs capacity and buys nothing: the `tool` head goes
+from 119/131 to 100/131 at the same 4096 buckets. So the device model is
+`OTHER=0`, and that is what every table above is measured on.
+
+**The router sits among forty-seven tools and does see them.** Without those
+negatives it calls **38% of the other suites' 709 messages** an extraction
+request, and wiring it in cost the routing eval fourteen of its top-three
+positions. With them the false-positive rate is 7.6%, the eval is untouched at
+166/166, and the gate catches **15 of the 18** requests the router's hand-written
+triggers cannot reach at all. It needs 16384 buckets to hold both jobs, but only
+one head ships — 48 KiB.
+
 ## Running it
 
 ```bash
 cd esp32
 python3 extract_msgs.py > msgs.txt      # the benchmark messages
-python3 gen_slots.py 1200 train.jsonl   # labelled examples, TR + EN
+
+# the device model — every table above
+OTHER=0 python3 gen_slots.py 1200 train.jsonl
 python3 train_slots.py 4096             # trains, scores, writes slots.bin
 cc -O2 -o slots slots.c
 python3 check.py                        # device vs trainer — must print 0 disagreements
 python3 budget.py                       # the tables above
+
+# the router gate — one head, with the other tools' work as negatives
+OTHER=1 python3 gen_slots.py 1200 train.jsonl
+python3 train_slots.py 16384
+python3 export_gate.py                  # -> crates/tacet-tools/src/slot_gate.bin
 ```
+
+`slot_gate.rs` has tests that pin what the blob does on fixed strings. If they
+fail after a regeneration the model changed; decide whether that was intended
+rather than updating the expectation.
 
 Needs numpy and a C compiler. Like [training/](../training/), it is outside the
 Rust workspace on purpose: `cargo test` must never try to run any of it.

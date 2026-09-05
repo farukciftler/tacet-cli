@@ -25,6 +25,7 @@ pub mod router;
 pub mod run_code;
 pub mod sandbox_path;
 pub mod shell;
+pub mod slot_gate;
 pub mod time;
 pub mod web_search;
 pub mod workspace;

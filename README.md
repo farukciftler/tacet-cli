@@ -623,6 +623,17 @@ even if it fitted, which it does not. At 92 KiB the weights are 18% of the
 *internal* SRAM and the bandwidth wall never applies — 4,380 ops is 46 µs at
 240 MHz, on the middle of three stated cycle assumptions.
 
+**And 48 KiB of it now ships inside the router.** The trigger list reaches these
+two tools on 87 of the 105 requests that expect one; the `tool` head, added as a
+signal that only ever raises a score and never overrules one, takes that to
+**102** — it catches 15 of the 18 requests no substring can reach, including the
+ones that name no place at all. Measured against `eval --routing`, which is the
+guard for exactly this: 166/166 reach and 166/166 in the top three, unchanged, at
+pressure 0 and 20. An earlier version of the same head, trained without the other
+tools' work as negatives, called 38% of the other suites' messages an extraction
+request and cost fourteen of those top-three positions — which is why it is in
+the repository with its false-positive rate measured rather than asserted.
+
 **What it cannot do is the honest half.** `city`, `promised_date` and `amount`
 are open text — span copying, not classification — and stay with the host. Nine
 cases is a small denominator. And the device figures are arithmetic from a

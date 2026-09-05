@@ -59,28 +59,40 @@
 //! One row per sequence, 256 apart. Two backends refusing the same tensor for
 //! the same reason means the defect is the strided narrow, not a kernel.
 //!
-//! THE ONE WORD, AND WHAT IT COSTS. Adding `.contiguous()` to that narrow in a
+//! THE ONE WORD, AND IT IS FREE. Adding `.contiguous()` to that narrow in a
 //! local candle-transformers 0.11 flips every width from the stepped prefill to
-//! the batched one. MEASURED on an M-series Metal, qwen3-0.6b Q4_K_M, two runs
-//! per row, decode tok/s:
+//! the batched one, and costs nothing. MEASURED on an M-series Metal,
+//! qwen3-0.6b Q4_K_M, one quiet machine, decode tok/s:
 //!
-//!     build                          prefill    b=2    b=8    b=32
-//!     stock candle                   stepped   197.1  205.1  197.3
-//!     patched, TACET_BATCH_PREFILL=0 stepped   194.7  205.4  197.7
-//!     patched                        batched   167.6  170.2  162.8
+//!     build            prefill    b=1    b=2    b=8    b=32
+//!     stock candle     stepped   170.5  203.2  210.8  205.1
+//!     patched          batched   170.5  201.1  208.5  204.7
 //!
-//! READ THE MIDDLE ROW FIRST. It is the patched build with the batched prefill
-//! turned off, and it matches stock to within noise — so the added copy costs
-//! NOTHING in the decode loop, which is the obvious suspicion and it is wrong.
-//! What costs 17% is the batched prefill itself: a one-shot `[b, 256]` forward
-//! leaves the KV cache in a different layout from the one 256 stepped forwards
-//! build by concatenation, and every decode step afterwards pays for it. That
-//! second effect was not chased further, and it is the reason the one-word fix
-//! is necessary but not sufficient.
+//! THAT TABLE REPLACES ONE THAT SAID THE PATCH COST 17%, and the retraction is
+//! the more useful half. The earlier reading — 167 tok/s patched against 199
+//! stock — was an artefact of THIS FILE. A stepped prefill runs the `[b, 1]`
+//! forward 256 times before the clock starts, so every kernel for that shape is
+//! already built; a batched prefill runs `[b, PREFILL]` instead and left the
+//! `[b, 1]` kernels to be compiled inside a 64-step timed loop. The fix is the
+//! warm-up below, and the check that it was never the KV cache is in candle:
+//! `ConcatKvCache::append` calls `contiguous` and `cat` on EVERY append, so both
+//! paths leave the same tensor behind.
 //!
-//! The work that is genuinely ours is an engine API that decodes several
-//! sequences together, with one sampler and one grammar mask per sequence, and
-//! prompts of different lengths padded and masked.
+//! Two process notes, because they cost more than the measurement did. The
+//! stale-binary trap: an edit that failed to compile left `cargo build | grep`
+//! silent and the previous binary in place, so three runs measured a build that
+//! did not match the source — hence the `contiguous()?;` grep in front of the
+//! patched runs. And two of these runs overlapped on one laptop, which is worth
+//! more than 30% of the throughput; they are serialised now.
+//!
+//! WHAT IS ACTUALLY IN THE WAY of a batched engine is not this patch. It is that
+//! `ModelWeights::forward(input, offset)` takes no attention mask —
+//! `causal_mask(b, tgt, offset, sw)`'s fourth argument is a SLIDING WINDOW, not
+//! padding, and `forward` always passes `None`. Sequences of different lengths
+//! therefore cannot share a batch: pad tokens enter the KV cache and every real
+//! token attends to them. Real prompts are never the same length, so a batched
+//! engine needs that upstream before it needs anything from us. What remains
+//! ours after it lands is one sampler and one grammar mask per sequence.
 //!
 //! RUN IT:
 //!   cargo run --release --example batch_decode --features candle,cuda
@@ -264,15 +276,36 @@ fn main() -> candle_core::Result<()> {
         // and hide the very thing this line exists to show.
         println!("b={b:<3} prefill: {prefill_path}");
 
+        let step = one;
+
+        // WARM-UP, OUTSIDE THE TIMER, AND IT IS THE POINT OF THIS EXAMPLE'S
+        // SECOND FINDING. The stepped prefill runs the `[b, 1]` forward 256
+        // times before the clock starts, so every kernel for that shape is
+        // already compiled and cached; a batched prefill runs `[b, PREFILL]`
+        // instead and leaves the `[b, 1]` kernels to be built inside the timed
+        // loop. With only 64 timed steps that is not noise — it was measured as
+        // a 17% "cost of the batched prefill" and blamed on the KV cache layout,
+        // which `ConcatKvCache::append` rules out: it calls `contiguous` and
+        // `cat` on every append, so both paths leave the same tensor.
+        //
+        // `TACET_WARMUP=0` turns this off to reproduce the older number.
+        let warmup: usize = std::env::var("TACET_WARMUP")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8);
+        for w in 0..warmup {
+            let t = model.forward(&step, PREFILL + w)?;
+            let _ = t.flatten_all()?.narrow(0, 0, 1)?.to_vec1::<f32>()?;
+        }
+
         // The timed loop. `to_scalar` on one element forces the queue to drain,
         // so the wall clock covers work that actually finished rather than work
         // that was merely submitted — without it a GPU measurement times the
         // enqueue and reports a number several times too good.
-        let step = one;
         let started = std::time::Instant::now();
         let mut last = None;
         for s in 0..STEPS {
-            last = Some(model.forward(&step, PREFILL + s)?);
+            last = Some(model.forward(&step, PREFILL + warmup + s)?);
         }
         if let Some(t) = last {
             let _ = t.flatten_all()?.narrow(0, 0, 1)?.to_vec1::<f32>()?;

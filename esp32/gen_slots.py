@@ -9,7 +9,7 @@ nobody needs.
 So the templates below are deliberately NOT the benchmark sentences: different
 verbs, different word order, different fillers.
 """
-import json, random, sys, itertools
+import json, os, random, sys, itertools
 
 rng = random.Random(7)
 
@@ -94,6 +94,58 @@ def _quotes(label, lang):
             "paid":    PAID_TR if lang=="tr" else PAID_EN,
             "irrelevant": IRR_TR if lang=="tr" else IRR_EN}[label]
 
+# THE OTHER TOOLS' WORK, AS NEGATIVES. Without these the gate has never seen a
+# request to read a file, add two numbers or check a repository, and it puts 38%
+# of them in one of the two extraction classes — measured on the 709 messages of
+# the suites that expect neither. They are GENERATED rather than taken from
+# those suites, because training on the cases the router is scored against would
+# make the improvement unmeasurable.
+OTHER_TR = [
+ "{f} dosyasini ac ve ilk paragrafi oku", "{f} icindeki tabloyu ozetle",
+ "{f} adli belgeyi bul", "masaustunde {f} var mi diye bak",
+ "{f} dosyasinin ozetini cikar", "{f} belgesine bir satir ekle",
+ "{f} dosyasindaki son satiri sil", "{f} arsivinin icinde ne var",
+ "{f} dosyasinin ozetini hesapla", "{f} dosyasinin boyutu ne kadar",
+ "{n} ile {m} carpimi kac eder", "{n} sayisinin yuzde {p} kaci",
+ "{n} lirayi {m} kisiye bolersem kisi basi ne duser",
+ "{n} ile {m} arasindaki fark ne", "{n} tl ye yuzde {p} zam gelirse ne olur",
+ "saat kac su an", "bugun ayin kaci", "yarin hangi gun",
+ "gelecek haftaki toplantilarimi listele", "takvime bir kayit ekle",
+ "son commitleri goster", "hangi dosyalar degismis", "depoda kac branch var",
+ "bunu not defterine kaydet", "gecen sefer ne konusmustuk",
+ "internetten guncel dolar kurunu bak", "son dakika haberlerine bak",
+ "bu adresteki sayfayi getir", "su linki acip ozetle",
+]
+OTHER_EN = [
+ "open {f} and read the first paragraph", "summarise the table inside {f}",
+ "find the document called {f}", "check whether {f} is on the desktop",
+ "write a summary of {f}", "append a line to {f}",
+ "delete the last line of {f}", "what is inside the archive {f}",
+ "compute the checksum of {f}", "how big is {f}",
+ "what is {n} times {m}", "what is {p} percent of {n}",
+ "split {n} between {m} people", "the difference between {n} and {m}",
+ "add {p} percent to {n}",
+ "what time is it", "what is today's date", "what day is tomorrow",
+ "list my meetings next week", "put an entry in the calendar",
+ "show the recent commits", "which files have changed", "how many branches are there",
+ "remember this for later", "what did we talk about last time",
+ "look up the current exchange rate online", "check the latest news",
+ "fetch the page at this address", "open that link and summarise it",
+]
+FILES = ["rapor.docx","butce.xlsx","notlar.md","sunum.pptx","arsiv.zip","fatura.pdf",
+         "report.docx","budget.xlsx","notes.md","deck.pptx","backup.zip","invoice.pdf"]
+
+def other_examples(n):
+    out=[]
+    for _ in range(n):
+        tr = rng.random() < 0.5
+        t = rng.choice(OTHER_TR if tr else OTHER_EN)
+        t = t.format(f=rng.choice(FILES), n=rng.randint(12, 990),
+                     m=rng.randint(2, 40), p=rng.choice([5,10,12,15,18,20,25]))
+        out.append({"text":t,"gate":"none","tool":"none","audience":"none",
+                    "price":"none","when":"none","intent":"none"})
+    return out
+
 CHAT_TR_A = ["sağ ol","teşekkürler","merhaba","günaydın","selam","iyi akşamlar","peki"]
 CHAT_TR_B = ["yeterli bu kadar","çok yardımcı oldun","nasıl gidiyor","sen kimsin",
              "bugün canım sıkkın","bana bir şey anlat","ne düşünüyorsun","hangi dilleri biliyorsun",
@@ -160,7 +212,20 @@ def chat_examples(n):
 
 if __name__ == "__main__":
     n = int(sys.argv[1]) if len(sys.argv)>1 else 1200
+    # WHAT THE MODEL MUST SAY NO TO DEPENDS ON WHERE IT RUNS, so the negatives
+    # covering the other tools' work are a switch rather than a given.
+    #
+    # A DEVICE whose only job is these two requests never sees "open report.docx"
+    # — including those costs capacity and buys nothing: measured, the `tool`
+    # head goes 119/131 to 100/131 at the same 4096 buckets.
+    #
+    # THE ROUTER sits among forty-seven tools and does see them. Without the
+    # negatives it calls 38% of the other suites' messages an extraction request
+    # and costs the routing eval fourteen top-three positions; with them that is
+    # 7.6% and the eval is untouched.
     rows = search_examples(n) + intent_examples(n) + chat_examples(n)
+    if os.environ.get("OTHER", "1") != "0":
+        rows += other_examples(n)
     rng.shuffle(rows)
     seen=set(); uniq=[]
     for r in rows:

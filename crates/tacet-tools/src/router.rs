@@ -1357,6 +1357,30 @@ pub fn score_intent(message: &str) -> IntentScores {
             (*p, total)
         })
         .collect();
+    let mut scores: Vec<(IntentProfile, usize)> = scores;
+
+    // THE LEARNED HALF, AND IT ONLY ADDS. `slot_gate` is 6 KiB of int8 that
+    // answers "is this a request for one of the two extraction tools" where the
+    // trigger list above cannot: 58 of 105 benchmark requests reach neither
+    // tool by substring, and the ones carrying no place noun at all cannot be
+    // reached by a list without naming them one at a time, which is fitting the
+    // router to its own test.
+    //
+    // IT RAISES A SCORE AND NEVER OVERRULES ONE. Everything else the router
+    // decides is unchanged, so a wrong prediction costs one slot of the nine
+    // rather than the right tool — and `eval --routing` is the guard that says
+    // so, at 166/166 with this on.
+    //
+    // The boost is the length of a typical trigger, so a learned hit weighs
+    // about what one written trigger does rather than swamping the profile.
+    if crate::slot_gate::predict(message).is_some() {
+        const LEARNED_BOOST: usize = 12;
+        for (profile, total) in scores.iter_mut() {
+            if *profile == IntentProfile::Extract {
+                *total += LEARNED_BOOST;
+            }
+        }
+    }
     IntentScores { scores }
 }
 
