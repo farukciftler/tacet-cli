@@ -208,9 +208,9 @@ tacet-cli ──────────► terminal shell; drives the turn loop
    ├── tacet-eval ──► cases, scoring, reports
    │
    ├── tacet-grammar► ArgSchema → constrained-generation grammar (PDA + token mask)
-   │        │
-   │        ▼
-   ├── tacet-engine ► contracts: Prompt, EngineProvider, Constrainer, TokenCounter
+   │                  depends on tacet-kernel ONLY — no inference stack
+   │
+   ├── tacet-engine ► contracts: Prompt, EngineProvider, TokenCounter
    │                  FakeEngine (default) / CandleEngine (--features candle)
    │
    ├── tacet-tools ─► concrete tools + ToolExecutor + Router
@@ -221,10 +221,47 @@ tacet-cli ──────────► terminal shell; drives the turn loop
    ├── tacet-skills ► trigger-matched guidance, fenced into one turn
    ├── tacet-memory ► notes on disk, injected only when relevant
    │
-   └── tacet-kernel► the CONTRACT: Tool, ArgSchema, ToolOutcome, DataStore, Catalog
+   └── tacet-kernel► the CONTRACT: Tool, ArgSchema, ToolOutcome, DataStore,
+                      Catalog, Constrainer
 ```
 
-Arrows are dependency direction. `tacet-kernel` depends on nothing, so the contract never bends under pressure from an implementation. `tacet-engine` deliberately does not know `tacet-grammar`: the `Constrainer` contract lives in the engine, its implementation in the grammar, so a run without constraints doesn't compile grammar code it never uses.
+Arrows are dependency direction. `tacet-kernel` depends on nothing, so the contract never bends under pressure from an implementation. `tacet-engine` deliberately does not know `tacet-grammar`: the contract lives in the kernel, its implementation in the grammar, so a run without constraints doesn't compile grammar code it never uses.
+
+### The guarantee is not tied to this engine
+
+The whole constraint contract is three signatures over `&mut [f32]` and `u32`:
+
+```rust
+fn session(&self) -> Box<dyn ConstraintSession>;
+fn mask(&self, logits: &mut [f32]);
+fn advance(&mut self, token: u32) -> Result<(), ConstraintError>;
+```
+
+Nothing in it names a model, a tokenizer, a device or a file — so **any runtime
+that can hand over a logit slice and take back a token gets the same guarantee**:
+llama.cpp through a binding, ONNX, a hand-written loop. `cargo tree -p
+tacet-grammar` is the kernel, serde and thiserror; there is no inference
+dependency to adopt along with it.
+
+That is a recent correction rather than an original virtue. The contract used to
+live in `tacet-engine`, which made a runtime-independent property look like
+something this engine provided, and made anyone who wanted it depend on GGUF
+loading and prompt budgeting to get three method signatures.
+
+Two things keep it honest. A test in the kernel implements a working constraint
+importing *only* that module, so a signature that starts needing an inference
+type stops compiling. And `cargo run -p tacet-grammar --example no_engine` shows
+it end to end against a pretend runtime in thirty lines:
+
+```
+after `weather({"city":"London",` the grammar allows: ["\"", " "]
+`kelvin` is in the vocabulary and closed: true
+```
+
+`kelvin` is in the vocabulary and the schema does not allow it, so its logit is
+`-inf` **before the sampler runs**. No temperature, top-p or beam search can
+select it. That is the difference between checking output afterwards and making
+the bad output unrepresentable.
 
 ## What it scores — honestly
 
