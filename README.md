@@ -70,7 +70,7 @@ answering — which meant the failure looked like a working product giving bad
 replies, and nobody reported it. `tacet --version` prints the build it actually is:
 
 ```bash
-tacet --version        # tacet 0.1.11 (metal)  ← the part in brackets is the engine
+tacet --version        # tacet 0.1.26 (metal)  ← the part in brackets is the engine
 ```
 
 Or grab a prebuilt binary from [Releases](../../releases) — macOS (Apple Silicon
@@ -210,8 +210,8 @@ tacet-cli ──────────► terminal shell; drives the turn loop
    ├── tacet-grammar► ArgSchema → constrained-generation grammar (PDA + token mask)
    │        │
    │        ▼
-   ├── tacet-engine ► contracts: Prompt, ModelProvider, Constrainer, TokenCounter
-   │                  MockEngine (default) / CandleEngine (--features candle)
+   ├── tacet-engine ► contracts: Prompt, EngineProvider, Constrainer, TokenCounter
+   │                  FakeEngine (default) / CandleEngine (--features candle)
    │
    ├── tacet-tools ─► concrete tools + ToolExecutor + Router
    │        ├── tacet-zip ──► hand-written zip/deflate/crc32 → OOXML
@@ -275,26 +275,40 @@ tool on "thanks, that's all" is worse than no assistant, and that is the failure
 this number rules out.
 
 **The failures, because a score without a diagnosis is a number to be proud of
-rather than one to act on.** They are not scattered. The largest group is the
-model writing the right call in a syntax nobody taught it, and Turkish produced a
-shape English never did:
+rather than one to act on.** Twenty-seven of the 184 cases failed, and they are
+not scattered. Counted off the baseline itself:
+
+| | |
+|---|---|
+| called the wrong tool — 10 | 5× `edit_document` → `read_document`, 3× `web_fetch` → `web_search`, and one each of `read_document` → `find_file` and `run_code` → `calculate` |
+| answered in prose, no call — 8 | including **two that are ours, not the model's**: one turn died on `engine error: constraint rejected the token: 32`, another on `generation was cut off halfway` |
+| wrote a call in a syntax nobody taught it — 5 | three of them the same glued shape, which Turkish produced and English never did |
+| declined a tool it *had* — 5 | `web_search`, `git`, `calendar`, `remember` |
 
 ```
 find_filepattern: "bütçe"          ← the tool name glued to its first argument
 ```
 
-Then: the model declining a tool it *had*, an extra `read_document` before an
-edit — arguably correct behaviour the case does not allow for — and "I cannot do
-that in one call", without trying.
+The two largest are worth naming because neither is what you would guess. Five
+cases read the document and then said *"no tool is available to edit or update
+the content"* — with `edit_document` sitting at rank 1 in that turn's own prompt,
+confirmed with `tacet why`. And three handed a URL called `web_search` instead of
+`web_fetch`, which is the tool description's own fault: it said *"use only when a
+search result summary is not enough"*, which is exactly the wrong instruction for
+a message that already carries the address.
 
-The six refusals turned out to be **our fault, not the model's**. The system
-prompt opened with *"an assistant that runs entirely on the device. Data never
-leaves the device"* — a true statement about the architecture that a small model
-reads as a statement about its capabilities, and then declines to use
-`web_search`, which `tacet why` confirms was sitting at rank 2 in its own prompt.
+**A refusal is usually ours.** An earlier run had six of them, and the cause was
+the system prompt: it opened with *"an assistant that runs entirely on the
+device. Data never leaves the device"* — a true statement about the architecture
+that a small model reads as a statement about its own capabilities, and then
+declines to use `web_search`, which `tacet why` confirmed was sitting at rank 2
+in its own prompt. Five survive in the numbers above, and the same test applies
+to each: run `tacet why` on the message before blaming the model.
 
-**What happened when we fixed it is the most useful thing on this page.** The raw
-score moved +3. `eval --compare` ran a sign test and refused to call it:
+**What happened when we fixed that one is the most useful thing on this page.**
+This was the earlier, English-only suite — 115 cases, not the 184 above, so the
+numbers below do not belong to the table. The raw score moved +3, and
+`eval --compare` ran a sign test and refused to call it:
 
 ```
 fixed 8   broke 5
@@ -314,7 +328,7 @@ its own resolution limit rather than letting a +3 be reported as progress.
 | Platform | State |
 |---|---|
 | macOS (arm64) | **Verified.** Full suite runs here: build, clippy `-D warnings`, tests, eval. |
-| Linux | **The sandbox is measured, and on a default install it is OFF.** Measured on a stock Ubuntu 24.04 (4 Sep 2026), not only in CI: as an ordinary user `bwrap --unshare-net` fails with `loopback: Failed RTM_NEWADDR: Operation not permitted`, because the distro ships `kernel.apparmor_restrict_unprivileged_userns=1`. So `run_code` and `write_code` are **absent from the catalog** — the honest-refusal path, working as designed, but it is the DEFAULT on the most common Linux rather than an edge case. `tacet diagnostics` now names the sysctl and the one-line remedy. As **root** on the same machine the shield verifies and both tools appear, which is why testing with sudo hides the problem. What the shield itself does is measured: with the restriction lifted, `the_network_is_really_cut`, `the_sandbox_cannot_be_escaped` and the timeout kill all pass against a real `bwrap` 0.9.0 — **1069 tests, 0 failures** (33 binaries), under `TACET_SANDBOX_MUST_RUN=1`, the flag that makes the 22 tests that used to skip execute or fail the build. Still unmeasured: nobody has held a conversation with the interactive shell on Linux. |
+| Linux | **The sandbox is measured, and on a default install it is OFF.** Measured on a stock Ubuntu 24.04 (4 Sep 2026), not only in CI: as an ordinary user `bwrap --unshare-net` fails with `loopback: Failed RTM_NEWADDR: Operation not permitted`, because the distro ships `kernel.apparmor_restrict_unprivileged_userns=1`. So `run_code` and `write_code` are **absent from the catalog** — the honest-refusal path, working as designed, but it is the DEFAULT on the most common Linux rather than an edge case. The shell says so on startup — the line that reports `run_code` as off now names the sysctl and the one-line remedy, rather than leaving "no sandbox" as the whole explanation. As **root** on the same machine the shield verifies and both tools appear, which is why testing with sudo hides the problem. What the shield itself does is measured: with the restriction lifted, `the_network_is_really_cut`, `the_sandbox_cannot_be_escaped` and the timeout kill all pass against a real `bwrap` 0.9.0 — **1069 tests, 0 failures** (33 binaries), under `TACET_SANDBOX_MUST_RUN=1`, the flag that makes the 22 tests that used to skip execute or fail the build. Still unmeasured: nobody has held a conversation with the interactive shell on Linux. |
 | Windows | **Measured for the first time, on a real machine.** Windows Server 2019 (Kamatera, 4 Sep 2026), Rust 1.98.1: the workspace builds and **1037 tests pass, 0 failures** (31 binaries). Two things that CI cannot see, because GitHub's runner is not a user's machine: (1) a clean Windows has no MSVC linker, so `cargo build` stops at ``error: linker `link.exe` not found`` until ~2 GB of Visual Studio Build Tools is installed — see CONTRIBUTING; (2) a Windows build prints a `dead_code` warning for `O_NOFOLLOW`, which no job fails on because `clippy -D warnings` runs only on ubuntu. That warning is real: the symlink second belt is Unix-only. The FIRST belt was measured there and holds — `create_new` on an existing symlink gives `os error 80` and leaves the target untouched. Still unmeasured: the interactive shell, and `0600` stamping is deliberately not applied here (`set_permissions` only flips a read-only flag, which would give the appearance of protection without the substance). |
 
 Where a guarantee holds on one platform and not another, the code says so at the point where it matters. `0600` permission stamping, for example, is deliberately not applied on Windows — there `set_permissions` only flips a read-only flag, which would produce the *appearance* of protection without the substance.

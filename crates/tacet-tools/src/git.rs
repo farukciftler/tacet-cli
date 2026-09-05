@@ -539,11 +539,10 @@ impl Tool for GitTool {
     /// must re-run `the_expected_tool_does_not_drop_out_of_the_routers_budget`.
     fn description(&self) -> &str {
         "Reads the state of the git repository in the working directory: \
-         'status' lists which files changed, 'diff' reads the changes \
-         themselves, 'log' lists the recent commits. Call this when the user \
-         asks what they changed, wants their changes summarized, or wants you \
-         to write a commit message. READ-ONLY: it cannot commit, push or undo \
-         anything."
+         'status' reports THE CURRENT BRANCH and which files changed, 'diff' \
+         reads the changes, 'log' lists recent commits. Call this when the user \
+         asks which branch they are on, what they changed, or wants a commit \
+         message written. READ-ONLY: it cannot commit, push or undo anything."
     }
 
     fn schema(&self) -> ArgSchema {

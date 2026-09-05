@@ -411,7 +411,26 @@ fn last_identifier(text: &str) -> &str {
 /// the opposite — no answer to a user contains "<tool_call>" by accident. So the
 /// marker is the whole licence to look, and the two attribute cases stay
 /// unrecovered on purpose.
-const CALL_MARKERS: [&str; 3] = ["```tool_code", "```tool", "<tool_call>"];
+/// `\`\`\`json` JOINED THEM AFTER THE 184-CASE RUN, and it is the one marker on
+/// this list that a model could plausibly write while NOT calling a tool — a
+/// fenced JSON block is ordinary prose furniture. It is safe here for the same
+/// reason the others are, which is that the marker is only the licence to look:
+/// the block still has to name a catalog tool, every key still has to be a field
+/// of that tool's schema, and every required field still has to be present. A
+/// block explaining a data shape fails the last two.
+///
+/// The shape it recovers, measured twice in that run:
+///
+/// ```text
+/// \`\`\`json
+/// {"action":"read_document","path":"report.md"}
+/// \`\`\`
+/// ```
+///
+/// The envelope key needs no special handling: the name is found INSIDE
+/// `"action"`'s value, and the scan for arguments starts after it, so `action`
+/// is behind the cursor by the time keys are read.
+const CALL_MARKERS: [&str; 4] = ["```tool_code", "```tool", "```json", "<tool_call>"];
 
 /// Recovers a call written behind one of `CALL_MARKERS`.
 ///
@@ -509,8 +528,16 @@ fn recover_glued_call(raw: &str, catalog: &ToolCatalog) -> Option<ToolCall> {
 fn scan_key_values(text: &str, fields: &[tacet_kernel::Field]) -> serde_json::Map<String, Value> {
     let mut args = serde_json::Map::new();
     for field in fields.iter() {
-        for sep in ['=', ':'] {
-            let needle = format!("{}{}", field.name, sep);
+        // `key=`, `key:`, and the same two with the quote a JSON key closes
+        // with — `"path": "report.md"` puts a `"` between the name and the
+        // separator, which is why the bare needles missed the fenced-JSON shape
+        // this scan is also asked to read.
+        for needle in [
+            format!("{}=", field.name),
+            format!("{}:", field.name),
+            format!("{}\"=", field.name),
+            format!("{}\":", field.name),
+        ] {
             let Some(at) = text.find(&needle) else {
                 continue;
             };
@@ -2048,6 +2075,55 @@ mod tests {
             assert!(
                 recover_glued_call(raw, &catalog).is_none(),
                 "recovered from prose: {raw:?}"
+            );
+        }
+    }
+}
+
+/// A CALL FENCED AS `json` WITH THE NAME IN AN ENVELOPE KEY.
+///
+/// MEASURED in the 184-case run, twice: the model wrote
+/// ```` ```json {"action":"read_document","path":"report.md"} ``` ```` — the
+/// right tool, the right argument, and no `(`, so the grammar never armed.
+#[cfg(test)]
+mod json_fence {
+    use super::*;
+    use crate::memory::SharedMemory;
+
+    fn catalog() -> ToolCatalog {
+        let store = std::sync::Arc::new(crate::data_store::SharedStore::new());
+        let memory = SharedMemory::in_memory();
+        let (catalog, _, _) = crate::catalog::production_catalog(&store, &memory, Some(0));
+        catalog
+    }
+
+    #[test]
+    fn the_shape_the_model_actually_wrote_is_recovered() {
+        let raw = "```json\n{\"action\":\"read_document\",\"path\":\"report.md\"}\n```";
+        let call = recover_marked_call(raw, &catalog()).expect("this is a call");
+        assert_eq!(call.name, "read_document");
+        assert_eq!(call.args["path"], Value::String("report.md".into()));
+    }
+
+    /// THE ASSERTION THAT KEEPS THE NEW MARKER HONEST. `\`\`\`json` is the one
+    /// marker on the list a model writes without calling anything, so a fenced
+    /// block that names a tool but does not carry its required argument must
+    /// stay an answer. Without this the marker would be a way to turn prose
+    /// about a tool into a call to it.
+    #[test]
+    fn a_json_block_that_is_only_talking_about_a_tool_is_not_a_call() {
+        let c = catalog();
+        for raw in [
+            // Names the tool, gives it nothing.
+            "```json\n{\"tools\":[\"read_document\",\"find_file\"]}\n```",
+            // Names the tool, and the only key is not in its schema.
+            "```json\n{\"example\":\"read_document\",\"colour\":\"blue\"}\n```",
+            // No catalog tool named at all.
+            "```json\n{\"name\":\"Ada\",\"path\":\"report.md\"}\n```",
+        ] {
+            assert!(
+                recover_marked_call(raw, &c).is_none(),
+                "not a call, and must not become one: {raw}"
             );
         }
     }

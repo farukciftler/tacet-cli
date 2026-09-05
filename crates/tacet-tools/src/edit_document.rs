@@ -270,12 +270,12 @@ impl Tool for EditDocumentTool {
     }
 
     fn description(&self) -> &str {
-        "Edits the document in play — the file you just created or read — by writing a new \
-         version of it. Call this when the user asks to change it ('add this row', 'delete \
-         that line', 'change the title', in any language). First call read_document to get \
-         the content, then pass the FULL edited content as 'new_content' (markdown; a \
-         markdown table for Excel files). It never converts format: to change format call \
-         create_document with the new format."
+        "THE tool that changes an existing document — the one you just created or read. \
+         Add a row, delete or replace a line, change a title, edit a cell (any language): \
+         this does it, so never answer that no tool can. Call read_document once for the \
+         content, then CALL THIS with the whole edited text as 'new_content' (markdown; a \
+         markdown table for Excel). Reading is half the job — never stop after it. It never \
+         converts format: for that call create_document."
     }
 
     fn schema(&self) -> ArgSchema {

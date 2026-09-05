@@ -771,11 +771,32 @@ fn nanos() -> u128 {
         .unwrap_or(0)
 }
 
+/// WHAT ACTUALLY MAKES A SCRATCH NAME UNIQUE, and the timestamp above is not it.
+///
+/// MEASURED, twice, as an intermittent failure of the whole workspace run that
+/// never reproduced when the file's own tests were run alone: two `db_write`
+/// tests on different threads of ONE process built the same directory name and
+/// then deleted each other's fixture. What came out was two unrelated-looking
+/// errors — `no such table: users`, and a backup that "could not be written next
+/// to the database" — neither of which pointed at the cause.
+///
+/// The pid does not separate threads, and `as_nanos()` does not carry nanosecond
+/// resolution: on this machine `SystemTime::now()` steps in microseconds, so two
+/// threads a few hundred nanoseconds apart read the SAME number. A counter has
+/// no resolution to run out of. `tacet_eval::Env` reached the same conclusion for
+/// the same reason and says so in its own comment.
+static SCRATCH_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn scratch_serial() -> u64 {
+    SCRATCH_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 fn scratch_name(tag: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
-        "tacet-db-write-{tag}-{}-{}",
+        "tacet-db-write-{tag}-{}-{}-{}",
         std::process::id(),
-        nanos()
+        nanos(),
+        scratch_serial()
     ))
 }
 
@@ -1443,9 +1464,10 @@ mod tests {
 
     fn temp_root(tag: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
-            "tacet-dbw-{tag}-{}-{}",
+            "tacet-dbw-{tag}-{}-{}-{}",
             std::process::id(),
-            nanos()
+            nanos(),
+            super::scratch_serial()
         ));
         std::fs::create_dir_all(&path).expect("temp dir");
         path.canonicalize().expect("resolved")

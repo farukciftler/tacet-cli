@@ -452,8 +452,10 @@ impl Tool for WebFetchTool {
     }
 
     fn description(&self) -> &str {
-        "Fetches the readable text of ONE web page by its address. Use only when a search \
-         result summary is not enough and you need the details from that page."
+        "Fetches the readable text of ONE web page by its address. WHEN THE MESSAGE ALREADY \
+         CARRIES AN ADDRESS (http://, https://, www.) THIS IS THE TOOL: call it with that url \
+         and do not search for a page you were handed. Use web_search instead when there is \
+         no address and the page still has to be found, or when a page's summary is enough."
     }
 
     fn schema(&self) -> ArgSchema {
