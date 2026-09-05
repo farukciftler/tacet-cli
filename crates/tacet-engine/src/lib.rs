@@ -801,6 +801,14 @@ mod architecture_tests {
         assert_eq!(Architecture::Qwen2.template(), Template::ChatML);
         assert_eq!(Architecture::Qwen3.template(), Template::ChatML);
         assert_eq!(Architecture::Gemma3.template(), Template::Gemma);
+
+        // `llama` IS THE ONE ENTRY WHOSE TEMPLATE THIS TABLE CANNOT SETTLE. It
+        // names a family, and the family disagrees: SmolLM2 and TinyLlama speak
+        // ChatML, Llama-3 does not. ChatML is what this table answers, and the
+        // loader refuses a llama GGUF whose tokenizer has no `<|im_start|>`
+        // rather than trusting the answer.
+        assert_eq!(Architecture::resolve("llama").unwrap(), Architecture::Llama);
+        assert_eq!(Architecture::Llama.template(), Template::ChatML);
     }
 
     /// THE MOST IMPORTANT TEST. Falling back to the "nearest" module for an
@@ -808,7 +816,7 @@ mod architecture_tests {
     /// message must list what is supported so the user knows what to do.
     #[test]
     fn an_unknown_architecture_errors_instead_of_falling_back() {
-        for name in ["llama", "gemma2", "phi3", "qwen", "", "QWEN3"] {
+        for name in ["gemma2", "phi3", "qwen", "llama2", "", "QWEN3"] {
             let result = Architecture::resolve(name);
             assert!(result.is_err(), "'{name}' was accepted silently");
             let message = result.unwrap_err().to_string();
@@ -816,7 +824,7 @@ mod architecture_tests {
                 message.contains("unsupported GGUF architecture"),
                 "{message}"
             );
-            assert!(message.contains("qwen2, qwen3, gemma3"), "{message}");
+            assert!(message.contains("qwen2, qwen3, gemma3, llama"), "{message}");
         }
     }
 }

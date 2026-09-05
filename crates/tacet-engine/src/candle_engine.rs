@@ -967,6 +967,36 @@ SmolLM2 and TinyLlama work; a Llama-3 chat model needs its own template first.",
                     );
                 }
                 chosen
+            } else if greedy {
+                // THE SAME ARGMAX AS THE CONSTRAINED BRANCH, and this was a real
+                // defect rather than tidying.
+                //
+                // The two branches used to pick differently: masked logits went
+                // through `largest_index` (a CPU `total_cmp` argmax) and
+                // unmasked ones through candle's `LogitsProcessor` — the very
+                // path the note above says returned a `-inf` BIT PATTERN instead
+                // of an index. So a constrained and an unconstrained run of the
+                // same prompt could diverge from the first token for a reason
+                // that had nothing to do with the grammar.
+                //
+                // WHAT IT DID NOT FIX, recorded so the next person does not
+                // spend the afternoon this cost. `bench gap` promises "same
+                // prompt, same sampler, the only difference is the mask", and it
+                // reported Qwen3-0.6B starting FEWER calls with the grammar on.
+                // Two argmaxes was the obvious suspect and it was wrong: with
+                // both columns forced through this one, the run came back
+                // identical to the digit — 41.0 / 25.6 / 50.0 / 90.0. The cause
+                // was in what the metric counted as a started call, not in the
+                // engine at all. This branch is still the right shape (a claim
+                // of "same sampler" that is not true is worth nothing), but it
+                // bought correctness of description, not a changed number.
+                //
+                // The sampled paths still go through candle, because they need
+                // its seeded rng and do not take the argmax branch.
+                let raw: Vec<f32> = logits
+                    .to_vec1()
+                    .map_err(|e| EngineError::Inference(e.to_string()))?;
+                largest_index(&raw) as u32
             } else {
                 sampler
                     .sample(&logits)
