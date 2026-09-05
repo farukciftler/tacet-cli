@@ -87,6 +87,7 @@
 //! the head of that file).
 
 mod addon;
+mod bench_cmd;
 mod chat;
 mod cli;
 mod config;
@@ -317,6 +318,23 @@ fn main() -> ExitCode {
                 sampling,
             })
         }
+        Command::Bench { job } => match job {
+            cli::BenchJob::Check { file, portable } => bench_cmd::bench_check(&file, portable),
+            cli::BenchJob::Gap { file, model } => {
+                bench_cmd::bench_gap(&file, &model.unwrap_or_else(|| DEFAULT_MODEL.to_string()))
+            }
+            cli::BenchJob::Run {
+                file,
+                model,
+                json,
+                skip_missing,
+            } => bench_cmd::bench_run(
+                &file,
+                &model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
+                json,
+                skip_missing,
+            ),
+        },
         Command::Sessions { json, purge } => sessions(json, purge),
         Command::Eval {
             json,

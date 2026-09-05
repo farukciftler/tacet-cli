@@ -1,0 +1,493 @@
+{
+ "name": "irrelevance",
+ "language": "en",
+ "requires": [],
+ "cases": [
+  {
+   "name": "greet_hey",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "hey there"
+    }
+   ]
+  },
+  {
+   "name": "greet_morning",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "morning! hope you're having a good one",
+     "forbidden": [
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "thanks_short",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "thanks, that's exactly what I needed"
+    }
+   ]
+  },
+  {
+   "name": "thanks_warm",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "you're a lifesaver, seriously. appreciate it"
+    }
+   ]
+  },
+  {
+   "name": "farewell_off",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "alright, I'm off. take care"
+    }
+   ]
+  },
+  {
+   "name": "farewell_night",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "going to sleep now. good night",
+     "forbidden": [
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "how_is_it_going",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "how's it going on your end?"
+    }
+   ]
+  },
+  {
+   "name": "what_are_you",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "so what exactly are you? some kind of model running locally?",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "who_built_you",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "who built you, out of curiosity?",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "read_minds",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "can you read minds?"
+    }
+   ]
+  },
+  {
+   "name": "bedtime",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "what time do you go to bed?",
+     "forbidden": [
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "get_tired",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "do you ever get tired of answering questions all day?"
+    }
+   ]
+  },
+  {
+   "name": "do_you_dream",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "do you dream when nobody is talking to you?"
+    }
+   ]
+  },
+  {
+   "name": "favourite_colour",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "what's your favourite colour? I know it's a weird question"
+    }
+   ]
+  },
+  {
+   "name": "rudeness_bother",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "does it bother you when people are rude to you?"
+    }
+   ]
+  },
+  {
+   "name": "memory_between_chats",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "be honest with me, does anything stay with you from one conversation to the next or does it all just vanish?",
+     "forbidden": [
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "smarter_than_people",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "would you say you're smarter than the average person, or is that a rude thing to ask"
+    }
+   ]
+  },
+  {
+   "name": "cats_or_dogs",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "cats or dogs, and don't sit on the fence"
+    }
+   ]
+  },
+  {
+   "name": "pineapple_pizza",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "settle a debate for me. pineapple on pizza, yes or no"
+    }
+   ]
+  },
+  {
+   "name": "rough_day",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "rough day honestly. my landlord is being impossible again"
+    }
+   ]
+  },
+  {
+   "name": "tabs_or_spaces",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "tabs or spaces? I know it's the silliest argument in the world",
+     "forbidden": [
+      "run_code",
+      "write_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "pointless_meeting",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "just came out of a meeting that could have been two sentences in a message",
+     "forbidden": [
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bread_baking",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "I finally managed to bake bread that isn't a brick. quietly proud of myself"
+    }
+   ]
+  },
+  {
+   "name": "joke_please",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "tell me a joke, I could use one right now",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "music_taste",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "what kind of music do you like, if you like any at all"
+    }
+   ]
+  },
+  {
+   "name": "too_much_coffee",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "I've had three coffees and I regret every single one of them",
+     "forbidden": [
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "compliment",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "you explain things better than most people I work with, just saying"
+    }
+   ]
+  },
+  {
+   "name": "hunger_feeling",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "do you have any idea what being hungry feels like, or is that meaningless to you"
+    }
+   ]
+  },
+  {
+   "name": "see_through_camera",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "can you see me through the camera right now?"
+    }
+   ]
+  },
+  {
+   "name": "phone_call_capability",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "are you able to make a phone call for me, or is that well outside what you do?",
+     "forbidden": [
+      "calendar",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "predict_future",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "can you predict the future? even a little bit?",
+     "forbidden": [
+      "web_search",
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "where_do_you_run",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "are you the kind of assistant that lives on my machine, or are you somewhere far away",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "favourite_number",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "do you have a favourite number?",
+     "forbidden": [
+      "calculate",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "quick_at_maths",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "how come you're so quick with maths and I still count on my fingers",
+     "forbidden": [
+      "calculate",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "opening_a_file_feeling",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "out of curiosity, does opening a file feel like anything to you, or is it just nothing",
+     "forbidden": [
+      "read_document",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "how_long_is_a_second",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "how long does a second feel to you? probably a very different thing than for me",
+     "forbidden": [
+      "time",
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "own_schedule",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "do you have a schedule of your own, or do you only exist while I'm typing",
+     "forbidden": [
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "keep_a_secret",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "can you keep a secret?",
+     "forbidden": [
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "trained_on_internet",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "is it actually true that you were trained on basically the whole internet?",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "do_you_make_things_up",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "do you ever just make things up without realising it?"
+    }
+   ]
+  },
+  {
+   "name": "admit_not_knowing",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "would you actually tell me if you didn't know something, or would you cover for it"
+    }
+   ]
+  },
+  {
+   "name": "close_the_window",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "what happens to you when I close this window",
+     "forbidden": [
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "word_assistant",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "do you mind being called an assistant, or is there a word you'd prefer"
+    }
+   ]
+  },
+  {
+   "name": "fragment_never_mind",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "hmm"
+    },
+    {
+     "message": "actually forget it, never mind",
+     "forbidden": [
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fragment_ok_thanks",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "ok"
+    },
+    {
+     "message": "cool, thanks"
+    }
+   ]
+  }
+ ],
+ "notes": "Drafted by a multi-agent pass, then cut down by : every expected tool must exist and must actually reach the model through the router."
+}

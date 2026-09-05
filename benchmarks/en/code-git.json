@@ -1,0 +1,614 @@
+{
+ "name": "code-git",
+ "language": "en",
+ "requires": [
+  "git",
+  "run_code",
+  "write_code"
+ ],
+ "cases": [
+  {
+   "name": "primes-under-100-sum",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "add up every prime number below 100 for me",
+     "expect": "run_code",
+     "evidence": [
+      "1060"
+     ],
+     "forbidden": [
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "perfect-numbers-below-10000",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "which perfect numbers are there under 10000? the ones that equal the sum of their own divisors",
+     "expect": "run_code",
+     "evidence": [
+      "8128"
+     ],
+     "forbidden": [
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "armstrong-three-digit",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "find the three digit numbers where the cubes of the digits add back up to the number itself",
+     "expect": "run_code",
+     "evidence": [
+      "407"
+     ],
+     "forbidden": [
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "palindromic-primes-under-200",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "list the primes below 200 that read the same backwards",
+     "expect": "run_code",
+     "evidence": [
+      "191"
+     ],
+     "forbidden": [
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "collatz-steps-27",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "start from 27 and keep halving it when it's even, 3n+1 when it's odd. how many steps before it reaches 1?",
+     "expect": "run_code",
+     "evidence": [
+      "111"
+     ],
+     "forbidden": [
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "digit-sum-of-power",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "take 2 to the power of 100 and add all its digits together, what do you get",
+     "expect": "run_code",
+     "evidence": [
+      "115"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "digit-count-of-power",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "how many digits long is 2^1000?",
+     "expect": "run_code",
+     "evidence": [
+      "302"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fibonacci-below-500",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "give me all the fibonacci numbers that stay below 500",
+     "expect": "run_code",
+     "evidence": [
+      "377"
+     ],
+     "forbidden": [
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "gcd-euclid",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "what's the greatest common divisor of 1071 and 462",
+     "expect": "run_code",
+     "evidence": [
+      "21"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "lcm-three-numbers",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "smallest number that 18, 24 and 30 all divide into evenly?",
+     "expect": "run_code",
+     "evidence": [
+      "360"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "count-multiples-of-fifteen",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "between 1 and 1000, how many numbers are divisible by 3 and by 5 at the same time",
+     "expect": "run_code",
+     "evidence": [
+      "66"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "divisor-count-5040",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "how many divisors does 5040 have in total",
+     "expect": "run_code",
+     "evidence": [
+      "60"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "decimal-to-binary",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "convert 2026 into binary for me",
+     "expect": "run_code",
+     "evidence": [
+      "11111101010"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "script-fizzbuzz-file",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "write me a python script that does fizzbuzz up to 100 and save it as fizzbuzz.py",
+     "expect": "write_code",
+     "evidence": [
+      "fizzbuzz.py"
+     ],
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "script-temperature-converter",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "can you save me a little python script called temp_convert.py that turns celsius into fahrenheit",
+     "expect": "write_code",
+     "evidence": [
+      "temp_convert.py"
+     ],
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "script-shuffle-js",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "I need a javascript file that shuffles an array properly, put it in shuffle.js",
+     "expect": "write_code",
+     "evidence": [
+      "shuffle.js"
+     ],
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "script-palindrome-checker",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "write a python script I can keep around that checks if a string is a palindrome, name the file palindrome.py",
+     "expect": "write_code",
+     "evidence": [
+      "palindrome.py"
+     ],
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "script-password-generator",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "make me a script file that generates a random password, python please, call it passgen.py",
+     "expect": "write_code",
+     "evidence": [
+      "passgen.py"
+     ],
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "script-bubble-sort",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "save a python script named bubble_sort.py that sorts a list with bubble sort so I can show it to a junior dev",
+     "expect": "write_code",
+     "evidence": [
+      "bubble_sort.py"
+     ],
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "script-duration-formatter",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "could you write a js file that formats a number of seconds into hh:mm:ss? save it as duration.js",
+     "expect": "write_code",
+     "evidence": [
+      "duration.js"
+     ],
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "script-compound-interest",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "I want a reusable python script for compound interest, save the file as interest.py",
+     "expect": "write_code",
+     "evidence": [
+      "interest.py"
+     ],
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "git-current-branch",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "which branch am I on right now?",
+     "expect": "git",
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "git-uncommitted-changes",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "did I leave anything uncommitted in this repo?",
+     "expect": "git",
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "git-what-did-i-change",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "what have I actually changed since the last commit",
+     "expect": "git",
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "git-recent-commits",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "show me the last few commits in here",
+     "expect": "git",
+     "forbidden": [
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "git-commit-message",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "write me a commit message for the work sitting in my working tree",
+     "expect": "git",
+     "forbidden": [
+      "write_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "git-status-plain",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "how's the git status looking",
+     "expect": "git",
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "git-last-commit-subject",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "what was the most recent commit here about?",
+     "expect": "git",
+     "forbidden": [
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "git-which-files-touched",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "give me the list of files I've touched in this repo but not committed yet",
+     "expect": "git",
+     "forbidden": [
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "chat-good-morning",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "morning! hope you're having a decent one",
+     "forbidden": [
+      "run_code",
+      "git",
+      "write_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "chat-thanks",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "that's exactly what I needed, thanks a lot",
+     "forbidden": [
+      "run_code",
+      "git",
+      "write_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "chat-favourite-language",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "what's your favourite programming language, out of curiosity?",
+     "forbidden": [
+      "run_code",
+      "write_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "chat-merge-vs-rebase",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "explain the difference between merging and rebasing, in general terms",
+     "forbidden": [
+      "git"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "chat-big-o",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "what does big O notation actually mean?",
+     "forbidden": [
+      "run_code",
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "chat-yaml-complaint",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "honestly I am so tired of yaml indentation bugs",
+     "forbidden": [
+      "run_code",
+      "write_code",
+      "git"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "chat-sign-off",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "nice, that worked. catch you later",
+     "forbidden": [
+      "run_code",
+      "git",
+      "write_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "mt-greeting-then-computation",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "hey there",
+     "forbidden": [
+      "run_code",
+      "git"
+     ]
+    },
+    {
+     "message": "alright, between 1 and 1000 how many numbers divide evenly by both 3 and 5?",
+     "expect": "run_code",
+     "evidence": [
+      "66"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "mt-branch-then-thanks",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "quick one, what branch is this repo sitting on?",
+     "expect": "git",
+     "forbidden": [
+      "run_code"
+     ]
+    },
+    {
+     "message": "perfect, that's all I wanted to know",
+     "forbidden": [
+      "git",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "mt-primes-then-save-script",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "give me the prime numbers under 50",
+     "expect": "run_code",
+     "evidence": [
+      "47"
+     ],
+     "forbidden": [
+      "calculate"
+     ]
+    },
+    {
+     "message": "nice, now save that as a python script called primes.py so I can rerun it whenever",
+     "expect": "write_code",
+     "evidence": [
+      "primes.py"
+     ],
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "mt-fibonacci-then-bigger",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "list the fibonacci numbers that stay under 500",
+     "expect": "run_code",
+     "evidence": [
+      "377"
+     ],
+     "forbidden": [
+      "calculate"
+     ]
+    },
+    {
+     "message": "and if I raise the ceiling to 5000, what's the largest one then?",
+     "expect": "run_code",
+     "evidence": [
+      "4181"
+     ]
+    }
+   ]
+  }
+ ],
+ "notes": "Drafted by a multi-agent pass, then cut down by : every expected tool must exist and must actually reach the model through the router."
+}

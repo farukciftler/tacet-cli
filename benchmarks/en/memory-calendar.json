@@ -1,0 +1,373 @@
+{
+ "name": "memory-calendar",
+ "language": "en",
+ "requires": [
+  "calendar",
+  "remember"
+ ],
+ "cases": [
+  {
+   "name": "remember-allergy",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Remember that I'm allergic to peanuts.",
+     "expect": "remember"
+    }
+   ]
+  },
+  {
+   "name": "remember-espresso",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Keep this in mind about me: I take my espresso with two sugars.",
+     "expect": "remember"
+    }
+   ]
+  },
+  {
+   "name": "remember-partner-name",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Remember my wife's name is Deniz.",
+     "expect": "remember"
+    }
+   ]
+  },
+  {
+   "name": "remember-shoe-size",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Save this about me, my shoe size is 43.",
+     "expect": "remember"
+    }
+   ]
+  },
+  {
+   "name": "remember-music-preference",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "I want you to remember that I can't stand background music while I work.",
+     "expect": "remember"
+    }
+   ]
+  },
+  {
+   "name": "remember-landlord",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Note this down for later: my landlord is called Mr Kaya.",
+     "expect": "remember"
+    }
+   ]
+  },
+  {
+   "name": "remember-list-all",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "What do you have saved about me so far?",
+     "expect": "remember"
+    }
+   ]
+  },
+  {
+   "name": "remember-list-everything",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Show me every note you're keeping about me.",
+     "expect": "remember"
+    }
+   ]
+  },
+  {
+   "name": "remember-forget-address",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Forget my old home address, I moved last month.",
+     "expect": "remember"
+    }
+   ]
+  },
+  {
+   "name": "remember-forget-diet",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Delete the note you kept about my diet please.",
+     "expect": "remember"
+    }
+   ]
+  },
+  {
+   "name": "remember-forget-everything",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Wipe everything you've stored about me, I want a clean slate.",
+     "expect": "remember"
+    }
+   ]
+  },
+  {
+   "name": "remember-recall-saved-note",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Look in your memory, what did I ask you to keep about my shoe size?",
+     "expect": "remember"
+    }
+   ]
+  },
+  {
+   "name": "calendar-today",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "What's on my calendar today?",
+     "expect": "calendar"
+    }
+   ]
+  },
+  {
+   "name": "calendar-tomorrow",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Do I have anything scheduled for tomorrow?",
+     "expect": "calendar"
+    }
+   ]
+  },
+  {
+   "name": "calendar-friday",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Check my calendar for Friday, would you?",
+     "expect": "calendar"
+    }
+   ]
+  },
+  {
+   "name": "calendar-monday-free",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Am I free on Monday afternoon or is something already booked?",
+     "expect": "calendar"
+    }
+   ]
+  },
+  {
+   "name": "calendar-sunday",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Anything on my schedule this Sunday?",
+     "expect": "calendar"
+    }
+   ]
+  },
+  {
+   "name": "calendar-day-after-tomorrow",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "See if I have anything the day after tomorrow.",
+     "expect": "calendar"
+    }
+   ]
+  },
+  {
+   "name": "calendar-first-appointment",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "What's my first appointment tomorrow?",
+     "expect": "calendar"
+    }
+   ]
+  },
+  {
+   "name": "calendar-remind-dentist",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Remind me to call the dentist tomorrow at 9.",
+     "expect": "calendar"
+    }
+   ]
+  },
+  {
+   "name": "calendar-remind-bins",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Set a reminder for tonight at 10 to take the bins out.",
+     "expect": "calendar"
+    }
+   ]
+  },
+  {
+   "name": "calendar-remind-medication",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Can you remind me to take my medication tomorrow morning at 8?",
+     "expect": "calendar"
+    }
+   ]
+  },
+  {
+   "name": "calendar-remind-call-mum",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Give me a nudge to call my mum on Sunday evening at 7.",
+     "expect": "calendar"
+    }
+   ]
+  },
+  {
+   "name": "chat-morning-greeting",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Morning! How's it going?"
+    }
+   ]
+  },
+  {
+   "name": "chat-thanks",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Thanks, that was really helpful."
+    }
+   ]
+  },
+  {
+   "name": "chat-how-memory-works",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Out of curiosity, how does your memory actually work under the hood?"
+    }
+   ]
+  },
+  {
+   "name": "chat-planner-opinion",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Do you think paper planners are better than digital ones, or is that just nostalgia?"
+    }
+   ]
+  },
+  {
+   "name": "chat-name-tips",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Any tips for remembering people's names at parties? I'm hopeless at it."
+    }
+   ]
+  },
+  {
+   "name": "chat-idle",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "No task right now, I'm just poking around to see what you're like."
+    }
+   ]
+  },
+  {
+   "name": "chat-compliment",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "You're a lot calmer to talk to than the last assistant I tried."
+    }
+   ]
+  },
+  {
+   "name": "multi-save-then-forget",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Remember that I drink my coffee black.",
+     "expect": "remember"
+    },
+    {
+     "message": "Actually, scrap that one, I've switched to tea. Forget it.",
+     "expect": "remember"
+    }
+   ]
+  },
+  {
+   "name": "multi-save-then-list",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Please keep this about me: my daughter's name is Lina.",
+     "expect": "remember"
+    },
+    {
+     "message": "And what else do you have stored about me right now?",
+     "expect": "remember"
+    }
+   ]
+  },
+  {
+   "name": "multi-calendar-then-reminder",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "What's on my calendar tomorrow?",
+     "expect": "calendar"
+    },
+    {
+     "message": "Alright, remind me to pack my laptop tonight at 8.",
+     "expect": "calendar"
+    }
+   ]
+  },
+  {
+   "name": "multi-greeting-then-save",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Hey there, good evening."
+    },
+    {
+     "message": "Anyway, remember that I'm vegetarian.",
+     "expect": "remember"
+    }
+   ]
+  },
+  {
+   "name": "multi-memory-then-schedule",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Remember that my gym is closed on Mondays.",
+     "expect": "remember"
+    },
+    {
+     "message": "Now show me what I have scheduled on Monday.",
+     "expect": "calendar"
+    }
+   ]
+  }
+ ],
+ "notes": "Drafted by a multi-agent pass, then cut down by : every expected tool must exist and must actually reach the model through the router."
+}

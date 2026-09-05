@@ -1,0 +1,719 @@
+{
+ "name": "arithmetic-time",
+ "language": "en",
+ "requires": [
+  "calculate",
+  "time"
+ ],
+ "cases": [
+  {
+   "name": "dinner-split-four",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "The dinner bill was 96 euros and there were four of us. What does each person owe?",
+     "expect": "calculate",
+     "evidence": [
+      "24"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "vat-on-invoice",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Add 20% VAT on top of 45 pounds for me.",
+     "expect": "calculate",
+     "evidence": [
+      "54"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tip-fifteen-total",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "The bill came to 84 and I want to add a 15% tip. What's the total?",
+     "expect": "calculate",
+     "evidence": [
+      "96.6"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "rent-percent-increase",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "My rent went from 750 to 825. What percent increase is that?",
+     "expect": "calculate",
+     "evidence": [
+      "10"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "three-to-the-fifth",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "What's 3 to the power of 5?",
+     "expect": "calculate",
+     "evidence": [
+      "243"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "parentheses-expression",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Work out (145 + 55) * 3 for me.",
+     "expect": "calculate",
+     "evidence": [
+      "600"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "grocery-receipt-sum",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "I spent 23.40, 8.75 and 12.10 at the shop today. What did that come to altogether?",
+     "expect": "calculate",
+     "evidence": [
+      "44.25"
+     ],
+     "forbidden": [
+      "run_code",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fuel-litres-price",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "I put in 45 litres and the pump price was 1.80 a litre. How much is that?",
+     "expect": "calculate",
+     "evidence": [
+      "81"
+     ],
+     "forbidden": [
+      "run_code",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "hourly-pay-week",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "I worked 37 hours this week at 19 an hour. What am I owed?",
+     "expect": "calculate",
+     "evidence": [
+      "703"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "room-square-metres",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "The living room is 4.5 by 3.2 metres. How many square metres is that?",
+     "expect": "calculate",
+     "evidence": [
+      "14.4"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "euro-to-dollar-given-rate",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Say a euro is worth 1.08 dollars. How many dollars would I get for 250 euros?",
+     "expect": "calculate",
+     "evidence": [
+      "270"
+     ],
+     "forbidden": [
+      "run_code",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "recipe-one-third",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "The recipe calls for 375 grams of flour but I only want to make a third of it. How much flour?",
+     "expect": "calculate",
+     "evidence": [
+      "125"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "percent-of-640",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "What is 12.5% of 640?",
+     "expect": "calculate",
+     "evidence": [
+      "80"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "budget-left-after-spend",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "I had 1200 in the account and spent 349 of it. How much is left?",
+     "expect": "calculate",
+     "evidence": [
+      "851"
+     ],
+     "forbidden": [
+      "run_code",
+      "db"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "stacked-discounts",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "The coat is 200 lira, 25% off on the tag, and they take another 10% off at the till. What do I end up paying?",
+     "expect": "calculate",
+     "evidence": [
+      "135"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "litres-three-fills",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "I filled the tank three times this month: 32, 45 and 28 litres. How many litres in total?",
+     "expect": "calculate",
+     "evidence": [
+      "105"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "price-per-bottle",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "A twelve pack of water costs 8.40. What's that per bottle?",
+     "expect": "calculate",
+     "evidence": [
+      "0.7"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "multiply-87-by-9",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Quick one, what's 87 times 9?",
+     "expect": "calculate",
+     "evidence": [
+      "783"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "seats-sold-percent",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "The hall has 480 seats and we sold 65% of them. How many tickets is that?",
+     "expect": "calculate",
+     "evidence": [
+      "312"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "order-of-operations",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Sanity check for me: 100 - 4 * 15, what does that come out as?",
+     "expect": "calculate",
+     "evidence": [
+      "40"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "what-time-is-it",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "What time is it?",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "todays-date",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "What's today's date?",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "which-weekday",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "What day of the week is it today?",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "day-of-the-month",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "What day of the month are we on?",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "days-until-new-year",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "How many days until new year?",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "days-until-christmas",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "How many days are left until christmas?",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "days-until-12-december",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "How many days do I have until 12 december?",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "days-until-1-june",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "How many days until 1 june?",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "time-in-istanbul",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Do you know what time it is in Istanbul right now?",
+     "expect": "time",
+     "forbidden": [
+      "web_search",
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "is-it-the-weekend",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Is it the weekend yet?",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "date-and-time-together",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Give me the date and the time right now.",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "greeting-only",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Hey there",
+     "forbidden": [
+      "calculate",
+      "time",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "plain-thanks",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Thanks, that helped a lot.",
+     "forbidden": [
+      "calculate",
+      "time",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "asks-about-privacy",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Do you run entirely on my machine, or does anything get sent off somewhere?",
+     "forbidden": [
+      "calculate",
+      "time",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "opinion-on-cooking",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Do you think learning to cook properly is worth the effort?",
+     "forbidden": [
+      "calculate",
+      "time",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tired-small-talk",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "I'm wrecked today, barely slept last night.",
+     "forbidden": [
+      "calculate",
+      "time",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "what-can-you-do",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "What kind of things can you actually help me with?",
+     "forbidden": [
+      "calculate",
+      "time",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bad-at-maths-remark",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "I've never been any good at maths, honestly.",
+     "forbidden": [
+      "calculate",
+      "time",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "never-mind",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Ah forget it, never mind.",
+     "forbidden": [
+      "calculate",
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "percent-then-double-it",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "What's 15% of 240?",
+     "expect": "calculate",
+     "evidence": [
+      "36"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    },
+    {
+     "message": "And if I double that?",
+     "expect": "calculate",
+     "evidence": [
+      "72"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "greeting-then-multiply",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Morning!",
+     "forbidden": [
+      "time",
+      "calculate"
+     ]
+    },
+    {
+     "message": "Can you work out 18 times 24 for me?",
+     "expect": "calculate",
+     "evidence": [
+      "432"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "date-then-countdown",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "What's the date today?",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "web_search"
+     ]
+    },
+    {
+     "message": "And how many days until 1 january?",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "installments-then-thanks",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "I paid the phone off in 6 monthly installments of 129. What did it cost me in the end?",
+     "expect": "calculate",
+     "evidence": [
+      "774"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    },
+    {
+     "message": "Perfect, thanks.",
+     "forbidden": [
+      "calculate",
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "clock-then-subtraction",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "What time is it right now?",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "web_search"
+     ]
+    },
+    {
+     "message": "Cheers. One more thing, what's 340 minus 175?",
+     "expect": "calculate",
+     "evidence": [
+      "165"
+     ],
+     "forbidden": [
+      "time",
+      "run_code"
+     ]
+    }
+   ]
+  }
+ ],
+ "notes": "Drafted by a multi-agent pass, then cut down by : every expected tool must exist and must actually reach the model through the router."
+}

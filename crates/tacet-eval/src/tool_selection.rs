@@ -140,6 +140,130 @@ impl Category {
 pub enum Language {
     Turkish,
     English,
+    Spanish,
+    French,
+    German,
+    Russian,
+    Chinese,
+}
+
+/// WHAT MAKES A LANGUAGE RECOGNISABLE, as data rather than as a `match` arm.
+///
+/// Two independent kinds of proof, and either is enough:
+///
+/// * `letters` — characters the OTHER supported languages do not write. For
+///   Turkish that is `ç ğ ı İ ö ş ü`; for Russian it is the whole Cyrillic
+///   block; for Chinese, any CJK ideograph. A single one of these settles the
+///   question by itself.
+/// * `words` — whole function words, compared for EQUALITY and never as
+///   substrings. The substring version is what this file already had to remove
+///   once: "için" contains "in", so every Turkish answer counted as English and
+///   a gate that no input could fail was being reported as passing.
+///
+/// THE WORD LISTS MUST NOT OVERLAP, which is not obvious and is the thing that
+/// breaks first when a language is added: Spanish and French both write "la",
+/// German and English both write "in". A shared word makes the claim vacuous in
+/// the same way the substring test did, so
+/// `no_two_languages_claim_the_same_function_word` fails the build over it.
+pub struct LanguageMarks {
+    pub code: &'static str,
+    pub letters: &'static str,
+    pub words: &'static [&'static str],
+}
+
+impl Language {
+    /// The code a benchmark file writes in its `language` field.
+    pub fn from_code(code: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|l| l.marks().code == code.to_lowercase())
+    }
+
+    pub const ALL: [Language; 7] = [
+        Language::English,
+        Language::Turkish,
+        Language::Spanish,
+        Language::French,
+        Language::German,
+        Language::Russian,
+        Language::Chinese,
+    ];
+
+    pub fn marks(self) -> LanguageMarks {
+        match self {
+            // `İ` (dotted capital I) is in the list and plain `I` is NOT: the
+            // two look alike in a font and are different characters, and
+            // including the ASCII one would let any capitalised English
+            // sentence pass as Turkish.
+            Language::Turkish => LanguageMarks {
+                code: "tr",
+                // `ö ü` are NOT here even though Turkish writes them: German writes
+                // them too, and a letter two languages share proves neither.
+                // What is left is still enough — `ğ ı İ ş` occur in no other
+                // language on this list.
+                letters: "çÇğĞıİşŞ",
+                words: &[
+                    "ve", "bir", "bu", "icin", "ile", "var", "yok", "gun", "saat", "tarih",
+                    "dosya", "not", "olarak", "kadar", "su", "da", "de", "sonra", "once", "kac",
+                    "ne",
+                ],
+            },
+            Language::English => LanguageMarks {
+                code: "en",
+                letters: "",
+                words: &[
+                    "the", "is", "and", "to", "in", "for", "it", "on", "of", "with", "a", "an",
+                    "are", "you", "your", "was", "has", "have", "there", "that", "this", "days",
+                    "day",
+                ],
+            },
+            // Spanish and French share "la", "le", "en", "des"… so neither list
+            // carries a word the other writes. `ñ` and `¿` do the heavy lifting.
+            Language::Spanish => LanguageMarks {
+                code: "es",
+                letters: "ñÑ¿¡",
+                words: &[
+                    "el", "los", "una", "que", "por", "para", "con", "como", "pero", "esta",
+                    "este", "son", "hay", "archivo", "fecha", "hora",
+                ],
+            },
+            Language::French => LanguageMarks {
+                code: "fr",
+                // No `ç`: Turkish writes it too. The accents below do not occur
+                // in any other supported language's proof set.
+                letters: "àèùâêîôûëïœÀÈÙÂÊÎÔÛ",
+                words: &[
+                    "les", "une", "dans", "sur", "pour", "avec", "vous", "est", "sont", "cette",
+                    "fichier", "heure", "jours", "aucun",
+                ],
+            },
+            Language::German => LanguageMarks {
+                code: "de",
+                // `ö ü` dropped for the same reason they left the Turkish row.
+                letters: "äÄß",
+                words: &[
+                    "der", "die", "das", "und", "nicht", "ist", "sind", "eine", "einen", "mit",
+                    "auf", "datei", "uhr", "tage", "keine",
+                ],
+            },
+            // A whole script is proof; the word list is a courtesy for an answer
+            // that happens to be transliterated.
+            Language::Russian => LanguageMarks {
+                code: "ru",
+                letters: "абвгдеёжзийклмнопрстуфхцчшщъыьэюяАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ",
+                words: &[],
+            },
+            Language::Chinese => LanguageMarks {
+                code: "zh",
+                // The CJK Unified Ideographs block is checked by range in
+                // `speaks`; a handful of the commonest characters are listed so
+                // the table stays readable and testable.
+                letters: "的是在有和文件时间日期没有",
+                words: &[],
+            },
+        }
+    }
 }
 
 /// A single user message and the tool expected from it.
@@ -1306,30 +1430,22 @@ fn speaks(lang: Language, answer: &str) -> bool {
     if words.is_empty() {
         return true;
     }
-    match lang {
-        Language::Turkish => {
-            // The letters English does not write. `İ` (dotted capital I) is in
-            // the list and plain `I` is NOT: the two look alike in a font and
-            // are different characters, and including the ASCII one would let
-            // any capitalised English sentence pass as Turkish.
-            const TURKISH_ONLY: &str = "çÇğĞıİöÖşŞüÜ";
-            if answer.chars().any(|c| TURKISH_ONLY.contains(c)) {
-                return true;
-            }
-            const TURKISH: &[&str] = &[
-                "ve", "bir", "bu", "icin", "ile", "var", "yok", "gun", "saat", "tarih", "dosya",
-                "not", "olarak", "kadar", "su", "da", "de", "sonra", "once", "kac", "ne",
-            ];
-            words.iter().any(|w| TURKISH.contains(&w.as_str()))
-        }
-        Language::English => {
-            const ENGLISH: &[&str] = &[
-                "the", "is", "and", "to", "in", "for", "it", "on", "of", "with", "a", "an", "are",
-                "you", "your", "was", "has", "have", "there", "that", "this", "days", "day",
-            ];
-            words.iter().any(|w| ENGLISH.contains(&w.as_str()))
-        }
+    let marks = lang.marks();
+    // A character the other supported languages do not write settles it alone.
+    if answer.chars().any(|c| marks.letters.contains(c)) {
+        return true;
     }
+    // Chinese by RANGE rather than by list: the block has tens of thousands of
+    // characters and an answer is free to use one that is not in the sample
+    // above.
+    if lang == Language::Chinese
+        && answer
+            .chars()
+            .any(|c| matches!(c, '\u{4e00}'..='\u{9fff}' | '\u{3400}'..='\u{4dbf}'))
+    {
+        return true;
+    }
+    words.iter().any(|w| marks.words.contains(&w.as_str()))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1630,6 +1746,26 @@ fn generation_counter(engine: &Arc<dyn EngineProvider>) -> tacet_engine::TokenCo
 /// VRAM, for whoever measures this again on a bigger card, where the answer may
 /// differ: four processes at a 40960 window took 22.8 GB of 24 GB — the weights
 /// are 2.5 GB and the rest is KV cache.
+/// WHERE THE TOOLS COME FROM, chosen by the caller rather than fixed here.
+///
+/// The suite and a benchmark want opposite things and both are right. The
+/// SUITE's catalog is compiled in and deliberately narrow — no network, no
+/// host-dependent tool — because it is the number this project publishes and it
+/// must not move when the reader installs an addon. A BENCHMARK's catalog is the
+/// one the machine actually has, MCP servers and addons included, because the
+/// whole question is "does it call MY tools".
+///
+/// A closure rather than an enum: `tacet-eval` must not learn how to start an
+/// MCP client to offer "the host catalog" as a variant, and the crate that
+/// already knows how hands it in.
+pub type CatalogFor<'a> = &'a dyn Fn(&Env, &SharedMemory) -> ToolCatalog;
+
+/// The suite's own catalog, as a `CatalogFor`. Every existing caller gets this
+/// and nothing about their measurement changes.
+pub fn suite_catalog(env: &Env, memory: &SharedMemory) -> ToolCatalog {
+    selection_catalog(env, memory)
+}
+
 pub fn run_selection(cases: &[SelectionCase], engine: &Arc<dyn EngineProvider>) -> SelectionReport {
     run_selection_with_options(cases, engine, None, false)
 }
@@ -1640,13 +1776,24 @@ pub fn run_selection_with_options(
     budget: Option<usize>,
     force_tool_name: bool,
 ) -> SelectionReport {
+    run_selection_in(cases, engine, budget, force_tool_name, &suite_catalog)
+}
+
+/// The body, with the catalog supplied. See `CatalogFor`.
+pub fn run_selection_in(
+    cases: &[SelectionCase],
+    engine: &Arc<dyn EngineProvider>,
+    budget: Option<usize>,
+    force_tool_name: bool,
+    catalog_for: CatalogFor<'_>,
+) -> SelectionReport {
     let started = std::time::Instant::now();
     let total = cases.len();
     let outcomes: Vec<SelectionOutcome> = cases
         .iter()
         .enumerate()
         .map(|(i, c)| {
-            let outcome = run_selection_case_with_options(c, engine, budget, force_tool_name);
+            let outcome = run_selection_case_in(c, engine, budget, force_tool_name, catalog_for);
             report_progress(i + 1, total, &c.name, started.elapsed());
             outcome
         })
@@ -1773,6 +1920,17 @@ pub fn run_selection_case_with_options(
     budget: Option<usize>,
     force_tool_name: bool,
 ) -> SelectionOutcome {
+    run_selection_case_in(case, engine, budget, force_tool_name, &suite_catalog)
+}
+
+/// The body, with the catalog supplied. See `CatalogFor`.
+pub fn run_selection_case_in(
+    case: &SelectionCase,
+    engine: &Arc<dyn EngineProvider>,
+    budget: Option<usize>,
+    force_tool_name: bool,
+    catalog_for: CatalogFor<'_>,
+) -> SelectionOutcome {
     let env = match Env::setup() {
         Ok(e) => e,
         Err(e) => {
@@ -1795,7 +1953,7 @@ pub fn run_selection_case_with_options(
         }
     };
     let memory = SharedMemory::in_memory();
-    let catalog = selection_catalog(&env, &memory);
+    let catalog = catalog_for(&env, &memory);
     let executor = ToolExecutor::new(catalog.clone());
     let traces = Arc::new(TraceCollector::new());
     let mut ctx = ToolContext::new(
@@ -2752,5 +2910,122 @@ mod trace_format {
         let cut = truncate_for_trace("first line\nsecond\tline\r\n");
         assert!(!cut.contains('\n') && !cut.contains('\t') && !cut.contains('\r'));
         assert_eq!(cut, "first line second line  ");
+    }
+}
+
+/// THE LANGUAGE TABLE IS ONLY A CLAIM IF THE LISTS ARE DISJOINT.
+///
+/// The gate this file already had to fix once was vacuous for a reason worth not
+/// repeating: "için" contains "in", so every Turkish answer satisfied the
+/// English claim and a check no input could fail was reported as passing.
+/// Widening from two languages to seven brings the same failure back in a new
+/// shape — Spanish and French both write "la", German and English both write
+/// "in" — and a shared word makes both claims meaningless rather than one.
+#[cfg(test)]
+mod language_table {
+    use super::*;
+
+    #[test]
+    fn no_two_languages_claim_the_same_function_word() {
+        for a in Language::ALL {
+            for b in Language::ALL {
+                if a == b {
+                    continue;
+                }
+                let (wa, wb) = (a.marks().words, b.marks().words);
+                let shared: Vec<&&str> = wa.iter().filter(|w| wb.contains(w)).collect();
+                assert!(
+                    shared.is_empty(),
+                    "{a:?} and {b:?} both claim {shared:?}; a word two languages write \
+proves neither"
+                );
+            }
+        }
+    }
+
+    /// The same rule for the letters. `ç` is written by Turkish AND French, so
+    /// it cannot be proof of either — this test is what caught that, and why
+    /// the French entry leans on `à è ù â ê î ô û ë ï œ` instead.
+    #[test]
+    fn no_two_languages_claim_the_same_letter() {
+        for a in Language::ALL {
+            for b in Language::ALL {
+                if a == b {
+                    continue;
+                }
+                let shared: Vec<char> = a
+                    .marks()
+                    .letters
+                    .chars()
+                    .filter(|c| b.marks().letters.contains(*c))
+                    .collect();
+                assert!(
+                    shared.is_empty(),
+                    "{a:?} and {b:?} both write {shared:?}; a letter two languages \
+share is proof of neither"
+                );
+            }
+        }
+    }
+
+    /// EVERY CODE IS DISTINCT AND ROUND-TRIPS. A benchmark file names its
+    /// language by code, so a duplicate or a typo silently selects the wrong
+    /// judge.
+    #[test]
+    fn every_language_has_a_distinct_code_that_parses_back() {
+        let mut codes: Vec<&str> = Language::ALL.iter().map(|l| l.marks().code).collect();
+        let before = codes.len();
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes.len(), before, "two languages share a code");
+        for l in Language::ALL {
+            assert_eq!(Language::from_code(l.marks().code), Some(l));
+            assert_eq!(Language::from_code(&l.marks().code.to_uppercase()), Some(l));
+        }
+        assert_eq!(Language::from_code("klingon"), None);
+    }
+
+    /// NOT VACUOUS IN EITHER DIRECTION: a real sentence in each language must
+    /// satisfy its own claim, and must NOT satisfy any other's.
+    #[test]
+    fn each_language_recognises_itself_and_no_other() {
+        let samples = [
+            (Language::English, "The file has 12 rows and no header."),
+            (Language::Turkish, "Dosyada 12 satır var, başlık yok."),
+            (
+                Language::Spanish,
+                "El archivo tiene 12 filas y ningún título.",
+            ),
+            (Language::French, "Les fichiers contiennent 12 lignes."),
+            (
+                Language::German,
+                "Die Datei hat 12 Zeilen und keine Kopfzeile.",
+            ),
+            (Language::Russian, "В файле 12 строк и нет заголовка."),
+            (Language::Chinese, "文件有12行，没有标题。"),
+        ];
+        for (lang, text) in samples {
+            assert!(speaks(lang, text), "{lang:?} must recognise {text:?}");
+            for other in Language::ALL {
+                if other == lang {
+                    continue;
+                }
+                assert!(
+                    !speaks(other, text),
+                    "{text:?} is {lang:?}, but {other:?} claimed it too"
+                );
+            }
+        }
+    }
+
+    /// A TEXT WITH NO WORDS IN IT IS NOT JUDGED — kept from the original, and
+    /// still the reason a correct short answer is not counted as a language
+    /// defect.
+    #[test]
+    fn an_answer_with_nothing_to_read_is_not_judged() {
+        for lang in Language::ALL {
+            assert!(speaks(lang, "1000."));
+            assert!(speaks(lang, "  "));
+        }
     }
 }

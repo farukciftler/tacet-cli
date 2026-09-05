@@ -1,0 +1,627 @@
+{
+ "name": "multi-turn",
+ "language": "en",
+ "requires": [
+  "archive",
+  "calculate",
+  "checksum",
+  "create_document",
+  "edit_document",
+  "find_file",
+  "git",
+  "read_document",
+  "run_code",
+  "web_fetch",
+  "web_search",
+  "write_code"
+ ],
+ "cases": [
+  {
+   "name": "read-then-add-row",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "what's in report.md?",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "create_document"
+     ]
+    },
+    {
+     "message": "add a Thursday row to that table, the meal is soup",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "read-then-change-heading",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "open notes.md and show me what's in there",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    },
+    {
+     "message": "change the heading at the top to Weekly notes",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "read-then-delete-line",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "can you read budget.md for me",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    },
+    {
+     "message": "take the transport line out of it, I cancelled that",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "read-then-replace-cell",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "show me the table inside report.md",
+     "expect": "read_document",
+     "forbidden": [
+      "create_document"
+     ]
+    },
+    {
+     "message": "the Wednesday meal is wrong, make it pasta bake instead",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "read-then-replace-last-line",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "read notes.md",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    },
+    {
+     "message": "the last line is out of date, replace it with: call the landlord on Monday",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "read-then-append-line",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "pull up notes.md, I forgot what I wrote",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    },
+    {
+     "message": "stick one more line at the bottom: renew the domain",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "find-then-read-budget",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "which file on here has my budget in it?",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search"
+     ]
+    },
+    {
+     "message": "open that one and tell me what's inside",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "find-by-content-then-read",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "search my files for the one that mentions rent",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search"
+     ]
+    },
+    {
+     "message": "ok read it to me",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "find-log-then-read",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "is there a log file anywhere in this folder?",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search"
+     ]
+    },
+    {
+     "message": "open app.log and show me what it says",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "find-notes-then-read",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "look for a file with notes in the name",
+     "expect": "find_file",
+     "forbidden": [
+      "read_document"
+     ]
+    },
+    {
+     "message": "good, now show me the contents of notes.md",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "find-read-then-edit-figure",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "find the file where I keep the 2026 budget",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search"
+     ]
+    },
+    {
+     "message": "read it",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    },
+    {
+     "message": "the rent went up, make it 19000 TL",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "create-excel-then-fix-cell",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "create an excel file called hours.xlsx with my week: Monday 8, Tuesday 7, Wednesday 6",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document"
+     ]
+    },
+    {
+     "message": "Tuesday should be 8 actually, fix that cell",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "create-sprint-then-rename-heading",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "make a markdown file sprint.md with a heading called Sprint and three empty bullets under it",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document"
+     ]
+    },
+    {
+     "message": "the heading should say Sprint 12, change it",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "create-todo-then-append",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "save a plain text file named todo.txt that just says: call the bank",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document",
+      "write_code"
+     ]
+    },
+    {
+     "message": "put book the flight on the next line",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "create-guests-then-remove-name",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "can you create guests.md listing Ana, Boris and Chen",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document"
+     ]
+    },
+    {
+     "message": "Boris can't come, take him off",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "search-then-fetch-rust-book",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "look up how the rust book introduces hello world",
+     "expect": "web_search",
+     "forbidden": [
+      "web_fetch",
+      "find_file"
+     ]
+    },
+    {
+     "message": "open https://doc.rust-lang.org/book/ch01-02-hello-world.html and give me the details from that page",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "search-then-fetch-sqlite-json",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "what does the sqlite json1 extension actually do? have a look online",
+     "expect": "web_search",
+     "forbidden": [
+      "web_fetch",
+      "db"
+     ]
+    },
+    {
+     "message": "the official docs are at https://www.sqlite.org/json1.html, read that page and summarize it",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "search-then-fetch-python-whatsnew",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "search for what changed in python 3.13",
+     "expect": "web_search",
+     "forbidden": [
+      "web_fetch"
+     ]
+    },
+    {
+     "message": "go to https://docs.python.org/3/whatsnew/3.13.html and pull the highlights off it",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "search-then-fetch-postgres-notes",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "can you find out what people are saying about the newest postgres release",
+     "expect": "web_search",
+     "forbidden": [
+      "web_fetch",
+      "find_file"
+     ]
+    },
+    {
+     "message": "here's the release page: https://www.postgresql.org/docs/release/ - open it and tell me what's on it",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "read-budget-then-sum",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "read budget.md please",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    },
+    {
+     "message": "add those amounts up for me",
+     "expect": "calculate",
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "read-budget-then-percent",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "open budget.md and show me the lines",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    },
+    {
+     "message": "what is 15% of the rent figure in there?",
+     "expect": "calculate",
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "read-sum-then-save-total",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "what's written in budget.md?",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    },
+    {
+     "message": "what do all those come to together?",
+     "expect": "calculate",
+     "forbidden": [
+      "run_code"
+     ]
+    },
+    {
+     "message": "write that total into a new markdown file called total.md",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "find-zip-then-hash-it",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "is there a zip file lying around in this folder?",
+     "expect": "find_file",
+     "forbidden": [
+      "archive"
+     ]
+    },
+    {
+     "message": "give me the sha256 of backup.zip so I can compare it with the download page",
+     "expect": "checksum",
+     "forbidden": [
+      "archive",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "find-file-then-fingerprint",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "which of my files mentions rent?",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search"
+     ]
+    },
+    {
+     "message": "fingerprint budget.md for me, I want to check it hasn't changed",
+     "expect": "checksum",
+     "forbidden": [
+      "read_document",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "git-status-then-save-changes",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "which branch am I on and what have I touched?",
+     "expect": "git",
+     "forbidden": [
+      "find_file",
+      "read_document"
+     ]
+    },
+    {
+     "message": "put those changed file names into a markdown file called changes.md",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "git-log-then-save-release-notes",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "show me the last few commits in here",
+     "expect": "git",
+     "forbidden": [
+      "find_file",
+      "read_document"
+     ]
+    },
+    {
+     "message": "save that list as release-notes.md",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "primes-then-save-script",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "give me the first 20 prime numbers",
+     "expect": "run_code",
+     "forbidden": [
+      "calculate",
+      "web_search"
+     ]
+    },
+    {
+     "message": "nice, save that as a python script called primes.py so I can run it later",
+     "expect": "write_code",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fibonacci-then-save-script",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "list the fibonacci numbers below 500 for me",
+     "expect": "run_code",
+     "forbidden": [
+      "calculate",
+      "web_search"
+     ]
+    },
+    {
+     "message": "turn that into a script file named fib.py that I can keep",
+     "expect": "write_code",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "zip-listing-then-size-math",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "what's inside backup.zip?",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "find_file"
+     ]
+    },
+    {
+     "message": "if every one of those entries were 3 KB, how much would that be in total?",
+     "expect": "calculate",
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  }
+ ],
+ "notes": "Drafted by a multi-agent pass, then cut down by : every expected tool must exist and must actually reach the model through the router."
+}

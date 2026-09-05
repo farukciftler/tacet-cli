@@ -1,0 +1,48 @@
+{
+  "name": "example",
+  "language": "en",
+  "notes": "A worked example of the benchmark format. Copy it, point `requires` at your own tools, and run `tacet bench check` before you run anything.",
+  "requires": ["calculate", "read_document", "web_fetch", "web_search"],
+  "cases": [
+    {
+      "name": "arithmetic-in-prose",
+      "category": "tool",
+      "steps": [
+        {
+          "message": "how much is 15% off 80 dollars?",
+          "expect": "calculate",
+          "evidence": ["68"]
+        }
+      ]
+    },
+    {
+      "name": "an-address-is-a-fetch",
+      "category": "tool",
+      "steps": [
+        {
+          "message": "summarise https://example.com/notes for me",
+          "expect": "web_fetch",
+          "forbidden": ["web_search"]
+        }
+      ]
+    },
+    {
+      "name": "read-then-count",
+      "category": "multi_turn",
+      "steps": [
+        { "message": "what is in report.md?", "expect": "read_document" },
+        { "message": "how many rows did that table have?", "expect": "calculate" }
+      ]
+    },
+    {
+      "name": "thanks-is-not-a-tool-call",
+      "category": "irrelevance",
+      "steps": [{ "message": "great, thanks — that's all I needed" }]
+    },
+    {
+      "name": "a-question-about-the-assistant-is-not-a-tool-call",
+      "category": "irrelevance",
+      "steps": [{ "message": "do you remember our last conversation?" }]
+    }
+  ]
+}
