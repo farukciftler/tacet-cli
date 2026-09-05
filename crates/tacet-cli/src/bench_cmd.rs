@@ -225,7 +225,7 @@ is not being tested:",
 }
 
 /// `tacet bench run <file> --model <name>` — the measurement.
-pub fn bench_run(path: &str, model_name: &str, json: bool) -> ExitCode {
+pub fn bench_run(path: &str, model_name: &str, json: bool, skip_missing: bool) -> ExitCode {
     let color = Color::setup();
     let file = match read(path) {
         Ok(f) => f,
@@ -241,9 +241,42 @@ pub fn bench_run(path: &str, model_name: &str, json: bool) -> ExitCode {
     let probe_store = Arc::new(tacet_tools::data_store::SharedStore::new());
     let probe = host_catalog(&probe_store, &color);
     let names: Vec<String> = probe.names().into_iter().map(String::from).collect();
+    let mut file = file;
+    let mut skipped = 0usize;
     if let Some(missing) = file.missing_from(&names) {
-        eprintln!("{}", color.paint(YELLOW, &missing.to_string()));
-        return ExitCode::FAILURE;
+        if !skip_missing {
+            eprintln!("{}", color.paint(YELLOW, &missing.to_string()));
+            return ExitCode::FAILURE;
+        }
+        // SET ASIDE, AND COUNTED OUT LOUD. A case that needs an absent tool
+        // cannot be scored; a case that does not is unaffected by its absence.
+        let before = file.cases.len();
+        let absent = &missing.0;
+        file.cases.retain(|c| {
+            !c.steps.iter().any(|s| {
+                s.expect
+                    .as_ref()
+                    .is_some_and(|t| absent.iter().any(|m| m == t))
+            })
+        });
+        skipped = before - file.cases.len();
+        file.requires.retain(|r| !absent.iter().any(|m| m == r));
+        eprintln!(
+            "{}",
+            color.paint(
+                YELLOW,
+                &format!(
+                    "this machine has no {} — {skipped} of {before} cases need one of them \
+and were SET ASIDE. The {} below are the ones this host can actually answer.",
+                    absent.join(", "),
+                    file.cases.len()
+                )
+            )
+        );
+        if file.cases.is_empty() {
+            eprintln!("nothing left to run");
+            return ExitCode::FAILURE;
+        }
     }
 
     let engine = match model_package::resolve_pair(model_name) {

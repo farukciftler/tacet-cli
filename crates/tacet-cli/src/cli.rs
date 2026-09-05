@@ -669,5 +669,16 @@ pub enum BenchJob {
         /// `eval --compare` reads, so two benchmark runs pair like two suite runs.
         #[arg(long)]
         json: bool,
+        /// Instead of refusing the whole file when a tool is missing, RUN THE
+        /// CASES THAT DO NOT NEED IT and say how many were set aside.
+        ///
+        /// The refusal is the right default: a case scored without its tool is a
+        /// model failure that never happened. But a file written for a Mac and
+        /// run on a Linux box is a real situation, and throwing away the 40
+        /// comparable cases to avoid mis-scoring the 6 is the wrong trade when
+        /// the exclusion is REPORTED. It is the same choice `eval --compare`
+        /// makes for a catalog mismatch.
+        #[arg(long)]
+        skip_missing: bool,
     },
 }
