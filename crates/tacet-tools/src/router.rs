@@ -93,6 +93,19 @@ pub enum IntentProfile {
     /// Is this file what it claims to be — checksums, digests, "are these two
     /// the same file".
     Integrity,
+    /// A sentence that has STRUCTURE HIDDEN IN IT: a request to be turned into a
+    /// search filter, a message to be classified.
+    ///
+    /// ONE PROFILE FOR TWO TOOLS, and it is worth saying why rather than
+    /// splitting it. The two families share nothing in their vocabulary — "where
+    /// can I take the kids" against "what does this reply mean" — so a shared
+    /// profile lifts both on either message. What separates them is the second
+    /// half of `tool_score`: the profile score is multiplied by the hints matched
+    /// on THE TOOL'S OWN name and description, and `search_filter` matches
+    /// "search"/"filter"/"request" where `message_intent` matches
+    /// "message"/"intent"/"classif". A second profile would buy the same
+    /// separation for twice the table.
+    Extract,
 }
 
 impl IntentProfile {
@@ -121,7 +134,7 @@ impl IntentProfile {
     /// The STANDING guarantees are `every_expected_tool_reaches_the_model` and
     /// `a_connected_server_does_not_push_the_expected_tool_out_of_the_budget`
     /// over in `tacet_eval::routing`.
-    pub const ALL: [IntentProfile; 11] = [
+    pub const ALL: [IntentProfile; 12] = [
         IntentProfile::Document,
         IntentProfile::DocEdit,
         IntentProfile::Clock,
@@ -133,10 +146,12 @@ impl IntentProfile {
         IntentProfile::Memory,
         IntentProfile::Archive,
         IntentProfile::Integrity,
+        IntentProfile::Extract,
     ];
 
     pub fn name(&self) -> &'static str {
         match self {
+            IntentProfile::Extract => "extract",
             IntentProfile::Document => "document",
             IntentProfile::DocEdit => "doc-edit",
             IntentProfile::Clock => "clock",
@@ -601,6 +616,27 @@ impl IntentProfile {
                 // dropping it costs nothing: "unzip invoices.zip" and "what is
                 // in backup.zip" both already fire on "zip".
             ],
+            IntentProfile::Extract => &[
+                // THE SEARCH-FILTER HALF: a request for places or things to do,
+                // with the qualifiers a person actually writes.
+                "places to",
+                "things to do",
+                "where can i take",
+                "somewhere to",
+                "what is there to do",
+                "free places",
+                "kid friendly",
+                "with the kids",
+                "family friendly",
+                // THE MESSAGE half. "message" alone is deliberately absent: it
+                // sits inside "commit message", which belongs to `git`.
+                "what does this message",
+                "what does this reply",
+                "reply means",
+                "classify this",
+                "what do they mean by",
+                "sent me this",
+            ],
             IntentProfile::Integrity => &[
                 "checksum",
                 // BOTH SPELLINGS, AND THE HYPHEN IS THE REASON. Matching is a
@@ -652,6 +688,36 @@ impl IntentProfile {
     /// tool it needed. Three of the Turkish suite's five failures were this.
     fn locale_triggers(&self) -> &'static [&'static str] {
         match self {
+            // The seven-language shape of the same two questions. Turkish first
+            // because it is the one with a natively-authored suite behind it.
+            IntentProfile::Extract => &[
+                "gidilebilecek",
+                "cocukla",
+                "ucretsiz yerler",
+                "gezilecek yerler",
+                "gidilecek yerler",
+                "nereye gidebilirim",
+                "ne yapilir",
+                "bu mesaj ne",
+                "ne demek istiyor",
+                "bu ne demek",
+                "ne anlama geliyor",
+                "que hacer",
+                "sitios para",
+                "que quiere decir",
+                "que faire",
+                "endroits",
+                "que veut dire",
+                "was kann man",
+                "orte fur",
+                "was bedeutet",
+                "куда сходить",
+                "что делать",
+                "что значит",
+                "去哪里",
+                "有什么好玩",
+                "什么意思",
+            ],
             IntentProfile::Document => &[
                 "belge",
                 "rapor",
@@ -1012,6 +1078,9 @@ impl IntentProfile {
     /// if it did not exist. The name and the description are scanned together.
     fn tool_hints(&self) -> &'static [&'static str] {
         match self {
+            // WHAT SEPARATES THE TWO TOOLS THAT SHARE THIS PROFILE. The profile
+            // score is the same for both; the product with these hints is not.
+            IntentProfile::Extract => &["filter", "search", "intent", "message", "classif"],
             IntentProfile::Document => &[
                 // "spreadsheet" WAS ADDED HERE AND THEN TAKEN BACK OUT, and the
                 // measurement is worth more than the line would have been.

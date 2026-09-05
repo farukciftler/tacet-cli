@@ -357,7 +357,27 @@ impl Tool for WebSearchTool {
             let trace = ctx.start_chip("globe", &format!("searching · {query}"));
             let request_url = self.client.request_url(query, None);
 
-            let outcome = match self.client.search(query, None) {
+            // THE SEARCH, OR THE RECORDING OF ONE. See `crate::cassette`: a live
+            // search cannot be a benchmark, because the answer changes while
+            // nobody is looking. With `TACET_WEB_CASSETTE` set this reads the
+            // frozen result and opens no socket; with `TACET_WEB_RECORD` set it
+            // searches for real and writes the result down. With neither — the
+            // ordinary case, and every user — nothing here changes.
+            let searched = match crate::cassette::replay(query) {
+                Ok(Some(recorded)) => Ok(recorded),
+                Err(why) => {
+                    return ToolOutcome::failed(&tacet_kernel::ToolError::InvalidArgument(why));
+                }
+                Ok(None) => {
+                    let live = self.client.search(query, None);
+                    if let Ok(results) = &live {
+                        crate::cassette::record(query, results);
+                    }
+                    live
+                }
+            };
+
+            let outcome = match searched {
                 Ok(raw_results) => {
                     let total = raw_results.len();
                     let words = keywords(query);

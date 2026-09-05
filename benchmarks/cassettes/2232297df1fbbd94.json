@@ -1,0 +1,125 @@
+{
+  "query": "big earthquakes reported in the last few days",
+  "results": [
+    {
+      "source": "earthquake.usgs.gov",
+      "summary": "USGS Magnitude 2.5+ Earthquakes, Past Day. 110 Earthquakes.",
+      "title": "Latest Earthquakes",
+      "url": "https://earthquake.usgs.gov/earthquakes/map/"
+    },
+    {
+      "source": "earthquake.usgs.gov",
+      "summary": "3.0. 41 km NW of Toyah, Texas. 2026-09-04 04:35:24 (UTC) · 4.1. 101 km SSE of Sand Point, Alaska. 2026-09-04 03:33:10 (UTC) · 5.0. 236 km ESE of Attu Station, ...",
+      "title": "Latest Earthquakes",
+      "url": "https://earthquake.usgs.gov/legacy/map/"
+    },
+    {
+      "source": "earthquake.usgs.gov",
+      "summary": "USGS Magnitude 2.5+ Earthquakes, Past Week. 372 Earthquakes. Only List Earthquakes Shown on Map. Format. Magnitude. Sort. Newest First. 2.7. 3 km SW of ...",
+      "title": "USGS Magnitude 2.5+ Earthquakes, Past Week",
+      "url": "https://earthquake.usgs.gov/earthquakes/map/?range=week"
+    },
+    {
+      "source": "earthquakelist.org",
+      "summary": "Earthquakes appear here a few minutes after occurring. List of latest earthquakes. Date and Time, Magnitude, Location. -69799 seconds ago",
+      "title": "Latest Earthquakes Happening Now - Earthquake List",
+      "url": "https://earthquakelist.org/latest-earthquakes-today/"
+    },
+    {
+      "source": "earthquakes.bgs.ac.uk",
+      "summary": "The British Geological Survey provides up-to-date information on recent and historical earthquakes, educational resources, and seismic hazard services.",
+      "title": "Significant world earthquakes in the last 60 days",
+      "url": "https://earthquakes.bgs.ac.uk/earthquakes/recent_world_events.html"
+    },
+    {
+      "source": "www.artemis.bm",
+      "summary": "USGS recent significant earthquakes from the last 30 days · M 5.4 – 21 km WNW of Jiangyou, China · M 6.3 – 84 km SSW of Nikolski, Alaska · M 5.2 – 2 km W of Las ...",
+      "title": "Recent Earthquakes - Artemis.bm",
+      "url": "https://www.artemis.bm/recent-earthquakes/"
+    },
+    {
+      "source": "www.642weather.com",
+      "summary": "Earthquakes Worldwide 4.0+ Last 7 Days ; 266 km W of Houma, Tonga, 4.2, 01890411746 mi ; 109 km NW of Hicks Bay, New Zealand, 4.5, 01727510734 mi ; 137 km S of ...",
+      "title": "Earthquakes Worldwide Last 7 Days | Long Beach, WA USA",
+      "url": "https://www.642weather.com/weather/earthquakes-world.php"
+    },
+    {
+      "source": "earthquaketrack.com",
+      "summary": "There have been: (M1.5 or greater) · 181 earthquakes in the past 24 hours · 1,243 earthquakes in the past 7 days · 5,261 earthquakes in the past 30 days · 57,737 ...",
+      "title": "Map of Earthquakes Today",
+      "url": "https://earthquaketrack.com/"
+    },
+    {
+      "source": "www.worlddata.info",
+      "summary": "If two tectonic plates move towards each other, they fold up at the edges and whole mountain ranges are formed over a long period of time. However, most of ...",
+      "title": "Most recent earthquakes worldwide - Worlddata.info",
+      "url": "https://www.worlddata.info/earthquakes.php"
+    },
+    {
+      "source": "www.bbc.com",
+      "summary": "All the latest content about Earthquakes from the BBC.",
+      "title": "Earthquakes - BBC News",
+      "url": "https://www.bbc.com/news/topics/cx250ppxpygt"
+    },
+    {
+      "source": "www.geonet.org.nz",
+      "summary": "Recent Quakes · Weak earthquake (An hour ago). Fri Sep 4 2026 6:49 AM · Weak earthquake (Yesterday). Thu Sep 3 2026 11:11 AM · Weak earthquake (Yesterday). Thu Sep ...",
+      "title": "Quakes - Weak and above - GeoNet",
+      "url": "https://www.geonet.org.nz/earthquake/weak"
+    },
+    {
+      "source": "www.cwa.gov.tw",
+      "summary": "Taiwan Map. M ≥ 6.0 Earthquake in 3 days. M ≥ 6.0 Earthquake in 3 days. No. Largest Intensity, Details. Last Earthquake Reports. Last Earthquake Reports. No.",
+      "title": "Recent Earthquake Report | Central Weather Administration",
+      "url": "https://www.cwa.gov.tw/V8/E/E/index.html"
+    },
+    {
+      "source": "seismologie.be",
+      "summary": "Date and time UTC, Epicentral coordinates, Z, Magnitude, Region, View. Lat. Long. 2026-08-24 14:10:17, -6.626, 127.460, 10.0, Mw 6.0, Banda Sea, View.",
+      "title": "Major earthquakes of the 6 last month with magnitude >= 6",
+      "url": "https://seismologie.be/en/seismology/worldwide-seismicity/major-earthquakes"
+    },
+    {
+      "source": "www.volcanodiscovery.com",
+      "summary": "The largest quake that occurred worldwide during the past 10 years was a magnitude 8.8 earthquake that hit Kamchatka, Russia, 1 year 5 weeks ago on Wednesday, ...",
+      "title": "Earthquakes Today: Latest Quakes Worldwide Past 24 Hours",
+      "url": "https://www.volcanodiscovery.com/earthquakes/today.html"
+    },
+    {
+      "source": "pnsn.org",
+      "summary": "Largest4.7Smallest-0.5. Mag. Event ID, Location, Time, Age, Depth. 1.8. UW ... 1 day, -0.14 mi. 1 2 3 4 5 … 13. 25. EARTHQUAKES · Recent Earthquakes · Volcanoes.",
+      "title": "Recent Earthquakes List - PNSN.org",
+      "url": "https://pnsn.org/events/list"
+    },
+    {
+      "source": "abcnews.com",
+      "summary": "... Indonesia. Aug 16. Show More. Latest Videos. Rescuers in Colombia race against time to find survivors as hundreds remain missing. Aug 12. Playlist · 10 Videos.",
+      "title": "Earthquakes - ABC News",
+      "url": "https://abcnews.com/alerts/Earthquakes"
+    },
+    {
+      "source": "scedc.caltech.edu",
+      "summary": "Click on an earthquake on the above map for more information. Update time = Fri Sep 4 15:00:00 2026. Here are the earthquakes appearing on this map, most recent ...",
+      "title": "List of Earthquakes for Los Angeles",
+      "url": "https://scedc.caltech.edu/recent/Maps/Los_Angeles.html"
+    },
+    {
+      "source": "www.aa.com.tr",
+      "summary": "26 Ağu 2026 ... 11 magnitude-7 or greater earthquakes have been recorded so far this year, compared with a long-term average of about 16 annually | Anadolu.",
+      "title": "EXPLAINER – Is the world seeing more major earthquakes this year?",
+      "url": "https://www.aa.com.tr/en/world/explainer-is-the-world-seeing-more-major-earthquakes-this-year/4037973"
+    },
+    {
+      "source": "www.earthquakescanada.nrcan.gc.ca",
+      "summary": "7 Ağu 2026 ... Recent significant seismic event reports · M2.9. 29 km SE of Penticton, BC 2026-08-18 23:17 PDT · M2.3. 2 km SSW of Saint-Donat-de-Montcalm, QC ...",
+      "title": "Earthquakes Canada / Séismes Canada - Natural Resources Canada",
+      "url": "https://www.earthquakescanada.nrcan.gc.ca/index-en.php"
+    },
+    {
+      "source": "earthquaketrack.com",
+      "summary": "Earthquake locations and epicenters today and in the last few days - the most recent earthquakes. ... The biggest earthquakes: today: 5.5 in Kuril'sk ...",
+      "title": "Today's Earthquakes",
+      "url": "https://earthquaketrack.com/recent"
+    }
+  ]
+}

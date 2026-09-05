@@ -4,6 +4,7 @@
 pub mod archive;
 pub mod calc;
 pub mod calendar;
+pub mod cassette;
 pub mod catalog;
 pub mod checksum;
 pub mod clipboard;
@@ -13,6 +14,7 @@ pub mod db;
 pub mod db_write;
 pub mod edit_document;
 pub mod executor;
+pub mod extract;
 pub mod find_file;
 pub mod git;
 pub mod http_call;

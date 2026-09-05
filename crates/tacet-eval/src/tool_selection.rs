@@ -1623,11 +1623,36 @@ pub fn ratio(passed: usize, total: usize) -> f64 {
 // The runner
 // ---------------------------------------------------------------------------
 
+/// TOOLS THE SUITE DELIBERATELY DOES NOT CARRY, because they have a benchmark
+/// of their own.
+///
+/// THIS IS A NARROW EXCEPTION TO A RULE THIS FILE OTHERWISE KEEPS — that eval and
+/// the shell must see the same catalog, because a selection measured over a
+/// different list measures a program nobody runs. It is made for two tools and
+/// for one reason: `search_filter` and `message_intent` exist to measure SLOT
+/// FILLING, which the suite has no way to score. The suite asks "was the right
+/// tool called"; these two are only interesting when you also ask "were the
+/// right five fields filled with values from the right closed sets", and that
+/// question lives in `benchmarks/tasks/`, where `evidence` can assert on the
+/// receipt they print.
+///
+/// The cost of NOT doing this is the reason it is done: adding them to the suite
+/// would move `tool_total` from 160 and make every number this project has
+/// published incomparable with the next one, to measure something the suite
+/// cannot see anyway.
+///
+/// `the_suite_carries_every_tool_it_is_shown` pins the list at two, so it cannot
+/// quietly become the place tools go to avoid being measured.
+pub(crate) const BENCHED_SEPARATELY: [&str; 2] = ["search_filter", "message_intent"];
+
 pub(crate) fn selection_catalog(env: &Env, memory: &SharedMemory) -> ToolCatalog {
     let (full, _, _) =
         tacet_tools::catalog::production_catalog(&env.store, memory, Some(FIXED_EPOCH));
     let mut c = ToolCatalog::new();
     for tool in full.tools() {
+        if BENCHED_SEPARATELY.contains(&tool.name()) {
+            continue;
+        }
         if TO_DRY.contains(&tool.name()) {
             c.add(Arc::new(DryTool(Arc::clone(tool))));
         } else {
@@ -1656,6 +1681,77 @@ fn announce_missing_tools(catalog: &ToolCatalog) {
             );
         }
     });
+}
+
+/// WHERE A DISTILLATION SET IS WRITTEN, when `TACET_DISTIL_DIR` is set.
+///
+/// WHAT THIS IS FOR. A 270M model cannot be taught to call tools from a
+/// hand-written dataset that nobody has time to write, and it should not be
+/// taught from a bigger model's output either — most of which is wrong. What it
+/// CAN be taught from is the subset of a bigger model's output that a benchmark
+/// scored as correct. The teacher is a 4B; the definition of "correct" is not a
+/// judge model but the same pass/fail the suite has always used.
+///
+/// ONLY PASSING STEPS ARE WRITTEN, and that is the whole discipline. A step that
+/// called the wrong tool, or called nothing, contributes nothing — its prompt is
+/// exactly the input where the student must NOT copy the teacher.
+///
+/// THE PROMPT IS THE RENDERED ONE, template and all, because that is the string
+/// the student will be shown at inference. A dataset built from the logical
+/// prompt would train the model on a format it never sees.
+fn distillation_dir() -> Option<std::path::PathBuf> {
+    tacet_kernel::env_var("TACET_DISTIL_DIR")
+        .map(std::path::PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+}
+
+/// One JSON object per line: `{"case":…,"prompt":…,"completion":…}`.
+///
+/// APPEND-ONLY AND ONE FILE PER PROCESS. Several benchmark files are run one
+/// after another and the set is the union of all of them; a file per process
+/// keeps two parallel runs from interleaving half-written lines.
+fn write_distillation(case: &str, pairs: &[(String, String)]) {
+    let Some(dir) = distillation_dir() else {
+        return;
+    };
+    if pairs.is_empty() {
+        return;
+    }
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("could not create {}: {e}", dir.display());
+        return;
+    }
+    let path = dir.join(format!("distil-{}.jsonl", std::process::id()));
+    let mut body = String::new();
+    for (prompt, completion) in pairs {
+        // A turn that produced nothing is not an example of anything.
+        if completion.trim().is_empty() {
+            continue;
+        }
+        let line = serde_json::json!({
+            "case": case,
+            "prompt": prompt,
+            "completion": completion,
+        });
+        body.push_str(&line.to_string());
+        body.push('\n');
+    }
+    if body.is_empty() {
+        return;
+    }
+    use std::io::Write;
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        Ok(mut f) => {
+            if let Err(e) = f.write_all(body.as_bytes()) {
+                eprintln!("could not append to {}: {e}", path.display());
+            }
+        }
+        Err(e) => eprintln!("could not open {}: {e}", path.display()),
+    }
 }
 
 /// THE GENERATION BUDGET THIS MEASUREMENT GIVES THE MODEL, built the way the
@@ -2000,6 +2096,7 @@ pub fn run_selection_case_in(
             truncate_for_trace(&step.message)
         ));
         let ticket = executor.new_turn();
+        let mut turn_pairs: Vec<(String, String)> = Vec::new();
         traces.reset();
         let selected: ToolCatalog = router.select(&step.message, &catalog).into_iter().collect();
         let selected_names: Vec<String> = selected.names().into_iter().map(String::from).collect();
@@ -2110,6 +2207,14 @@ pub fn run_selection_case_in(
                 }
             };
             let gen_secs = gen_started.elapsed().as_secs_f64();
+            // THE TEACHER'S OWN WORDS, kept only long enough to find out whether
+            // they were right. See `write_distillation`.
+            if distillation_dir().is_some() {
+                turn_pairs.push((
+                    prompt.text_with_template(engine.template()),
+                    generation.text.clone(),
+                ));
+            }
             trace(&format!(
                 "  turn {}/{} · {} tokens in {:.1}s ({:.1} tok/s) · stop={:?}",
                 turn + 1,
@@ -2152,6 +2257,10 @@ pub fn run_selection_case_in(
             Some(name) => called.iter().any(|c| c == name),
             None => called.is_empty(),
         };
+
+        if passed {
+            write_distillation(&case.name, &turn_pairs);
+        }
 
         let tool_outcomes_text: Vec<String> = turn_tools.iter().map(|t| t.text.clone()).collect();
         let answer_passed = passed && check_answer_quality(step, &answer, &tool_outcomes_text);
@@ -3026,6 +3135,38 @@ share is proof of neither"
         for lang in Language::ALL {
             assert!(speaks(lang, "1000."));
             assert!(speaks(lang, "  "));
+        }
+    }
+}
+
+/// THE EXCLUSION LIST CANNOT QUIETLY GROW.
+///
+/// `BENCHED_SEPARATELY` is a hole in the rule that eval and the shell see the
+/// same catalog, and a hole that anyone can widen is not an exception, it is a
+/// policy. Two entries, both named, both with a benchmark file behind them.
+#[cfg(test)]
+mod suite_coverage {
+    use super::*;
+
+    #[test]
+    fn the_suite_carries_every_tool_it_is_shown() {
+        assert_eq!(
+            BENCHED_SEPARATELY.len(),
+            2,
+            "a third tool has been excluded from the suite. That is allowed only when it \
+has a benchmark of its own that measures something the suite cannot — say so here, and \
+add the file, or give it two suite cases like every other tool."
+        );
+        for name in BENCHED_SEPARATELY {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../benchmarks/tasks")
+                .join(format!("{name}.json"));
+            assert!(
+                path.exists(),
+                "{name} is excluded from the suite on the promise of a benchmark, and \
+{} does not exist",
+                path.display()
+            );
         }
     }
 }

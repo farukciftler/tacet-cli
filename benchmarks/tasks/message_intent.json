@@ -1,0 +1,201 @@
+{
+ "name": "message_intent",
+ "requires": [
+  "message_intent"
+ ],
+ "notes": "A message someone sent -> its intent and the date or amount it names. `intent` is a required closed-vocabulary field, so the grammar cannot produce a fifth answer; `evidence` asserts on the receipt the tool prints. Bilingual, and therefore no `language` field.",
+ "cases": [
+  {
+   "name": "promised-friday",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Borçlu şöyle yazmış: 'Cuma günü ödeyeceğim, söz.' Bu ne anlama geliyor?",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=promised_date"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "promised-15th",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Müşteri sent me this: 'ayın 15inde hesabınıza yatıracağım' — bu mesaj ne demek?",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=promised_date"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "dispute-amount",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "He sent me this reply: 'I never ordered that, I owe you nothing.' What does this message mean?",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=dispute"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "dispute-tr",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Karşı taraf 'böyle bir borcum yok, yanlışınız var' demiş. Bu ne demek istiyor?",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=dispute"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "already-paid",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "They sent me this: 'I paid it last Tuesday, check your account.' What does this reply mean?",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=paid"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "already-paid-tr",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'Geçen hafta ödedim zaten, dekontu da yolladım' yazmış. Bu mesaj ne diyor?",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=paid"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "irrelevant-greeting",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "The reply was just: 'Happy new year to you and the team!' What does this message mean?",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=irrelevant"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "irrelevant-tr",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'İyi bayramlar, kolay gelsin' yazmış sadece. Bu ne demek?",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=irrelevant"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "promise-with-amount",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "classify this: 'I will send the 4500 TL on Monday'",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=promised_date"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "dispute-partial",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "what does this reply mean: 'I only owe half of that, the rest was cancelled'",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=dispute"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "paid-with-date",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "what do they mean by: 'transferred on the 3rd, it should be there'",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=paid"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "promise-vague-date",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "classify this: 'maaşımı alınca ödeyeceğim, ayın sonunda'",
+     "expect": "message_intent",
+     "evidence": [
+      "intent=promised_date"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "thanks-intent",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "thanks, got it"
+    }
+   ]
+  },
+  {
+   "name": "chat-intent",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "do you ever get tired of reading my messages?"
+    }
+   ]
+  },
+  {
+   "name": "tr-chat",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "nasılsın bugün?"
+    }
+   ]
+  },
+  {
+   "name": "opinion-intent",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "should I just forgive the debt, what would you do?"
+    }
+   ]
+  }
+ ]
+}
