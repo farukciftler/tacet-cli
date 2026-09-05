@@ -444,17 +444,67 @@ const CALL_MARKERS: [&str; 4] = ["```tool_code", "```tool", "```json", "<tool_ca
 /// `execute` and is validated against the schema there like any other, so a
 /// field wanting a number rejects `"3"` rather than silently coercing — the
 /// recovery layer is not a second, quieter validator.
+/// Where `needle` occurs in `haystack` as a WHOLE WORD, if it does.
+///
+/// A name character is a letter, a digit or `_` — the alphabet tool names are
+/// written in. `time` is a word in `"time"` and in `time(`, and is not one in
+/// `timeout` or `runtime`. Everything else that surrounds a name in a real call
+/// (quotes, colons, braces, parens, whitespace) is a boundary already.
+fn find_word(haystack: &str, needle: &str) -> Option<usize> {
+    let is_name = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut from = 0;
+    while let Some(rel) = haystack[from..].find(needle) {
+        let at = from + rel;
+        let before_ok = haystack[..at]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !is_name(c));
+        let after_ok = haystack[at + needle.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !is_name(c));
+        if before_ok && after_ok {
+            return Some(at);
+        }
+        from = at + needle.len();
+    }
+    None
+}
+
 fn recover_marked_call(raw: &str, catalog: &ToolCatalog) -> Option<ToolCall> {
     let marker = CALL_MARKERS.iter().find(|m| raw.contains(**m))?;
     let after = raw.split_once(*marker)?.1;
 
-    // The name is the first catalog tool the text mentions after the marker; a
-    // marker with no known name behind it is not a call.
-    let (name, rest) = catalog.tools().iter().find_map(|t| {
-        let n = t.name();
-        let at = after.find(n)?;
-        Some((n.to_string(), &after[at + n.len()..]))
-    })?;
+    // The name is the catalog tool the text mentions EARLIEST after the marker;
+    // a marker with no known name behind it is not a call.
+    //
+    // A WHOLE WORD, NOT A SUBSTRING, and the difference executed a tool.
+    // `after.find(name)` matched `time` inside the key `"timeout"`, so this
+    // prose —
+    //
+    //     Sure. The settings block looks like this:
+    //     ```json
+    //     {"timeout": 30, "kind": "date"}
+    //     ```
+    //
+    // — recovered as a `time` call and RAN, because `kind` then satisfied that
+    // tool's required field. Nothing in the text names a tool; the model was
+    // showing an example.
+    //
+    // EARLIEST IN THE TEXT, NOT FIRST IN THE CATALOG, for the same reason. The
+    // old `find_map` took whichever tool the catalog happened to list first, so
+    // a `time` buried inside a later word outranked the real name sitting at the
+    // front of the JSON. Position in the text is the only ordering the model
+    // controls, and the only one that means anything here.
+    let (name, rest) = catalog
+        .tools()
+        .iter()
+        .filter_map(|t| {
+            let n = t.name();
+            find_word(after, n).map(|at| (at, n.to_string(), &after[at + n.len()..]))
+        })
+        .min_by_key(|(at, _, _)| *at)
+        .map(|(_, n, rest)| (n, rest))?;
     let tool = catalog.find(&name)?;
     let schema = tool.schema();
     let fields = schema.fields();
@@ -1957,6 +2007,60 @@ mod tests {
         .unwrap();
         assert_eq!(s.reason, ExecutionReason::Ok);
         assert_eq!(s.to_model, "data: 42");
+    }
+
+    /// A TOOL NAME BURIED IN A LONGER WORD IS NOT A CALL.
+    ///
+    /// This prose ran a tool. `recover_marked_call` looked for the name with a
+    /// plain substring search, `"timeout"` contains `time`, and `kind` then
+    /// satisfied that tool's required field — so an illustrative JSON block
+    /// became an executed call:
+    ///
+    /// ```text
+    /// Sure. The settings block looks like this:
+    /// ```json
+    /// {"timeout": 30, "kind": "date"}
+    /// ```
+    /// ```
+    ///
+    /// It is the fourth defect of one shape found in this codebase: a substring
+    /// test matching the thing around what it meant to match, rather than the
+    /// thing. The others were `name(` matching an echoed tool signature,
+    /// `<tool_response>` matching the system prompt's description of it, and a
+    /// whitespace fold that disagreed with its own trainer.
+    ///
+    /// KEY ORDER USED TO DECIDE IT, which is how thin the ice was:
+    /// `{"kind":"date","timeout":30}` was refused and the same object with the
+    /// keys swapped was executed, because the catalog was scanned in its own
+    /// order rather than the text's.
+    #[test]
+    fn prose_that_merely_contains_a_tool_name_inside_a_word_is_not_a_call() {
+        let store = std::sync::Arc::new(crate::data_store::SharedStore::new());
+        let memory = crate::memory::SharedMemory::in_memory();
+        let (catalog, _, _) =
+            crate::catalog::production_catalog_with(&store, &memory, Some(0), true);
+
+        for prose in [
+            "Sure. The settings block looks like this:\n```json\n{\"timeout\": 30, \"kind\": \"date\"}\n```\nThat is all.",
+            "Sure. The settings block looks like this:\n```json\n{\"kind\": \"date\", \"timeout\": 30}\n```\nThat is all.",
+            "A run takes some time; the runtime is logged.\n```json\n{\"kind\": \"date\"}\n```",
+        ] {
+            assert!(
+                recover_marked_call(prose, &catalog).is_none(),
+                "prose recovered as a call: {prose:?}"
+            );
+        }
+    }
+
+    /// The whole-word rule, at the level it is decided.
+    #[test]
+    fn a_name_is_found_only_on_word_boundaries() {
+        assert_eq!(find_word("{\"tool\": \"time\"}", "time"), Some(10));
+        assert_eq!(find_word("time(", "time"), Some(0));
+        assert_eq!(find_word("{\"timeout\": 30}", "time"), None);
+        assert_eq!(find_word("the runtime is logged", "time"), None);
+        // The earliest WHOLE-word occurrence wins over an earlier partial one.
+        assert_eq!(find_word("timeout then time", "time"), Some(13));
     }
 
     /// THE SEVEN SHAPES A REAL MODEL ACTUALLY WROTE, and the prose that must not
