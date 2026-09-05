@@ -25,20 +25,34 @@ pub const REPO: &str = "farukciftler/tacet-cli";
 
 const TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Every platform the updater will look for an asset on.
+///
+/// A TABLE RATHER THAN A `match`, so a test can walk it. The half-written
+/// contract this replaces cost nothing to write and everything to notice:
+/// ("aarch64", "linux") was mapped here long before the release workflow built
+/// that target, so a Raspberry Pi asked for an asset that was never published
+/// and `tacet update --install` reported it as "not published for your platform
+/// yet" — which is indistinguishable, from the user's side, from a release that
+/// simply had not happened. `the_release_workflow_builds_every_triple_we_ask_for`
+/// is the guard.
+pub const PLATFORMS: [(&str, &str, &str); 5] = [
+    ("aarch64", "macos", "aarch64-apple-darwin"),
+    ("x86_64", "macos", "x86_64-apple-darwin"),
+    ("x86_64", "linux", "x86_64-unknown-linux-gnu"),
+    ("aarch64", "linux", "aarch64-unknown-linux-gnu"),
+    ("x86_64", "windows", "x86_64-pc-windows-msvc"),
+];
+
 /// The target triple of the running binary.
 ///
 /// Built from `std::env::consts` rather than a build script: the table is short,
 /// and an explicit list makes an unsupported platform say so instead of guessing
 /// a triple that has no asset and reporting it as "not published yet".
 pub fn host_triple() -> Option<&'static str> {
-    Some(match (std::env::consts::ARCH, std::env::consts::OS) {
-        ("aarch64", "macos") => "aarch64-apple-darwin",
-        ("x86_64", "macos") => "x86_64-apple-darwin",
-        ("x86_64", "linux") => "x86_64-unknown-linux-gnu",
-        ("aarch64", "linux") => "aarch64-unknown-linux-gnu",
-        ("x86_64", "windows") => "x86_64-pc-windows-msvc",
-        _ => return None,
-    })
+    PLATFORMS
+        .iter()
+        .find(|(arch, os, _)| *arch == std::env::consts::ARCH && *os == std::env::consts::OS)
+        .map(|(_, _, triple)| *triple)
 }
 
 /// The name of the bare-binary asset for this platform.
@@ -585,6 +599,39 @@ mod tests {
             lowered.contains("not compared") || lowered.contains("not verified"),
             "the note has to say the digest is not checked: {note}"
         );
+    }
+
+    /// EVERY TRIPLE THE UPDATER ASKS FOR MUST BE ONE THE RELEASE BUILDS.
+    ///
+    /// This was a half-written contract for several releases: `PLATFORMS`
+    /// mapped ("aarch64", "linux") to `aarch64-unknown-linux-gnu` while the
+    /// release workflow built four targets that did not include it. A Raspberry
+    /// Pi running `tacet update --install` asked for an asset that was never
+    /// published and got back "not published for your platform yet" — a message
+    /// indistinguishable from a release that simply had not been cut.
+    ///
+    /// Nothing failed. No test went red, no build broke; the only symptom was
+    /// one class of user quietly unable to update. That is the shape of defect
+    /// worth a guard, so the two lists are compared here and adding a platform
+    /// to one without the other fails the build.
+    #[test]
+    fn the_release_workflow_builds_every_triple_we_ask_for() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.github/workflows/release.yml");
+        let workflow = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()));
+
+        for (arch, os, triple) in PLATFORMS {
+            // `target: <triple>,` is how the matrix names it; matching the comma
+            // keeps one triple from being satisfied by a prefix of another.
+            let named = workflow.contains(&format!("target: {triple},"));
+            assert!(
+                named,
+                "host_triple returns {triple} for ({arch}, {os}), but release.yml \
+                 builds no such target — that platform can download nothing, and \
+                 `tacet update` will call it unpublished"
+            );
+        }
     }
 
     #[test]

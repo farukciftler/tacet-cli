@@ -31,6 +31,19 @@ jobs:
           # architectures from either host, so the runner is not load-bearing.
           - { os: macos-latest,   target: x86_64-apple-darwin,       ext: "", features: metal }
           - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu,  ext: "", features: candle }
+          # ARM64 LINUX IS A NATIVE BUILD, NOT A CROSS-COMPILE, and the reason is
+          # the feature check below: it RUNS the binary it just built, which an
+          # x86 host cannot do for an aarch64 target. Dropping that check to
+          # cross-compile would trade a real guard for a cheaper job.
+          #
+          # It exists because the client half of the contract was already
+          # written: `update::host_triple` maps ("aarch64", "linux") to this
+          # triple, so a Raspberry Pi asked for an asset the release never
+          # produced and `tacet update --install` answered "not published for
+          # your platform". Single-board ARM Linux is where the edge work in
+          # esp32/ is heading, so it is the one platform that has to be
+          # installable rather than built from source.
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, ext: "", features: candle }
           - { os: windows-latest, target: x86_64-pc-windows-msvc,    ext: ".exe", features: candle }
     steps:
       - uses: actions/checkout@v4
