@@ -4,6 +4,7 @@
 pub mod archive;
 pub mod calc;
 pub mod calendar;
+pub mod cassette;
 pub mod catalog;
 pub mod checksum;
 pub mod clipboard;

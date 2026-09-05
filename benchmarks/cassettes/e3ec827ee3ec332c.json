@@ -1,0 +1,125 @@
+{
+  "query": "latest stable Rust version",
+  "results": [
+    {
+      "source": "blog.rust-lang.org",
+      "summary": "2 gün önce ... The Rust team has published a new point release of Rust, 1.98.1. Rust is a programming language that is empowering everyone to build reliable ...",
+      "title": "Announcing Rust 1.98.1 - Rust Blog",
+      "url": "https://blog.rust-lang.org/releases/latest/"
+    },
+    {
+      "source": "github.com",
+      "summary": "Cargo: update tar to 0.4.45 This resolves CVE-2026-33055 and CVE-2026-33056. Users of crates.io are not affected. See blog for more details.",
+      "title": "Releases · rust-lang/rust - GitHub",
+      "url": "https://github.com/rust-lang/rust/releases"
+    },
+    {
+      "source": "endoflife.date",
+      "summary": "21 Ağu 2026 ... A new stable release is produced every six weeks. Only the latest stable release receives patches. Each new stable release spends the preceding ...",
+      "title": "Rust | endoflife.date",
+      "url": "https://endoflife.date/rust"
+    },
+    {
+      "source": "rust-lang.org",
+      "summary": "Rust Logo Rust. Install · Learn · Playground · Tools ... If you've installed rustup in the past, you can update your installation by running rustup update .",
+      "title": "Install Rust - Rust Programming Language",
+      "url": "https://rust-lang.org/install.html"
+    },
+    {
+      "source": "github.com",
+      "summary": "1.29.0 - 2026-03-05. This new release of rustup comes with significant changes. The headline feature is better concurrency for certain operations, implemented ...",
+      "title": "CHANGELOG.md - rust-lang/rustup - GitHub",
+      "url": "https://github.com/rust-lang/rustup/blob/main/CHANGELOG.md"
+    },
+    {
+      "source": "rustfoundation.org",
+      "summary": "15 May 2025 ... A note from the Rust Foundation: Today, May 15, 2025, marks 10 years since the first stable release of Rust. To commemorate this milestone, ...",
+      "title": "10 Years of Stable Rust: An Infrastructure Story - The Rust Foundation",
+      "url": "https://rustfoundation.org/media/10-years-of-stable-rust-an-infrastructure-story/"
+    },
+    {
+      "source": "stackoverflow.com",
+      "summary": "22 Eyl 2023 ... Determine current stable rust version · 2. Another avenue of enquiry might be to look at how rustup determines the latest versions. · Funny that ...",
+      "title": "Determine current stable rust version - Stack Overflow",
+      "url": "https://stackoverflow.com/questions/77156044/determine-current-stable-rust-version"
+    },
+    {
+      "source": "datalust.co",
+      "summary": "4 Nis 2019 ... How Rust is shipped · stable: the currently supported version. A new minor version is cut every six weeks. · beta: candidate for the next ...",
+      "title": "Our journey from nightly to stable Rust - Seq",
+      "url": "https://datalust.co/blog/our-journey-from-rust-nightly-to-stable"
+    },
+    {
+      "source": "www.phoronix.com",
+      "summary": "1 Ara 2025 ... \"We are planning to propose that the minimum supported Rust version in Linux follows Debian Stable releases, with Debian 13 being the first one ...",
+      "title": "Rust Updates For Linux 6.19, Rust Minimum Baseline To ... - Phoronix",
+      "url": "https://www.phoronix.com/news/Linux-6.19-Rust"
+    },
+    {
+      "source": "releases.rs",
+      "summary": "Rust Versions # · Stable: 1.98.1 · Beta: 1.99.0 (1 October, 2026, 27 days left) · Nightly: 1.100.0 (12 November, 2026, 69 days left) ...",
+      "title": "Rust Changelogs: Rust Versions",
+      "url": "https://releases.rs/"
+    },
+    {
+      "source": "ubuntu.com",
+      "summary": "16 Tem 2026 ... Rustup snap¶ ; stable. releases are made every 6 weeks (with occasional point releases) ; beta. the version that will appear in the next stable ...",
+      "title": "Available Rust versions - Ubuntu for Developers",
+      "url": "https://ubuntu.com/developers/docs/reference/availability/rust/"
+    },
+    {
+      "source": "rust-lang.github.io",
+      "summary": "Stable publishes new releases every six weeks. When a new version of Rust is released, simply type rustup update to update: $ rustup ...",
+      "title": "Basic usage - The rustup book",
+      "url": "https://rust-lang.github.io/rustup/basics.html"
+    },
+    {
+      "source": "www.reddit.com",
+      "summary": "21 Mar 2024 ... How to find out the latest stable Rust version supporting a certain target? ... I want to release software that supports architectures like armv7 ...",
+      "title": "How to find out the latest stable Rust version supporting a certain ...",
+      "url": "https://www.reddit.com/r/rust/comments/1bju207/how_to_find_out_the_latest_stable_rust_version/"
+    },
+    {
+      "source": "en.wikipedia.org",
+      "summary": "The first stable release, Rust 1.0, was published in May 2015. The ... version are released to a new stable version. Every two or three years ...",
+      "title": "Rust (programming language) - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Rust_(programming_language)"
+    },
+    {
+      "source": "firefox-source-docs.mozilla.org",
+      "summary": "We ship official stable Firefox with a stable Rust. As a general rule, we update the Rust version ... Someone building Firefox can maintain the latest ...",
+      "title": "Rust Update Policy — Firefox Source Docs documentation - Mozilla",
+      "url": "https://firefox-source-docs.mozilla.org/writing-rust-code/update-policy.html"
+    },
+    {
+      "source": "hub.docker.com",
+      "summary": "1-trixie , 1.98-trixie , 1.98.0-trixie , trixie , 1 , 1.98 , 1.98.0 , latest ⁠ ... rust:<version>. This is the defacto image. If you are unsure about what your ...",
+      "title": "rust - Official Image - Docker Hub",
+      "url": "https://hub.docker.com/_/rust"
+    },
+    {
+      "source": "www.linuxfromscratch.org",
+      "summary": "The current version of rust's num_cpus crate now recognizes that cgroups can ... stable version of the System V books. Package Information. Download ...",
+      "title": "Rustc-1.97.1 - Linux From Scratch!",
+      "url": "https://www.linuxfromscratch.org/blfs/view/svn/general/rust.html"
+    },
+    {
+      "source": "doc.rust-lang.org",
+      "summary": "16 Tem 2026 ... Revert “Update wasm-related dependencies in CI”, fixing file descriptor leaks on the wasm32-wasip2 target. §Version 1.93.0 (2026-01-22). § ...",
+      "title": "Rust Release Notes",
+      "url": "https://doc.rust-lang.org/beta/releases.html"
+    },
+    {
+      "source": "wiki.archlinux.org",
+      "summary": "28 Nis 2026 ... To install the latest stable version of Rust from the official Arch Linux software repository, install the rust package. This will install ...",
+      "title": "Rust - ArchWiki",
+      "url": "https://wiki.archlinux.org/title/Rust"
+    },
+    {
+      "source": "rustup.rs",
+      "summary": "An installer for the systems programming language Rust · Run the following in your terminal, then follow the onscreen instructions. · To install Rust, download ...",
+      "title": "rustup.rs - The Rust toolchain installer",
+      "url": "https://rustup.rs/"
+    }
+  ]
+}

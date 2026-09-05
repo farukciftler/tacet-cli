@@ -1,0 +1,205 @@
+{
+ "name": "web",
+ "requires": [
+  "web_search",
+  "web_fetch"
+ ],
+ "notes": "Web search and fetch, measured against a RECORDED SearXNG. A live search cannot be a benchmark — the answer changes while nobody is looking — so the results are frozen in benchmarks/cassettes/ and replayed with TACET_WEB_CASSETTE. What is scored is ours: did it search rather than answer from memory, did an explicit address go to web_fetch rather than web_search, and did a greeting reach no tool at all.",
+ "cases": [
+  {
+   "name": "dollar-rate-tr",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "dolar bugün kaç lira?",
+     "expect": "web_search"
+    }
+   ]
+  },
+  {
+   "name": "weather-istanbul",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "istanbulda hava nasıl olacak yarın?",
+     "expect": "web_search"
+    }
+   ]
+  },
+  {
+   "name": "newest-rust",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "which stable Rust version is the newest one right now",
+     "expect": "web_search"
+    }
+   ]
+  },
+  {
+   "name": "air-quality-delhi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "how bad is the air quality in Delhi right now?",
+     "expect": "web_search"
+    }
+   ]
+  },
+  {
+   "name": "train-strike-france",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "is there a train strike going on in France?",
+     "expect": "web_search"
+    }
+   ]
+  },
+  {
+   "name": "who-won-cl",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "who won the champions league final this season?",
+     "expect": "web_search"
+    }
+   ]
+  },
+  {
+   "name": "petrol-germany",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "roughly what does a litre of petrol cost in Germany these days?",
+     "expect": "web_search"
+    }
+   ]
+  },
+  {
+   "name": "earthquakes-recent",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "have there been any big earthquakes reported in the last few days",
+     "expect": "web_search"
+    }
+   ]
+  },
+  {
+   "name": "bitcoin-price",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "how much is bitcoin going for today?",
+     "expect": "web_search"
+    }
+   ]
+  },
+  {
+   "name": "japan-pm",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "who is the prime minister of Japan these days?",
+     "expect": "web_search"
+    }
+   ]
+  },
+  {
+   "name": "eur-try",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "euro kaç lira şu an?",
+     "expect": "web_search"
+    }
+   ]
+  },
+  {
+   "name": "apple-event",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "what did Apple announce at their latest event? I missed it completely",
+     "expect": "web_search"
+    }
+   ]
+  },
+  {
+   "name": "fetch-example",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "summarise https://example.com/ for me",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fetch-wikipedia",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "read https://en.wikipedia.org/wiki/Kalman_filter and tell me what it is for",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fetch-rust-book",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "open https://doc.rust-lang.org/book/ch01-02-hello-world.html and give me the gist",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "thanks-web",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "thanks, that is everything"
+    }
+   ]
+  },
+  {
+   "name": "chat-web",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "do you actually browse the internet or is it a tool?"
+    }
+   ]
+  },
+  {
+   "name": "tr-tesekkur",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "sağ ol, halloldu"
+    }
+   ]
+  },
+  {
+   "name": "opinion-web",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "do you think the news is worth following daily?"
+    }
+   ]
+  }
+ ]
+}
