@@ -297,6 +297,28 @@ confirmed with `tacet why`. And three handed a URL called `web_search` instead o
 search result summary is not enough"*, which is exactly the wrong instruction for
 a message that already carries the address.
 
+**Both are fixed, and this is the first time the instrument has called an effect
+real.** The descriptions now say what those tools can do, the router puts a tool
+that requires a `url` first when the message carries one, and a call fenced as
+` ```json ` is recovered. Measured by re-running the whole suite on one rented
+RTX 3090 against a same-weights, same-host run made before the change:
+
+```
+paired on 184 cases
+  before   146/184  (79.3%)
+  after    155/184  (84.2%)
+  fixed 12   broke 3
+  delta +4.9 points   95% CI [+1.1, +9.2]
+  sign test p = 0.0352
+  verdict: REAL at 95%.
+```
+
+Nine of the twelve are the cases named above. The table further up is the **Metal**
+baseline and has not been re-measured since, so it still reads pre-fix — the two
+numbers are from different machines and `--compare` refuses to pair across
+either a different model or a different catalog, which is why this one is quoted
+on its own terms rather than folded into the table.
+
 **A refusal is usually ours.** An earlier run had six of them, and the cause was
 the system prompt: it opened with *"an assistant that runs entirely on the
 device. Data never leaves the device"* — a true statement about the architecture
