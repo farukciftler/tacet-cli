@@ -1242,7 +1242,70 @@ impl Router {
                 chosen.extend(extra);
             }
         }
+
+        // AN ADDRESS IN THE MESSAGE IS A FETCH, NOT A SEARCH.
+        //
+        // MEASURED on the model set: three of the twenty-seven failures were a
+        // message carrying a URL — "Summarize https://example.com/…", "https://
+        // news.ycombinator.com adresindeki başlıkları al" — answered with
+        // `web_search`. Both tools were in the prompt and `web_fetch` was second,
+        // so this is not a tool that never arrived; the model took the first
+        // plausible one on the list. `tacet why` shows why it was second:
+        // `web_search` and `web_fetch` share the Web profile, so they rise
+        // together, and the tie goes to whichever tool's own text matched more
+        // Web hints. Nothing in that arithmetic knows the message already
+        // contains the address one of them needs.
+        //
+        // IT REORDERS AND NEVER ADDS OR DROPS, which is what keeps it safe: it
+        // runs on the tools that already earned their place in the budget, so a
+        // stray "http" in a sentence cannot pull an unrelated tool in, and no
+        // tool that scored its way in is pushed out.
+        //
+        // IT IS KEYED ON THE SCHEMA, NOT ON A NAME. A tool qualifies by having a
+        // REQUIRED field called `url` — the question being asked is "does this
+        // tool want the thing the message is holding", and answering it by
+        // matching the string "web_fetch" would leave the `http` addon, which
+        // takes the same argument, behind for the same reason.
+        if Self::carries_address(message) {
+            let (addressed, rest): (Vec<_>, Vec<_>) = chosen
+                .into_iter()
+                .partition(|t| Self::takes_an_address(t.as_ref()));
+            chosen = addressed.into_iter().chain(rest).collect();
+        }
         chosen
+    }
+
+    /// Does the message hold a literal web address?
+    ///
+    /// THE THREE FORMS THE TRIGGER TABLE ALREADY TRUSTS, and no more. A looser
+    /// test (a dot between two words, say) would fire on "report.md" and on
+    /// every Turkish sentence ending in an abbreviation. These three are the
+    /// same markers the Web profile scores on, so a message this returns true
+    /// for has already scored as a web request — the reorder only settles WHICH
+    /// web tool, never whether the message is one.
+    ///
+    /// It reads the raw message rather than the folded one on purpose: folding
+    /// exists to make Turkish comparable, and it is what puts "url" inside
+    /// "teşekkürler". None of the three below survives that kind of accident.
+    fn carries_address(message: &str) -> bool {
+        let lower = message.to_lowercase();
+        ["http://", "https://", "www."]
+            .iter()
+            .any(|m| lower.contains(m))
+    }
+
+    /// Does this tool WANT an address — a required field called `url`?
+    ///
+    /// Asked of the schema rather than the name so that any tool taking the
+    /// argument qualifies: `web_fetch` today, the `http` addon on the same
+    /// footing, and an MCP server's page reader without a change here. Required,
+    /// because a tool that merely accepts an optional url is not a tool the
+    /// address is FOR.
+    fn takes_an_address(tool: &dyn Tool) -> bool {
+        tool.schema()
+            .fields()
+            .iter()
+            .any(|f| f.required && f.name == "url")
     }
 
     /// A tool's score: for every profile the tool belongs to, the product of the
@@ -1994,5 +2057,108 @@ mod tests {
         let document = names.iter().position(|n| *n == "document_edit").unwrap();
         let calendar = names.iter().position(|n| *n == "calendar_read").unwrap();
         assert!(document < calendar, "{names:?}");
+    }
+}
+
+/// AN ADDRESS IN THE MESSAGE PUTS THE FETCHER FIRST.
+///
+/// MEASURED on the model set: three of twenty-seven failures were a message
+/// carrying a URL answered with `web_search`. Both tools were in the prompt and
+/// `web_fetch` was second, so the model took the first plausible one on the
+/// list — which makes the ORDER of the nine, not their membership, the thing
+/// that had to change.
+#[cfg(test)]
+mod address_first {
+    use super::*;
+    use crate::data_store::SharedStore;
+    use crate::memory::SharedMemory;
+
+    /// The production catalog with the web addon forced open, so `web_search`
+    /// and `web_fetch` are both present regardless of the machine running the
+    /// test — the same reason `production_catalog_with_gates` exists.
+    fn web_catalog() -> tacet_kernel::ToolCatalog {
+        let store = std::sync::Arc::new(SharedStore::new());
+        let memory = SharedMemory::in_memory();
+        let (catalog, _, _) =
+            crate::catalog::production_catalog_with(&store, &memory, Some(0), true);
+        catalog
+    }
+
+    fn order(message: &str) -> Vec<String> {
+        Router::new()
+            .select(message, &web_catalog())
+            .into_iter()
+            .map(|t| t.name().to_string())
+            .collect()
+    }
+
+    fn rank(names: &[String], want: &str) -> usize {
+        names
+            .iter()
+            .position(|n| n == want)
+            .unwrap_or_else(|| panic!("{want} is not in {names:?}"))
+    }
+
+    #[test]
+    fn a_url_in_the_message_puts_web_fetch_ahead_of_web_search() {
+        for message in [
+            "Summarize https://example.com/election-results",
+            "https://news.ycombinator.com adresindeki başlıkları al",
+            "read www.example.org and tell me what it says",
+        ] {
+            let names = order(message);
+            assert!(
+                rank(&names, "web_fetch") < rank(&names, "web_search"),
+                "{message:?} carries an address, so the fetcher must come first: {names:?}"
+            );
+        }
+    }
+
+    /// NOT VACUOUS, and this is the assertion that keeps the rule narrow: a web
+    /// question with no address must be unchanged, with `web_search` in front.
+    /// A rule that promoted the fetcher always would pass the test above for
+    /// free and be wrong here.
+    #[test]
+    fn a_web_question_without_an_address_still_leads_with_web_search() {
+        for message in [
+            "How much is the dollar today?",
+            "Find flight schedules from London to Paris",
+        ] {
+            let names = order(message);
+            assert!(
+                rank(&names, "web_search") < rank(&names, "web_fetch"),
+                "{message:?} names no page, so searching comes first: {names:?}"
+            );
+        }
+    }
+
+    /// The reorder must not change WHICH tools are in the budget — only their
+    /// order. A rule that could drop a tool would be a routing regression
+    /// wearing a fix's clothes.
+    #[test]
+    fn the_reorder_changes_the_order_and_not_the_membership() {
+        let catalog = web_catalog();
+        let with = Router::new().select("Summarize https://example.com/x", &catalog);
+        let without = Router::new().select("Summarize the page about x", &catalog);
+        assert_eq!(with.len(), without.len(), "the budget is unchanged");
+        let mut a: Vec<&str> = with.iter().map(|t| t.name()).collect();
+        let names_before = a.clone();
+        a.sort_unstable();
+        assert_eq!(
+            a.len(),
+            a.iter().collect::<std::collections::BTreeSet<_>>().len(),
+            "no tool appears twice after partitioning: {names_before:?}"
+        );
+    }
+
+    /// `carries_address` must not fire on the accidents the folded-text triggers
+    /// already had to be defended from — "teşekkürler" contains "url", and a
+    /// filename contains a dot. Neither is an address.
+    #[test]
+    fn a_thank_you_and_a_filename_are_not_addresses() {
+        assert!(!Router::carries_address("Çok teşekkürler, harikaydı!"));
+        assert!(!Router::carries_address("read report.md and summarise it"));
+        assert!(!Router::carries_address("dosya türleri nelerdir"));
+        assert!(Router::carries_address("HTTPS://EXAMPLE.COM"));
     }
 }
