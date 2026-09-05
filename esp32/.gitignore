@@ -1,0 +1,6 @@
+# Built here, not shipped: the weights are 92 KiB of int8 that `train_slots.py`
+# reproduces in about a minute, and a binary blob in review is a blob nobody reads.
+slots.bin
+slots
+msgs.txt
+train.jsonl

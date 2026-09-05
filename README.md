@@ -591,6 +591,46 @@ which is 38 cases, and the composite over all 165.
 The recipe, the one dependency trap, and the constraint that teacher and student
 must share a chat template are in [training/](training/).
 
+### Down to 92 KiB
+
+A `choice[...]` field is not a generation problem. `search_filter`'s `audience`,
+`price` and `when` are five values each and `message_intent`'s `intent` is one of
+four — an argmax over a handful of classes, where the guarantee the automaton
+buys on a GPU is free because there is nothing to emit from.
+
+So the same job, as hashed character n-grams into one int8 weight per class.
+Trained on generated examples, scored on the 36 human-written cases in
+`benchmarks/tasks/`, against the distilled 135M on the held-out cases it was
+scored on:
+
+| | SmolLM2-135M | classifier |
+|---|---|---|
+| size | 528 MiB resident | **92 KiB** |
+| work per message | ~200 tokens generated | **4,380 integer ops** |
+| `search_filter` tool | 4/5 | **5/5** |
+| `search_filter` slots | 1/5 | **15/15** |
+| `message_intent` intent | 0/4 | **3/4** |
+
+**Which is what makes an ESP32-S3 a real target rather than a slide.** A decode
+step reads every weight once, so `tokens/s <= bandwidth / size`, and that board's
+PSRAM sustains ~40 MB/s: a 135M model at Q4 is 68 MB and cannot beat 0.59 tok/s
+even if it fitted, which it does not. At 92 KiB the weights are 18% of the
+*internal* SRAM and the bandwidth wall never applies — 4,380 ops is 46 µs at
+240 MHz, on the middle of three stated cycle assumptions.
+
+**What it cannot do is the honest half.** `city`, `promised_date` and `amount`
+are open text — span copying, not classification — and stay with the host. Nine
+cases is a small denominator. And the device figures are arithmetic from a
+measured operation count, not silicon: nothing has been run on a board.
+
+The two implementations must compute identical features or the model is being
+fed n-grams it was not fitted to, so the trainer and the C are compared
+accumulator by accumulator. Comparing their *answers* was not enough — breaking
+the letter folding changed every Turkish message's features and flipped no
+prediction at all. The tighter check found two real bugs in a minute: Python
+lowercases `İ` into two codepoints, and reading every non-ASCII character as two
+bytes mistakes an em dash for a Turkish letter. Details in [esp32/](esp32/).
+
 ### Seven languages
 
 The same Qwen3-4B against the natively-authored cores in `benchmarks/core/`

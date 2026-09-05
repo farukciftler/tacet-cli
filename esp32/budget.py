@@ -1,0 +1,66 @@
+"""What fits on an ESP32-S3, and what the arithmetic says it would cost.
+
+THIS IS ARITHMETIC, NOT SILICON. Nothing here was run on a device. What IS
+measured is the operation count (slots.c counts its own ops) and the model size
+(bytes on disk); the device figures are those two numbers divided by documented
+ESP32-S3 characteristics, and every assumption is printed next to its result so
+a reader with a board can check it rather than trust it.
+"""
+import json, os, subprocess
+
+CLOCK_HZ   = 240_000_000     # ESP32-S3, dual Xtensa LX7, one core used
+SRAM_BYTES = 512 * 1024      # internal SRAM
+FLASH_BYTES = 16 * 1024 * 1024
+PSRAM_BW   = 40e6            # octal PSRAM, conservative sustained bytes/s
+
+def measure_ops():
+    out = subprocess.run(["./slots", "500"], stdin=open("msgs.txt"),
+                         capture_output=True, text=True).stdout
+    ops = size = mean = None
+    for line in out.splitlines():
+        if "ops per inference" in line:
+            ops = float(line.split("=")[-1])
+        if "weights " in line and "bytes" in line:
+            size = int(line.split()[1])
+        if "mean" in line:
+            mean = float(line.split("mean")[1].split()[0])
+    return ops, size, mean
+
+ops, weights, mean_len = measure_ops()
+
+print("MEASURED (by slots.c, on the 36 benchmark messages)")
+print(f"  weights                {weights:,} bytes ({weights/1024:.1f} KiB), int8")
+print(f"  mean message           {mean_len:.0f} bytes")
+print(f"  ops per inference      {ops:,.0f}   (FNV hash + int8 accumulate)")
+print()
+print("ESP32-S3 BUDGET (arithmetic from the two numbers above)")
+print(f"  internal SRAM          {SRAM_BYTES//1024} KiB")
+print(f"  weights fit in SRAM    {'yes' if weights < SRAM_BYTES else 'no'}"
+      f"  — {100*weights/SRAM_BYTES:.0f}% of it, so no PSRAM and no bandwidth wall")
+print(f"  accumulators           23 int32 = 92 bytes")
+print(f"  fold buffer            1 KiB")
+print()
+for cpo, why in ((1.0, "optimistic: everything single-cycle"),
+                 (2.5, "likely: int8 load + add, no SIMD"),
+                 (5.0, "pessimistic: cache misses and loop overhead")):
+    us = ops * cpo / CLOCK_HZ * 1e6
+    print(f"  at {cpo:>3.1f} cycles/op       {us:6.1f} us per message   ({why})")
+print()
+
+print("WHAT A GENERATIVE MODEL WOULD COST INSTEAD")
+print("  A decode step reads every weight once, so tokens/s <= bandwidth / size.")
+print(f"  PSRAM sustained ~{PSRAM_BW/1e6:.0f} MB/s.\n")
+row = "  {:<28} {:>10} {:>9} {:>14}"
+print(row.format("model", "Q4 weights", "fits?", "ceiling"))
+for name, params in (("TinyStories-15M", 15e6),
+                     ("SmolLM2-135M", 135e6),
+                     ("FunctionGemma-270M", 270e6),
+                     ("Qwen3-0.6B", 600e6)):
+    size = params * 0.5                       # 4-bit
+    fits = "flash" if size < FLASH_BYTES else "no"
+    toks = PSRAM_BW / size
+    ceiling = f"{toks:.2f} tok/s" if toks >= 0.01 else "< 0.01 tok/s"
+    print(row.format(name, f"{size/1e6:.0f} MB", fits, ceiling))
+print()
+print(f"  the slot classifier          {weights/1024:.0f} KiB     SRAM   "
+      f"{1e6/(ops*2.5/CLOCK_HZ*1e6):>8,.0f} msg/s")
