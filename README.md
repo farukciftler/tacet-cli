@@ -484,6 +484,38 @@ Speed and memory, from the same runs: time to first token 340 ms (4B) / 200 ms
 (0.6B) / 122 ms (270M) on a 3090; decode 73 / 78 / 99 tok/s; peak resident 695 MiB
 for the 0.6B and 1622 MiB for the 270M at F16.
 
+### Distilling a tool-caller
+
+A 135M model cannot call tools in this format. After **five minutes** of training
+on a set Tacet generated from its own benchmarks, it can:
+
+| SmolLM2-135M-Instruct | before | after |
+|---|---|---|
+| started a call | 2.6% | **84.6%** |
+| valid **if** started | 100% | 100% |
+| **correct call** | **0.0%** | **61.5%** |
+| `search_filter` score | 44.0 | **76.4** |
+| decode | 127 tok/s | 127–134 tok/s |
+| peak resident | 529 MiB | 528 MiB |
+
+**The training data is the teacher's correct answers and nothing else.** With
+`TACET_DISTIL_DIR` set, every benchmark step that *passes* writes its rendered
+prompt and the call the teacher produced. A step that called the wrong tool
+contributes nothing — that prompt is exactly where the student must not copy the
+teacher. "Correct" is the benchmark's own pass/fail, not a judge model. Qwen3-4B
+over 665 cases gave 1031 pairs.
+
+**And the cost is the part worth reading twice: the irrelevance gate went from
+4/4 to 3/4.** Teaching a model to reach for tools makes it likelier to reach for
+one when it should not — which is why the composite weights irrelevance heaviest,
+so a gain in tool accuracy cannot quietly buy a loss in restraint. Slot filling
+barely moved (0/16 → 5/16): the student learned *which* tool, not *what to put in
+it*, and that is only visible because the task benchmarks score arguments
+separately.
+
+The recipe, the one dependency trap, and the constraint that teacher and student
+must share a chat template are in [training/](training/).
+
 ### Seven languages
 
 The same Qwen3-4B against the natively-authored cores in `benchmarks/core/`
