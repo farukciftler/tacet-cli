@@ -520,32 +520,73 @@ that calls nothing is also the one that costs the most memory.
 
 ### Distilling a tool-caller
 
-A 135M model cannot call tools in this format. After **five minutes** of training
-on a set Tacet generated from its own benchmarks, it can:
+A 135M model cannot call tools in this format. After three to five minutes of
+training on a set Tacet generated from its own benchmarks, it can. **Every column
+below is measured on 165 cases the student never saw** — a per-case 75/25 split
+of the whole suite, teacher run over the train half only. RTX 3090, 5 Sep 2026.
 
-| SmolLM2-135M-Instruct | before | after |
-|---|---|---|
-| started a call | 2.6% | **84.6%** |
-| valid **if** started | 100% | 100% |
-| **correct call** | **0.0%** | **61.5%** |
-| `search_filter` score | 44.0 | **76.4** |
-| decode | 127 tok/s | 127–134 tok/s |
-| peak resident | 529 MiB | 528 MiB |
+| SmolLM2-135M-Instruct | base | distilled | + composed set |
+|---|---|---|---|
+| **composite** | 47.7 | 54.9 | **62.4** |
+| irrelevance | **36/38** | 28/38 | 34/38 |
+| tool selection | 6/101 | 39/101 | 39/101 |
+| started a call | 0.0% | 63.6% | 63.6% |
+| valid **if** started | — | 100% | 100% |
+| **correct call** | **0.0%** | **36.4%** | 36.4% |
+| `search_filter` — tool | 0/5 | 1/5 | **4/5** |
+| `search_filter` — answer | 0/5 | 0/5 | 1/5 |
+| `message_intent` | 0/4 | 0/4 | 0/4 |
+| decode | 132 tok/s | 130–134 tok/s | 131–134 tok/s |
+| peak resident | 528 MiB | 528 MiB | 528 MiB |
+| training | — | 218 s | 300 s |
+
+**These replace an earlier table that was measured on the student's own training
+data.** That version reported 0% → 61.5% correct calls and a `search_filter`
+score of 44.0 → 76.4. The set had been generated from every benchmark file and
+the result then reported on three of them: 179 of the 1017 pairs came from the
+scored cases. Held out properly the gain is real and smaller — 0% → 36.4% — and
+the recipe now splits before it generates. See [training/](training/).
 
 **The training data is the teacher's correct answers and nothing else.** With
 `TACET_DISTIL_DIR` set, every benchmark step that *passes* writes its rendered
 prompt and the call the teacher produced. A step that called the wrong tool
 contributes nothing — that prompt is exactly where the student must not copy the
 teacher. "Correct" is the benchmark's own pass/fail, not a judge model. Qwen3-4B
-over 665 cases gave 1031 pairs.
+over the 498 train cases gave 764 pairs.
 
-**And the cost is the part worth reading twice: the irrelevance gate went from
-4/4 to 3/4.** Teaching a model to reach for tools makes it likelier to reach for
-one when it should not — which is why the composite weights irrelevance heaviest,
-so a gain in tool accuracy cannot quietly buy a loss in restraint. Slot filling
-barely moved (0/16 → 5/16): the student learned *which* tool, not *what to put in
-it*, and that is only visible because the task benchmarks score arguments
-separately.
+**THE COST IS THE ROW TO READ, and it is four times what this page used to
+claim.** Teaching a 135M model to reach for tools costs it restraint: irrelevance
+falls from 36/38 to 28/38 — eight messages that must not reach a tool now do. The
+old figure was "4/4 → 3/4", which is the same effect seen through a four-case
+sample. This is why the composite weights irrelevance at 0.40: a gain in tool
+accuracy is not allowed to quietly buy a loss in restraint.
+
+**The third column is what the set looks like when it is composed rather than
+poured.** The pairs are four different behaviours in one pile — calls, answers
+built from a tool result already in the prompt, correct abstentions, and argument
+extraction — and treating them as one is why the plain column loses restraint.
+Capping the answer turns at the number of call turns, tripling the handful of
+extraction rows and weighting the 171 abstentions ×2 recovers six of the eight
+irrelevance cases and takes `search_filter` from 1/5 to 4/5, for no loss
+anywhere: 62.4 against 54.9.
+
+**And the dial goes the other way too.** A further run capped the answers WITHOUT
+weighting the abstentions: tool selection rose to 48/101 and the gate fell
+further, to 27/38, for a composite of 57.9. Reaching and restraint trade against
+each other, the weights are where that trade is made, and the composite is what
+decides it — which is the whole reason irrelevance carries 0.40 of it.
+
+**Slot filling is where the honest limit is.** `search_filter` goes from calling
+nothing to picking the right tool 4 times out of 5 — and getting the answer right
+once. The student learned *which* tool, not *what to put in it*, and no weighting
+fixes that: the training half contains **13** argument-extraction rows, because
+that is how many of those cases the teacher passes. Tripling thirteen rows is
+thirty-nine. More cases have to be written. `message_intent` stays at 0/4
+throughout.
+
+The small denominators are the honest caveat: 5 and 4 cases for the task
+benchmarks, 11 for the gap. What carries weight here is the irrelevance axis,
+which is 38 cases, and the composite over all 165.
 
 The recipe, the one dependency trap, and the constraint that teacher and student
 must share a chat template are in [training/](training/).
