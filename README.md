@@ -514,8 +514,9 @@ all**. When the intervention is that rare and the sampler is not the difference,
 the remaining suspect is what the metric counts.
 
 Speed and memory from the same runs: time to first token 392 ms (4B) / 135 ms
-(0.6B); decode 64 / 128 tok/s; peak resident 933 MiB for the 4B at Q4_K_M and
-706 MiB for the 0.6B.
+(0.6B) / 142 ms (270M); decode 64 / 128 / 75 tok/s; peak resident 933 MiB for the
+4B at Q4_K_M, 706 MiB for the 0.6B, and 1622 MiB for the 270M at BF16 — the one
+that calls nothing is also the one that costs the most memory.
 
 ### Distilling a tool-caller
 
