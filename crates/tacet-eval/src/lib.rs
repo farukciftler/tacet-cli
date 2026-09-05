@@ -16,6 +16,7 @@
 //! directory and the directory is deleted on drop.
 
 pub mod analysis;
+pub mod bench;
 pub mod case;
 pub mod env;
 pub mod report;

@@ -111,6 +111,17 @@ pub enum Command {
         #[arg(long)]
         purge: bool,
     },
+    /// Runs a BENCHMARK FILE — a measurement somebody else wrote, against the
+    /// tools this machine actually has (addons and MCP included).
+    ///
+    /// Not the same thing as `eval`: that suite is compiled in and measures this
+    /// project against a deliberately narrow catalog, so its number does not
+    /// move when a reader installs an addon. A benchmark is a file, and the
+    /// question it asks is "does this assistant call MY tools".
+    Bench {
+        #[command(subcommand)]
+        job: BenchJob,
+    },
     /// Runs the eval set; the exit code depends on the success rate.
     Eval {
         #[arg(long)]
@@ -609,4 +620,31 @@ mod command_line {
             Some(Command::Update { install: true, .. })
         ));
     }
+}
+
+#[derive(Subcommand, Debug)]
+pub enum BenchJob {
+    /// Checks a benchmark file WITHOUT running a model: is it well formed, does
+    /// this machine have the tools it needs, and would the router even show the
+    /// expected tool to the model.
+    ///
+    /// WHY IT IS ITS OWN COMMAND: a case whose expected tool never reaches the
+    /// prompt scores as a model failure every time it is run, forever. That is
+    /// cheap to catch and expensive to leave in.
+    Check {
+        /// Path to the benchmark JSON.
+        file: String,
+    },
+    /// Runs the benchmark and prints the four axes and a score out of 100.
+    Run {
+        /// Path to the benchmark JSON.
+        file: String,
+        /// The local model folder (`~/models/<name>`).
+        #[arg(long)]
+        model: Option<String>,
+        /// Emit the raw report instead of the table — the same shape
+        /// `eval --compare` reads, so two benchmark runs pair like two suite runs.
+        #[arg(long)]
+        json: bool,
+    },
 }

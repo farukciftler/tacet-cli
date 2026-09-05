@@ -345,6 +345,66 @@ Two runs of anything differ by a case or two for no reason. If you take one numb
 away from this section, take that one — and note that the instrument volunteered
 its own resolution limit rather than letting a +3 be reported as progress.
 
+## Benchmarks — measure YOUR tools
+
+The suite above is compiled in and measures this project. A **benchmark** is the
+other direction: a file you write, run against the tools your machine actually
+has — your MCP servers, your addons, your language — answering "does this
+assistant call *my* tools".
+
+```bash
+tacet bench check my-tools.json               # no model runs; costs nothing
+tacet bench run my-tools.json --model qwen3-4b
+```
+
+A file is JSON and the whole format fits on a screen:
+
+```json
+{
+  "name": "our-github-mcp",
+  "language": "en",
+  "requires": ["gh_search_issues", "web_fetch"],
+  "cases": [
+    { "name": "open-issues-by-label", "category": "tool",
+      "steps": [{ "message": "which issues are labelled regression?",
+                  "expect": "gh_search_issues",
+                  "evidence": ["#412"],
+                  "forbidden": ["web_search"] }] },
+    { "name": "thanks", "category": "irrelevance",
+      "steps": [{ "message": "great, thanks!" }] }
+  ]
+}
+```
+
+`benchmarks/example.json` is a worked one. Three things about the format are
+deliberate:
+
+**`requires` is not paperwork.** It is what makes the runner *stop* when the
+machine lacks a tool, instead of scoring every case that needs it as a model
+failure and publishing that as a result — the same defect `eval --compare` was
+taught to refuse when a Linux run paired against a macOS baseline read nineteen
+absent-tool failures as a regression.
+
+**`bench check` runs before any model does**, and it asks the question nobody
+writes by hand: the router shows the model nine tools, so *would the expected
+tool even be among them?* A case whose tool never reaches the prompt measures the
+router and reports the model, every time it is run, forever. Checking it is free.
+(It caught two of these in the first batch of drafted questions, plus six files
+where a case expected a tool the file never declared — including an
+"irrelevance" case that expected `time`.)
+
+**There is no regex, no script and no expected answer text.** `evidence` is a
+plain substring. Scoring prose against prose needs a judge, a judge is a second
+model, and a second model is a second thing to be wrong.
+
+The score is out of 100 with the four axes printed beside it, and the weights are
+in the source rather than in someone's head — **irrelevance 0.40, tool 0.30, step
+0.20, answer 0.10**. The safety axis is heaviest on purpose: a model that fires a
+tool at "thanks, that's all" must not be able to buy that back with tool
+accuracy, and a test asserts it cannot. An axis with no cases is left out and the
+rest renormalised, not scored as zero — a benchmark made only of irrelevance
+cases is a legitimate benchmark.
+
 ## Platform support — honestly
 
 | Platform | State |
