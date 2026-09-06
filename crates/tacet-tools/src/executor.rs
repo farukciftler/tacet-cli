@@ -325,12 +325,19 @@ fn recover_nameless_json(raw: &str, catalog: &ToolCatalog) -> Option<ToolCall> {
     // (5) THE TIE-BREAK, and it was measured before it was written.
     //
     // Qwen3-4B answers "Bugün ayın kaçı?" with a bare `{"kind":"date"}` — the
-    // right arguments, no tool name. Two tools accept that object: `time`,
+    // right arguments, no tool name. Two tools accepted that object: `time`,
     // whose `kind` is the closed set clock|date|weekday|all|diff, and
-    // `calendar`, whose `kind` is free text and therefore accepts anything at
-    // all. The old rule saw two candidates, called it ambiguous and recovered
-    // nothing, so the case failed in seven runs out of seven while the model
-    // had already done its part.
+    // `calendar`, whose `kind` was free text at the time and therefore accepted
+    // anything at all. The old rule saw two candidates, called it ambiguous and
+    // recovered nothing, so the case failed in seven runs out of seven while the
+    // model had already done its part.
+    //
+    // `calendar` DECLARES ITS TWO VALUES NOW, so that particular pair is no
+    // longer a tie — the object is refused by one side outright. The rule stays
+    // because the catalog is not only built-ins: a bridged MCP tool arrives with
+    // whatever schema its server wrote, and free-text-everything is the common
+    // shape. See `the_last_tool_standing_is_not_evidence`, which builds that
+    // shape rather than borrowing a built-in that no longer has it.
     //
     // A value landing inside a CLOSED SET is evidence; a value landing in a
     // free-text field is not. So the candidate that satisfies more closed sets
@@ -344,10 +351,15 @@ fn recover_nameless_json(raw: &str, catalog: &ToolCatalog) -> Option<ToolCall> {
     }
     // A SURVIVOR THAT SATISFIED NOTHING, WHILE SOMETHING ELSE WAS ELIMINATED,
     // IS THE WRONG READING. `{"kind":"banana"}` eliminates `time` (its closed
-    // set has no such value) and leaves `calendar`, whose `kind` is free text
-    // and would take anything — so the object would be recovered into an
-    // EFFECTFUL calendar call when what it really looks like is a botched
-    // `time` call. Winning by being the last one standing is not evidence.
+    // set has no such value); anything left over accepts `kind` as free text and
+    // would take the value whatever it was — so the object would be recovered
+    // into a call the model never asked for, when what it really looks like is a
+    // botched `time` call. Winning by being the last one standing is not
+    // evidence.
+    //
+    // The built-in that used to play that part was `calendar`; its `kind` is a
+    // choice now and it is eliminated alongside `time`, so no built-in pair
+    // reaches this line any more. A bridged tool does — the test builds one.
     if winner.1 == 0 && eliminated > 0 {
         return None;
     }
@@ -1294,11 +1306,11 @@ mod tests {
     ///
     /// Qwen3-4B answers "Bugün ayın kaçı?" with a bare `{"kind":"date"}` — the
     /// right arguments and no tool name. Both `time` and `calendar` declare a
-    /// required `kind`, but only `time` declares it as a closed set that
-    /// contains "date"; `calendar` takes free text and would accept anything.
-    /// The old rule counted two candidates, called it ambiguous and recovered
-    /// nothing, and the case failed in seven runs out of seven.
-    /// THE REPAIR MUST NOT INVENT A CALL.
+    /// required `kind`, and when the tie-break was written only `time` declared
+    /// it as a closed set containing "date" — `calendar` took free text and
+    /// would have accepted anything. The old rule counted two candidates, called
+    /// it ambiguous and recovered nothing, and the case failed in seven runs out
+    /// of seven. THE REPAIR MUST NOT INVENT A CALL.
     ///
     /// It was added without a test; these are the cases that decide whether a
     /// rewrite of the model's own words is safe. A comma inside a STRING is the
@@ -1369,12 +1381,15 @@ mod tests {
         assert_eq!(call.args["kind"], "date");
 
         // A value OUTSIDE the closed set is proof the object was not meant for
-        // that tool at all. With `calendar` present and taking free text, the
-        // recovery must not simply fall back to it.
+        // that tool at all. Both built-ins that declare a required `kind`
+        // declare it as a choice today, so `banana` is refused by both and there
+        // is nothing left to fall back to. THE GUARANTEE IS THE SAME AS IT WAS
+        // WHEN `calendar` TOOK FREE TEXT; only the reason changed, and the shape
+        // that still reaches the last-one-standing rule is built by
+        // `the_last_tool_standing_is_not_evidence`.
         assert!(
             recover_nameless_json(r#"{"kind":"banana"}"#, &catalog).is_none(),
-            "a value no closed set accepts must not be handed to whichever tool \
-             happens to take free text"
+            "a value no closed set accepts must not be recovered into a call"
         );
 
         // AND AMBIGUITY IS STILL AMBIGUITY: two tools with equally good evidence
@@ -1385,6 +1400,60 @@ mod tests {
                 || ambiguous.as_ref().map(|c| c.name.as_str()) == Some("read_document"),
             "an object matching several free-text tools must not pick one at random: {ambiguous:?}"
         );
+    }
+
+    /// A FREE-TEXT TOOL MUST NOT INHERIT A CALL THE CLOSED SETS REFUSED.
+    ///
+    /// The catalog is not only built-ins. A bridged MCP tool arrives with
+    /// whatever schema its server wrote, and `everything is a string` is the
+    /// common shape — so a server offering its own `kind` is exactly the tool
+    /// that would catch `{"kind":"banana"}` after `time` has refused it. That is
+    /// the reading the `winner.1 == 0 && eliminated > 0` rule exists to stop:
+    /// being the last one standing is not evidence.
+    ///
+    /// This used to be checked against `calendar`, whose `kind` was free text.
+    /// It is a choice now, so no pair of built-ins reaches the rule and testing
+    /// it through the production catalog would have quietly stopped testing
+    /// anything. The foil is built here instead.
+    #[test]
+    fn the_last_tool_standing_is_not_evidence() {
+        /// A bridged tool in the shape a server actually sends: one required
+        /// argument, declared as text because JSON Schema said `"type":
+        /// "string"` and nothing more.
+        struct BridgedNotes;
+        impl Tool for BridgedNotes {
+            fn name(&self) -> &str {
+                "notes_write"
+            }
+            fn description(&self) -> &str {
+                "Writes a note of some kind."
+            }
+            fn schema(&self) -> ArgSchema {
+                ArgSchema::object(vec![Field::new("kind", ArgSchema::text()).required()])
+            }
+            fn run<'a>(&'a self, _a: Value, _c: &'a mut ToolContext) -> ToolFuture<'a> {
+                boxed(async move { ToolOutcome::written("written", "noted") })
+            }
+        }
+
+        let store = std::sync::Arc::new(crate::data_store::SharedStore::new());
+        let memory = crate::memory::SharedMemory::in_memory();
+        let (mut catalog, _, _) = crate::catalog::production_catalog(&store, &memory, Some(0));
+        catalog.add(Arc::new(BridgedNotes));
+
+        // `time` is eliminated: `banana` is not in its closed set. `notes_write`
+        // survives having satisfied NOTHING. It must not be handed the call.
+        assert!(
+            recover_nameless_json(r#"{"kind":"banana"}"#, &catalog).is_none(),
+            "a value no closed set accepts was handed to the tool that happens \
+             to take free text"
+        );
+
+        // AND THE RULE MUST NOT COST THE CASE IT WAS BUILT FOR: with a value
+        // that IS in the closed set, the evidence decides and `time` still wins
+        // even though the free-text tool is standing right next to it.
+        let call = recover_nameless_json(r#"{"kind":"date"}"#, &catalog).expect("recovered");
+        assert_eq!(call.name, "time");
     }
 
     #[test]

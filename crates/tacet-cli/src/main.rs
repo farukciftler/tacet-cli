@@ -1932,7 +1932,16 @@ mod tests {
     /// deliberately syntactic: the alternative — trusting position inside the
     /// object — breaks on the first guide that writes a value containing a colon.
     /// Nothing else about the net is loosened; a bogus VALUE is still caught.
-    fn quoted_words(block: &str) -> Vec<String> {
+    /// The quoted words that are KEYS — a `:` follows them.
+    ///
+    /// Split out from `quoted_words_of`, which deliberately drops keys. The
+    /// caller below wanted exactly the opposite and got an EMPTY LIST every
+    /// time: the system prompt's example is `calculate({"expression":"12*8"})`,
+    /// whose only key was filtered as a key and whose only value was filtered
+    /// for not being lowercase letters. The assertion inside that loop had never
+    /// executed. A green test that cannot go red is the failure this repository
+    /// has a rule against, and it took reusing the helper to notice.
+    fn quoted_keys(block: &str) -> Vec<String> {
         let parts: Vec<&str> = block.split('"').collect();
         parts
             .iter()
@@ -1940,9 +1949,58 @@ mod tests {
             .skip(1)
             .step_by(2)
             .filter(|(i, _)| {
+                parts
+                    .get(i + 1)
+                    .is_some_and(|after| after.trim_start().starts_with(':'))
+            })
+            .map(|(_, t)| t.to_string())
+            .filter(|t| !t.is_empty())
+            .collect()
+    }
+
+    /// The quoted words in a block that could be a value OF `field`.
+    ///
+    /// A quoted word is skipped when it is a KEY (a `:` follows it) and when it
+    /// is the value of a DIFFERENT key (a `:` precedes it and the key before
+    /// that colon is not `field`). The second rule was missing, and the day
+    /// `calendar`'s `kind` stopped being free text the guard fired on
+    ///
+    /// ```text
+    /// `calendar({"kind":"events","day":"tomorrow"})` reads the user's own calendar.
+    /// ```
+    ///
+    /// reporting `kind="tomorrow"` — a value belonging to `day`, one key over.
+    /// The block, not the key, was the unit. THE BLOCK MUST STAY THE UNIT: the
+    /// mutation test that put it there showed a line-scoped check misses the
+    /// defect this whole test exists for, because a guide names the field on one
+    /// line and lists its values on the next. So a bare quoted word anywhere in
+    /// the block is still a candidate; only a word visibly bound to another key
+    /// is not.
+    fn quoted_words_of(block: &str, field: &str) -> Vec<String> {
+        let parts: Vec<&str> = block.split('"').collect();
+        parts
+            .iter()
+            .enumerate()
+            .skip(1)
+            .step_by(2)
+            .filter(|(i, _)| {
+                // A key, not a value.
                 !parts
                     .get(i + 1)
                     .is_some_and(|after| after.trim_start().starts_with(':'))
+            })
+            .filter(|(i, _)| {
+                // A value of some other key.
+                let Some(before) = parts.get(i - 1) else {
+                    return true;
+                };
+                if !before.trim_end().ends_with(':') {
+                    return true;
+                }
+                match i.checked_sub(2).and_then(|k| parts.get(k)) {
+                    Some(key) => *key == field,
+                    None => true,
+                }
             })
             .map(|(_, t)| *t)
             .filter(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
@@ -1950,13 +2008,46 @@ mod tests {
             .collect()
     }
 
-    /// The unit of the check is the PARAGRAPH, not the line. It was the line
-    /// first and the first mutation test showed that to be worthless: the guide
-    /// names the field on one line ("`format`: data/plan/budget ->") and carries
-    /// the values onto the next, so the very defect this test exists for slipped
-    /// straight through a line-scoped filter.
-    fn paragraphs(text: &str) -> Vec<String> {
-        text.split("\n\n").map(|p| p.to_string()).collect()
+    /// The blocks of a guide in which a quoted word could be a value of `field`.
+    ///
+    /// THE UNIT WAS THE PARAGRAPH AND THAT WAS TOO WIDE. It was the line first,
+    /// and the first mutation test showed a bare line filter to be worthless:
+    /// the guide names the field on one line ("`format`: data/plan/budget ->")
+    /// and can carry the values onto the next, so the very defect this test
+    /// exists for slipped through. The paragraph fixed that and bought a false
+    /// alarm with it — the day `calendar`'s `kind` stopped being free text, this
+    /// paragraph
+    ///
+    /// ```text
+    /// - Copy the day from the user's words ("today", "tomorrow", "friday"); …
+    /// - `kind:"remind"` needs both `title` and `when`.
+    /// ```
+    ///
+    /// reported `kind="today"`, because one bullet names `kind` and another,
+    /// three lines away and about a different argument, carries quoted words. A
+    /// guard that cries wolf on a correct guide gets the guide changed to suit
+    /// the guard.
+    ///
+    /// So: the line that names the field, plus the line after it WHEN THAT LINE
+    /// IS UNFINISHED (`->`, `:`, `,`, `;`) — which is exactly the shape the
+    /// mutation test was defending and nothing wider.
+    fn blocks_naming(text: &str, field: &str) -> Vec<String> {
+        let lines: Vec<&str> = text.lines().collect();
+        let mut blocks = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains(field) {
+                continue;
+            }
+            let mut block = line.to_string();
+            if line.trim_end().ends_with(['-', '>', ':', ',', ';'])
+                && let Some(next) = lines.get(i + 1)
+            {
+                block.push('\n');
+                block.push_str(next);
+            }
+            blocks.push(block);
+        }
+        blocks
     }
 
     /// A SEAM TEST — a skill guide must not command a tool name, or an argument
@@ -2047,11 +2138,8 @@ mod tests {
                     continue;
                 };
                 for (field, allowed) in choice_fields(&tool.schema()) {
-                    for block in paragraphs(&skill.text)
-                        .iter()
-                        .filter(|b| b.contains(&field))
-                    {
-                        for value in quoted_words(block) {
+                    for block in blocks_naming(&skill.text, &field) {
+                        for value in quoted_words_of(&block, &field) {
                             assert!(
                                 allowed.contains(&value),
                                 "skill '{}' tells the model {field}=\"{value}\", \
@@ -2095,7 +2183,13 @@ mod tests {
             }
             _ => Vec::new(),
         };
-        for key in quoted_words(example_args.split("})").next().unwrap_or("")) {
+        let keys = quoted_keys(example_args.split("})").next().unwrap_or(""));
+        assert!(
+            !keys.is_empty(),
+            "the example call carries no argument keys, so the check below \
+             measures nothing: {example_args}"
+        );
+        for key in keys {
             assert!(
                 fields.contains(&key),
                 "the system prompt's example passes '{key}', but \

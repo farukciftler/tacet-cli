@@ -205,22 +205,40 @@ impl tacet_kernel::Tool for CalendarTool {
     }
 
     fn description(&self) -> &str {
+        // `kind` IS A CHOICE NOW, so the signature already lists its two values
+        // and this text does not spell them out a second time. What it keeps is
+        // the part a signature cannot carry: which argument each kind needs, and
+        // that days are copied from the user's words rather than resolved here.
         "Reads the user's calendar and creates reminders ON THIS DEVICE (macOS Calendar and \
-         Reminders apps; nothing touches the network). kind='events' lists the events of one \
-         day: put the day into 'day' in the user's own words ('today', 'tomorrow', 'yarin', \
-         'onumuzdeki sali') — the date is resolved by code, never guess or rewrite it. \
-         kind='remind' creates a reminder: 'title' is what to be reminded of, 'when' is the \
-         moment in the user's own words ('tomorrow 9', 'yarin 18:30'). Call this for any \
-         question about the user's schedule and any 'remind me' request, in any language. \
-         NEVER answer schedule questions from memory: if this tool did not return an event, \
-         it is not on the calendar."
+         Reminders apps; nothing touches the network). For 'events', put the day into 'day' \
+         in the user's own words ('today', 'yarin', 'onumuzdeki sali') — the date is \
+         resolved by code, never guess or rewrite it. For 'remind', 'title' is what to be \
+         reminded of and 'when' is the moment in the user's own words ('yarin 18:30'). Call \
+         this for any question about the user's schedule and any 'remind me' request, in any \
+         language. NEVER answer schedule questions from memory: if this tool did not return \
+         an event, it is not on the calendar."
     }
 
     fn schema(&self) -> ArgSchema {
         ArgSchema::object(vec![
+            // A CLOSED SET WRITTEN AS ONE, which is the whole point of the
+            // project applied to its own catalog. The body accepts exactly
+            // `events` and `remind` and refuses everything else, but the schema
+            // said `text` — so the grammar had nothing to compile into a literal
+            // alternation and an invalid `kind` stayed REPRESENTABLE. The model
+            // could spend a turn on `{"kind":"banana"}` and be told no
+            // afterwards, which is precisely the shape this codebase exists to
+            // make impossible. Every sibling with a closed action (`time`,
+            // `git`, `remember`, `archive`, `clipboard`, `run_code`,
+            // `write_code`) already uses `choice`.
             Field::new(
                 "kind",
-                ArgSchema::text().description("'events' to read a day, 'remind' to create a reminder."),
+                ArgSchema::choice(["events", "remind"])
+                    // THE VALUES ARE NOW IN THE SIGNATURE, so the sentence does
+                    // not repeat them — `choice[events|remind]` is what the
+                    // model reads, and spending prompt tokens saying it twice is
+                    // what pushed the nine-tool block over its ceiling.
+                    .description("Read a day, or create a reminder."),
             )
             .required(),
             Field::new(
