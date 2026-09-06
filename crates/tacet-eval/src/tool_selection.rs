@@ -1442,6 +1442,14 @@ pub enum Ending {
     CutOff,
     /// The environment could not be built — a host problem, not a model one.
     HostFailed,
+    /// The case ran past `CASE_WALL_LIMIT` and was stopped between passes.
+    ///
+    /// NOT A MODEL VERDICT. Like `HostFailed` it is unmeasurable, and it is a
+    /// separate variant for the same reason `CutOff` is separate from
+    /// `OutOfTurns`: "the model spent its passes" and "we stopped it" are
+    /// different events and a report that merges them cannot tell a slow tool
+    /// from a stubborn model.
+    TimedOut,
 }
 
 impl Ending {
@@ -1458,6 +1466,7 @@ impl Ending {
             Ending::EngineError => "engine error",
             Ending::CutOff => "cut off",
             Ending::HostFailed => "host failed",
+            Ending::TimedOut => "timed out",
         }
     }
 }
@@ -1832,6 +1841,24 @@ pub fn ratio(passed: usize, total: usize) -> f64 {
 /// `the_suite_carries_every_tool_it_is_shown` pins the list at two, so it cannot
 /// quietly become the place tools go to avoid being measured.
 pub(crate) const BENCHED_SEPARATELY: [&str; 2] = ["search_filter", "message_intent"];
+
+/// HOW LONG ONE CASE MAY TAKE BEFORE THE RUN GIVES UP ON IT.
+///
+/// WHY A BOUND EXISTS AT ALL. Nothing bounded a case. A single pass is bounded
+/// by the token cap and a case by `MAX_TURNS`, but a TOOL is bounded by nothing
+/// the eval controls: `calendar-day` reads as a 39-second case of which 30
+/// seconds is `osascript` waiting on the Calendar app, and a helper that never
+/// returns would stall a 48-minute run indefinitely — on rented hardware, with
+/// no partial report, and nothing in the output saying which case it was.
+///
+/// 180 SECONDS IS FOUR TIMES THE SLOWEST CASE EVER MEASURED HERE. It is a
+/// backstop, not a policy: if it starts firing, something is wrong and the
+/// report now says which case and how long, instead of the run never finishing.
+///
+/// CHECKED BETWEEN PASSES, which is the only place it can be. A forward pass
+/// cannot be split and a tool call is somebody else's process; what this bounds
+/// is the case, not the syscall.
+pub const CASE_WALL_LIMIT: std::time::Duration = std::time::Duration::from_secs(180);
 
 pub(crate) fn selection_catalog(env: &Env, memory: &SharedMemory) -> HostCatalog {
     // THE SECOND RETURN VALUE IS NOT DISCARDABLE. It was, and the eval spent
@@ -2370,6 +2397,15 @@ pub fn run_selection_case_in(
         let mut must_answer = false;
 
         for turn in 0..MAX_TURNS {
+            // THE BOUND, before anything expensive starts. See `CASE_WALL_LIMIT`.
+            if case_started.elapsed() > CASE_WALL_LIMIT {
+                answer = format!(
+                    "the case was stopped after {:.0}s — see CASE_WALL_LIMIT",
+                    case_started.elapsed().as_secs_f64()
+                );
+                ended = Ending::TimedOut;
+                break;
+            }
             // THE LAST PASS IS OFFERED NO TOOLS — the shell does the same, and
             // this set exists to measure the shell. See the rationale in
             // `tacet-cli`'s turn loop.
