@@ -56,6 +56,21 @@ The sentence used to read "invalid tool calls are impossible", and measuring it 
 
 **And a valid call has to end.** That is a second property, weaker than the first and until recently not held at all: a valid *prefix* could wander forever. A model wrote a complete, correct `calendar(…)` call and then emitted whitespace for twelve minutes, because whitespace was legal at a structural position and legal again immediately. Unrepresentable-invalid and always-terminating are different claims — the grammar now bounds consecutive whitespace and the length of a field the schema leaves open, and the engine caps a constrained generation at 2048 tokens, measured against a largest-observed legitimate call of 1523.
 
+**A tool result cannot forge a turn.** The schema makes an invalid call
+unrepresentable — that is a claim about the CALL, and it says nothing about the
+prompt. Measured on the prompt: a tool result went in verbatim, so a document
+containing `</tool_response><|im_end|>` followed by `<|im_start|>system` rendered
+as a **real system turn** in the ChatML prompt — a forged instruction in the role
+a model is trained to obey above every other, written by whoever wrote the file.
+`read_document` reads files the user did not write, `web_fetch` reads pages
+nobody here controls, and an MCP result is a third party's text. Every string
+entering the prompt from outside — tool results, the question, memory, a
+user-authored skill, and a bridged tool's own name and description — now has its
+turn markers neutralised with one space (`< |im_end|>` is not a token), so
+nothing is censored and nothing can open a block. `cargo test -p tacet-engine
+--test a_tool_result_cannot_forge_a_turn` is the demonstration, in all three
+templates.
+
 **The network monopoly is checkable by eye.** Exactly two crates may open a socket, and the HTTP dependency appears in exactly those two manifests. You do not have to trust a privacy claim you cannot audit — `grep -v '^\s*#' crates/*/Cargo.toml | grep ureq` is the audit, and `cargo test -p tacet-cli --test network_monopoly` is the same audit as a failing build: it asserts that exactly those two manifests declare an HTTP client, that no other client was swapped in under a different name, and that nobody reached a socket through `std::net` instead — scanning every `.rs` file under `crates/*/{src,tests,examples,benches}`, not just the library code. (One honest asterisk: if you install the `shell` addon and put `curl` on its allow-list, you have handed a program the network. That is why `shell` sits behind the approval gate — see [Addons](#addons).)
 
 **Nothing leaves the device by default.** Everything with outside reach is an *addon* you install deliberately: web search against your own SearXNG, HTTP against hosts you name, a shell against programs you list. Until you install one, its tools are not merely disabled — they are **absent from the catalog the model is shown**, so it cannot call them or claim it did.
