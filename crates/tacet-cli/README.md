@@ -343,23 +343,39 @@ tacet eval --tool-selection --model qwen3-4b --turkish   # Turkish only
 
 | | |
 |---|---|
-| tool selection | **133/160** · 83.1% |
+| tool selection | **139/160** · 86.9% |
 | irrelevance gate | **24/24** · 100% |
-| step chain | 162/190 · 85.3% |
-| answer quality | 41/47 · 87.2% |
+| step chain | 169/190 · 88.9% |
+| answer quality | 40/47 · 85.1% |
 
-Qwen3-4B-Instruct-2507 Q4_K_M on Metal, 184 cases in both languages, 44 min —
-the weights `tacet models download qwen3-4b` fetches, pinned by digest, with the
-fingerprint recorded in the baseline.
+Qwen3-4B-Instruct-2507 Q4_K_M on Metal, 184 cases in both languages, **44.0 min**
+— the weights `tacet models download qwen3-4b` fetches, pinned by digest, with
+the fingerprint recorded in the baseline. Re-measured 6 Sep 2026 on this commit,
+and the baseline in `crates/tacet-eval/baselines/` is that run: **`wall_ms` is
+populated for the first time**, so the 44 minutes is now re-derivable instead of
+remembered. It said 44 before, hand-recorded; the machine agrees to within a
+tenth of a minute, which is the pleasant version of this kind of check.
+
+**The axes moved, and the instrument says the move is not distinguishable from
+noise.** Against the previous baseline: tool selection 133 → 139, step chain
+162 → 169, answer 41 → 40; ten cases fixed, four broken.
+
+```
+  delta    +3.3 points   95% CI [-0.5, +7.6]
+  sign test p = 0.1796
+  verdict: NOT DISTINGUISHABLE from no change at 95%.
+```
+
+So it is published as a new baseline, not as an improvement. Four of the ten
+fixed cases are Turkish, which is consistent with the router work in this commit
+range — but "consistent with" is not "caused by", and the instrument declines to
+say more than that.
 
 **This block is the Metal run; the model table further down is the same suite on
-a rented RTX 3090.** They agree on tool selection, irrelevance and the step chain
-and differ on the answer axis (41/47 here, 43/47 there), which is why the two
-`/47`s on this page are not a contradiction. Wall time is the one number neither
-can prove: `wall_ms` is `0` in the checked-in baseline, so both the 44 min and
-the 6.4 min are hand-recorded — and this paragraph said 6.2 while the table said
-6.4 for the same model, card and suite. The next baseline written should populate
-`wall_ms`, which is what makes a timing re-derivable instead of remembered.
+a rented RTX 3090**, and that table has NOT been re-measured — it still reads
+against the older code, which is why the two now differ on more than the answer
+axis. The 3090 wall times remain hand-recorded, because `wall_ms` can only be
+populated by whoever runs the card.
 
 **Six minutes on a GPU — and the model matters more than the card.** The same
 184 cases on a rented RTX 3090: 6.4 minutes with these weights, and 53.7 minutes

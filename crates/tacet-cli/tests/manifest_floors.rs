@@ -231,12 +231,14 @@ fn the_registry_metadata_rules_are_satisfied() {
 #[test]
 fn a_baseline_carries_the_time_it_took() {
     /// Known to be missing it, with the reason. Shrink this list; never grow it.
-    const MISSING: [&str; 1] = [
-        // Predates the rule. Re-deriving it means a 44-minute run on the same
-        // weights, which is a NEW measurement rather than a repair of this one —
-        // so it is recorded as missing instead of being invented.
-        "qwen3-4b-both.json",
-    ];
+    ///
+    /// IT IS EMPTY, AND THE DAY IT EMPTIED IS THE POINT. `qwen3-4b-both.json`
+    /// was in here with "re-deriving it means a 44-minute run, which is a NEW
+    /// measurement rather than a repair". That run happened on 6 Sep 2026, the
+    /// baseline was replaced, and this test failed — telling whoever did it to
+    /// take the entry out. A one-directional guard would have stayed green and
+    /// left the excuse standing forever.
+    const MISSING: [&str; 0] = [];
 
     let dir = repo_root().join("crates/tacet-eval/baselines");
     let mut found_missing: Vec<String> = Vec::new();
