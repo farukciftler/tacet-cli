@@ -974,8 +974,35 @@ columns, and the reason, are in [esp32/README.md](esp32/README.md).
 step reads every weight once, so `tokens/s <= bandwidth / size`, and that board's
 PSRAM sustains ~40 MB/s: a 135M model at Q4 is 68 MB and cannot beat 0.59 tok/s
 even if it fitted, which it does not. At 92 KiB the weights are 18% of the
-*internal* SRAM and the bandwidth wall never applies — 4,266 ops is 44.4 µs at
-240 MHz, on the middle of three stated cycle assumptions.
+*internal* SRAM and the bandwidth wall never applies.
+
+**And the cycle assumption has now been paid for on real silicon — on the wrong
+side of it.** `budget.py` divided 4,266 operations by a documented clock and
+bracketed cycles-per-operation at 1.0, 2.5 and 5.0 because nobody had run it.
+The same two loops on a NodeMCU (ESP8266EX, Xtensa LX106, 80 MHz, `-O2`),
+6 Sep 2026:
+
+| | value |
+|---|---|
+| cycles per operation | **44.50** |
+| median cycles per message | 188,576 |
+| per message | 2,357 µs · 424 messages/s |
+| agreement with `slots.c` | **141 of 141 messages, 0 disagreements** |
+
+Reproduced identically on three consecutive runs. The correctness column is what
+licenses the timing column: all 23 accumulators are compared against `slots.c`
+on every message, because a board that classifies differently is not measuring
+this model.
+
+**44.50 does not refute the 1.0–5.0 bracket; it prices the assumption the
+bracket rests on.** That part has 48,952 bytes of free heap, so the weights live
+in flash and every one of the ~3,300 weight reads per message goes through
+`pgm_read_byte` and a 32 KiB cache that 92 KiB of randomly-indexed buckets
+thrash. SRAM residency was load-bearing in the sentence above and had never been
+costed: on a part where the weights do **not** fit, the identical code is an
+order of magnitude slower, paid entirely for where the bytes sit. What is still
+unmeasured is the other half — the same loops with the weights in DRAM, which is
+the experiment `esp32/device/` is built to run.
 
 **And 48 KiB of it now ships inside the router.** The trigger list reaches these
 two tools on 87 of the 105 requests that expect one; the `tool` head, added as a
@@ -990,8 +1017,9 @@ the repository with its false-positive rate measured rather than asserted.
 
 **What it cannot do is the honest half.** `city`, `promised_date` and `amount`
 are open text — span copying, not classification — and stay with the host. Nine
-cases is a small denominator. And the device figures are arithmetic from a
-measured operation count, not silicon: nothing has been run on a board.
+cases is a small denominator. And the ESP32-S3 row of the device table is still
+arithmetic: what has been run on a board is an ESP8266 with the weights in
+flash, which is the regime that row explicitly is not.
 
 The two implementations must compute identical features or the model is being
 fed n-grams it was not fitted to, so the trainer and the C are compared
