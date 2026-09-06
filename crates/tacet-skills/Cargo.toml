@@ -23,7 +23,10 @@ rust-version.workspace = true
 tacet-kernel.workspace = true
 
 # WHY DEV-DEPENDENCY ONLY: `INJECTION_LIMIT` and `tacet_engine::GUIDE_LIMIT`
-# MUST be the SAME number — one feeds the other. Linking against tacet-engine
+# must AGREE — the first budgets the guide's body, the second bounds the fenced
+# string that reaches the model, so the second must leave room for the first plus
+# the envelope. They were documented as "the SAME number", they were the same
+# number, and that is precisely why sixteen of seventeen skills arrived cut. Linking against tacet-engine
 # in production would invert the layering direction (the skill layer must not
 # know the engine's internal representation). A dev-dependency instead catches
 # the numbers drifting apart AT COMPILE TIME and adds nothing to the production

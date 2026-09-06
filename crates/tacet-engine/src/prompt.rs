@@ -53,12 +53,26 @@ pub enum Template {
     Gemma,
 }
 
-/// The most characters taken from the guide in a single injection.
+/// The most characters of guidance that reach the model, FENCE INCLUDED.
 ///
-/// The same number as the Swift side (700). Larger eats the history in a 4096
-/// window; smaller was cutting off the concrete `tool(args)` example and the
-/// anti-hallucination rules — which is exactly why the guide exists.
-pub const GUIDE_LIMIT: usize = 700;
+/// 700 was the Swift side's number and it is still the budget for the BODY —
+/// `tacet_skills::injection::INJECTION_LIMIT`. What was missed is that the body
+/// is then wrapped in a `<guidance>` fence and a 150-character "never mention
+/// this" instruction, so the string that arrives here is body + envelope, and
+/// this constant was cutting the difference off the end.
+///
+/// MEASURED, 6 Sep 2026: sixteen of seventeen package skills were over — up to
+/// 882 characters — and SIX lost their closing `</guidance>` entirely. The model
+/// was reading an unclosed fence and a sentence stopping mid-word
+/// (`...If it can be computed, compute`) on every turn a skill fired.
+///
+/// 960 leaves room for a 700-character body inside the longest envelope the
+/// fence can produce (202 characters over a 32-character skill name), with
+/// slack. The cost is ~50 tokens on the turns a guide fires, against a 4096-token
+/// floor window — about 1%, and it buys the closing fence and the last rule.
+/// `the_guide_limit_leaves_room_for_the_fence` in `tacet-skills` keeps the two
+/// numbers in step; making them equal is what caused this.
+pub const GUIDE_LIMIT: usize = 960;
 
 /// The source of a conversation turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,7 +246,25 @@ impl Prompt {
     /// human reference; taking from the front does the opposite.
     pub fn with_guide(mut self, guide: impl AsRef<str>) -> Self {
         let g = guide.as_ref();
-        let truncated: String = g.chars().take(GUIDE_LIMIT).collect();
+        // A BACKSTOP THAT CUTS AT A LINE, not in the middle of a word.
+        //
+        // `tacet-skills` budgets its own envelope now, so a package skill
+        // arrives under the limit and this does nothing. It still has to be
+        // right, because a user-authored skill or a caller that appends to the
+        // guide can still overflow — and until today this took `chars()` at a
+        // raw boundary, which handed the model an unclosed `<guidance` fence and
+        // sentences ending `...If it can be computed, compute`. The skills crate
+        // records why that is worse than sending less: half an order is worse
+        // than no order at all.
+        let truncated: String = if g.chars().count() <= GUIDE_LIMIT {
+            g.to_string()
+        } else {
+            let cut: String = g.chars().take(GUIDE_LIMIT).collect();
+            match cut.rfind('\n') {
+                Some(i) => cut[..i].to_string(),
+                None => cut,
+            }
+        };
         self.guide = (!truncated.trim().is_empty()).then_some(truncated);
         self
     }

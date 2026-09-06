@@ -479,11 +479,29 @@ mod tests {
     fn the_guide_is_cut_from_the_front_and_stays_within_the_limit() {
         // The core (the concrete call example) sits at the FRONT of the file; if
         // the cut were from the end, exactly that part would be thrown away.
-        let long = format!("CORE: calendar_read(day)\n{}", "filler ".repeat(400));
+        let long = format!(
+            "CORE: calendar_read(day)\n{}",
+            "filler filler filler filler\n".repeat(200)
+        );
         let prompt = Prompt::new("s", "q").with_guide(&long);
         let g = prompt.guide.as_deref().unwrap();
         assert!(g.starts_with("CORE: calendar_read(day)"));
-        assert_eq!(g.chars().count(), GUIDE_LIMIT);
+        // AT A LINE, and no longer exactly at the limit. The cut used to be a
+        // raw `chars().take()`, which handed the model a sentence stopping
+        // mid-word — the harm `tacet_skills`' own `cut_at_line` exists to
+        // prevent, on the layer below. So the claim is "within the limit and on
+        // a boundary", not "exactly the limit".
+        assert!(g.chars().count() <= GUIDE_LIMIT);
+        assert!(
+            g.chars().count() > GUIDE_LIMIT - 40,
+            "the cut threw away far more than one line: {}",
+            g.chars().count()
+        );
+        assert!(
+            !g.ends_with("fille"),
+            "cut mid-word: {:?}",
+            &g[g.len() - 20..]
+        );
     }
 
     #[test]
