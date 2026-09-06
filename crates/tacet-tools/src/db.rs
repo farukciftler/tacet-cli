@@ -473,16 +473,22 @@ impl DbTool {
     }
 }
 
+/// The description, as a constant so a ROUTING test can score the real text on a
+/// machine where the tool itself cannot be built. `db` is an addon tool behind a
+/// `sqlite3` discovery, so on a host without one the router would otherwise be
+/// measured against a description someone typed twice.
+pub const DESCRIPTION: &str = "Runs a read-only SQL query against a SQLite database file in the \
+     working directory and returns the rows. Use when the user asks about data held in a \
+     .db/.sqlite file — counts, lookups, listing records. READ-ONLY: it cannot \
+     insert, update, delete or alter anything. SQLite only.";
+
 impl Tool for DbTool {
     fn name(&self) -> &str {
         "db"
     }
 
     fn description(&self) -> &str {
-        "Runs a read-only SQL query against a SQLite database file in the working \
-         directory and returns the rows. Use when the user asks about data held in a \
-         .db/.sqlite file — counts, lookups, listing records. READ-ONLY: it cannot \
-         insert, update, delete or alter anything. SQLite only."
+        DESCRIPTION
     }
 
     fn schema(&self) -> ArgSchema {

@@ -106,6 +106,26 @@ pub enum IntentProfile {
     /// "message"/"intent"/"classif". A second profile would buy the same
     /// separation for twice the table.
     Extract,
+    /// A QUESTION ABOUT DATA HELD IN A FILE — rows, counts, a lookup in a
+    /// SQLite database.
+    ///
+    /// WHY IT WAS MISSING FOR SO LONG: `db` is an addon tool, and the routing
+    /// eval builds its catalog from `production_catalog`, where no addon gate is
+    /// open. So the one instrument that would have caught this could not see the
+    /// tool — and nothing else asked. `tacet why "how many rows are in the users
+    /// table of app.db"` on a real install put `create_document` first and left
+    /// `db` off the list entirely: the message scored `document 5` on "table"
+    /// and `calc 8` on "how many", and the database tool matched no profile at
+    /// all. A tool the user installed, answering the plainest possible phrasing
+    /// of its own job, was unreachable.
+    Data,
+    /// WHAT THE USER LAST COPIED — and only when they say so.
+    ///
+    /// The same hole as `Data` and for the same reason. The tool's description
+    /// goes out of its way to say it must be used ONLY on an explicit request;
+    /// that instruction never reached the model, because the tool never reached
+    /// the prompt.
+    Clipboard,
 }
 
 impl IntentProfile {
@@ -131,10 +151,24 @@ impl IntentProfile {
     /// case at rank 1, and the same single case (`tr-dosya-ara`) outside the top
     /// three as before. Identical numbers under `--routing-pressure 20`.
     ///
+    /// MEASURED AGAIN WHEN `Data` AND `Clipboard` WERE ADDED, in the same
+    /// commit that made the five file-extension triggers able to fire at all.
+    /// `eval --routing` before and after: REACH 166/166, TOP 3 166/166, MEAN
+    /// RANK 1.33 — identical, and identical again under `--routing-pressure 20`.
+    /// The rank-by-rank diff is NOT zero this time and the two moves are worth
+    /// naming: `tr-belge-markdown` went 2 -> 1 and `tr-belge-oku` went 2 -> 3,
+    /// so the mean is unchanged because they cancel. Thirteen selections
+    /// reordered, every one of them a `.md` sentence — which is the intended
+    /// effect of a rule that had never fired starting to fire, not a side
+    /// effect of the two new profiles. Neither `db` nor `clipboard` is in the
+    /// eval catalog (no addon gate is open there), which is why their
+    /// reachability is measured by `the_database_tool_is_reachable_by_the_
+    /// plainest_phrasings` and its clipboard twin instead.
+    ///
     /// The STANDING guarantees are `every_expected_tool_reaches_the_model` and
     /// `a_connected_server_does_not_push_the_expected_tool_out_of_the_budget`
     /// over in `tacet_eval::routing`.
-    pub const ALL: [IntentProfile; 12] = [
+    pub const ALL: [IntentProfile; 14] = [
         IntentProfile::Document,
         IntentProfile::DocEdit,
         IntentProfile::Clock,
@@ -147,11 +181,16 @@ impl IntentProfile {
         IntentProfile::Archive,
         IntentProfile::Integrity,
         IntentProfile::Extract,
+        // APPENDED, per the rule at the top of this array: both lose their ties.
+        IntentProfile::Data,
+        IntentProfile::Clipboard,
     ];
 
     pub fn name(&self) -> &'static str {
         match self {
             IntentProfile::Extract => "extract",
+            IntentProfile::Data => "data",
+            IntentProfile::Clipboard => "clipboard",
             IntentProfile::Document => "document",
             IntentProfile::DocEdit => "doc-edit",
             IntentProfile::Clock => "clock",
@@ -211,7 +250,16 @@ impl IntentProfile {
                 // below carries the original failing case without the side
                 // effect.
                 "summar",
-                ".md",
+                // "md" AND NOT ".md". `matching::contains` requires a
+                // non-alphanumeric character BEFORE a match, and `budget-2026.md`
+                // has a `6` in front of the dot — so the dotted form could not
+                // fire on any real filename, and all 137 extension occurrences
+                // across `benchmarks/` are preceded by an alphanumeric. Without
+                // the dot the two-character root is under `WHOLE_TERM_LIMIT`, so
+                // it matches `notes.md` as a whole term and stays out of
+                // `mdadm`. The same edit, for the same reason, on the four
+                // below.
+                "md",
                 "add to the document",
                 "create a document",
                 "write to a file",
@@ -388,8 +436,8 @@ impl IntentProfile {
                 "times",
                 // The file extension IS the request when a script is asked for
                 // as a file.
-                ".py",
-                ".js",
+                "py",
+                "js",
             ],
             IntentProfile::Web => &[
                 "http",
@@ -564,8 +612,8 @@ impl IntentProfile {
                 "entire text",
                 "preview of",
                 "contents",
-                ".txt",
-                ".log",
+                "txt",
+                "log",
                 "workspace",
                 "where is",
             ],
@@ -615,6 +663,35 @@ impl IntentProfile {
                 // the table from report.xlsx", which is a document request, and
                 // dropping it costs nothing: "unzip invoices.zip" and "what is
                 // in backup.zip" both already fire on "zip".
+            ],
+            IntentProfile::Data => &[
+                // WRITTEN FROM THE WORDS A PERSON USES, not from the tool's own
+                // vocabulary. "sqlite" and "sql" are what someone who knows what
+                // the file is writes; "how many rows", "records" and "database"
+                // are what someone who does not writes. All five natural
+                // phrasings in the finding that produced this profile are
+                // carried by one of the two halves.
+                "sql", "sqlite", "database",
+                // "db" IS TWO CHARACTERS, so `matching::contains` requires it to
+                // be a WHOLE term — which is exactly what makes it safe and what
+                // makes it work: `app.db` matches (the `.` is a boundary and the
+                // name ends there) while `dbus` and `adb` do not.
+                "db", "rows", "records",
+                "query",
+                // "table" IS DELIBERATELY ABSENT. It is a Document trigger and a
+                // document word — "put this in a table" is a request to WRITE
+                // one. "table of" was tried and dropped for the same reason:
+                // "the table of contents". The database sense is carried by the
+                // company it keeps ("rows in the users table" fires on "rows").
+            ],
+            IntentProfile::Clipboard => &[
+                "clipboard",
+                "copied",
+                "copy this",
+                "paste",
+                // BARE "copy" IS NOT HERE. "copy the file to backups" is file
+                // work and would take a slot from `find_file` on every one of
+                // them. The clipboard senses all carry a second word.
             ],
             IntentProfile::Extract => &[
                 // THE SEARCH-FILTER HALF: a request for places or things to do,
@@ -728,6 +805,25 @@ impl IntentProfile {
         match self {
             // The seven-language shape of the same two questions. Turkish first
             // because it is the one with a natively-authored suite behind it.
+            IntentProfile::Data => &[
+                "veritabani",
+                "veri tabani",
+                "sorgu",
+                "kayit",
+                // "satir" (row) IS ABSENT and it was the first thing tried: it
+                // is the ordinary word for a LINE of text, so "dosyanin ilk on
+                // satiri" — read the first ten lines of a file — scored as a
+                // database question. "kayit" (record) has no such second
+                // reading in this catalog.
+            ],
+            IntentProfile::Clipboard => &[
+                "pano",
+                "kopyaladigim",
+                "panoya",
+                "panodaki",
+                // "kopyala" ALONE IS ABSENT for the reason bare "copy" is: it is
+                // the verb for copying a file too.
+            ],
             IntentProfile::Extract => &[
                 "gidilebilecek",
                 "cocukla",
@@ -912,7 +1008,13 @@ impl IntentProfile {
                 "doviz",
                 "kuru",
                 "dolar",
-                "euro",
+                // "euro" IS NOT REPEATED HERE. It is spelled identically in both
+                // languages, so it was already carried by the Web
+                // `message_triggers` list — and `score_intent` chains the two
+                // lists without dedup, so every Turkish exchange-rate sentence
+                // scored it twice. The locale list is for what the English list
+                // CANNOT reach; a word that is the same in both belongs in one
+                // place. See `no_trigger_is_listed_twice_in_a_profile`.
                 // "altin" ALONE WAS A FALSE POSITIVE, found by `tacet why` on a
                 // routing case: Turkish "altinda" / "altindaki" (under, beneath)
                 // folds to a string that STARTS WITH "altin", and prefix
@@ -1075,10 +1177,12 @@ impl IntentProfile {
                 "распакуй",
                 "压缩包",
                 "解压",
-                // "arsiv" folds from "arşiv" — see the header of this function
-                // on why the diacritics are already gone by the time a trigger
-                // is compared.
-                "arsiv",
+                // "arsiv" (which folds from "arşiv") IS ALREADY IN THIS LIST,
+                // fifteen lines up. It was here a second time and
+                // `score_intent` chains the two lists without dedup, so the word
+                // was counted twice — `tacet why "arsiv"` printed
+                // `archive 10 arsiv, arsiv`. The guard against a third is
+                // `no_trigger_is_listed_twice_in_a_profile`.
                 // "zipten" / "zipi": Turkish glues the case suffix onto the
                 // borrowed noun, and bare "zip" is three characters, so it has
                 // to match as a WHOLE term — "zipten" is not reachable from it.
@@ -1145,6 +1249,16 @@ impl IntentProfile {
             // WHAT SEPARATES THE TWO TOOLS THAT SHARE THIS PROFILE. The profile
             // score is the same for both; the product with these hints is not.
             IntentProfile::Extract => &["filter", "search", "intent", "message", "classif"],
+            // "db" IS THE TOOL'S WHOLE NAME, which is the strongest evidence the
+            // router has (`NAME_WEIGHT` is 4x a description match) and the thing
+            // this profile was missing: before it, `db` scored only on generic
+            // description hints capped at `DESCRIPTION_CAP`, so any tool whose
+            // NAME matched a fired profile beat it — which is how
+            // `create_document` won a question about rows in a table.
+            IntentProfile::Data => &[
+                "db", "sql", "sqlite", "database", "rows", "records", "query",
+            ],
+            IntentProfile::Clipboard => &["clipboard", "paste", "copy"],
             IntentProfile::Document => &[
                 // "spreadsheet" WAS ADDED HERE AND THEN TAKEN BACK OUT, and the
                 // measurement is worth more than the line would have been.
@@ -1870,6 +1984,196 @@ mod tests {
         Arc::new(FakeTool { name, description })
     }
 
+    // --- The trigger table, as data ------------------------------------------
+
+    /// A TRIGGER LISTED TWICE IS WEIGHTED TWICE, and nothing said so.
+    ///
+    /// `score_intent` chains `message_triggers` and `locale_triggers` and sums
+    /// the length of everything that matched, with no dedup. Two words had
+    /// drifted into both lists of their own profile — `arsiv` (twice inside
+    /// Archive's locale list) and `euro` (in Web's message list AND its locale
+    /// list, being spelled the same in both languages). `tacet why "arsiv"`
+    /// printed `archive 10 arsiv, arsiv`: a silent double weight on one word,
+    /// which is exactly the kind of thing that makes a hand-tuned table
+    /// impossible to reason about.
+    #[test]
+    fn no_trigger_is_listed_twice_in_a_profile() {
+        for profile in IntentProfile::ALL {
+            let mut seen: Vec<&str> = Vec::new();
+            for trigger in profile
+                .message_triggers()
+                .iter()
+                .chain(profile.locale_triggers().iter())
+            {
+                assert!(
+                    !seen.contains(trigger),
+                    "profile `{}` lists `{trigger}` twice — `score_intent` chains \
+                     the two lists without dedup, so the word is weighted twice",
+                    profile.name()
+                );
+                seen.push(trigger);
+            }
+        }
+    }
+
+    /// A TRIGGER THAT CANNOT FIRE IS FALSE DOCUMENTATION.
+    ///
+    /// Five rules were file extensions written with the dot — `.md`, `.txt`,
+    /// `.log`, `.py`, `.js`. `matching::contains` requires a non-alphanumeric
+    /// character BEFORE the match, and a real filename puts a letter or a digit
+    /// there: `budget-2026.md` has a `6`. All 137 extension occurrences across
+    /// `benchmarks/` are of that shape, so none of the five had ever fired.
+    /// Nothing depended on them — sibling phrase triggers added in the same
+    /// commits carry those sentences — which is precisely why they survived: a
+    /// dead rule costs nothing until someone tunes the list believing it works.
+    ///
+    /// The test is written over the whole table rather than over the five, so
+    /// the next one is caught the day it is added.
+    #[test]
+    fn a_trigger_that_looks_like_a_file_extension_fires_on_a_real_filename() {
+        for profile in IntentProfile::ALL {
+            for trigger in profile
+                .message_triggers()
+                .iter()
+                .chain(profile.locale_triggers().iter())
+            {
+                let Some(extension) = trigger.strip_prefix('.') else {
+                    continue;
+                };
+                // The shape a filename actually has: a stem ending in a digit,
+                // which is what defeats the boundary rule.
+                let filename = format!("budget-2026.{extension}");
+                assert!(
+                    tacet_skills::matching::contains(&filename, trigger),
+                    "profile `{}` lists `{trigger}`, which cannot match `{filename}` — \
+                     `matching::contains` wants a non-alphanumeric character before the \
+                     match and a filename stem ends in one. Drop the dot: the bare \
+                     extension matches as a whole term.",
+                    profile.name()
+                );
+            }
+        }
+    }
+
+    /// AND THE REPLACEMENTS DO FIRE, on the filenames they were written for and
+    /// not on the words they must stay out of.
+    #[test]
+    fn the_bare_extension_roots_match_a_filename_and_not_a_word() {
+        for (extension, filename, innocent) in [
+            (
+                "md",
+                "summarize budget-2026.md for me",
+                "mdadm is a raid tool",
+            ),
+            ("txt", "read notes.txt", "the context of the message"),
+            ("log", "show me server1.log", "logistics for the trip"),
+            ("py", "run prime_numbers.py", "pyramid schemes"),
+            ("js", "open bundle3.js", "jsonnet templates"),
+        ] {
+            assert!(
+                tacet_skills::matching::contains(filename, extension),
+                "`{extension}` must reach `{filename}`"
+            );
+            assert!(
+                !tacet_skills::matching::contains(innocent, extension),
+                "`{extension}` must not reach `{innocent}`"
+            );
+        }
+    }
+
+    // --- The two tools no profile could see ----------------------------------
+
+    /// A CATALOG WITH THE ADDON TOOLS IN IT, whatever this machine has.
+    ///
+    /// `db` needs a `sqlite3`, `clipboard` needs a clipboard helper, and CI runs
+    /// on hosts that have neither — but the router only ever reads a tool's
+    /// NAME and DESCRIPTION, so a stand-in carrying the real ones measures the
+    /// real thing. The description is a `pub const` in each module rather than a
+    /// copy here, so the two cannot drift; when the real tool IS present it is
+    /// used, which also proves the constant is what the tool returns.
+    fn catalog_with_addons() -> ToolCatalog {
+        let store = Arc::new(crate::data_store::SharedStore::new());
+        let memory = crate::memory::SharedMemory::in_memory();
+        let (mut catalog, _, _) = crate::catalog::production_catalog_gated(
+            &store,
+            &memory,
+            Some(0),
+            crate::catalog::AddonGates::all_open(),
+        );
+        if catalog.find("db").is_none() {
+            catalog.add(tool("db", crate::db::DESCRIPTION));
+        }
+        if catalog.find("clipboard").is_none() {
+            catalog.add(tool("clipboard", crate::clipboard::DESCRIPTION));
+        }
+        catalog
+    }
+
+    /// `tacet why "how many rows are in the users table of app.db"` LEFT `db`
+    /// OFF THE LIST.
+    ///
+    /// Measured on a live install with the addon open: the message scored
+    /// `document 5` on "table" and `calc 8` on "how many", `create_document`
+    /// came first, and the database tool was in the "left out" line — where a
+    /// tool cannot be called however well the model reasons. It had no trigger
+    /// anywhere (nothing for sql/sqlite/database/veritabani/query/rows) and no
+    /// name-side hint, so it scored only through generic description matches
+    /// capped at `DESCRIPTION_CAP` and lost to any tool whose NAME matched a
+    /// profile that had fired.
+    ///
+    /// THE PHRASINGS ARE THE PLAINEST ONES, deliberately: if a tool cannot be
+    /// reached by the most obvious way of asking for its own job, the trigger
+    /// table is not tuned, it is absent.
+    #[test]
+    fn the_database_tool_is_reachable_by_the_plainest_phrasings() {
+        let catalog = catalog_with_addons();
+        let router = Router::new();
+        for message in [
+            "how many rows are in the users table of app.db",
+            "run a sql query on data/app.db",
+            "list the records in the customers database",
+            "what is in my sqlite file",
+            "query the database for last month",
+            // Turkish, through the locale list.
+            "app.db dosyasindaki kayit sayisi ne",
+            "veritabaninda kac kayit var",
+        ] {
+            let shown = router.select(message, &catalog);
+            assert!(
+                shown.iter().any(|t| t.name() == "db"),
+                "`db` is not among the {} tools shown for {message:?}: {:?}",
+                shown.len(),
+                shown.iter().map(|t| t.name()).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// The same hole, the same shape. `clipboard`'s description goes out of its
+    /// way to tell the model to use it ONLY on an explicit request — an
+    /// instruction that never arrived, because the tool never reached the
+    /// prompt.
+    #[test]
+    fn the_clipboard_tool_is_reachable_when_the_user_names_it() {
+        let catalog = catalog_with_addons();
+        let router = Router::new();
+        for message in [
+            "read my clipboard",
+            "what did i copy",
+            "copy this to the clipboard",
+            "paste what is on the clipboard",
+            "panodaki metni oku",
+            "kopyaladigim seyi yaz",
+        ] {
+            let shown = router.select(message, &catalog);
+            assert!(
+                shown.iter().any(|t| t.name() == "clipboard"),
+                "`clipboard` is not among the {} tools shown for {message:?}: {:?}",
+                shown.len(),
+                shown.iter().map(|t| t.name()).collect::<Vec<_>>()
+            );
+        }
+    }
+
     /// The fixture catalog. The names and descriptions are ENGLISH, like the real
     /// tools: `tool_hints` matches against that text, so a Turkish fixture would
     /// measure a different world from production.
@@ -2206,10 +2510,21 @@ mod tests {
         // it contains rather than assuming: nothing unrecorded may collide, and
         // every recorded pair whose tool is actually here must still collide —
         // so a pair that stops colliding cannot rot in this list either.
+        //
+        // The last two arrived with the `Data` profile and are the cleanest
+        // possible example of why the boundary rule is not optional: the hint is
+        // `db`, the tool's whole NAME, and the letters hide inside the word
+        // "sandbox" — which `run_code` and `write_code` each use several times
+        // to say the one thing they are about. Without term boundaries a hint
+        // worth `NAME_WEIGHT` would fire on both code tools for every database
+        // question. Nothing to fix on either side: the prose is right, the hint
+        // is right, and the two have no relationship whatsoever.
         let recorded = [
             ("calendar", "write"),
             ("read_document", "sheet"),
+            ("run_code", "db"),
             ("time", "write"),
+            ("write_code", "db"),
         ];
         let present: Vec<String> = catalog
             .tools()

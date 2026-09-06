@@ -400,6 +400,13 @@ impl ClipboardTool {
     }
 }
 
+/// The description, as a constant — same reason as `db::DESCRIPTION`: the tool
+/// exists only where a clipboard helper does, and its routing has to be
+/// measurable everywhere.
+pub const DESCRIPTION: &str = "Reads the system clipboard, or writes text to it. Use ONLY when \
+     the user explicitly asks about the clipboard — 'what did I copy', 'copy this' — never \
+     to gather context on your own. The clipboard often holds something private.";
+
 impl Tool for ClipboardTool {
     fn name(&self) -> &str {
         "clipboard"
@@ -411,9 +418,7 @@ impl Tool for ClipboardTool {
         // pulls whatever the user last copied — quite possibly a password — into
         // the window for no reason. The description is the only place that
         // expectation can be set before the router even scores the tool.
-        "Reads the system clipboard, or writes text to it. Use ONLY when the user \
-         explicitly asks about the clipboard — 'what did I copy', 'copy this' — never \
-         to gather context on your own. The clipboard often holds something private."
+        DESCRIPTION
     }
 
     fn schema(&self) -> ArgSchema {
