@@ -265,9 +265,12 @@ fn recover_nameless_json(raw: &str, catalog: &ToolCatalog) -> Option<ToolCall> {
         return None;
     }
 
-    // (name, how many of the object's values a CLOSED SET accepted) — the
-    // second number is what breaks a tie; see below.
-    let mut candidates: Vec<(String, usize)> = Vec::new();
+    // (name, how many of the object's values a CLOSED SET accepted, the object
+    // AS THAT TOOL WOULD RECEIVE IT) — the second number breaks a tie, see
+    // below, and the third carries any repair made for this candidate: a pasted
+    // menu is dropped per-tool, because a value that is `remember`'s whole menu
+    // is not `time`'s.
+    let mut candidates: Vec<(String, usize, serde_json::Map<String, Value>)> = Vec::new();
     let mut eliminated = 0usize;
     for tool in catalog.tools() {
         let schema = tool.schema();
@@ -298,6 +301,7 @@ fn recover_nameless_json(raw: &str, catalog: &ToolCatalog) -> Option<ToolCall> {
         // the ones that DO fit is what tells two candidates apart in (5).
         let mut closed_set_hits = 0usize;
         let mut violates = false;
+        let mut object = object.clone();
         for field in fields {
             let Some(value) = object.get(&field.name) else {
                 continue;
@@ -305,6 +309,31 @@ fn recover_nameless_json(raw: &str, catalog: &ToolCatalog) -> Option<ToolCall> {
             if let Some(choices) = field.schema.choices() {
                 match value.as_str() {
                     Some(text) if choices.iter().any(|c| c == text) => closed_set_hits += 1,
+                    // THE MODEL PASTED THE MENU INSTEAD OF ORDERING FROM IT.
+                    //
+                    // The prompt renders a closed set as `'a'|'b'|'c'`, and a
+                    // small model sometimes copies that alternation into the
+                    // value. Recorded verbatim on `tr-hafiza-oku`:
+                    // `{"kind":"identity|preference|relation|fact"}`, which is
+                    // `remember`'s own menu read back. That is not a value
+                    // outside the set — it is every value in the set at once,
+                    // and it is EVIDENCE the object was meant for this tool
+                    // rather than proof it was not.
+                    //
+                    // On an OPTIONAL field the repair is to drop it: the model
+                    // failed to choose, the tool has a default, and eliminating
+                    // the whole candidate over an optional field it could have
+                    // left out entirely is the harsher reading. A REQUIRED field
+                    // still eliminates — there the model has said nothing about
+                    // something the call cannot go without.
+                    //
+                    // It stays narrow on purpose. Two or more parts, quotes
+                    // stripped, and EVERY part in this field's own set:
+                    // `{"kind":"banana"}` has no `|` and is still eliminated,
+                    // and so is a pipe-joined list carrying anything invented.
+                    Some(text) if !field.required && is_the_whole_menu(text, choices) => {
+                        object.remove(&field.name);
+                    }
                     _ => {
                         violates = true;
                         break;
@@ -319,7 +348,7 @@ fn recover_nameless_json(raw: &str, catalog: &ToolCatalog) -> Option<ToolCall> {
             continue;
         }
 
-        candidates.push((tool.name().to_string(), closed_set_hits));
+        candidates.push((tool.name().to_string(), closed_set_hits, object));
     }
 
     // (5) THE TIE-BREAK, and it was measured before it was written.
@@ -343,8 +372,8 @@ fn recover_nameless_json(raw: &str, catalog: &ToolCatalog) -> Option<ToolCall> {
     // free-text field is not. So the candidate that satisfies more closed sets
     // wins — and only when it is ALONE at the top. Two tools with the same
     // evidence stay ambiguous, which is the old behaviour and the safe one.
-    let best = candidates.iter().map(|(_, hits)| *hits).max()?;
-    let mut winners = candidates.iter().filter(|(_, hits)| *hits == best);
+    let best = candidates.iter().map(|(_, hits, _)| *hits).max()?;
+    let mut winners = candidates.iter().filter(|(_, hits, _)| *hits == best);
     let winner = winners.next()?;
     if winners.next().is_some() {
         return None;
@@ -363,7 +392,27 @@ fn recover_nameless_json(raw: &str, catalog: &ToolCatalog) -> Option<ToolCall> {
     if winner.1 == 0 && eliminated > 0 {
         return None;
     }
-    Some(ToolCall::new(winner.0.clone(), Value::Object(object)))
+    // THE WINNER'S OWN COPY, not the text the model wrote. If a pasted menu was
+    // dropped for this tool, the call must go out without it — handing the tool
+    // back the alternation it could not read would turn a recovery into a
+    // refusal one layer later.
+    Some(ToolCall::new(
+        winner.0.clone(),
+        Value::Object(winner.2.clone()),
+    ))
+}
+
+/// Is this value the field's entire closed set, pasted back as one string?
+///
+/// The prompt writes a choice as `'a'|'b'|'c'`; the model occasionally copies it
+/// whole. Requiring EVERY part to be in the set, and at least two parts, keeps
+/// this from catching a value that merely contains a pipe.
+fn is_the_whole_menu(text: &str, choices: &[String]) -> bool {
+    let parts: Vec<&str> = text
+        .split('|')
+        .map(|p| p.trim().trim_matches(['\'', '"']))
+        .collect();
+    parts.len() >= 2 && parts.iter().all(|p| choices.iter().any(|c| c == p))
 }
 
 /// The identity of a call WITHIN A TURN: `name|arguments`.
@@ -1436,6 +1485,53 @@ mod tests {
     /// It is a choice now, so no pair of built-ins reaches the rule and testing
     /// it through the production catalog would have quietly stopped testing
     /// anything. The foil is built here instead.
+    /// THE MODEL PASTED THE MENU INSTEAD OF ORDERING FROM IT.
+    ///
+    /// Recorded verbatim on `tr-hafiza-oku`: the prompt renders `remember`'s
+    /// optional `kind` as `'identity'|'preference'|'relation'|'fact'`, and the
+    /// model wrote that alternation back as the VALUE. The old rule read it as a
+    /// value outside the closed set, eliminated `remember` entirely, and
+    /// recovered nothing — while the object was in fact `remember`'s own menu,
+    /// which is evidence the call was meant for it.
+    #[test]
+    fn a_pasted_alternation_on_an_optional_field_is_not_a_violation() {
+        let store = std::sync::Arc::new(crate::data_store::SharedStore::new());
+        let memory = crate::memory::SharedMemory::in_memory();
+        let (catalog, _, _) = crate::catalog::production_catalog(&store, &memory, Some(0));
+
+        let call = recover_nameless_json(
+            r#"{"action":"list","kind":"identity|preference|relation|fact"}"#,
+            &catalog,
+        )
+        .expect("recovered");
+        assert_eq!(call.name, "remember");
+        // AND THE MENU DOES NOT GO OUT WITH IT. Handing the tool back the
+        // alternation would turn the recovery into a refusal one layer later.
+        assert!(
+            call.args.get("kind").is_none(),
+            "the pasted menu was passed through: {:?}",
+            call.args
+        );
+        assert_eq!(call.args["action"], "list");
+
+        // The quoted form the prompt actually renders.
+        let quoted = recover_nameless_json(
+            r#"{"action":"list","kind":"'identity'|'preference'|'relation'|'fact'"}"#,
+            &catalog,
+        )
+        .expect("recovered");
+        assert_eq!(quoted.name, "remember");
+
+        // AND IT STAYS NARROW. A value with something invented in it is still a
+        // violation, and so is one with no pipe at all.
+        assert!(
+            recover_nameless_json(r#"{"action":"list","kind":"identity|banana"}"#, &catalog)
+                .is_none_or(|c| c.args.get("kind").is_none() && c.name != "remember"),
+            "a list carrying an invented value must not be swallowed"
+        );
+        assert!(recover_nameless_json(r#"{"kind":"banana"}"#, &catalog).is_none());
+    }
+
     #[test]
     fn the_last_tool_standing_is_not_evidence() {
         /// A bridged tool in the shape a server actually sends: one required

@@ -1497,31 +1497,97 @@ pub fn check_answer_quality(
 /// Turkish; the old code failed it, which counted a correct short answer as a
 /// language defect. There is nothing there to read, so there is nothing to
 /// claim.
-fn speaks(lang: Language, answer: &str) -> bool {
-    let words: Vec<String> = answer
-        .split(|c: char| !c.is_alphanumeric())
+/// The words of an answer, for the language check.
+///
+/// APOSTROPHES DO NOT SPLIT A WORD. Turkish attaches its case suffixes with one
+/// — `480'in`, `81'in`, `625'tir` — and splitting there produced the standalone
+/// token `in`, which is on the ENGLISH list. So a Turkish sentence handed
+/// evidence to English while giving none to Turkish.
+fn answer_words(answer: &str) -> Vec<String> {
+    answer
+        .split(|c: char| !c.is_alphanumeric() && c != '\'' && c != '\u{2019}')
+        .map(|w| w.trim_matches(['\'', '\u{2019}']))
         .filter(|w| w.chars().any(char::is_alphabetic))
         .map(str::to_lowercase)
-        .collect();
-    if words.is_empty() {
-        return true;
-    }
+        .collect()
+}
+
+/// How much this answer looks like `lang`, in arbitrary units.
+///
+/// A proof letter is worth more than a function word because it is harder to
+/// produce by accident; the absolute values do not matter, only the comparison
+/// in `speaks`.
+fn language_evidence(lang: Language, answer: &str, words: &[String]) -> usize {
     let marks = lang.marks();
-    // A character the other supported languages do not write settles it alone.
-    if answer.chars().any(|c| marks.letters.contains(c)) {
-        return true;
-    }
+    let mut score = 3 * answer
+        .chars()
+        .filter(|c| marks.letters.contains(*c))
+        .count();
     // Chinese by RANGE rather than by list: the block has tens of thousands of
-    // characters and an answer is free to use one that is not in the sample
-    // above.
+    // characters and an answer is free to use one that is not in the sample.
     if lang == Language::Chinese
         && answer
             .chars()
             .any(|c| matches!(c, '\u{4e00}'..='\u{9fff}' | '\u{3400}'..='\u{4dbf}'))
     {
+        score += 3;
+    }
+    // The letters two languages share are evidence for BOTH, which is why they
+    // were dropped from the proof sets — but dropping them left Turkish with no
+    // evidence at all in `81'in karekökü 9'dur.` They come back here, weighted
+    // like a word, and the competition below decides between the claimants.
+    if matches!(lang, Language::Turkish | Language::German) {
+        score += answer.chars().filter(|c| "öÖüÜ".contains(*c)).count();
+    }
+    score
+        + words
+            .iter()
+            .filter(|w| marks.words.contains(&w.as_str()))
+            .count()
+}
+
+/// Does this answer look like it is written in `lang`.
+///
+/// IT PROVES THE NEGATIVE, NOT THE POSITIVE — and it used to do the opposite.
+///
+/// The old rule demanded evidence FOR the asked language and failed the answer
+/// when it found none. Measured on the shipped baseline, that failed four
+/// answers that were written in the language asked for:
+///
+/// ```text
+/// tr-hesap-yuzde    "480'in yüzde 18'i 86.4'tür."
+/// tr-hesap-cikarma  "1000 eksi 375, yani 1000 - 375 = 625'tir."
+/// tr-hesap-karekok  "81'in karekökü 9'dur."
+/// chat-bored        "Why don't scientists trust atoms? …"   (English, none of the 23 words)
+/// ```
+///
+/// Turkish's proof letters exclude `ö ü` because German writes them too, and
+/// none of the three carries `ç ğ ı İ ş` or a listed function word. English has
+/// no proof letters at all, so a fluent English joke with none of its 23 words
+/// fails its own gate. That is four of the nine answer-quality failures being
+/// the instrument rather than the model.
+///
+/// The rule now: score every supported language, and accept unless ANOTHER one
+/// scores strictly higher. When nothing scores — a short sentence in no
+/// language's evidence — it ABSTAINS, because "I cannot tell" is not "wrong".
+/// `tr-tesekkur`, a genuinely English reply where Turkish was asked, still
+/// fails: English scores and Turkish does not.
+fn speaks(lang: Language, answer: &str) -> bool {
+    let words = answer_words(answer);
+    if words.is_empty() {
         return true;
     }
-    words.iter().any(|w| marks.words.contains(&w.as_str()))
+    let mine = language_evidence(lang, answer, &words);
+    let best = Language::ALL
+        .iter()
+        .map(|l| language_evidence(*l, answer, &words))
+        .max()
+        .unwrap_or(0);
+    // Nothing to go on: abstain rather than fail.
+    if best == 0 {
+        return true;
+    }
+    mine >= best
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2306,20 +2372,68 @@ pub fn run_selection_case_in(
                 generation.token_count as f64 / gen_secs.max(1e-9),
                 generation.stop
             ));
+            // A CUT-OFF PASS IS A LOST PASS, NOT A LOST TURN.
+            //
+            // This killed the whole turn and threw away every tool result the
+            // earlier passes had already collected — so a case where the model
+            // called correctly twice and then ran long on the third pass was
+            // recorded as if nothing had happened. Four steps of the shipped
+            // baseline ended here, and `write_code-script` had two successful
+            // `write_code` calls in hand when it did.
+            //
+            // Going to the final pass instead keeps those results and gives the
+            // model the one thing it is missing: a pass with no tools and an
+            // instruction to answer. If the cut-off happens ON the final pass
+            // there is nothing left to try, and it still ends the turn.
             if !generation.stop.is_complete() {
-                answer = "generation was cut off halfway".into();
-                ended = Ending::CutOff;
-                break;
+                if turn + 1 == MAX_TURNS {
+                    answer = "generation was cut off halfway".into();
+                    ended = Ending::CutOff;
+                    break;
+                }
+                must_answer = true;
+                continue;
             }
             // THE TOOL'S OWN TIME, separated from the model's. Without this the
             // two are one number and the wrong one gets optimised: `calendar-day`
             // reads as a 39 s case, of which 9.5 s is generation and 30 s is
             // `osascript` talking to the Calendar app.
             let tool_started = std::time::Instant::now();
+            // ON THE LAST PASS, WHAT THE MODEL WRITES IS THE ANSWER.
+            //
+            // The last pass is offered NO tools and told to answer; running a
+            // call it writes there is the harness disagreeing with the prompt it
+            // just sent. Three steps of the shipped baseline died exactly this
+            // way — every pass spent calling, the budget gone, nothing said —
+            // and the loop had no pass left to turn the result into a sentence.
+            //
+            // GATED ON `turn + 1 == MAX_TURNS`, NOT ON `final_turn`, and the
+            // narrowing is the whole safety argument. `final_turn` is also true
+            // when `must_answer` was set by a duplicate call, which can fire as
+            // early as pass 2 — SIXTEEN currently-passing steps have three or
+            // more calls with a consecutive repeat, and gating on `final_turn`
+            // would replace their real answer with a raw call string. Gating on
+            // the true last pass captures the three four-call steps and touches
+            // none of the sixteen.
+            let last_pass = turn + 1 == MAX_TURNS;
+            if last_pass {
+                // AND A CALL WRITTEN THERE IS STILL NOT AN ANSWER. Not executing
+                // it is half the rule; the other half is not counting it as the
+                // sentence the user got. A turn whose last words are
+                // `calculate({"expression":"125*8"})` said nothing, and calling
+                // that an answer would trade one wrong verdict for another.
+                if tacet_tools::executor::ToolCall::parse(&generation.text).is_some() {
+                    ended = Ending::OutOfTurns;
+                } else {
+                    answer = generation.text.clone();
+                    ended = Ending::Answered;
+                }
+                break;
+            }
             let Some(outcome) = wait(executor.execute_raw(&generation.text, ticket, &mut ctx))
             else {
-                // THE ONLY EXIT THAT PRODUCED AN ANSWER: the generation was not
-                // a call, so it is what the user is told.
+                // THE ONLY OTHER EXIT THAT PRODUCED AN ANSWER: the generation was
+                // not a call, so it is what the user is told.
                 answer = generation.text.clone();
                 ended = Ending::Answered;
                 break;

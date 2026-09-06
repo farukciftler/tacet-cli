@@ -1286,8 +1286,18 @@ pub fn chat(run: ChatRun) -> ExitCode {
                     ui::Stage::Tool { name: call.name }
                 });
             }
-            let Some(outcome) = wait(executor.execute_raw(&generation.text, ticket, &mut ctx))
-            else {
+            // ON THE LAST PASS, WHAT THE MODEL WRITES IS THE ANSWER — see the
+            // note in `tacet-eval`'s copy of this loop. The last pass is offered
+            // no tools and told to answer; executing a call it writes there is
+            // the shell disagreeing with the prompt it just sent, and it costs
+            // the user the answer.
+            let last_pass = turn + 1 == tacet_eval::MAX_TURNS;
+            let executed = if last_pass {
+                None
+            } else {
+                wait(executor.execute_raw(&generation.text, ticket, &mut ctx))
+            };
+            let Some(outcome) = executed else {
                 indicator.finish();
                 answer = generation.text;
                 // THE SAFETY VALVE: if nothing was printed in the stream, the

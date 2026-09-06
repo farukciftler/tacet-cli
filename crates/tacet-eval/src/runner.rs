@@ -276,7 +276,15 @@ pub fn run_case(case: &EvalCase, selector: &dyn EngineSelector) -> CaseOutcome {
         // opposite question — "is this number in the pool WITHOUT the answer" —
         // and with the answer already inside, every number would ground itself.
         // The two halves are joined below, after the claim that needs them apart.
-        let Some(outcome) = wait(executor.execute_raw(&generation.text, ticket, &mut ctx)) else {
+        // ON THE LAST PASS, WHAT THE MODEL WRITES IS THE ANSWER — the same rule
+        // as the other two loops, kept in step with them deliberately.
+        let last_pass = turn + 1 == MAX_TURNS;
+        let executed = if last_pass {
+            None
+        } else {
+            wait(executor.execute_raw(&generation.text, ticket, &mut ctx))
+        };
+        let Some(outcome) = executed else {
             answer = generation.text.clone();
             answered = true;
             break;
