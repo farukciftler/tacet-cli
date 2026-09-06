@@ -5,7 +5,13 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "A hand-written Model Context Protocol client: JSON-RPC 2.0 over Streamable HTTP with SSE."
-keywords = ["mcp", "model-context-protocol", "json-rpc", "llm"]
+# `model-context-protocol` WAS HERE AND CRATES.IO REJECTED THE PUBLISH: a keyword
+# may be at most 20 characters and that one is 22. It failed at the UPLOAD, after
+# ten other crates had already gone out, and took `tacet-tools`, `tacet-eval` and
+# `tacet-cli` down with it because they resolve through this crate. Nothing local
+# checks registry metadata rules — `cargo package` and `--dry-run` both pass —
+# so `the_registry_metadata_rules_are_satisfied` checks them instead.
+keywords = ["mcp", "json-rpc", "sse", "llm", "tool-calling"]
 categories = ["api-bindings", "network-programming"]
 rust-version.workspace = true
 readme = "README.md"

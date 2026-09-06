@@ -136,3 +136,82 @@ fn every_member_ships_the_licence_text() {
     }
     assert!(checked >= 11, "only {checked} members walked");
 }
+
+/// THE RULES CRATES.IO ENFORCES AND CARGO DOES NOT.
+///
+/// `cargo package`, `cargo publish --dry-run` and every local check pass on a
+/// manifest the registry will reject, because these limits live on the server.
+/// The failure therefore arrives at the UPLOAD — the one step that is not
+/// reversible and the one place a chain of eleven crates is half-way through.
+///
+/// It happened: `tacet-mcp` carried the keyword `model-context-protocol`, which
+/// is 22 characters against a limit of 20. Ten crates had already been published
+/// when the eleventh was refused, and `tacet-tools`, `tacet-eval` and
+/// `tacet-cli` then failed to resolve because they depend on it.
+///
+/// The limits below are crates.io's: at most 5 keywords, each at most 20
+/// characters, each starting alphanumeric and otherwise `[A-Za-z0-9_-]`; a
+/// description is required; `license` and `repository` are what the page needs
+/// to be readable at all.
+#[test]
+fn the_registry_metadata_rules_are_satisfied() {
+    let root = repo_root();
+    let mut checked = 0;
+    for entry in std::fs::read_dir(root.join("crates")).expect("crates/") {
+        let dir = entry.expect("a directory entry").path();
+        let manifest_path = dir.join("Cargo.toml");
+        if !manifest_path.exists() {
+            continue;
+        }
+        let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+        let manifest = std::fs::read_to_string(&manifest_path).expect("a manifest");
+
+        let keywords: Vec<String> = manifest
+            .lines()
+            .find(|l| l.trim_start().starts_with("keywords"))
+            .and_then(|l| l.split_once('['))
+            .and_then(|(_, rest)| rest.split_once(']'))
+            .map(|(inner, _)| {
+                inner
+                    .split(',')
+                    .map(|k| k.trim().trim_matches('"').to_string())
+                    .filter(|k| !k.is_empty())
+                    .collect()
+            })
+            .unwrap_or_else(|| panic!("{name} declares no keywords"));
+
+        assert!(
+            keywords.len() <= 5,
+            "{name} declares {} keywords; crates.io allows 5",
+            keywords.len()
+        );
+        for keyword in &keywords {
+            assert!(
+                keyword.chars().count() <= 20,
+                "{name}: keyword `{keyword}` is {} characters; crates.io allows 20 \
+                 and refuses the UPLOAD, not the package",
+                keyword.chars().count()
+            );
+            assert!(
+                keyword
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphanumeric())
+                    && keyword
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+                "{name}: keyword `{keyword}` is not [A-Za-z0-9_-] starting alphanumeric"
+            );
+        }
+        for required in ["description", "license", "repository"] {
+            assert!(
+                manifest
+                    .lines()
+                    .any(|l| l.trim_start().starts_with(required)),
+                "{name} declares no `{required}`, so its crates.io page is unreadable"
+            );
+        }
+        checked += 1;
+    }
+    assert!(checked >= 11, "only {checked} manifests walked");
+}

@@ -194,15 +194,22 @@ the workspace half-released — some crates on crates.io pointing at versions th
 do not exist yet.
 
 ```
-tacet-kernel
-tacet-zip        tacet-skills     tacet-memory     # independent of each other
-tacet-grammar
-tacet-engine
-tacet-tools
-tacet-web        tacet-mcp
-tacet-eval
-tacet-cli
+tacet-kernel     tacet-zip                        # no in-tree dependencies
+tacet-skills                                      # kernel
+tacet-memory                                      # kernel, skills
+tacet-grammar    tacet-web        tacet-mcp        # kernel (all three)
+tacet-engine                                      # kernel, grammar
+tacet-tools                                       # kernel, zip, memory, skills, web, mcp
+tacet-eval                                        # + engine, grammar
+tacet-cli                                         # everything
 ```
+
+**`tacet-web` and `tacet-mcp` come BEFORE `tacet-tools`, not after.** This list
+had them after, which reads naturally — they are the outward-facing pair — and is
+wrong: `tacet-tools` depends on both, so that order fails on the first publish
+past `tacet-tools`. Derive the order from
+`awk '/^\[dependencies\]/{p=1} p&&/^tacet-/' crates/*/Cargo.toml` rather than
+from what the crates feel like.
 
 Before any of it, two things that have each cost a release here:
 
