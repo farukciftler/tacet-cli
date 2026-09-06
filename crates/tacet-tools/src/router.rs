@@ -1267,9 +1267,25 @@ impl IntentProfile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IntentScores {
     scores: Vec<(IntentProfile, usize)>,
+    /// Did any WRITTEN TRIGGER fire, before the learned gate had its say?
+    ///
+    /// A SEPARATE QUESTION FROM "IS ANY SCORE NON-ZERO", and conflating them
+    /// broke the MCP reservation. That reservation exists so a question in a
+    /// language the trigger table has never seen can still reach a connected
+    /// server, and it is gated on nothing having matched. The learned gate is
+    /// explicitly a supplement for messages the table cannot reach — so letting
+    /// its boost answer "did the table recognise this" turned the reservation
+    /// off on precisely the messages it was written for.
+    matched_by_trigger: bool,
 }
 
 impl IntentScores {
+    /// Did a written trigger fire? See the field's note: this is not the same
+    /// as "some score is non-zero" once the learned gate can add one.
+    pub fn matched_by_trigger(&self) -> bool {
+        self.matched_by_trigger
+    }
+
     pub fn score(&self, profile: IntentProfile) -> usize {
         self.scores
             .iter()
@@ -1358,6 +1374,7 @@ pub fn score_intent(message: &str) -> IntentScores {
         })
         .collect();
     let mut scores: Vec<(IntentProfile, usize)> = scores;
+    let matched_by_trigger = scores.iter().any(|(_, total)| *total > 0);
 
     // THE LEARNED HALF, AND IT ONLY ADDS. `slot_gate` is 6 KiB of int8 that
     // answers "is this a request for one of the two extraction tools" where the
@@ -1381,7 +1398,10 @@ pub fn score_intent(message: &str) -> IntentScores {
             }
         }
     }
-    IntentScores { scores }
+    IntentScores {
+        scores,
+        matched_by_trigger,
+    }
 }
 
 /// WHY a tool did or did not reach the model, for one message.
@@ -1537,7 +1557,11 @@ impl Router {
         // pushing scoring ones out of the budget — measured on the same
         // exchange-rate question, where five of nine slots had gone to the
         // server.
-        let nothing_matched = scores.score(scores.dominant()) == 0;
+        // THE WRITTEN TABLE, NOT THE TOTAL. The learned gate adds a score for
+        // exactly the messages this reservation exists for — ones the trigger
+        // table cannot reach — so asking "is any score zero" let the gate
+        // silence the reservation on its own best cases.
+        let nothing_matched = !scores.matched_by_trigger();
         let mut chosen: Vec<Arc<dyn Tool>> = ordered
             .iter()
             .take(budget)
@@ -1564,7 +1588,25 @@ impl Router {
                     .take(wanted)
                     .cloned()
                     .collect();
-                chosen.truncate(budget.saturating_sub(extra.len()));
+                // MAKE ROOM FROM THE TAIL, SKIPPING THE RESERVED — a blind
+                // `truncate` deleted the very tools this block exists to keep.
+                //
+                // A reserved tool that EARNED a tail slot on merit is counted in
+                // `already` (so `wanted` shrinks) and was then cut off by the
+                // truncate, so the reservation delivered fewer slots than it
+                // promised the moment merit and reservation agreed. MEASURED at
+                // production geometry — 17 built-ins plus 29 MCP tools, budget
+                // 9, three reserved slots — 1080 of 3772 non-scoring probe
+                // messages got 2 of 3.
+                let mut room = extra.len();
+                let mut i = chosen.len();
+                while room > 0 && i > 0 {
+                    i -= 1;
+                    if !self.reserved.iter().any(|n| n == chosen[i].name()) {
+                        chosen.remove(i);
+                        room -= 1;
+                    }
+                }
                 chosen.extend(extra);
             }
         }
@@ -1931,6 +1973,56 @@ mod tests {
     /// reservation fired even though the message had said plainly what it was
     /// about. One shared everyday word is a coincidence; and the reservation is
     /// for silence, not for competition.
+    /// THE RESERVATION DELIVERS ITS SLOTS EVEN WHEN MERIT AGREES WITH IT.
+    ///
+    /// The old code made room with `chosen.truncate(budget - extra.len())`,
+    /// which cuts the tail without looking at what is in it. A reserved tool
+    /// that had EARNED a tail slot was counted in `already` — shrinking how many
+    /// extras were fetched — and then deleted by the same truncate. So the
+    /// reservation under-delivered exactly when the router and the reservation
+    /// wanted the same tool, which is the case nobody thinks to test.
+    ///
+    /// The existing guard above checks the opposite direction (a reserved tool
+    /// reachable from an unseen language) and cannot see this.
+    #[test]
+    fn a_reserved_tool_that_earned_its_slot_is_not_dropped_to_make_room() {
+        // ORDER IS THE WHOLE TEST. With no profile firing every tool scores
+        // zero and catalog order decides, so `srv_disk` lands in the LAST slot
+        // of the budget — it earned its place, and the blind truncate that made
+        // room for the other two reserved tools then deleted it.
+        let mut catalog = tacet_kernel::ToolCatalog::new();
+        for name in ["qqq_alpha", "qqq_beta", "qqq_gamma"] {
+            catalog.add(Arc::new(FakeTool {
+                name,
+                description: "zzz yyy xxx.",
+            }));
+        }
+        for name in ["srv_disk", "srv_net", "srv_proc"] {
+            catalog.add(Arc::new(FakeTool {
+                name,
+                description: "zzz yyy xxx.",
+            }));
+        }
+        let reserved: Vec<String> = ["srv_disk", "srv_net", "srv_proc"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let router = Router::new().max(4).reserving(reserved.clone());
+
+        let picked: Vec<String> = router
+            .select("ワードプロセッサの状態", &catalog)
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        let kept = picked.iter().filter(|n| reserved.contains(n)).count();
+        assert_eq!(
+            kept,
+            RESERVED_SLOTS.min(reserved.len()),
+            "the reservation promised {} slots and delivered {kept}: {picked:?}",
+            RESERVED_SLOTS.min(reserved.len())
+        );
+    }
+
     #[test]
     fn a_remote_catalog_does_not_crowd_a_message_that_said_what_it_wants() {
         let mut catalog = ToolCatalog::new();
