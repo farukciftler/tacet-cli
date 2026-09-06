@@ -77,18 +77,44 @@ fn date_build(var: &str, d: &DateTime) -> String {
     )
 }
 
-/// The script that lists one day's events, one per line: "HH:MM · title".
-fn events_script(day: &DateTime) -> String {
+/// THE LONGEST SPAN ONE CALL MAY READ.
+///
+/// AppleScript walks every calendar and every event in the window, so the cost
+/// is linear in the span and the bridge already has a 30-second timeout —
+/// "what have I got this year" would spend it and return nothing. Thirty-one
+/// days covers "this week", "next week" and "the rest of the month", which is
+/// every range a person asks for in one breath.
+pub const MAX_SPAN_DAYS: i64 = 31;
+
+/// The script that lists `span` days of events from `day`, one per line.
+///
+/// FORMAT DEPENDS ON THE SPAN, and it has to. One day's events read fine as
+/// "HH:MM · title"; the same lines over a week are unattributable — three
+/// entries at 09:00 with no way to tell Monday from Thursday. Over a span the
+/// date is prefixed, and the cost is paid only where it buys something.
+///
+/// THE SPAN USED TO BE FIXED AT ONE and there was no way to ask for more: the
+/// schema had a single `day` and "what does my week look like" could only be
+/// answered by calling the tool seven times, which the turn budget does not
+/// allow. The `+ 1 * days` in this script was the whole limitation.
+fn events_script(day: &DateTime, span: i64) -> String {
     let mut start = day.start_of_day();
     start.clock = 0;
     start.minute = 0;
+    let span = span.clamp(1, MAX_SPAN_DAYS);
+    let line = if span > 1 {
+        "set end of out to (short date string of (start date of e)) & \" \" & \
+         (time string of (start date of e)) & \" · \" & (summary of e)\n"
+    } else {
+        "set end of out to (time string of (start date of e)) & \" · \" & (summary of e)\n"
+    };
     format!(
-        "{}set d2 to d1 + 1 * days\n\
+        "{}set d2 to d1 + {span} * days\n\
          set out to {{}}\n\
          tell application \"Calendar\"\n\
          repeat with c in calendars\n\
          repeat with e in (every event of c whose start date is greater than or equal to d1 and start date is less than d2)\n\
-         set end of out to (time string of (start date of e)) & \" · \" & (summary of e)\n\
+         {line}\
          end repeat\n\
          end repeat\n\
          end tell\n\
@@ -246,6 +272,15 @@ impl tacet_kernel::Tool for CalendarTool {
                 ArgSchema::text()
                     .description("Only for kind='events': the day, copied from the user's words. Default: today."),
             ),
+            // A BOUNDED INTEGER, NOT FREE TEXT, for the reason `kind` is a
+            // `choice`: the grammar compiles the bound, so "the whole year"
+            // cannot be written as an argument and refused afterwards.
+            Field::new(
+                "days",
+                ArgSchema::integer()
+                    .range(Some(1.0), Some(MAX_SPAN_DAYS as f64))
+                    .description("Only for kind='events': how many days from `day`. Default 1; a week is 7."),
+            ),
             Field::new(
                 "title",
                 ArgSchema::text().description("Only for kind='remind': what to be reminded of."),
@@ -286,19 +321,38 @@ impl tacet_kernel::Tool for CalendarTool {
                         let d = text_arg("day");
                         if d.is_empty() { "today".to_string() } else { d }
                     };
+                    // CLAMPED, NOT REFUSED. The schema already bounds this, so a
+                    // value outside the range cannot arrive from a constrained
+                    // model; the clamp is for the unconstrained callers (a test,
+                    // a bridge) and costs one instruction.
+                    let span = args
+                        .get("days")
+                        .and_then(serde_json::Value::as_i64)
+                        .unwrap_or(1)
+                        .clamp(1, MAX_SPAN_DAYS);
                     match TimeResolver::resolve(&raw_day, self.now()) {
                         None => ToolOutcome::failed(&ToolError::InvalidArgument(format!(
                             "the day '{raw_day}' was not understood — pass it exactly as the user said it"
                         ))),
-                        Some(r) => match run_osascript(&events_script(&r.an)) {
+                        Some(r) => match run_osascript(&events_script(&r.an, span)) {
                             Err(e) => ToolOutcome::failed(&ToolError::Io(std::io::Error::other(e))),
+                            // THE SPAN IS IN THE SENTENCE, because "no events on
+                            // 2026-09-07" after a question about the week is a
+                            // true statement that answers a different question.
                             Ok(text) if text.trim().is_empty() => ToolOutcome::new(
-                                "calendar read · empty day",
+                                "calendar read · empty",
                                 ToolState::Read,
-                                format!(
-                                    "no events on {:04}-{:02}-{:02}",
-                                    r.an.year, r.an.month, r.an.day
-                                ),
+                                if span > 1 {
+                                    format!(
+                                        "no events in the {span} days from {:04}-{:02}-{:02}",
+                                        r.an.year, r.an.month, r.an.day
+                                    )
+                                } else {
+                                    format!(
+                                        "no events on {:04}-{:02}-{:02}",
+                                        r.an.year, r.an.month, r.an.day
+                                    )
+                                },
                             ),
                             Ok(text) => {
                                 let count = text.lines().count();
@@ -359,6 +413,7 @@ impl tacet_kernel::Tool for CalendarTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tacet_kernel::Tool;
 
     fn day() -> DateTime {
         DateTime::new(2026, 7, 29, 15, 30, 0).expect("valid")
@@ -366,7 +421,7 @@ mod tests {
 
     #[test]
     fn dates_are_injected_numerically_not_as_locale_literals() {
-        let s = events_script(&day());
+        let s = events_script(&day(), 1);
         assert!(s.contains("set year of d1 to 2026"));
         assert!(s.contains("set month of d1 to 7"));
         assert!(s.contains("set day of d1 to 29"));
@@ -378,6 +433,50 @@ mod tests {
             !s.contains("date \""),
             "no locale-parsed date literal anywhere"
         );
+    }
+
+    /// A DAY WAS THE ONLY THING THIS TOOL COULD READ.
+    ///
+    /// The script said `d1 + 1 * days` and the schema had no way to say
+    /// otherwise, so "what does my week look like" could only be answered by
+    /// calling the tool seven times — which the turn budget does not allow, and
+    /// which nothing in the description invited. The question simply had no
+    /// answer.
+    #[test]
+    fn a_span_reads_more_than_one_day() {
+        let one = events_script(&day(), 1);
+        let week = events_script(&day(), 7);
+        assert!(one.contains("d1 + 1 * days"));
+        assert!(week.contains("d1 + 7 * days"));
+        // THE FORMAT CHANGES WITH THE SPAN, and it has to: three entries at
+        // 09:00 over a week are unattributable without the date.
+        assert!(
+            !one.contains("short date string"),
+            "one day needs no date prefix and the tokens are not free"
+        );
+        assert!(
+            week.contains("short date string"),
+            "over a span, a bare HH:MM cannot be attributed to a day"
+        );
+    }
+
+    /// The span is bounded in the SCHEMA — so a constrained model cannot write
+    /// "the whole year" and be refused afterwards — and clamped in the script
+    /// for the callers the grammar does not run through.
+    #[test]
+    fn the_span_is_bounded_where_the_grammar_can_see_it() {
+        let schema = CalendarTool::new().schema();
+        let signature = schema.short_signature();
+        assert!(
+            signature.contains("days"),
+            "the model cannot pass what the signature does not name: {signature}"
+        );
+        assert!(
+            events_script(&day(), 9_999).contains(&format!("d1 + {MAX_SPAN_DAYS} * days")),
+            "an unconstrained caller must not be able to walk every calendar for a year"
+        );
+        assert!(events_script(&day(), 0).contains("d1 + 1 * days"));
+        assert!(events_script(&day(), -5).contains("d1 + 1 * days"));
     }
 
     #[test]
