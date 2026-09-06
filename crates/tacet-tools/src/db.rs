@@ -490,7 +490,8 @@ impl Tool for DbTool {
             Field::new(
                 "path",
                 ArgSchema::text().description(
-                    "Path of the SQLite file inside the working directory, e.g. 'data/app.db'.",
+                    "Path of the SQLite file, relative to the working directory or an \
+                     absolute path in a folder the user opened. Example: 'data/app.db'.",
                 ),
             )
             .required(),

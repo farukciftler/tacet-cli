@@ -187,7 +187,8 @@ impl Tool for ArchiveTool {
             Field::new(
                 "path",
                 ArgSchema::text().description(
-                    "Path to the .zip file, relative to the working directory. Example: backup.zip",
+                    "Path to the .zip file, relative to the working directory or an \
+                     absolute path in a folder the user opened. Example: backup.zip",
                 ),
             )
             .required(),

@@ -324,11 +324,28 @@ impl Tool for FindFileTool {
         // the model must not call this tool for a "search the internet" request.
         // The warning in the description is not enough on its own, the name carries
         // it — but the two together are better.
-        "Searches the user's OWN files inside the working directory by file name and by \
-         text content. Call this when the user asks to find a file or a note on this device \
-         ('find the file about X', 'which file mentions Y', in any language). It cannot see \
-         the internet and it cannot leave the working directory — never use it for weather, \
-         news or general knowledge."
+        //
+        // TWO REFUSALS USED TO BE WELDED TOGETHER HERE and only one of them is
+        // true. "It cannot see the internet AND it cannot leave the working
+        // directory" was one sentence; the second half stopped being true when
+        // the workspace addon started accepting absolute paths inside folders
+        // the user registered (`sandbox_path::resolve_absolute_in_roots`).
+        //
+        // A DESCRIPTION IS AN INTERFACE, not documentation — it is the only
+        // thing the model reads. So the reach a user paid an install and an
+        // approval screen for was unreachable: the tool would have accepted the
+        // path, and the model never offered one. Measured: `FindFileTool` with
+        // an absolute path in a second root answers "There is no access to this
+        // location." before `install_roots` and succeeds after.
+        //
+        // The internet refusal stays ABSOLUTE, because it is doing separate
+        // work: it is what keeps the model from reaching here for "search the
+        // web". Only the directory half is now conditional.
+        "Searches the user's OWN files — the working directory and any folder the user \
+         opened — by file name and by text content. Call this when the user asks to find a \
+         file or a note on this device ('find the file about X', 'which file mentions Y', \
+         in any language). It cannot see the internet — never use it for weather, news or \
+         general knowledge."
     }
 
     fn schema(&self) -> ArgSchema {
@@ -343,7 +360,8 @@ impl Tool for FindFileTool {
             Field::new(
                 "folder",
                 ArgSchema::text().description(
-                    "Optional subfolder to search in, relative to the working directory. \
+                    "Optional folder to search in, relative to the working directory or \
+                     an absolute path in a folder the user opened. \
                      Leave empty to search everything.",
                 ),
             ),

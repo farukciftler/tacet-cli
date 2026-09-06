@@ -116,7 +116,8 @@ impl Tool for ReadDocumentTool {
             Field::new(
                 "path",
                 ArgSchema::text().description(
-                    "Path to the document to read, relative to the working directory. \
+                    "Path to the document, relative to the working directory or an \
+                     absolute path in a folder the user opened. \
                      Supported: .xlsx, .md, .txt, .csv, .log, .json",
                 ),
             )

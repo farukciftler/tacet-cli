@@ -116,7 +116,8 @@ impl Tool for ChecksumTool {
             Field::new(
                 "path",
                 ArgSchema::text().description(
-                    "Path to the file to fingerprint, relative to the working directory.",
+                    "Path to the file, relative to the working directory or an absolute \
+                     path in a folder the user opened.",
                 ),
             )
             .required(),
