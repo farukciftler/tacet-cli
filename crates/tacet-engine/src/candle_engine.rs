@@ -82,6 +82,30 @@ fn largest_index(logits: &[f32]) -> usize {
 /// It looks only at THE END: a legitimate repetition in the middle of the text (a
 /// list, a table row) must not cut generation; what has to be cut is generation
 /// being STUCK right now.
+/// Does the stuck-generation backstop run at this step?
+///
+/// A FREE FUNCTION SO IT CAN BE TESTED, because the version of this decision
+/// that lived inline was wrong for as long as it existed and nothing could say
+/// so: exercising it needed a model, weights and a device. The two gates below
+/// are the whole of what went wrong, and they are three lines each.
+///
+/// The question is whether the constraint is CONSTRAINING, not whether one was
+/// passed. Tacet's `CallConstraint` is present on every shell turn but the last
+/// and leaves free text open until a call begins, so `constraint.is_some()`
+/// answered a different question and answered it wrongly on every prose turn.
+fn backstop_runs(structural: bool) -> bool {
+    !structural
+}
+
+/// Has a call that armed at `armed_at` spent its budget?
+///
+/// Measured from where the automaton armed, not from the first token: a turn
+/// that answers in prose and never starts a call is not on a call's budget at
+/// all, and clamping it to one was the second half of the same mistake.
+fn call_over_budget(armed_at: Option<usize>, produced: usize, cap: usize) -> bool {
+    armed_at.is_some_and(|start| produced.saturating_sub(start) >= cap)
+}
+
 fn is_looping(produced: &[u32]) -> bool {
     let needed = LOOP_SEQUENCE_LENGTH * LOOP_THRESHOLD;
     if produced.len() < needed {
@@ -726,16 +750,21 @@ SmolLM2 and TinyLlama work; a Llama-3 chat model needs its own template first.",
         //
         // ONLY WHEN CONSTRAINED. Free prose is the answer to the user and has no
         // such natural size; it keeps the caller's budget.
+        //
+        // AND "CONSTRAINED" HAS TO MEAN ARMED, not merely offered. The shell
+        // passes `Some(&CallConstraint)` on every turn but the last, and that
+        // constraint leaves free text open until `name(` arrives — so this
+        // clamped ordinary prose answers to 2048 tokens, which is the opposite
+        // of what the paragraph above promises. The cap is now applied from the
+        // point the automaton actually arms (see `armed_at` in the loop): a turn
+        // that never starts a call keeps the caller's budget, and a call that
+        // starts gets 2048 tokens to finish in.
         const TOOL_CALL_CAP: usize = 2048;
-        let setting = if constraint.is_some() {
-            SamplingSetting {
-                max_tokens: setting.max_tokens.min(TOOL_CALL_CAP),
-                ..setting
-            }
-        } else {
-            setting
-        };
         let mut produced: Vec<u32> = Vec::with_capacity(setting.max_tokens);
+        // Where the automaton first armed, if it has. The cap is measured from
+        // there rather than from the first token, so a turn that answers in
+        // prose is never clamped by a rule written for calls.
+        let mut armed_at: Option<usize> = None;
         // Diagnostics (env-gated, read once — polling an environment variable at
         // every step of the hot loop would slow down the measurement itself).
         // The read goes through a single place (`tacet_kernel::env`) — it MUST read
@@ -1015,10 +1044,31 @@ SmolLM2 and TinyLlama work; a Llama-3 chat model needs its own template first.",
 
             // CUT stuck generation. Giving the user a half-finished but readable
             // answer beats giving them a wall repeating the same sentence 40
-            // times. SKIPPED while a constraint is active: a valid JSON call may
-            // by nature contain repeated strings, and cutting the call in the
-            // middle would make it unparseable.
-            if session.is_none() && is_looping(&produced) {
+            // times. SKIPPED while the constraint is STRUCTURALLY active: a
+            // valid JSON call may by nature contain repeated strings, and
+            // cutting the call in the middle would make it unparseable.
+            //
+            // STRUCTURAL, NOT PRESENT, and the difference disabled this on
+            // ordinary answers. The shell passes `Some(&CallConstraint)` on
+            // every turn but the last, and that constraint deliberately leaves
+            // free text open until `name(` arrives — so a plain prose answer was
+            // "constrained" by this test and ran with the backstop off. The
+            // repeat penalty already draws the line in the right place
+            // (`is_structural` at the top of this loop); this now draws the same
+            // one.
+            let structural = session.as_ref().is_some_and(|s| s.is_structural());
+            if structural && armed_at.is_none() {
+                armed_at = Some(produced.len());
+            }
+            // THE CALL'S OWN BUDGET, counted from where it started. The largest
+            // legitimate call measured in this repository is 1523 tokens; 2048
+            // clears it by a third and turns a runaway from fifteen minutes into
+            // about two.
+            if call_over_budget(armed_at, produced.len(), TOOL_CALL_CAP) {
+                stop = StopReason::Length;
+                break;
+            }
+            if backstop_runs(structural) && is_looping(&produced) {
                 produced.truncate(produced.len() - LOOP_SEQUENCE_LENGTH * (LOOP_THRESHOLD - 1));
                 stop = StopReason::Loop;
                 break;
@@ -1433,5 +1483,43 @@ mod cuda_quant {
             .expect_err("an unknown quantisation must not load on CUDA");
         let text = format!("{err}");
         assert!(text.contains("IQ2_XXS"), "the refusal must name it: {text}");
+    }
+}
+
+#[cfg(test)]
+mod budget_and_backstop {
+    use super::{backstop_runs, call_over_budget};
+
+    /// THE BUG, AS AN ASSERTION. A constraint can be present and constraining
+    /// nothing: Tacet's own `CallConstraint` is passed on every shell turn but
+    /// the last and leaves free text open until a call begins. Both gates used
+    /// to key on presence, so an ordinary prose answer ran with the stuck-
+    /// generation backstop disabled and its budget clamped to a number written
+    /// for tool calls.
+    #[test]
+    fn a_present_but_unarmed_constraint_is_treated_as_free_text() {
+        // Present, not yet structural — a prose answer under CallConstraint.
+        assert!(
+            backstop_runs(false),
+            "prose must keep the stuck-generation backstop"
+        );
+        assert!(
+            !call_over_budget(None, 100_000, 2048),
+            "a turn that never started a call is not on a call's budget"
+        );
+    }
+
+    /// And the half that must not regress: inside the arguments of a call, the
+    /// backstop stays off (valid JSON repeats by nature) and the cap applies.
+    #[test]
+    fn an_armed_call_keeps_its_cap_and_loses_the_backstop() {
+        assert!(
+            !backstop_runs(true),
+            "cutting a call mid-JSON would make it unparseable"
+        );
+        // Armed at token 40; the cap is measured from there, not from zero.
+        assert!(!call_over_budget(Some(40), 2_000, 2048));
+        assert!(!call_over_budget(Some(40), 2_087, 2048));
+        assert!(call_over_budget(Some(40), 2_088, 2048));
     }
 }

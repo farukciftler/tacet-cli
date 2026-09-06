@@ -111,6 +111,15 @@ pub trait ConstraintSession: Send {
 /// already works); it is to run the free-text turn through THE SAME code path
 /// as the constrained turn. With two separate loops, sampling/stopping bugs
 /// would only ever get fixed in one of them.
+///
+/// A CAUTION FOR ENGINE AUTHORS, learned the expensive way. Do not decide
+/// anything from whether a constraint is PRESENT. A real constraint can be
+/// present and constraining nothing yet — Tacet's own `CallConstraint` leaves
+/// free text open until a call begins — so `constraint.is_some()` is not a
+/// question about the generation, only about the argument. Ask
+/// `is_structural()` instead. Gating on presence disabled the loop backstop and
+/// clamped the token budget on every ordinary prose answer this engine
+/// produced, for as long as both gates existed.
 pub struct FreeConstraint;
 
 impl Constrainer for FreeConstraint {
