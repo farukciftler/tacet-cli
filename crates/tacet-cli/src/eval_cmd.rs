@@ -822,6 +822,9 @@ pub struct SelectionRun<'a> {
     pub budget: Option<usize>,
     pub budget_sweep: Option<&'a str>,
     pub force_tool_name: bool,
+    /// See the `--journal` flag: a directory where every finished case is kept,
+    /// so an interrupted run resumes instead of starting over.
+    pub journal: Option<&'a str>,
 }
 
 pub fn eval_tool_selection(run: SelectionRun<'_>) -> ExitCode {
@@ -835,6 +838,7 @@ pub fn eval_tool_selection(run: SelectionRun<'_>) -> ExitCode {
         budget,
         budget_sweep,
         force_tool_name,
+        journal,
     } = run;
     let color = Color::setup();
     let engine = match model_package::resolve_pair(model_name) {
@@ -941,7 +945,57 @@ pub fn eval_tool_selection(run: SelectionRun<'_>) -> ExitCode {
         )
     );
 
-    let report = tacet_eval::run_selection_with_options(&cases, &engine, budget, force_tool_name);
+    // THE JOURNAL IS ONLY ON THE MAIN RUN, not on the sweep above: a sweep
+    // measures the SAME cases at several budgets, so one file per case name
+    // would have the budgets overwriting each other's results.
+    //
+    // A MISMATCH EXITS. `CaseJournal::open` refuses a directory holding cases
+    // from a different model, catalog or build; carrying on without the journal
+    // would silently re-measure a whole night and say so only in a line that
+    // scrolled past hours ago.
+    let opened;
+    let journal = match journal {
+        None => None,
+        Some(dir) => {
+            let names: Vec<String> = tacet_eval::tool_selection::suite_catalog(
+                &match tacet_eval::env::Env::setup() {
+                    Ok(e) => e,
+                    Err(e) => {
+                        eprintln!("error: the environment could not be set up: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                },
+                &tacet_tools::memory::SharedMemory::in_memory(),
+            )
+            .catalog
+            .names()
+            .into_iter()
+            .map(String::from)
+            .collect();
+            match tacet_eval::tool_selection::CaseJournal::open(
+                std::path::Path::new(dir),
+                &engine.identity(),
+                &names,
+            ) {
+                Ok(j) => {
+                    opened = j;
+                    Some(&opened)
+                }
+                Err(e) => {
+                    eprintln!("{}", color.paint(YELLOW, &format!("error: {e}")));
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+    };
+    let report = tacet_eval::tool_selection::run_selection_journalled(
+        &cases,
+        &engine,
+        budget,
+        force_tool_name,
+        &tacet_eval::tool_selection::suite_catalog,
+        journal,
+    );
 
     if let Some(req_q) = require_quant
         && !report

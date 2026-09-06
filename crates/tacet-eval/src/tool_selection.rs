@@ -32,7 +32,7 @@
 
 use crate::case::FIXED_EPOCH;
 use crate::env::Env;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 use tacet_engine::{
@@ -117,7 +117,7 @@ impl Tool for DryTool {
 // The case shape
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Category {
     /// A tool must be called.
     Tool,
@@ -1345,7 +1345,7 @@ pub fn selection_cases() -> Vec<SelectionCase> {
 // The outcome shape
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StepOutcome {
     pub message: String,
     pub expected: Option<String>,
@@ -1386,7 +1386,7 @@ pub struct StepOutcome {
 /// lives. A step's `called` is a list of names; it cannot say that the second
 /// call was the same as the first and was refused, or that the third pass spent
 /// 40 seconds producing nine tokens.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PassRecord {
     /// 1-based, matching what the trace prints.
     pub pass: usize,
@@ -1429,7 +1429,7 @@ pub struct PassRecord {
 /// A turn that could not be measured is not a pass and not a failure. It is
 /// counted separately and named, so a run in which generation broke cannot read
 /// as the safety property holding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Ending {
     /// The model produced text for the user. The only ending that can be scored.
     Answered,
@@ -1645,7 +1645,7 @@ fn speaks(lang: Language, answer: &str) -> bool {
     mine >= best
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SelectionOutcome {
     pub name: String,
     pub category: Category,
@@ -2138,24 +2138,195 @@ pub fn run_selection_in(
     force_tool_name: bool,
     catalog_for: CatalogFor<'_>,
 ) -> SelectionReport {
+    run_selection_journalled(cases, engine, budget, force_tool_name, catalog_for, None)
+}
+
+/// A RUN THAT SURVIVES BEING INTERRUPTED.
+///
+/// WHY. The suite takes 48 minutes on this laptop. Everything it had done was in
+/// memory until the last case finished, so a Ctrl-C at case 180, a laptop lid, a
+/// rented box reclaimed, or a panic in one case threw away 47 minutes of real
+/// model time — and the next attempt started at zero. That is the difference
+/// between a measurement somebody runs overnight and one they do not start.
+///
+/// HOW: one file per case, written the moment the case ends. On the next run the
+/// directory is read first and a case with a file is not run again.
+///
+/// THE IDENTITY IS THE GUARD, and it is the whole reason this is not just a
+/// cache. Cases from two different models, catalogs or commits in one report
+/// would be a mixture reported as a measurement — the single worst thing this
+/// file could produce. `identity.json` is written on the first case and every
+/// later run must match it exactly; a mismatch REFUSES rather than silently
+/// starting over, because silently starting over is how you lose a night.
+pub fn run_selection_journalled(
+    cases: &[SelectionCase],
+    engine: &Arc<dyn EngineProvider>,
+    budget: Option<usize>,
+    force_tool_name: bool,
+    catalog_for: CatalogFor<'_>,
+    journal: Option<&CaseJournal>,
+) -> SelectionReport {
     let started = std::time::Instant::now();
     let total = cases.len();
-    let outcomes: Vec<SelectionOutcome> = cases
-        .iter()
-        .enumerate()
-        .map(|(i, c)| {
-            let outcome = run_selection_case_in(c, engine, budget, force_tool_name, catalog_for);
-            report_progress(i + 1, total, &c.name, started.elapsed());
-            outcome
-        })
-        .collect();
     let catalog = production_catalog_names();
-    SelectionReport::new(
-        engine.identity(),
-        started.elapsed().as_millis(),
-        catalog,
-        outcomes,
-    )
+    let identity = engine.identity();
+
+    // THE JOURNAL ARRIVES ALREADY OPENED, and that is where the refusal lives:
+    // `CaseJournal::open` returns a `Result` and the CALLER decides what a
+    // mismatch means. A library that printed a warning and carried on would be
+    // doing the one thing the stamp exists to prevent — starting over quietly.
+    if let Some(j) = journal {
+        let done = j.done_count();
+        if done > 0 {
+            eprintln!(
+                "resuming: {done} of {total} cases already in {} — they will not be run again",
+                j.dir().display()
+            );
+        }
+    }
+
+    let mut outcomes: Vec<SelectionOutcome> = Vec::with_capacity(total);
+    for (i, c) in cases.iter().enumerate() {
+        // THE RESUMED CASE IS NOT RE-RUN AND NOT RE-TIMED. `wall_ms` below is
+        // this process's clock, so a resumed report's wall time is the time THIS
+        // attempt spent — which is why the journal writes the elapsed time per
+        // case as well, and why a resumed run's wall figure must not be quoted
+        // as the suite's cost.
+        if let Some(outcome) = journal.and_then(|j| j.read(&c.name)) {
+            report_progress(
+                i + 1,
+                total,
+                &format!("{} (resumed)", c.name),
+                started.elapsed(),
+            );
+            outcomes.push(outcome);
+            continue;
+        }
+        let outcome = run_selection_case_in(c, engine, budget, force_tool_name, catalog_for);
+        if let Some(j) = journal {
+            j.write(&outcome);
+        }
+        report_progress(i + 1, total, &c.name, started.elapsed());
+        outcomes.push(outcome);
+    }
+
+    SelectionReport::new(identity, started.elapsed().as_millis(), catalog, outcomes)
+}
+
+/// One directory, one file per finished case, plus the identity they all belong
+/// to. See `run_selection_journalled`.
+pub struct CaseJournal {
+    dir: std::path::PathBuf,
+}
+
+impl CaseJournal {
+    pub fn dir(&self) -> &std::path::Path {
+        &self.dir
+    }
+
+    /// The stamp every case in the directory must share. Model fingerprint,
+    /// engine, and the catalog the cases were scored against — the same three
+    /// things `--compare` refuses to pair across.
+    fn stamp(identity: &tacet_engine::EngineIdentity, catalog: &[String]) -> Value {
+        serde_json::json!({
+            "identity": identity,
+            "catalog": catalog,
+            "case_shape": env!("CARGO_PKG_VERSION"),
+        })
+    }
+
+    /// Opens the directory, writing the stamp if it is new and REFUSING if it
+    /// holds cases from a different model, catalog or build. The caller decides
+    /// what a refusal means; `tacet eval` exits non-zero on one, because the
+    /// alternative is a night spent re-measuring without being told.
+    pub fn open(
+        dir: &std::path::Path,
+        identity: &tacet_engine::EngineIdentity,
+        catalog: &[String],
+    ) -> Result<Self, String> {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("{} is not usable: {e}", dir.display()))?;
+        let stamp_path = dir.join("identity.json");
+        let want = Self::stamp(identity, catalog);
+        match std::fs::read_to_string(&stamp_path) {
+            Ok(text) => {
+                let have: Value = serde_json::from_str(&text)
+                    .map_err(|e| format!("{} is not readable: {e}", stamp_path.display()))?;
+                if have != want {
+                    return Err(format!(
+                        "{} holds cases measured on a DIFFERENT model, catalog or build.\n\
+                         Mixing them into one report would be a mixture reported as a \
+                         measurement.\nUse a new directory, or delete this one.",
+                        dir.display()
+                    ));
+                }
+            }
+            Err(_) => {
+                let text = serde_json::to_string_pretty(&want).unwrap_or_default();
+                std::fs::write(&stamp_path, text)
+                    .map_err(|e| format!("{} is not writable: {e}", stamp_path.display()))?;
+            }
+        }
+        Ok(Self {
+            dir: dir.to_path_buf(),
+        })
+    }
+
+    /// A case name is not a file name: the suite's names are safe today, and a
+    /// benchmark file's are somebody else's.
+    fn file(&self, name: &str) -> std::path::PathBuf {
+        let safe: String = name
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        self.dir.join(format!("{safe}.json"))
+    }
+
+    fn read(&self, name: &str) -> Option<SelectionOutcome> {
+        let text = std::fs::read_to_string(self.file(name)).ok()?;
+        match serde_json::from_str::<SelectionOutcome>(&text) {
+            Ok(o) if o.name == name => Some(o),
+            // A FILE THAT DOES NOT PARSE IS NOT TRUSTED AND NOT DELETED. It is
+            // the record of a crash mid-write; the case is simply run again and
+            // the file overwritten. Silently deleting evidence of a crash is how
+            // the crash stops being investigated.
+            _ => None,
+        }
+    }
+
+    /// WRITTEN THROUGH A TEMPORARY FILE AND RENAMED. A crash halfway through a
+    /// write would otherwise leave a truncated JSON file that the next run reads
+    /// as a finished case — the one failure mode a journal must not have.
+    fn write(&self, outcome: &SelectionOutcome) {
+        let Ok(text) = serde_json::to_string_pretty(outcome) else {
+            return;
+        };
+        let final_path = self.file(&outcome.name);
+        let tmp = final_path.with_extension("json.partial");
+        if std::fs::write(&tmp, text).is_ok() {
+            let _ = std::fs::rename(&tmp, &final_path);
+        }
+    }
+
+    pub fn done_count(&self) -> usize {
+        std::fs::read_dir(&self.dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|e| {
+                        e.path().extension().is_some_and(|x| x == "json")
+                            && e.file_name() != "identity.json"
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    }
 }
 
 /// THE LIVE TRACE — what the suite is doing RIGHT NOW, not what it did.

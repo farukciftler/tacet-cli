@@ -408,6 +408,19 @@ tacet eval --tool-selection --model qwen3-4b     # both languages, ~48 min
 tacet eval --tool-selection --model qwen3-4b --turkish   # Turkish only
 ```
 
+**An interrupted run no longer starts over.** `--journal <dir>` writes every
+finished case to that directory the moment it ends, and a later run skips what
+is already there — so a Ctrl-C at case 180, a closed lid or a reclaimed rented
+box costs the current case rather than the 47 minutes behind it. The directory
+is stamped with the model fingerprint, the engine and the catalog on the first
+case, and a run against a different one **exits non-zero** instead of quietly
+restarting: cases from two builds assembled into one report would be a mixture
+presented as a measurement, and nothing in the JSON would say so.
+
+```bash
+tacet eval --tool-selection --model qwen3-4b --journal /tmp/nightly --json > after.json
+```
+
 | | |
 |---|---|
 | tool selection | **136/160** · 85.0% |

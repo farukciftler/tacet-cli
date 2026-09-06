@@ -353,6 +353,7 @@ fn main() -> ExitCode {
             routing,
             routing_pressure,
             compare,
+            journal,
         } => {
             // `model` IS AN OPTION NOW (see the flag's own doc): every path that
             // REQUIRES a model resolves the default here, and the logic set uses
@@ -403,6 +404,7 @@ fn main() -> ExitCode {
                     budget,
                     budget_sweep: budget_sweep.as_deref(),
                     force_tool_name,
+                    journal: journal.as_deref(),
                 })
             } else {
                 eval(json, threshold, model.as_deref())

@@ -196,6 +196,20 @@ pub enum Command {
         /// interval. Works on any of the three reports this command produces.
         #[arg(long, num_args = 2, value_names = ["BEFORE", "AFTER"])]
         compare: Option<Vec<String>>,
+        /// With `--tool-selection`: keep every finished case in this directory,
+        /// and on a later run skip the ones already there.
+        ///
+        /// The suite takes about 48 minutes on a laptop and everything it had
+        /// done lived in memory until the last case finished — so a Ctrl-C at
+        /// case 180, a closed lid or a reclaimed rented box threw away 47
+        /// minutes of real model time and the next attempt started at zero.
+        ///
+        /// The directory is stamped with the model fingerprint, the engine and
+        /// the catalog on the first case. A later run against a different one is
+        /// REFUSED rather than silently restarted: cases from two models in one
+        /// report would be a mixture presented as a measurement.
+        #[arg(long, value_name = "DIR")]
+        journal: Option<String>,
     },
     /// Lists the catalog and its schemas.
     Tools {
