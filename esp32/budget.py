@@ -54,7 +54,15 @@ print()
 
 print("WHAT A GENERATIVE MODEL WOULD COST INSTEAD")
 print("  A decode step reads every weight once, so tokens/s <= bandwidth / size.")
-print(f"  PSRAM sustained ~{PSRAM_BW/1e6:.0f} MB/s.\n")
+# ONE BANDWIDTH FOR BOTH ROWS, AND THE LABEL SAYS SO. The first model is small
+# enough to live in flash and the rest are not, so strictly the flash row should
+# be rated at quad-SPI flash rather than at PSRAM. It is rated at PSRAM anyway,
+# and that is defensible rather than sloppy: 40 MB/s meets or exceeds sustained
+# quad-SPI on the modelled part, flash and PSRAM share SPI0 and the same cache on
+# an S3, and the number therefore stays a true CEILING — loose in the generative
+# model's favour, which is the direction an argument against it must be loose in.
+print(f"  PSRAM sustained ~{PSRAM_BW/1e6:.0f} MB/s; the flash row is rated at the")
+print("  same figure, which is generous to it — see the note in this script.\n")
 row = "  {:<28} {:>10} {:>9} {:>14}"
 print(row.format("model", "Q4 weights", "fits?", "ceiling"))
 for name, params in (("TinyStories-15M", 15e6),

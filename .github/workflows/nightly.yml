@@ -147,6 +147,29 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --features candle --no-run
       - run: cargo clippy --workspace --all-targets --features candle -- -D warnings
+      # AND TWO OF THEM DO NOT NEED WEIGHTS, so compiling and not running them
+      # was leaving real coverage on the floor. `a_tiny_gguf_becomes_a_working_tokenizer`
+      # and `an_out_of_order_vocabulary_is_refused` in `gguf_tokenizer.rs` build
+      # their own GGUF into a temp file — a handful of bytes, no model, no GPU —
+      # and they are the only tests anywhere that exercise the vocabulary reader
+      # that turns a GGUF's metadata into a working tokenizer. Everything else
+      # behind `candle` genuinely needs a 2.5 GB file and prints SKIPPED, which
+      # is why the step above stays `--no-run`.
+      #
+      # Measured on the author's machine: 0.02 s for the pair, against the
+      # several minutes the candle tree costs to build — so this is free, and it
+      # is the difference between "it compiles" and "it works".
+      #
+      # THE COUNT IS CHECKED, because `--exact` with a name that no longer exists
+      # runs ZERO tests and cargo calls that success — a green step standing for
+      # no measurement, which is the thing this file's header refuses.
+      - name: the candle-gated tests that need no weights actually run
+        run: |
+          cargo test -p tacet-engine --features candle --lib -- --exact \
+            gguf_tokenizer::tests::a_tiny_gguf_becomes_a_working_tokenizer \
+            gguf_tokenizer::tests::an_out_of_order_vocabulary_is_refused \
+            | tee /tmp/gguf.txt
+          grep -q "2 passed" /tmp/gguf.txt
 
   # THE BASELINE IS STILL PAIRABLE. Split from the job above so a red tick names
   # the reason without anybody opening the log: "baseline guard" failing means a

@@ -58,7 +58,33 @@ HEAD_EN = ["where should I go","what is worth seeing","any places to check out",
 # QUOTES ARE BUILT COMBINATORIALLY, not listed. A flat list of five quotes per
 # label gave 40 unique intent examples after dedup — the generator looked like it
 # produced 1200 and the label counts said otherwise. Counting the set after
-# dedup is the check that caught it.
+# dedup is the check that caught it, and the run prints those counts now.
+#
+# ONLY `promised_date` IS COMBINATORIAL, AND THAT WAS MEASURED RATHER THAN LEFT
+# AS A SUSPICION. `dispute`, `paid` and `irrelevant` are flat lists of eight
+# quotes per language: 8 x 2 languages x 4 frames = 64 unique texts each, which
+# is exactly what the counts show (64 / 63 / 63) against `promised_date`'s 208.
+# So the ceiling is real. Whether it COSTS anything was answered on 6 Sep 2026 by
+# expanding all three combinatorially — a lead and a tail crossed with each
+# quote, 2966 rows against 2306 — and training both:
+#
+#     head       flat (2306)   expanded (2966)
+#     intent       109/131        114/131        at 4096 buckets
+#     tool         107/131        109/131        at 16384, the head that SHIPS
+#     gate         111/131        114/131        at 4096
+#
+# AND THE AXIS THAT DECIDES WENT THE OTHER WAY. This gate's danger is not missing
+# an extraction request, it is calling a file question one: a false positive
+# costs a slot of nine on a message that needed something else, which is exactly
+# why the FIRST version of this gate was refused. Over the 715 benchmark messages
+# that expect NEITHER extraction tool, the tool head's false positives went
+# 28 (3.9%) -> 36 (5.0%).
+#
+# `eval --routing` cannot separate them: REACH 166/166 and TOP 3 166/166 either
+# way, mean rank 1.33 -> 1.32. When the instrument cannot tell two options apart
+# the smaller perturbation wins, so the expansion is NOT shipped — and this note
+# exists so the next person does not spend the afternoon finding that out again.
+# Reopen it if the expansion can be made to improve the false-positive probe too.
 PAY_TR  = ["ödeyeceğim","göndereceğim","yatıracağım","havale edeceğim","aktaracağım","hallederim"]
 PAY_EN  = ["I will pay","I'll send it","I will transfer it","I'll settle it","you will get it"]
 WHEN_TR = ["cuma günü","ayın 20sinde","önümüzdeki hafta","maaşımı alınca","salı","ay sonunda",
@@ -235,3 +261,15 @@ if __name__ == "__main__":
     with open(sys.argv[2],"w",encoding="utf-8") as f:
         for r in uniq: f.write(json.dumps(r,ensure_ascii=False)+"\n")
     print(f"{len(uniq)} unique examples")
+    # THE PER-LABEL COUNT AFTER DEDUP, printed rather than inferred.
+    #
+    # The note above says a flat list of five quotes gave 40 unique intent
+    # examples while the generator "produced 1200" — and the only reason anyone
+    # knew was that somebody counted by hand. Printing it makes a ceiling visible
+    # the moment it is hit, which is what the numbers up there are about.
+    for head in ("gate", "tool", "intent", "audience", "price", "when"):
+        counts = {}
+        for r in uniq:
+            counts[r[head]] = counts.get(r[head], 0) + 1
+        ordered = sorted(counts.items(), key=lambda kv: -kv[1])
+        print(f"  {head:9} " + "  ".join(f"{k}={v}" for k, v in ordered))
