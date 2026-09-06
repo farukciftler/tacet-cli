@@ -332,7 +332,7 @@ pub fn eval_compare(before_path: &str, after_path: &str) -> ExitCode {
     // scroll past, and the verdict below it is wrong, not approximate. Comparing
     // across models is a legitimate thing to want — it is just not what a sign
     // test over paired cases answers.
-    let fingerprint = |p: &str| -> Option<(String, String)> {
+    let fingerprint = |p: &str| -> Option<(String, String, String)> {
         let text = std::fs::read_to_string(p).ok()?;
         let v: serde_json::Value = serde_json::from_str(&text).ok()?;
         let id = v.get("identity")?;
@@ -342,9 +342,46 @@ pub fn eval_compare(before_path: &str, after_path: &str) -> ExitCode {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("?")
                 .to_string(),
+            id.get("device")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("?")
+                .to_string(),
         ))
     };
-    if let (Some((fa, ea)), Some((fb, eb))) = (fingerprint(before_path), fingerprint(after_path))
+    // THE DEVICE IS SAID OUT LOUD, AND NOT REFUSED.
+    //
+    // Different weights are refused because the verdict would be wrong. Two
+    // devices are a different case: the same GGUF on Metal and on CUDA is a
+    // comparison somebody legitimately wants, and this command was used to make
+    // one — but it is not the same experiment, because `kv_cache_budget` differs
+    // by device and the generation cap follows it. MEASURED, same weights, same
+    // commit, 6 Sep 2026: the caps were ~14 000 tokens on Metal and 52 019 on a
+    // rented RTX 3090, and ten cases that failed on the smaller budget passed on
+    // the larger. That is a real result and it is also not "this change helped".
+    //
+    // So it is printed, the way the catalog difference below is printed, and the
+    // reader decides.
+    if let (Some((_, _, da)), Some((_, _, db))) =
+        (fingerprint(before_path), fingerprint(after_path))
+        && da != db
+        && da != "?"
+        && db != "?"
+    {
+        eprintln!(
+            "{}",
+            color.paint(
+                DIM,
+                &format!(
+                    "these two runs were on DIFFERENT DEVICES ({da} -> {db}). The token budget \
+follows the device's KV cache, so the two runs did not offer the model the same room to think. \
+The verdict below is still paired and still honest; it is a comparison of two machines as much \
+as of two builds."
+                )
+            )
+        );
+    }
+    if let (Some((fa, ea, _)), Some((fb, eb, _))) =
+        (fingerprint(before_path), fingerprint(after_path))
         && fa != fb
     {
         eprintln!(

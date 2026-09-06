@@ -390,6 +390,37 @@ against the older code, which is why the two now differ on more than the answer
 axis. The 3090 wall times remain hand-recorded, because `wall_ms` can only be
 populated by whoever runs the card.
 
+**And the GPU run is now a committed artifact, not a remembered number.** The
+same 184 cases on a rented RTX 3090 (vast.ai, CUDA 12.4, driver 580.159.03,
+6 Sep 2026): **7m 34s against Metal's 47.7 min — 6.3×**, with the report in
+[`baselines/qwen3-4b-cuda-3090.json`](crates/tacet-eval/baselines/qwen3-4b-cuda-3090.json).
+The whole rental cost about twenty cents; `cargo build --features cuda` took
+2m 47s on fourteen cores.
+
+**The catalog was 12 tools there against 15 here, and that is the trap this
+comparator was built for.** `calendar` is macOS-only; `run_code` and
+`write_code` need a sandbox, and inside an unprivileged container `bwrap` cannot
+create a namespace at all (`Operation not permitted`) — so all three were absent
+and 21 cases would have read as regressions. `--compare` excluded them by name:
+
+```
+these two runs were on DIFFERENT DEVICES (metal -> cuda). The token budget
+follows the device's KV cache …
+these two runs did not have the same tools, so 21 case(s) … are EXCLUDED
+  not in after: calendar, run_code, write_code
+paired on 163 cases
+  delta +3.7 points   95% CI [-0.6, +8.0]   p = 0.1796
+  verdict: NOT DISTINGUISHABLE from no change at 95%.
+```
+
+**Same weights, two machines, no measurable difference in what the model chose** —
+which is the result worth having, because it says the numbers on this page are
+about the model and not about the card. The device line is new: `kv_cache_budget`
+is 2.5 GB on Metal against 8 GB on CUDA, so the generation cap was ~14,000 tokens
+on one and 52,019 on the other, and ten of the cases that moved are ones that had
+more room to think. That is a difference between two machines, and the comparator
+says so instead of letting it read as a difference between two builds.
+
 **Six minutes on a GPU — and the model matters more than the card.** The same
 184 cases on a rented RTX 3090: 6.4 minutes with these weights, and 53.7 minutes
 with `Qwen/Qwen3-4B`, the *other* model of the same name and size, which spends a
