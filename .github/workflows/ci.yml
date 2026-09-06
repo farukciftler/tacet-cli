@@ -114,6 +114,33 @@ jobs:
         env:
           TACET_SANDBOX_MUST_RUN: ${{ runner.os == 'Linux' && '1' || '' }}
 
+  # THE TRANSITIVE HALF OF THE "ALMOST NO DEPENDENCIES" CLAIM.
+  #
+  # The README's argument is that a reader can audit this program by reading it —
+  # six direct dependencies, three more behind an off-by-default feature. Nobody
+  # reads the transitive graph, and that is where the claim can quietly stop
+  # being true: a git dependency, a patched fork, a yanked crate, a licence
+  # nobody chose.
+  #
+  # `continue-on-error` IS DELIBERATE. A new advisory filed against a crate four
+  # levels down is news about the world, not a defect in this pull request, and a
+  # hard gate there would block a documentation fix on someone else's CVE. The
+  # value is the annotation on the run; the settings that are hard failures live
+  # in `deny.toml` (`unknown-git`, `unknown-registry`, `wildcards`) because those
+  # can only be caused from inside this repository.
+  supply-chain:
+    name: supply chain
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --all-features
+
   lint:
     name: clippy + fmt
     runs-on: ubuntu-latest

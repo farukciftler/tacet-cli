@@ -59,6 +59,8 @@ One honest note on what "the full list" means: those are the DIRECT dependencies
 * `ureq` brings `rustls`, which brings `ring`, and `ring` compiles C. Nothing here calls it and it changes no claim about what the program does, but it is what sets the build prerequisite on Windows: not the MSVC linker it looks like, but a C compiler, however you get one. Measured, with the three routes and their sizes, in [CONTRIBUTING](CONTRIBUTING.md).
 * `tokenizers` brings `onig` → `onig_sys` → `cc`, and `esaxx-rs` alongside it — a **second** C build, on the `candle` feature. This paragraph disclosed the first and not the second, which made the off-by-default feature look cheaper than it is. It is off by default and the CLI runs without it; if you build with it, you are building C.
 
+**And the transitive half is checked rather than argued.** `cargo deny check` runs on every push over the full graph with all features on — advisories, licences, wildcards, and sources. The two things it found on its first run are in [`deny.toml`](deny.toml) with a reason and a date rather than silenced: `paste` is unmaintained (a proc macro under candle, no runtime, no safe upgrade, not ours to fix), and `webpki-roots` carries `CDLA-Permissive-2.0` because it is Mozilla's root CA store — data, not code. `unknown-git` and `unknown-registry` are hard failures, because those can only be caused from inside this repository.
+
 ## Install
 
 ```bash
@@ -95,6 +97,22 @@ Check for a newer version at any time — this is the only command that talks to
 tacet update            # tells you what's available
 tacet update --install  # downloads and replaces the binary, with your confirmation
 ```
+
+**This command replaces the running binary, so it is worth saying what backs it.**
+It verifies the per-asset SHA-256 that the GitHub API reports, and says so
+honestly when it cannot. From v0.1.28 each release asset also carries a **build
+provenance attestation** — signed through Sigstore with a short-lived workflow
+identity, binding the file to this repository, this workflow and this commit, so
+there is no long-lived key to leak. Verify it without trusting the release job:
+
+```bash
+gh attestation verify tacet-aarch64-apple-darwin --repo farukciftler/tacet-cli
+```
+
+The `SHA256SUMS` file that was already there proves only that the release job
+agreed with itself — the same job computed the hashes and uploaded the binaries.
+That is a corruption check, not a provenance one. Releases also carry an SPDX
+SBOM of the full dependency graph.
 
 Nothing checks on its own until you say so. A few turns into your first session
 the shell asks once whether it may look for a new version daily, and writes the

@@ -276,7 +276,33 @@ has to be right.
 
 ## Reporting something security-relevant
 
-If you find something that lets code escape the sandbox, read files outside it, or send data somewhere it should not go, please open a **private** security advisory on GitHub rather than a public issue, and give it a few days before writing about it publicly.
+The policy now lives in [SECURITY.md](SECURITY.md), which is where GitHub's
+Security tab looks and where someone searching for it would think to open. Short
+version, unchanged: if you find something that lets code escape the sandbox, read
+files outside it, or send data somewhere it should not go, open a **private**
+security advisory rather than a public issue, and give it a few days before
+writing about it publicly.
+
+## The supply chain
+
+`cargo deny check` runs on every push (`deny.toml`, and the `supply chain` job in
+`ci.yml`) over the full graph with all features on. Run it locally with
+`cargo install cargo-deny && cargo deny check`.
+
+Two of its four checks are hard failures and two are not, deliberately.
+`unknown-git`, `unknown-registry` and `wildcards` can only be caused from inside
+this repository, so they gate. An advisory filed against a crate four levels down
+is news about the world rather than a defect in your pull request, so the CI job
+carries `continue-on-error` and the value is the annotation.
+
+**An entry in `deny.toml`'s `ignore` list needs a sentence and a date.** There
+are two, both from its first run, both with the reason written next to them.
+Silencing something without saying why is how this file stops meaning anything —
+and then it is worse than not having it, because it looks like an audit.
+
+Releases carry a Sigstore build-provenance attestation over every asset and an
+SPDX SBOM. `SHA256SUMS`, which was there before, proves only that the release job
+agreed with itself.
 
 ## Licence
 

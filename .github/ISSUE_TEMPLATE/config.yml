@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Something security-relevant
+    url: https://github.com/farukciftler/tacet-cli/security/advisories/new
+    about: Sandbox escape, path escape, or data leaving the device — please report privately.

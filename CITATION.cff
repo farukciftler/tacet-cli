@@ -1,0 +1,37 @@
+# https://citation-file-format.github.io/
+#
+# WHY THIS FILE. The constrained-decoding work here is citable — a schema-derived
+# pushdown automaton with a per-step logit mask, plus a termination bound that
+# the category does not usually advertise, plus a measurement that runs the other
+# way from the format-tax literature on tool selection. None of that could be
+# cited before, because there was nothing to cite. GitHub reads this file and
+# offers "Cite this repository" from it.
+cff-version: 1.2.0
+message: "If you use Tacet in academic work, please cite it as below."
+title: "Tacet: constrained tool calling for local language models"
+abstract: >-
+  A local-first assistant whose tool calls are constrained rather than validated:
+  the argument schema is compiled into a pushdown automaton and every generation
+  step is masked, so a call the schema forbids cannot be produced. The constraint
+  contract is three signatures over a logit slice and a token id, in a crate with
+  no inference dependency, so any runtime can take the guarantee without taking
+  an engine. Two further claims are measured rather than asserted: that a valid
+  call must terminate (bounded whitespace, a bounded open field, a token cap),
+  and that no data leaves the device (exactly two of eleven crates declare an
+  HTTP dependency, checked by a test).
+type: software
+authors:
+  - family-names: "Çiftler"
+    given-names: "Abdullah Faruk"
+    email: "hello@abdullahfaruk.com"
+repository-code: "https://github.com/farukciftler/tacet-cli"
+url: "https://usetacet.com"
+license: MIT
+version: 0.1.27
+date-released: "2026-09-06"
+keywords:
+  - constrained-decoding
+  - tool-calling
+  - local-first
+  - language-models
+  - structured-output

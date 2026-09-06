@@ -1,0 +1,80 @@
+# cargo-deny — the audit this repository's central claim needs.
+#
+# The README argues that a reader can audit this program by READING it: six
+# direct dependencies, plus three more behind an off-by-default feature. That
+# argument has a hole shaped exactly like the transitive graph, which nobody
+# reads. `cargo deny check` closes it mechanically — advisories, licences,
+# duplicate versions, and (the one that matters most here) sources.
+#
+#   cargo install cargo-deny && cargo deny check
+#
+# It runs in CI on every push. It is ALLOWED TO FAIL there, deliberately: a new
+# advisory against a transitive crate is news, not a reason to block a
+# documentation fix at 3am. The signal is the annotation, not the gate.
+
+[graph]
+# The `candle` feature is off by default and pulls the largest subtree in the
+# graph (candle-core, candle-transformers, tokenizers -> onig -> onig_sys -> cc).
+# Checking it is the point: it is the part nobody reads.
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+# Add an id here ONLY with a sentence saying why it does not reach this program,
+# and a date. An exception with no reason is how this file stops meaning
+# anything.
+ignore = [
+    # RUSTSEC-2024-0436 — `paste` is unmaintained (archived by its author). It is
+    # a PROC MACRO with no runtime, reached only through
+    # `candle-core -> gemm -> paste`, i.e. only when the off-by-default `candle`
+    # feature is on. "Unmaintained" is not a vulnerability, there is no safe
+    # upgrade, and the fix is not ours to make: it belongs upstream in `gemm`.
+    # Recorded 6 Sep 2026; re-read it if candle ever moves off gemm.
+    "RUSTSEC-2024-0436",
+]
+
+[licenses]
+version = 2
+# MIT/Apache-2.0/BSD/ISC/Unicode are what the Rust ecosystem is made of. Anything
+# outside this list is a decision, not an accident, and should arrive with a PR
+# that argues for it.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+    # CDLA-Permissive-2.0 is `webpki-roots`, which is Mozilla's root CA store —
+    # DATA, not code, which is why it carries a data licence. It arrives through
+    # `ureq -> rustls`, so it is present in every build that can reach the
+    # network, and the terms are permissive with no share-alike. Added
+    # deliberately, 6 Sep 2026, rather than left as a standing failure that
+    # everyone learns to ignore.
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+# WARN, NOT DENY. Two versions of the same crate is a compile-time and
+# binary-size cost, not a correctness one, and denying it would make this file
+# fail for a reason nobody would act on.
+multiple-versions = "warn"
+# A `*` version requirement means "whatever the registry has today", which is not
+# a dependency decision, it is the absence of one. Nothing here uses it and
+# nothing should.
+wildcards = "deny"
+
+[sources]
+# THE ONE THAT MATTERS. Everything must come from crates.io — no git
+# dependencies, no private registries, no patched forks. A `[patch]` or a `git =`
+# in a manifest is exactly the shape a supply-chain problem arrives in, and it is
+# invisible in a diff that only shows `Cargo.lock`.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

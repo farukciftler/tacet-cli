@@ -6,6 +6,13 @@ on:
 
 permissions:
   contents: write
+  # PROVENANCE NEEDS TWO MORE, and neither is optional for it to mean anything.
+  # `id-token: write` lets the job get an OIDC token so Sigstore can bind the
+  # attestation to THIS workflow at THIS commit; `attestations: write` lets it
+  # be stored. Without them `actions/attest-build-provenance` fails rather than
+  # silently producing nothing, which is the correct direction.
+  id-token: write
+  attestations: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -111,8 +118,46 @@ jobs:
       - name: Checksums
         run: |
           cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
+
+      # WHAT SHA256SUMS DOES AND DOES NOT PROVE. It proves the release job agreed
+      # with itself: the same job computed the hashes and uploaded the binaries,
+      # so anyone who can replace one can replace both. It is a corruption check,
+      # not a provenance check, and this file used to stop there.
+      #
+      # The attestation below is the missing half. It binds each asset to this
+      # repository, this workflow file and this commit, signed through Sigstore
+      # with a short-lived OIDC identity — no long-lived key exists to leak.
+      # Anyone can verify without trusting this job:
+      #
+      #     gh attestation verify tacet-aarch64-apple-darwin \
+      #        --repo farukciftler/tacet-cli
+      #
+      # This matters more here than for most CLIs: `tacet update` downloads and
+      # REPLACES THE RUNNING BINARY. It already verifies the per-asset digest the
+      # GitHub API reports (`update.rs`), and says so honestly when it cannot —
+      # what was missing was any way to check that GitHub's digest describes
+      # something this repository actually built.
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "dist/*"
+
+      # AN SBOM, because "almost no dependencies" is an argument about the
+      # transitive graph and the graph is not in the release. `cargo-deny` checks
+      # it at build time (see ci.yml); this publishes it, so someone downstream
+      # can answer "is this affected by <today's advisory>" without cloning the
+      # repository and resolving it themselves.
+      - uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          artifact-name: tacet-sbom.spdx.json
+          output-file: dist/tacet-sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
       # `tacet update` reads this release's tag and assets. The asset naming
       # scheme above is a contract with src/update.rs — change one, change both.
+      # The SBOM and SHA256SUMS do not match that scheme and are ignored by it.
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
