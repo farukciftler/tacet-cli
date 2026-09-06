@@ -296,9 +296,16 @@ fn measure(label: &str, tokenizer: &tokenizers::Tokenizer) {
     // The divergence above is tolerable only because a fragment cannot open a
     // JSON structure. Measured on both Qwen sources: 1457 surfaces contain
     // U+FFFD, NOT ONE of them contains `{}[]":,` and exactly ONE contains a
-    // parenthesis — id 94825, surface " (" + U+FFFD, which `CallConstraint`
-    // already handles as a paren token (its remainder fails the grammar, so
-    // `prefix_mask` closes it). gemma3: 134 U+FFFD surfaces, none of either kind.
+    // parenthesis — id 94825, surface " (" + U+FFFD. That one is harmless for a
+    // reason that has since changed and is worth stating correctly: the `(` is
+    // preceded by a SPACE, so `name (` is not a call — `align_prefix` finds no
+    // name at the end of `…create_document `, and both halves of
+    // `CallConstraint` read it as prose. (This comment used to say `prefix_mask`
+    // CLOSED the token because its remainder failed the grammar. That was true
+    // of a version that trimmed the space away and therefore disagreed with the
+    // automaton, which is the defect `mask_and_automaton_agree.rs` now pins;
+    // closing it was over-restriction, not the safety property claimed here.)
+    // gemma3: 134 U+FFFD surfaces, none of either kind.
     //
     // The parenthesis case is asserted as "at most one, and here it is" with the
     // id PRINTED rather than pinned, so a vocabulary that grows a second one

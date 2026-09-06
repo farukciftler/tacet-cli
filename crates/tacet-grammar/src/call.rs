@@ -225,13 +225,6 @@ fn align_prefix(inner: &Inner, queue: &str) -> String {
     String::new()
 }
 
-/// Can a NEW tool name start at the end of the queue. If the last character is
-/// an identifier character, no: the letters continuing from there are part of
-/// the current word.
-fn can_start_new_name(queue: &str) -> bool {
-    queue.chars().next_back().is_none_or(|c| !is_id_char(c))
-}
-
 impl CallSession {
     /// Processes a single character. Advancing per character is mandatory: one
     /// token carries several characters and the stage transition (seeing `(`)
@@ -310,13 +303,6 @@ impl CallSession {
     /// closing it would stop the model from writing normal sentences containing
     /// a `(`.
     fn prefix_mask(&self, queue: &str, logits: &mut [f32]) {
-        let matched = align_prefix(&self.inner, queue);
-        // If the window is empty AND the queue ends in the middle of a word, the
-        // leading letters of the token are the continuation of that word; a new
-        // name cannot start there.
-        if matched.is_empty() && !can_start_new_name(queue) {
-            return;
-        }
         // A BARE TOOL NAME IS LEFT ALONE, AND THAT IS A MEASURED DECISION.
         //
         // Gemma-3-4B-It scores 0/32 on the selection set because it writes the
@@ -365,13 +351,33 @@ impl CallSession {
         // in `tacet-tools`, which read a shape the model already wrote instead of
         // trying to prevent it from writing it.
 
+        // THE MASK AND THE AUTOMATON MUST READ THE SAME TEXT THE SAME WAY, and
+        // they did not. `swallow` asks `align_prefix(queue)` at the moment it
+        // sees `(`; this loop used to ask `format!("{matched}{before}").trim()`
+        // instead, and the two disagreed at both ends of the trim:
+        //
+        //   * TRAILING. Queue `…create_document`, token ` (`. The trim turned
+        //     `create_document ` back into a name, so the mask closed the token
+        //     — while `swallow` would have read `create_document ` as prose and
+        //     let it through. The mask forbade a token that was never a call:
+        //     exactly the over-restriction the header above promises it avoids.
+        //   * LEADING. Queue `hello` (ending in a word character), token
+        //     ` time(`. `matched` is empty and the old early return fired, so
+        //     nothing was masked — while `swallow` pushes ` time` onto the queue
+        //     and DOES start a call on the `(`. The boundary was inside the
+        //     token, where the queue alone could not see it.
+        //
+        // Both disappear by asking the same question `swallow` asks, over the
+        // text `swallow` will have seen: the queue with the token's own prefix
+        // appended. `align_prefix` already enforces the identifier boundary, so
+        // the `can_start_new_name` early return is gone with it — that guard was
+        // the leading-half bug.
         for (id, before, remainder) in &self.inner.paren_tokens {
             if *id >= logits.len() {
                 continue;
             }
-            let name = format!("{matched}{before}");
-            let name = name.trim();
-            let Some((_, grammar, empty_ok)) = self.inner.tools.iter().find(|(n, _, _)| n == name)
+            let name = align_prefix(&self.inner, &format!("{queue}{before}"));
+            let Some((_, grammar, empty_ok)) = self.inner.tools.iter().find(|(n, _, _)| *n == name)
             else {
                 continue;
             };
