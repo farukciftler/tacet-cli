@@ -49,6 +49,15 @@ metal = ["candle", "candle-core/metal", "candle-transformers/metal"]
 # CUDA runtime and nvcc compilation, and does not build on macOS.
 cuda = ["candle", "candle-core/cuda", "candle-transformers/cuda"]
 
+# DOCS.RS BUILDS DEFAULT FEATURES, AND THE DEFAULT HERE IS NOTHING. Without this
+# block, `docs.rs/tacet-engine` renders a page with no `CandleEngine`, no
+# `Architecture`, no `ModelSetting` and no `TokenizerSource` — every type an
+# evaluator opens the page to find is a 404, on the crate whose whole subject is
+# running a model. The feature is correctly off by default for BUILDS (it pulls
+# candle and a second C toolchain); it must be on for DOCS.
+[package.metadata.docs.rs]
+features = ["candle"]
+
 # The measurement example DOES NOT COMPILE without candle. Unmarked, a default
 # `cargo test --workspace` would try to build it and go red because the candle
 # types are missing — i.e. the mere existence of the example would break a run

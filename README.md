@@ -67,6 +67,18 @@ cargo install tacet-cli --features candle  # CPU
 cargo install tacet-cli                    # no inference; still runs eval, tools and the addon flow
 ```
 
+⚠️ **crates.io is behind this page, and on a Mac that is not cosmetic.**
+`cargo install tacet-cli` resolves to **0.1.25** today (6 Sep 2026) against
+**0.1.27** here. That build has no `bench` subcommand — which this page names
+twenty times — and pins `tacet-engine ^0.1.9`, one release below the **0.1.10**
+floor the workspace declares mandatory for constrained generation on Metal. Below
+that floor a constrained turn dies with `constraint rejected the token:
+4286578688`, so a Mac user who follows the line above installs the crash. Until
+the release goes out, take the binary from
+[Releases](https://github.com/farukciftler/tacet-cli/releases) or build from a
+checkout. The publish order and its checks are in
+[CONTRIBUTING](CONTRIBUTING.md#publishing-to-cratesio).
+
 ⚠️ **`cargo install` does not remember `--features`.** Upgrade without the flag
 and you get a binary that cannot run a model. It **refuses to answer** rather
 than making something up: it names the missing feature, tells you how to

@@ -185,6 +185,59 @@ A small change, a test that would fail without it, and a sentence about why. Tha
 
 Bug reports are equally welcome without a fix attached. A clear reproduction is worth more than a guess at the cause.
 
+## Publishing to crates.io
+
+**The order is not a preference, it is the dependency graph.** Cargo refuses to
+publish a crate whose path dependencies are not already on the registry at the
+version the manifest declares, so a publish out of order fails halfway and leaves
+the workspace half-released — some crates on crates.io pointing at versions that
+do not exist yet.
+
+```
+tacet-kernel
+tacet-zip        tacet-skills     tacet-memory     # independent of each other
+tacet-grammar
+tacet-engine
+tacet-tools
+tacet-web        tacet-mcp
+tacet-eval
+tacet-cli
+```
+
+Before any of it, two things that have each cost a release here:
+
+1. **A dry run only works one step ahead of the registry, and it is worth knowing
+   that before you plan around it.** Measured 6 Sep 2026 with kernel 0.1.5 not yet
+   published: `cargo publish --dry-run` succeeded for `tacet-kernel` and
+   `tacet-zip` and failed for the other nine — every one of them with
+   `failed to select a version for the requirement tacet-kernel = "^0.1.5"`, never
+   with a packaging error. `cargo package --no-verify` fails identically, because
+   resolution happens before packaging. So there is no "check everything first"
+   pass: dry-run what you are about to publish, publish it, then dry-run the next.
+   The one thing you CAN check up front is the tarball contents of the roots
+   (`cargo package --list -p <crate>`), which is where a missing `LICENSE` or a
+   `path` dependency with no `version` would show.
+2. **A crate whose SOURCE changed must have a new version, even if nothing about
+   it looks like a release.** Four crates in this repository once had changed
+   source under an unchanged published number, which is strictly worse than a
+   version gap: the next publish of that number is rejected, and until then no
+   consumer can tell they are missing the fixes. `every_declared_floor_is_the_version_the_member_actually_has`
+   in `crates/tacet-cli/tests/manifest_floors.rs` catches the half of this that a
+   test can catch — a floor left behind after a bump; the other half is noticing
+   you changed something. `diff -r` against the published tarball settles it:
+
+   ```bash
+   curl -sL -A tacet "https://crates.io/api/v1/crates/tacet-mcp/0.2.0/download" | tar xz
+   diff -rq tacet-mcp-0.2.0/src crates/tacet-mcp/src
+   ```
+
+**The version numbers in `[workspace.dependencies]` are FLOORS.** Roughly twenty
+comments there each record a fix that a lower resolution would quietly undo —
+"below 0.1.10 constrained generation on Metal dies with `constraint rejected the
+token: 4286578688`" and so on. Cargo strips comments when it packages, so none of
+that reasoning reaches a crates.io consumer; the floor is what survives, and it
+has to be right.
+
 ## Reporting something security-relevant
 
 If you find something that lets code escape the sandbox, read files outside it, or send data somewhere it should not go, please open a **private** security advisory on GitHub rather than a public issue, and give it a few days before writing about it publicly.

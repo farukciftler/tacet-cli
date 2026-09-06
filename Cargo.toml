@@ -25,7 +25,12 @@ members = [
 # rather than a version message. 1.85 is the edition-2024 floor this workspace
 # cannot go below; CI pins the exact toolchain that proves it.
 rust-version = "1.85"
-version = "0.1.0"
+# THE VERSION `tacet-skills` AND `tacet-zip` INHERIT. Bumped from 0.1.0 because
+# both had CHANGED SOURCE UNDER AN UNCHANGED PUBLISHED VERSION — a strictly worse
+# state than a version gap, because the next publish of that number is rejected
+# and no consumer can tell they are missing the fixes. Verified by diffing the
+# published tarballs against this tree, not by reading the log.
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/farukciftler/tacet-cli"
@@ -49,7 +54,7 @@ clap = { version = "4", features = ["derive"] }
 # PKCE challenge, the download verifier and the receipt chain would each need
 # their own SHA-256 again — three chances for one of them to be quietly wrong.
 tacet-kernel = { path = "crates/tacet-kernel", version = "0.1.5" }
-tacet-zip = { path = "crates/tacet-zip", version = "0.1.0" }
+tacet-zip = { path = "crates/tacet-zip", version = "0.1.1" }
 # 0.1.1 IS THE FLOOR: below it a tool that takes NO arguments cannot be called
 # at all — the prompt advertises `disk_usage()` and the grammar refuses it, so
 # the model writes something that parses as no call and the tool never runs.
@@ -152,8 +157,8 @@ tacet-engine = { path = "crates/tacet-engine", version = "0.1.11" }
 # which it then has to escape to write back inside a JSON argument. CI had been
 # red on windows-latest for exactly this.
 tacet-tools = { path = "crates/tacet-tools", version = "0.1.14" }
-tacet-skills = { path = "crates/tacet-skills", version = "0.1.0" }
-tacet-memory = { path = "crates/tacet-memory", version = "0.1.0" }
+tacet-skills = { path = "crates/tacet-skills", version = "0.1.1" }
+tacet-memory = { path = "crates/tacet-memory", version = "0.1.2" }
 # THE NETWORK MONOPOLY: a network call exists ONLY in these two crates. No
 # other crate opens a socket; so the rule can be audited by eye rather than by
 # an `audit` script, the HTTP dependency also stands only in these two manifests.
@@ -166,11 +171,11 @@ tacet-memory = { path = "crates/tacet-memory", version = "0.1.0" }
 # TLS alone — while the API response already carried the digest. It also
 # refuses a dotless host in the addon allow-list, where `merhaba` used to be
 # accepted as a hostname.
-tacet-web = { path = "crates/tacet-web", version = "0.1.5" }
+tacet-web = { path = "crates/tacet-web", version = "0.1.6" }
 # 0.2.0 SPEAKS THE 2026-07-28 REVISION: stateless requests, the `_meta`
 # envelope, MRTR, poll-based tasks, issuer-bound OAuth. The 0.1 line speaks only
 # the frozen revision, and a `^0.1` resolve would silently put a client on it.
-tacet-mcp = { path = "crates/tacet-mcp", version = "0.2.0" }
+tacet-mcp = { path = "crates/tacet-mcp", version = "0.2.1" }
 # 0.1.7 IS THE FLOOR FOR ANY MEASUREMENT THAT WILL BE COMPARED: below it the
 # logic runner repeats the user's question AFTER the tool result on every
 # pass — the shape the shell removed because it caused the loop — so the set
