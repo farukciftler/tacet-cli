@@ -387,6 +387,20 @@ clean a confirmation as this kind of change gets:
 Nothing was fixed, three things broke, and they are by name the three the change
 was written for.
 
+**And a third divergence was found after those numbers were taken, so the table
+above still carries it.** The harness built its catalog with `production_catalog`
+— which returns three things — and kept only the first. The second is `run_code`'s
+attempt counter, and the shell resets it at **every user turn**; the eval never
+reset it at all. A two-step case that spent both code attempts in step 1 began
+step 2 with the budget already gone, and the call came back *"two attempts
+exhausted"* without running. `chain-code-write` is that case by name: in the
+baseline above, step 1 calls `run_code` twice and step 2 calls nothing and is
+scored `CutOff`. The failure was booked against the model; nothing in the report
+said the budget was the harness's. The handle is carried now, in the eval and in
+`bench`, and `the_harness_matches_the_shell` asserts it survives — but the table
+above was measured before the fix and has not been re-run, so it is quoted as it
+was taken.
+
 **The last row is new and is the point.** A step now records WHY it stopped, and
 one that could not be measured is a pass on no axis: three ran out of turns, four
 stopped on the token cap. Under the old rule an engine error scored as a pass on

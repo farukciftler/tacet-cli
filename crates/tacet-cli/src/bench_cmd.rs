@@ -303,10 +303,18 @@ and were SET ASIDE. The {} below are the ones this host can actually answer.",
         None,
         false,
         &|env, memory| {
-            let (mut c, _) = session_catalog(&env.store, memory, &Color::setup(), false);
+            // THE CODE STATE IS CARRIED, not dropped. `session_catalog` hands it
+            // out precisely because the attempt counter has to be reset at every
+            // turn boundary and cannot be reached once the tool is inside an Arc
+            // in the catalog; a benchmark that threw it away gave a multi-step
+            // case one code budget for the whole case instead of one per step.
+            let (mut c, code_state) = session_catalog(&env.store, memory, &Color::setup(), false);
             let mut load = tacet_tools::mcp::load_from_default();
             let _ = tacet_tools::mcp::feed_catalog(&mut c, &mut load);
-            c
+            tacet_eval::tool_selection::HostCatalog {
+                catalog: c,
+                code_state,
+            }
         },
     );
 

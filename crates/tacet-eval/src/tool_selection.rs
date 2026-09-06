@@ -46,6 +46,7 @@ use tacet_kernel::{
 use tacet_tools::executor::ToolExecutor;
 use tacet_tools::memory::SharedMemory;
 use tacet_tools::router::Router;
+use tacet_tools::run_code::CodeState;
 
 /// The names of the tools that open the network — they are dried out in this set.
 const TO_DRY: &[&str] = &["web_search", "web_fetch"];
@@ -1787,8 +1788,10 @@ pub fn ratio(passed: usize, total: usize) -> f64 {
 /// quietly become the place tools go to avoid being measured.
 pub(crate) const BENCHED_SEPARATELY: [&str; 2] = ["search_filter", "message_intent"];
 
-pub(crate) fn selection_catalog(env: &Env, memory: &SharedMemory) -> ToolCatalog {
-    let (full, _, _) =
+pub(crate) fn selection_catalog(env: &Env, memory: &SharedMemory) -> HostCatalog {
+    // THE SECOND RETURN VALUE IS NOT DISCARDABLE. It was, and the eval spent
+    // months measuring a code budget the shell does not impose — see `HostCatalog`.
+    let (full, code_state, _) =
         tacet_tools::catalog::production_catalog(&env.store, memory, Some(FIXED_EPOCH));
     let mut c = ToolCatalog::new();
     for tool in full.tools() {
@@ -1802,7 +1805,10 @@ pub(crate) fn selection_catalog(env: &Env, memory: &SharedMemory) -> ToolCatalog
         }
     }
     announce_missing_tools(&c);
-    c
+    HostCatalog {
+        catalog: c,
+        code_state,
+    }
 }
 
 fn announce_missing_tools(catalog: &ToolCatalog) {
@@ -1996,11 +2002,46 @@ fn generation_counter(engine: &Arc<dyn EngineProvider>) -> tacet_engine::TokenCo
 /// A closure rather than an enum: `tacet-eval` must not learn how to start an
 /// MCP client to offer "the host catalog" as a variant, and the crate that
 /// already knows how hands it in.
-pub type CatalogFor<'a> = &'a dyn Fn(&Env, &SharedMemory) -> ToolCatalog;
+pub type CatalogFor<'a> = &'a dyn Fn(&Env, &SharedMemory) -> HostCatalog;
+
+/// A catalog PLUS the handles the turn loop has to reset between turns.
+///
+/// WHY THIS IS NOT JUST A `ToolCatalog`. `production_catalog` returns three
+/// things and this crate kept only the first, so `run_code`'s attempt counter —
+/// which the shell resets on EVERY user turn, because "once the tool is lost
+/// inside an Arc in the catalog it could not be reached" — was never reset here
+/// at all. A two-step case that spent both code attempts in step 1 began step 2
+/// with the budget already gone, and every such call came back as
+/// "two attempts exhausted" without running.
+///
+/// That made the eval measure a stricter program than the one it claims to
+/// measure, in the direction that looks like a model failure: the harness
+/// refused, the model got the refusal, and the case was scored as the model not
+/// recovering. Nothing in the report said the budget was the harness's.
+pub struct HostCatalog {
+    pub catalog: ToolCatalog,
+    /// `None` when this catalog has no code tools — a benchmark catalog of
+    /// somebody else's functions, or a machine with no verified sandbox. It is
+    /// deliberately not an `Arc<CodeState>` defaulted into existence: a counter
+    /// nothing increments would silently satisfy a test written to check that
+    /// the reset happens.
+    pub code_state: Option<Arc<CodeState>>,
+}
+
+impl From<ToolCatalog> for HostCatalog {
+    /// For a caller whose tools have no per-turn state — `bfcl.rs` hands in
+    /// BFCL's own functions, which are stubs.
+    fn from(catalog: ToolCatalog) -> Self {
+        Self {
+            catalog,
+            code_state: None,
+        }
+    }
+}
 
 /// The suite's own catalog, as a `CatalogFor`. Every existing caller gets this
 /// and nothing about their measurement changes.
-pub fn suite_catalog(env: &Env, memory: &SharedMemory) -> ToolCatalog {
+pub fn suite_catalog(env: &Env, memory: &SharedMemory) -> HostCatalog {
     selection_catalog(env, memory)
 }
 
@@ -2139,6 +2180,7 @@ fn production_catalog_names() -> Vec<String> {
     };
     let memory = SharedMemory::in_memory();
     selection_catalog(&env, &memory)
+        .catalog
         .names()
         .into_iter()
         .map(String::from)
@@ -2192,7 +2234,8 @@ pub fn run_selection_case_in(
         }
     };
     let memory = SharedMemory::in_memory();
-    let catalog = catalog_for(&env, &memory);
+    let host = catalog_for(&env, &memory);
+    let catalog = host.catalog.clone();
     let executor = ToolExecutor::new(catalog.clone());
     let traces = Arc::new(TraceCollector::new());
     let mut ctx = ToolContext::new(
@@ -2239,6 +2282,12 @@ pub fn run_selection_case_in(
             truncate_for_trace(&step.message)
         ));
         let ticket = executor.new_turn();
+        // THE SAME THREE RESETS THE SHELL DOES AT A TURN BOUNDARY, in the same
+        // order. The code budget was missing here; a step is a user turn, and
+        // the shell gives every user turn two code attempts.
+        if let Some(s) = &host.code_state {
+            s.new_turn();
+        }
         let mut turn_pairs: Vec<(String, String)> = Vec::new();
         traces.reset();
         let selected: ToolCatalog = router.select(&step.message, &catalog).into_iter().collect();
@@ -2516,7 +2565,7 @@ mod tests {
     fn there_are_at_least_two_cases_for_every_tool() {
         let env = Env::setup().unwrap();
         let memory = SharedMemory::in_memory();
-        let catalog = selection_catalog(&env, &memory);
+        let catalog = selection_catalog(&env, &memory).catalog;
         let cases = selection_cases();
         for tool in catalog.tools() {
             let count = cases
@@ -2601,7 +2650,7 @@ mod tests {
     fn the_expected_tools_exist_in_the_catalog() {
         let env = Env::setup().unwrap();
         let memory = SharedMemory::in_memory();
-        let catalog = selection_catalog(&env, &memory);
+        let catalog = selection_catalog(&env, &memory).catalog;
         for c in selection_cases() {
             for s in c.steps {
                 if let Some(name) = s.expected {
@@ -2621,7 +2670,7 @@ mod tests {
         let memory = SharedMemory::in_memory();
         let (full, _, _) =
             tacet_tools::catalog::production_catalog(&env.store, &memory, Some(FIXED_EPOCH));
-        let dry = selection_catalog(&env, &memory);
+        let dry = selection_catalog(&env, &memory).catalog;
         for name in TO_DRY {
             let (Some(f), Some(d)) = (full.find(name), dry.find(name)) else {
                 continue;
@@ -2678,7 +2727,7 @@ mod tests {
     fn a_missing_tool_is_told_apart_from_a_regression() {
         let env = Env::setup().unwrap();
         let memory = SharedMemory::in_memory();
-        let full = selection_catalog(&env, &memory);
+        let full = selection_catalog(&env, &memory).catalog;
 
         // Imitate a non-macOS machine by dropping the tools bound to the
         // discovery gate.
@@ -2754,7 +2803,7 @@ mod tests {
     fn budget_guard(suite: &str, cases: &[SelectionCase]) {
         let env = Env::setup().unwrap();
         let memory = SharedMemory::in_memory();
-        let catalog = selection_catalog(&env, &memory);
+        let catalog = selection_catalog(&env, &memory).catalog;
         let router = Router::new();
         let (mut measured, mut skipped) = (0usize, 0usize);
         for c in cases {
@@ -2964,7 +3013,7 @@ mod trigger_lint {
     fn the_suite_messages_reach_the_skill_guides_production_would_attach() {
         let env = Env::setup().expect("the sandbox is set up");
         let memory = SharedMemory::in_memory();
-        let catalog = selection_catalog(&env, &memory);
+        let catalog = selection_catalog(&env, &memory).catalog;
         let router = Router::new();
         let skills = tacet_skills::SkillStore::default_set();
         assert!(skills.count() > 0, "the bundled skill set is empty");
@@ -3139,7 +3188,7 @@ mod ordering_probe {
     fn print_ordering() {
         let env = Env::setup().unwrap();
         let memory = SharedMemory::in_memory();
-        let catalog = selection_catalog(&env, &memory);
+        let catalog = selection_catalog(&env, &memory).catalog;
         let router = Router::new();
         let messages: Vec<String> = selection_cases()
             .iter()

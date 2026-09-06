@@ -243,7 +243,10 @@ fn main() {
             for tool in &tools {
                 catalog.add(Arc::clone(tool));
             }
-            catalog
+            // BFCL's functions are stubs with no per-turn state, so there is no
+            // code budget to reset — `From<ToolCatalog>` says that explicitly
+            // rather than leaving a `None` for a reader to interpret.
+            catalog.into()
         };
         let outcome = run_selection_case_in(&case, &engine, None, false, build);
         let names: Vec<String> = outcome

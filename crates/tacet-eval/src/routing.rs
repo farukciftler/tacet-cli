@@ -353,7 +353,9 @@ pub fn run_routing_filtered(
 ) -> Result<RoutingReport, String> {
     let env = Env::setup().map_err(|e| format!("the environment could not be set up: {e}"))?;
     let memory = SharedMemory::in_memory();
-    let mut catalog = crate::tool_selection::selection_catalog(&env, &memory);
+    // The routing measurement runs no model and executes nothing, so the code
+    // budget in the `HostCatalog` has no bearing on it; only the tools do.
+    let mut catalog = crate::tool_selection::selection_catalog(&env, &memory).catalog;
     let mut remote_names: Vec<String> = Vec::new();
     for (name, description) in REMOTE_SHAPES.iter().take(pressure) {
         let full = format!("serverim_{name}");
