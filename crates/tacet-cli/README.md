@@ -848,50 +848,71 @@ has `irrelevance`, `live_irrelevance` and `live_relevance` categories measuring
 exactly this. Until 6 Sep 2026 **no number on this page was measured against any external
 benchmark** — every table was this project grading itself on cases it wrote.
 [Measured against someone else's benchmark](#measured-against-someone-elses-benchmark)
-is the first step out of that, and it is honestly one category deep: BFCL's
-irrelevance set, not the leaderboard.
+is the first step out of that, and it is honestly three categories deep — BFCL's
+relevance and irrelevance sets, not the leaderboard.
 
 ### Measured against someone else's benchmark
 
-**200 of 237, 84.4%** — BFCL v4's `irrelevance` category, qwen3-4B-Instruct-2507
-Q4_K_M on Metal, 8m 39s, 6 Sep 2026. Reproduced twice to the case: this decode is
-greedy, so the number is stable rather than merely repeated.
+Three of BFCL v4's relevance categories, run through this engine, this prompt,
+this router and this grammar, with **BFCL's own function definitions** rather
+than this project's catalog. qwen3-4B-Instruct-2507 Q4_K_M on Metal, 6 Sep 2026.
+The decode is greedy, so these are stable rather than merely repeated — the first
+category was run twice, case for case.
 
-BFCL's questions, **BFCL's own function definitions**, this engine, this prompt,
-this router and this grammar. Every case offers the model tools that do not
-answer the question; the correct behaviour on all 237 is to call nothing.
+| category | n | expected | result | wall |
+|---|---|---|---|---|
+| `irrelevance` | 237 | call nothing | **200** · 84.4% | 8m 42s |
+| `live_irrelevance` | 871 | call nothing | **678** · 77.8% | 58m 04s |
+| `live_relevance` | 16 | call **something** | **13** · 81.2% | 1m 19s |
+
+The `live_` sets are user-contributed, which shows: the same stack is six points
+worse on them than on the curated set. Reports are committed under
+[`crates/tacet-eval/baselines/`](https://github.com/farukciftler/tacet-cli/blob/main/crates/tacet-eval/baselines/), each with every
+case that went the wrong way and what the model said.
 
 ```bash
 curl -sLO https://raw.githubusercontent.com/ShishirPatil/gorilla/main/\
   berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_irrelevance.json
 BFCL_JSON=out.json cargo run --release -p tacet-eval --features metal \
-  --example bfcl_irrelevance -- ~/models/qwen3-4b/model.gguf BFCL_v4_irrelevance.json
+  --example bfcl -- ~/models/qwen3-4b/model.gguf BFCL_v4_irrelevance.json
 ```
 
-The report is committed at
-[`crates/tacet-eval/baselines/bfcl-irrelevance-qwen3-4b-metal.json`](https://github.com/farukciftler/tacet-cli/blob/main/crates/tacet-eval/baselines/bfcl-irrelevance-qwen3-4b-metal.json),
-with every case that called something and what it answered.
-
-**This is not a leaderboard submission and the number is not comparable to the
+**This is not a leaderboard submission and the numbers are not comparable to the
 published board.** BFCL scores through its own harness, its own prompt and its
-own parser, and each of those is part of what is being measured there. What this
+own parser, and each of those is part of what is measured there. What this
 answers is narrower: *given the same questions and the same functions, how often
-does this stack invent a call.* Three translations sit between the two and each
-is stated in the harness where it happens — BFCL writes `dict` and `float` where
-JSON Schema writes `object` and `number`; **92 function names had to be
-rewritten** because a dot cannot appear in a name this call format can express
-(`math.sum` would arm the automaton on `math`); **3 of 240 cases are not scored**
-because their only function's schema could not be expressed at all, and dropping
-them silently would have made the set easier.
+does this stack invent a call — or fail to make one.*
 
-**It found a defect on its eighth case, which is the argument for doing this at
-all.** Asked to solve `3x^2 - 2x - 5`, the model declined correctly — and wrote
-the quadratic formula on the way. `2(3)` is the denominator `2a`; it is also
-`name(args)`, with `3` as perfectly good JSON. Three of the turn's four passes
-went to a tool named `2`. Nothing ran, because gate 1 rejects an unknown name, so
-it was never a safety problem — it was the turn budget, and in any measurement it
-counts as a call on a case whose whole point is that there must not be one. A
-name may contain digits; it may not start with one. Fixed, with the fixture.
+**What the translation cost, stated because it makes the sets easier and
+therefore the numbers better.** Three things stand between BFCL's format and
+this one, and the harness counts all three:
+
+* BFCL writes `dict` and `float` where JSON Schema writes `object` and `number`.
+* **666 function names had to be rewritten** across the three sets, because a dot
+  cannot appear in a name this call format can express — `math.sum` would arm the
+  automaton on `math`.
+* **126 schemas could not be expressed at all**, 121 of them in `live_irrelevance`
+  alone, and where that left a case with no functions the case is **not scored**
+  (13 of 884 there, 3 of 240 in the curated set). That number is the honest price
+  of an `ArgSchema` small enough to compile into a grammar: BFCL's live set comes
+  from real APIs, and real APIs use JSON Schema this project deliberately does not
+  implement.
+
+**It found a defect on its eighth case, which is the argument for running someone
+else's cases at all.** Asked to solve `3x^2 - 2x - 5`, the model declined
+correctly — and wrote the quadratic formula on the way. `2(3)` is the denominator
+`2a`; it is also `name(args)`, with `3` as perfectly good JSON. Three of the
+turn's four passes went to a tool named `2`. Nothing ran, because gate 1 rejects
+an unknown name, so it was never a safety problem — it was the turn budget, and
+in any measurement it counts as a call on a case whose whole point is that there
+must not be one. A name may contain digits; it may not start with one. Fixed,
+with the fixture.
+
+**And the three `live_relevance` failures are the same known gap, not a new
+one.** Two of them wrote the call as `search_web language="fr", query=…` — the
+right tool and the right arguments in a shape nobody taught it. That is the
+limitation stated at the top of this page: the grammar arms after `name(`, so it
+says nothing about a call that never starts that way.
 
 ### What is actually distinctive
 

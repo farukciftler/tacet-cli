@@ -163,7 +163,7 @@ having none.
 
 ### Measuring against someone else's benchmark
 
-`crates/tacet-eval/examples/bfcl_irrelevance.rs` runs BFCL's `irrelevance`
+`crates/tacet-eval/examples/bfcl.rs` runs a BFCL relevance or irrelevance
 category through this stack with **BFCL's own function definitions**. It exists
 because every other number here is this project grading itself, and the
 "irrelevance gate" is BFCL's relevance/irrelevance detection under another name.
@@ -171,16 +171,28 @@ because every other number here is this project grading itself, and the
 ```bash
 curl -sLO https://raw.githubusercontent.com/ShishirPatil/gorilla/main/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_irrelevance.json
 BFCL_JSON=crates/tacet-eval/baselines/bfcl-irrelevance-<model>-<device>.json \
-  cargo run --release -p tacet-eval --features metal --example bfcl_irrelevance \
+  cargo run --release -p tacet-eval --features metal --example bfcl \
   -- ~/models/qwen3-4b/model.gguf BFCL_v4_irrelevance.json
 ```
+
+**Which direction a file is scored in comes from its NAME** — `irrelevance` and
+`live_irrelevance` are "call nothing", `live_relevance` is "call something".
+Derived rather than defaulted, because getting it backwards would report a
+perfect score for a model that never calls anything.
 
 The data is **not vendored**: it is someone else's benchmark and it moves. Three
 translations stand between their format and this one — their `dict`/`float` type
 names, names carrying characters this call format cannot express, and one turn
 rather than a conversation — and each is commented where it happens. **Report all
-three counts.** A harness that quietly rewrote 92 names and dropped 3 cases and
+three counts.** A harness that quietly rewrote 565 names and dropped 13 cases and
 said neither would be reporting a number for an easier set than the one it claims.
+
+**Budget an hour for `live_irrelevance` and do not be surprised by one case.** 871
+cases took 58 minutes, and a single combinatorics question — "in a group of 64
+people…" — took **14.5 of them**, producing 7,803 tokens as the decode rate fell
+from 30 to 9 tok/s with the KV cache. That is the free-prose budget working as
+intended (a prose turn keeps the caller's cap rather than being clamped), not a
+hang; it does mean a category's wall time is dominated by a handful of cases.
 
 An artifact in `baselines/` that declares `benchmark` and `source` is understood
 to be an external report and is exempt from the name-pairing check below — no

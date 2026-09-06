@@ -54,5 +54,5 @@ cuda = ["candle", "tacet-engine/cuda"]
 tacet-mcp.workspace = true
 
 [[example]]
-name = "bfcl_irrelevance"
+name = "bfcl"
 required-features = ["candle"]

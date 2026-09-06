@@ -6,13 +6,14 @@
 //! Calling Leaderboard's relevance/irrelevance detection under another name, and
 //! nothing here had ever been run against it.
 //!
-//! This runs BFCL's `irrelevance` category — 240 cases — through the real
-//! engine, the real prompt, the real router and the real grammar, with BFCL's
-//! OWN function definitions rather than this project's catalog. The correct
-//! behaviour on every case is to call nothing.
+//! This runs a BFCL relevance/irrelevance category through the real engine, the
+//! real prompt, the real router and the real grammar, with BFCL's OWN function
+//! definitions rather than this project's catalog. Which direction a file is
+//! scored in comes from its NAME: `irrelevance` and `live_irrelevance` are "call
+//! nothing", `live_relevance` is "call something".
 //!
 //!     cargo run --release -p tacet-eval --features metal --example \
-//!         bfcl_irrelevance -- ~/models/qwen3-4b/model.gguf /tmp/bfcl_irr.json
+//!         bfcl -- ~/models/qwen3-4b/model.gguf /tmp/bfcl_irr.json
 //!
 //! Get the data (it is not vendored — it is someone else's benchmark and it
 //! moves):
@@ -115,7 +116,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (Some(model), Some(data)) = (args.first(), args.get(1)) else {
         eprintln!(
-            "usage: bfcl_irrelevance <model.gguf> <BFCL_v4_irrelevance.json> [limit]\n\
+            "usage: bfcl <model.gguf> <BFCL_v4_irrelevance.json> [limit]\n\
              see the header of this file for where the data comes from"
         );
         std::process::exit(2);
@@ -128,6 +129,23 @@ fn main() {
         .get(2)
         .and_then(|s| s.parse().ok())
         .unwrap_or(usize::MAX);
+
+    // WHICH DIRECTION THE CASES ARE SCORED IN, taken from the file name because
+    // that is where BFCL puts it. `irrelevance` and `live_irrelevance` are
+    // "must call nothing"; `live_relevance` is the opposite — the functions DO
+    // answer the question and a model that stays silent has failed. Getting this
+    // backwards would report a perfect score for a model that never calls
+    // anything, so it is derived rather than defaulted.
+    let file_name = std::path::Path::new(data)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let must_call = file_name.contains("relevance") && !file_name.contains("irrelevance");
+    println!(
+        "scoring: a case passes when the model calls {}",
+        if must_call { "SOMETHING" } else { "NOTHING" }
+    );
 
     let text = std::fs::read_to_string(data).expect("the BFCL file is readable");
     let entries: Vec<Value> = text
@@ -165,6 +183,10 @@ fn main() {
     // project's recovery layer read one out of prose. Those are opposite
     // findings and the first run of this harness produced one of each.
     let mut called: Vec<(String, Vec<String>, String)> = Vec::new();
+    // On a `relevance` file the failures are the SILENT cases, and they need
+    // listing for the same reason: a rate with no examples behind it cannot be
+    // argued with.
+    let mut silent: Vec<(String, String)> = Vec::new();
     let started = std::time::Instant::now();
 
     for (i, entry) in entries.iter().enumerate() {
@@ -229,15 +251,25 @@ fn main() {
             .iter()
             .flat_map(|s| s.called.clone())
             .collect();
-        if names.is_empty() {
+        if names.is_empty() == !must_call {
             passed += 1;
-        } else {
+        }
+        if !names.is_empty() {
             let answer = outcome
                 .steps
                 .first()
                 .map(|s| s.answer.clone())
                 .unwrap_or_default();
             called.push((id, names, answer));
+        } else if must_call {
+            silent.push((
+                id,
+                outcome
+                    .steps
+                    .first()
+                    .map(|s| s.answer.clone())
+                    .unwrap_or_default(),
+            ));
         }
         if (i + 1) % 20 == 0 {
             println!(
@@ -250,7 +282,11 @@ fn main() {
         }
     }
 
-    let total = passed + called.len();
+    let total = if must_call {
+        passed + silent.len()
+    } else {
+        passed + called.len()
+    };
 
     // THE ARTIFACT. A number quoted on a page with nothing behind it is a number
     // the next person has to take on trust, and this one is quoted on the README.
@@ -258,9 +294,15 @@ fn main() {
     // environment stamp and every case that called something, so the rate can be
     // recomputed rather than believed.
     let artifact = serde_json::json!({
-        "benchmark": "BFCL v4 irrelevance",
-        "source": "gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_irrelevance.json",
-        "harness": "tacet-eval/examples/bfcl_irrelevance.rs",
+        "benchmark": format!("BFCL v4 {}", file_name.trim_end_matches(".json")),
+        // THE SOURCE FILE IS NAMED FROM THE ARGUMENT, not from a literal. It was
+        // a literal, and the first artifact written after this harness grew a
+        // second category recorded the wrong file — a stale field in a report is
+        // the same failure as a stale number on a page, with less excuse.
+        "source": format!(
+            "gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/{file_name}"
+        ),
+        "harness": "crates/tacet-eval/examples/bfcl.rs",
         "not_a_leaderboard_submission": "BFCL scores through its own harness, prompt and parser; this is the same questions and functions through this stack",
         // THE BARE FILE NAME, NEVER THE PATH. `~/models/<name>/model.gguf` is
         // where this lives on the machine that ran it, and this repository is
@@ -277,13 +319,17 @@ fn main() {
         "arch": std::env::consts::ARCH,
         "entries_in_file": entries.len(),
         "cases_scored": total,
-        "called_nothing": passed,
+        "must_call": must_call,
+        "passed": passed,
         "rate": passed as f64 / total.max(1) as f64,
         "tool_names_rewritten": renamed,
         "schemas_untranslatable": untranslatable,
         "wall_s": started.elapsed().as_secs(),
         "called": called.iter().map(|(id, names, answer)| serde_json::json!({
             "id": id, "called": names, "answer": answer,
+        })).collect::<Vec<_>>(),
+        "silent": silent.iter().map(|(id, answer)| serde_json::json!({
+            "id": id, "answer": answer,
         })).collect::<Vec<_>>(),
     });
     if let Some(path) = std::env::var_os("BFCL_JSON") {
@@ -292,19 +338,31 @@ fn main() {
         eprintln!("wrote {}", std::path::Path::new(&path).display());
     }
 
-    println!("\nBFCL irrelevance (v4), single turn, BFCL's own functions");
+    println!("\nBFCL {file_name} (v4), single turn, BFCL's own functions");
     if limit != usize::MAX {
         println!("  *** CAPPED RUN: {limit} of the file, not the whole category ***");
     }
     println!("  cases scored          {total}");
     println!(
-        "  called nothing        {passed}/{total}  ({:.1}%)",
+        "  {:<21} {passed}/{total}  ({:.1}%)",
+        if must_call {
+            "called something"
+        } else {
+            "called nothing"
+        },
         100.0 * passed as f64 / total.max(1) as f64
     );
     println!("  tool names rewritten  {renamed}   (a dot cannot appear in a call)");
     println!("  schemas untranslatable {untranslatable}");
     println!("  wall                  {:.0?}", started.elapsed());
-    if !called.is_empty() {
+    if must_call && !silent.is_empty() {
+        println!("\n  the ones that stayed silent:");
+        for (id, answer) in silent.iter().take(40) {
+            let answer: String = answer.chars().take(110).collect();
+            println!("    {id:<24} {}", answer.replace('\n', " "));
+        }
+    }
+    if !must_call && !called.is_empty() {
         println!("\n  the ones that called something:");
         for (id, names, answer) in called.iter().take(40) {
             let answer: String = answer.chars().take(110).collect();
