@@ -35,6 +35,21 @@ Tacet is that layer, written to be read. Every non-obvious decision has a commen
 
 ## What makes it different
 
+**Start here if you already know this field.** Constrained decoding — a schema
+compiled to an automaton, a per-step logit mask, "unrepresentable rather than
+validated afterwards" — is *category-standard*, and has been since llama.cpp
+shipped GBNF in 2023. It is what
+[Outlines](https://arxiv.org/abs/2307.09702) does, and
+[XGrammar](https://arxiv.org/abs/2411.15100) (in vLLM, TensorRT-LLM, MAX), and
+[llguidance](https://github.com/guidance-ai/llguidance) (which ships inside
+OpenAI's JSON Schema mode), and lm-format-enforcer, and Apple's own on-device
+guided generation. The first bold claim below is table stakes; the page used to
+lead with it and say nothing about any of them, which reads as unawareness rather
+than as a feature. [What is actually new here, and what is
+not](#where-this-is-not-novel) says which is which, with citations.
+
+The four claims below are the ones this project would defend in that room.
+
 **A call that has started cannot be finished invalidly.** Once the model emits `calculate(`, a pushdown automaton masks the logits at every step. Malformed JSON, a field that isn't in the schema, an out-of-range number, a missing required key — none of them can be *generated*. Not validated after the fact: unrepresentable. Sampling runs after masking, so no sampling strategy can escape it.
 
 The sentence used to read "invalid tool calls are impossible", and measuring it showed that was wider than the truth: **the grammar arms after `name(`, so it says nothing about a call that never starts that way.** Running a real model over 115 cases, seven of the twenty-two failures were the right tool with the right arguments written in a shape nobody taught it — ` ```tool read_document"path=report.md" ` and `<tool_call> read_document (path: "x") </tool_call>`. Those are recovered now, by a layer that will only look behind a marker no prose contains; the underlying gap is real and is written down rather than papered over.
@@ -413,6 +428,14 @@ numbers are from different machines and `--compare` refuses to pair across
 either a different model or a different catalog, which is why this one is quoted
 on its own terms rather than folded into the table.
 
+**And the "after" report behind this verdict is not in the repository.**
+CONTRIBUTING asks that a claimed model improvement arrive as a PR that updates
+the baseline and pastes the verdict; this pasted the verdict from a rented box
+and left the other half where nobody can pair against it. `baselines/` holds two
+files and neither is a 3090 run. The fix is not to re-word this paragraph, it is
+to commit the report — with `identity.model_path` reduced to a bare file name,
+which `cargo test -p tacet-eval --test baselines` already enforces.
+
 **A refusal is usually ours.** An earlier run had six of them, and the cause was
 the system prompt: it opened with *"an assistant that runs entirely on the
 device. Data never leaves the device"* — a true statement about the architecture
@@ -554,6 +577,23 @@ the finding; the score was not worth the rent.
 prompt, same sampler, both columns capped at 256 tokens so only the mask differs.
 The 39 calls of `benchmarks/en/arithmetic-time.json`, on a rented RTX 3090,
 5 Sep 2026.
+
+**This table has no committed artifact, and until recently it could not have
+one** — `bench gap` printed a table and nothing else, so it was the only figure
+on this page with no machine-readable form at all, on rented hardware nobody
+else has. `--json` now writes the run with the environment stamped beside it
+(weights, quantization, device, `rustc`, commit, peak resident), which is what a
+number on a page owes the person re-deriving it:
+
+```bash
+tacet bench gap benchmarks/en/arithmetic-time.json --model qwen3-4b --json \
+  > crates/tacet-eval/baselines/gap-qwen3-4b-<card>-<date>.json
+```
+
+The three rows below predate that and stay as they are, dated and attributed
+rather than back-filled: writing a JSON file today from a run on a card this
+machine does not have would be inventing an artifact, which is worse than not
+having one.
 
 | model | started a call | valid **if** started | correct call |
 |---|---|---|---|
@@ -762,6 +802,96 @@ What moves is tool selection, and Turkish is now the weakest rather than the
 strongest, which is the reverse of what the English/Turkish suite shows. The two
 are not the same cases: these were written natively per language, and the
 comparison to make is across this row, not against the older suite.
+
+## Where this is not novel
+
+This section exists because the alternative is worse. A reader who knows this
+field and finds the standard description of constrained decoding presented as the
+headline discovers the omission themselves, and then reasonably discounts every
+paragraph after it. Naming the prior art costs one section and buys the rest of
+the page.
+
+**The masking claim is category-standard.** Compile a schema to an automaton,
+mask the logits every step, make the invalid unrepresentable rather than
+validated afterwards — that is the shared description of:
+
+* **llama.cpp GBNF** (2023), the first version most people met;
+* **Outlines** — Willard & Louf, *Efficient Guided Generation for Large Language
+  Models*, [arXiv:2307.09702](https://arxiv.org/abs/2307.09702), which reframed
+  it as an indexed FSM walk;
+* **XGrammar** — [arXiv:2411.15100](https://arxiv.org/abs/2411.15100),
+  integrated into vLLM (Dec 2024), TensorRT-LLM, Modular MAX and OpenVINO GenAI;
+* **llguidance**, which [shipped inside OpenAI's JSON Schema
+  mode](https://github.com/guidance-ai/llguidance) in May 2025 and inside
+  Chromium;
+* **guidance** and **lm-format-enforcer**, and
+* **Apple's Foundation Models** guided generation. Tacet's grammar exists
+  *because* moving off Apple's `DynamicGenerationSchema` lost that forcing —
+  `crates/tacet-grammar/src/lib.rs` has said so since it was written.
+
+**The router-plus-distillation shape has direct prior art.**
+**TinyAgent** ([arXiv:2409.00608](https://arxiv.org/abs/2409.00608), EMNLP 2024)
+is a 1.1B/7B running on an M3 MacBook with a fine-tuned DeBERTa retriever cutting
+the tool list before inference, lifted from 12.71% to 78.89% by distilling 80K
+GPT-4-Turbo examples with correctness filtering. **Octopus v2**
+([arXiv:2404.01744](https://arxiv.org/abs/2404.01744)) and **Hammer**
+([arXiv:2410.04587](https://arxiv.org/abs/2410.04587), *Robust Function-Calling
+for On-Device Language Models via Function Masking*) occupy adjacent ground. The
+router here is a hand-written trigger table plus a 48 KiB int8 classifier rather
+than a fine-tuned encoder, which is a different point on the same curve — smaller
+and auditable, not new.
+
+**The "irrelevance gate" is BFCL's relevance/irrelevance detection under another
+name.** The [Berkeley Function Calling
+Leaderboard](https://github.com/ShishirPatil/gorilla/tree/main/berkeley-function-call-leaderboard)
+has `irrelevance`, `live_irrelevance` and `live_relevance` categories measuring
+exactly this. **No headline number on this page is measured against any external
+benchmark**, and that is a real gap, not a stylistic one: every table here is
+this project grading itself on cases it wrote. [Measured against
+BFCL](#measured-against-someone-elses-benchmark) is the first step out of that,
+and it is one category deep.
+
+### What is actually distinctive
+
+1. **Always-terminating, as a claim separate from unrepresentable-invalid.**
+   Bounded consecutive whitespace, a bounded open-schema field, a 2048-token cap
+   measured against a largest-observed legitimate call of 1523. Unbounded
+   whitespace wander is a known live failure in this category and nobody
+   advertises a termination bound. The measurement that produced it — a complete,
+   correct `calendar(…)` call followed by twelve minutes of spaces — is above.
+2. **The coupling claim.** The constraint contract is three signatures over
+   `&mut [f32]` and `u32` living in `tacet-kernel` with no inference dependency,
+   guarded by a test that stops compiling if a signature starts needing an
+   inference type, and demonstrated by `cargo run -p tacet-grammar --example
+   no_engine` — verified from outside the repository against crates.io, with
+   `cargo tree | grep -c tacet-engine` at zero. Most implementations in the list
+   above are coupled to a serving stack.
+3. **Privacy that fails the build.** The two-manifest network monopoly as a test
+   rather than a promise.
+4. **An eval that refuses a verdict below its own resolution**, and a page that
+   retracts its own overclaims with the measurement attached. Three of those
+   retractions are on this page.
+5. **A 92 KiB int8 classifier beating a distilled 135M on closed-vocabulary
+   slots** — 15/15 against 1/5, at 92 KiB against 528 MiB resident.
+
+### One counter-datum, scoped
+
+The literature says grammar constraint distorts the distribution and costs task
+accuracy: **Grammar-Aligned Decoding**
+([arXiv:2405.21047](https://arxiv.org/abs/2405.21047)) makes the distributional
+argument, and the format-tax papers report accuracy costs, one of them
+constraint-induced *suppression of tool calling*.
+
+`bench gap` here runs the other way on **tool selection**: started 76.9% → 97.4%,
+tool-name-correct 66.7% → 97.4%, with the mask overriding the model's own argmax
+only **19 times in 16,402 tokens** and an identical-argmax control.
+
+The caveats belong in the same breath: n=39, one file, one card, one date; two of
+three models show nothing measurable; and "correct" is `call.name == want`
+(`bench_cmd.rs`), a tool-selection metric, not an answer-quality one. Framed as a
+scoped counter-datum on tool selection it is publishable. Framed as a refutation
+of distributional distortion it is not — the +20.5 points of *started* calls are
+*explained* by the mask moving the model off its own distribution.
 
 ## Platform support — honestly
 

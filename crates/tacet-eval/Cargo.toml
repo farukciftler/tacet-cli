@@ -34,3 +34,25 @@ tacet-skills.workspace = true
 tacet-zip.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+# THE BFCL EXAMPLE IS THE ONLY THING THAT NEEDS WEIGHTS. Everything else in this
+# crate runs on `FakeEngine`, which is why `tacet-engine` is taken with default
+# features above — and that stays true: these forward to the engine's own
+# features and are off unless someone asks for them.
+[features]
+default = []
+candle = ["tacet-engine/candle"]
+metal = ["candle", "tacet-engine/metal"]
+cuda = ["candle", "tacet-engine/cuda"]
+
+[dev-dependencies]
+# ONLY FOR THE BFCL EXAMPLE, and it is the right crate to borrow from: BFCL ships
+# its functions as JSON Schema, and `bridge::convert_schema` is the translator
+# this project already uses for exactly that — the one a remote MCP server's
+# tools come through. Writing a second one for the benchmark would measure a
+# translator no user ever reaches.
+tacet-mcp.workspace = true
+
+[[example]]
+name = "bfcl_irrelevance"
+required-features = ["candle"]

@@ -657,6 +657,15 @@ pub enum BenchJob {
         /// The local model folder (`~/models/<name>`).
         #[arg(long)]
         model: Option<String>,
+        /// Writes the run as JSON instead of a table, so it can be COMMITTED.
+        ///
+        /// The README carries a dozen tables measured on rented hardware
+        /// nobody else has, and this one had no machine-readable form at all —
+        /// so of all of them it was the only one that could not be checked in
+        /// beside the claim. A number in prose with no artifact behind it is a
+        /// number the next person has to take on trust.
+        #[arg(long)]
+        json: bool,
     },
     /// Runs the benchmark and prints the four axes and a score out of 100.
     Run {

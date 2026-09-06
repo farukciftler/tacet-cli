@@ -452,7 +452,7 @@ fn started_a_call(text: &str, names: &[&str]) -> bool {
     })
 }
 
-pub fn bench_gap(path: &str, model_name: &str) -> ExitCode {
+pub fn bench_gap(path: &str, model_name: &str, as_json: bool) -> ExitCode {
     let color = Color::setup();
     let file = match read(path) {
         Ok(f) => f,
@@ -606,6 +606,68 @@ pub fn bench_gap(path: &str, model_name: &str) -> ExitCode {
     let (s_off, v_off, g_off, c_off, t_off, r_off, m_off) = summarise("off");
     let (s_on, v_on, g_on, c_on, t_on, r_on, m_on) = summarise("on");
 
+    // A FILE WITH NOTHING TO MEASURE SAYS SO, AND SAYS IT BEFORE `--json`.
+    // `bench gap` only looks at steps that EXPECT a tool, so an irrelevance file
+    // holds no calls at all — and emitting 0.0 on every field for that is a lie
+    // in the shape of a result, worse in a JSON artifact than on a screen
+    // because the artifact outlives the person who ran it.
+    if cases == 0 {
+        println!(
+            "{}",
+            color.paint(
+                DIM,
+                "  no step in this file expects a tool, so there is no call for the grammar to constrain and nothing to measure. `bench gap` reads tool cases; `bench run` is what scores an irrelevance file."
+            )
+        );
+        return ExitCode::SUCCESS;
+    }
+
+    // THE COMMITTABLE FORM, and the reason it exists is a rule this repository
+    // already had: a number that cannot be re-derived should carry the date and
+    // the machine it was measured on. Every other measurement here has a `--json`
+    // report that can sit in `crates/tacet-eval/baselines/` next to the claim.
+    // This one had none, so the gap table was the single figure on the front
+    // page with no artifact behind it at all — on rented hardware nobody else
+    // has, which is exactly when an artifact matters most.
+    //
+    // WHAT GOES IN IT IS THE ENVIRONMENT, NOT ONLY THE RESULT. `identity` says
+    // which weights, quantization and device; `rustc` and `commit` say what was
+    // built, because "the same model on the same card" has been wrong here
+    // before and the only thing that settles it is a stamp.
+    if as_json {
+        let stamp = serde_json::json!({
+            "benchmark": file.name,
+            "model": model_name,
+            "calls": cases,
+            "rustc": shell_line("rustc", &["--version"]),
+            "commit": shell_line("git", &["rev-parse", "--short", "HEAD"]),
+            "target": std::env::consts::ARCH,
+            "os": std::env::consts::OS,
+            "peak_resident_mib": peak_memory_mib(),
+            "off": {
+                "started_pct": s_off, "valid_pct": v_off, "valid_given_started_pct": g_off,
+                "correct_pct": c_off, "ttft_ms": t_off, "decode_tok_s": r_off,
+                "mean_tokens": m_off,
+            },
+            "on": {
+                "started_pct": s_on, "valid_pct": v_on, "valid_given_started_pct": g_on,
+                "correct_pct": c_on, "ttft_ms": t_on, "decode_tok_s": r_on,
+                "mean_tokens": m_on,
+            },
+            "rows": rows.iter().map(|r| serde_json::json!({
+                "armed": r.armed, "started": r.started, "valid": r.valid,
+                "correct": r.correct, "tokens": r.tokens,
+                "ttft_ms": r.ttft_ms, "decode_s": r.decode_s,
+            })).collect::<Vec<_>>(),
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&stamp)
+                .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+        );
+        return ExitCode::SUCCESS;
+    }
+
     println!();
     println!(
         "{}",
@@ -617,16 +679,6 @@ pub fn bench_gap(path: &str, model_name: &str) -> ExitCode {
     // A FILE WITH NOTHING TO MEASURE SAYS SO. `bench gap` only looks at steps
     // that EXPECT a tool, so an irrelevance file holds no calls at all — and
     // printing 0.0% on every row for that is a lie in the shape of a result.
-    if cases == 0 {
-        println!(
-            "{}",
-            color.paint(
-                DIM,
-                "  no step in this file expects a tool, so there is no call for the grammar to constrain and nothing to measure. `bench gap` reads tool cases; `bench run` is what scores an irrelevance file."
-            )
-        );
-        return ExitCode::SUCCESS;
-    }
     println!("                     grammar OFF   grammar ON    gap");
     println!(
         "  started a call     {s_off:>9.1}%   {s_on:>9.1}%   {:>+6.1}",
@@ -682,6 +734,24 @@ struct GapRow {
     tokens: usize,
     ttft_ms: f64,
     decode_s: f64,
+}
+
+/// One line of output from a command, for the environment stamp.
+///
+/// `unknown` rather than an empty string when it cannot be run: a report that
+/// says it does not know which compiler built it is useful, and one that
+/// silently claims the empty string is not. Nothing here depends on the answer —
+/// it is written down so a table on the README can be tied to a build.
+fn shell_line(program: &str, args: &[&str]) -> String {
+    std::process::Command::new(program)
+        .args(args)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 /// Peak resident set, from the kernel, where the kernel offers it.

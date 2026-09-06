@@ -215,3 +215,69 @@ fn the_registry_metadata_rules_are_satisfied() {
     }
     assert!(checked >= 11, "only {checked} manifests walked");
 }
+
+/// A CHECKED-IN BASELINE WITH NO WALL TIME CANNOT BE COMPARED ON TIME.
+///
+/// `run_selection_in` measures the run and puts it in the report, so a baseline
+/// written by the tool always has one. `qwen3-4b-both.json` carries
+/// `wall_ms: 0`, which means that file did not come out of the tool unedited —
+/// and the cost lands on the README, where "44 min" on Metal and "6.4 min" on a
+/// 3090 are hand-recorded with no artifact behind them. Two paragraphs of that
+/// page disagreed by 0.2 min about the same run for exactly this reason.
+///
+/// THE LIST IS ASSERTED IN BOTH DIRECTIONS rather than used as a mute button: a
+/// file that gains a real wall time must be taken out of it, or this fails. That
+/// is what stops a grandfather clause from becoming permanent.
+#[test]
+fn a_baseline_carries_the_time_it_took() {
+    /// Known to be missing it, with the reason. Shrink this list; never grow it.
+    const MISSING: [&str; 1] = [
+        // Predates the rule. Re-deriving it means a 44-minute run on the same
+        // weights, which is a NEW measurement rather than a repair of this one —
+        // so it is recorded as missing instead of being invented.
+        "qwen3-4b-both.json",
+    ];
+
+    let dir = repo_root().join("crates/tacet-eval/baselines");
+    let mut found_missing: Vec<String> = Vec::new();
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).expect("baselines/") {
+        let path = entry.expect("a directory entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?")
+            .to_string();
+        let text = std::fs::read_to_string(&path).expect("a baseline is readable");
+        // The logic-set baseline has no `wall_ms` at all: it measures no model
+        // and has no wall time worth recording. Only a file that HAS the field
+        // is making the claim.
+        let Some(after) = text.split(r#""wall_ms":"#).nth(1) else {
+            continue;
+        };
+        checked += 1;
+        let value: u128 = after
+            .trim_start()
+            .chars()
+            .take_while(|c: &char| c.is_ascii_digit())
+            .collect::<String>()
+            .parse()
+            .unwrap_or(0);
+        if value == 0 {
+            found_missing.push(name);
+        }
+    }
+    found_missing.sort();
+    let mut expected: Vec<String> = MISSING.iter().map(|s| s.to_string()).collect();
+    expected.sort();
+    assert_eq!(
+        found_missing, expected,
+        "the baselines missing a wall time are not the ones recorded as missing \
+         it. If a file gained one, take it out of MISSING; if a new file has \
+         none, it was not written by `eval --tool-selection --json`."
+    );
+    assert!(checked > 0, "no baseline carries a `wall_ms` field at all");
+}

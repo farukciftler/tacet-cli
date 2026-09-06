@@ -2106,6 +2106,7 @@ dependencies = [
  "tacet-engine",
  "tacet-grammar",
  "tacet-kernel",
+ "tacet-mcp",
  "tacet-skills",
  "tacet-tools",
  "tacet-zip",
