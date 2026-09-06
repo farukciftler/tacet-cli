@@ -17,6 +17,7 @@ use std::path::PathBuf;
 pub struct ToolOutcome {
     /// The final text shown on the chip (~5 words, plus " · detail" if needed).
     pub chip_text: String,
+    /// Succeeded, failed, wrote something — what the chip's colour says.
     pub state: ToolState,
     /// The SHORT text returned to the model. Bulk data is not written here.
     pub to_model: String,
@@ -109,11 +110,14 @@ impl ToolOutcome {
         )
     }
 
+    /// Attaches the raw output for the chip's detail view. It never reaches the
+    /// model; only the user sees it, and only on opening the chip.
     pub fn raw_output(mut self, raw: impl Into<String>) -> Self {
         self.raw_output = Some(raw.into());
         self
     }
 
+    /// Records the file this outcome produced, so the shell can offer to open it.
     pub fn file_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.file_path = Some(path.into());
         self

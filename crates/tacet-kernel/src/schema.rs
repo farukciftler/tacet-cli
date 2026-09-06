@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 /// One argument schema: kind + human description.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ArgSchema {
+    /// What shape the value has. This is what the grammar compiles.
     #[serde(flatten)]
     pub kind: SchemaKind,
     /// The description shown to the model. Must be short and imperative.
@@ -24,46 +25,71 @@ pub struct ArgSchema {
     pub description: Option<String>,
 }
 
+/// The shapes an argument may take.
+///
+/// DELIBERATELY SMALL AND CLOSED — the module header says why: this set is
+/// translated into a generation grammar, and a shape that cannot be translated
+/// is a shape the model cannot be FORCED into.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SchemaKind {
     /// An object with ordered fields. The root schema of a tool is always this.
     Object {
+        /// In declaration order, which is also prompt order and grammar order.
         fields: Vec<Field>,
     },
     /// A homogeneous array.
     Array {
+        /// Every element has this schema; arrays here are homogeneous.
         item: Box<ArgSchema>,
+        /// Fewest elements accepted. `None` allows the empty array.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         min: Option<usize>,
+        /// Most elements accepted. `None` is unbounded, which the grammar's own
+        /// termination bound then has to carry instead.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max: Option<usize>,
     },
+    /// Free text. The open shape, and therefore the one the termination bound
+    /// exists for.
     Text {
+        /// Longest string accepted. `None` means the grammar's own ceiling
+        /// applies — free text cannot be left genuinely unbounded, or a valid
+        /// call has no obligation to end.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_length: Option<usize>,
     },
     /// A closed value set. A separate variant from Text: the grammar turns this
     /// into a literal alternation, so the model cannot step outside the set.
     Choice {
+        /// The whole set, written literally into the grammar. A value outside it
+        /// is unrepresentable rather than refused afterwards, so a tool whose
+        /// body accepts exactly N values should declare exactly those N.
         choices: Vec<String>,
     },
+    /// A number, integral or not.
     Number {
         /// If true, an integer. The grammar decides on the decimal point from this.
         #[serde(default)]
         is_integer: bool,
+        /// Inclusive lower bound, enforced DURING generation rather than after.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         min: Option<f64>,
+        /// Inclusive upper bound, likewise.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max: Option<f64>,
     },
+    /// `true` or `false`, and nothing else — not `"true"`, not `1`.
     Bool,
 }
 
 /// An object field.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Field {
+    /// The JSON key. It is also what the model reads in the short signature, so
+    /// it is part of the prompt, not only of the parse.
     pub name: String,
+    /// What this field accepts.
     pub schema: ArgSchema,
     /// Requiredness is kept NEXT TO the field, not in a separate `required`
     /// list: information kept in two places drifts apart sooner or later.
@@ -72,6 +98,9 @@ pub struct Field {
 }
 
 impl Field {
+    /// An OPTIONAL field. Call `required()` on the result to make it mandatory —
+    /// optional is the default because a required field the model cannot supply
+    /// makes the whole call unwritable.
     pub fn new(name: impl Into<String>, schema: ArgSchema) -> Self {
         Self {
             name: name.into(),
@@ -80,6 +109,8 @@ impl Field {
         }
     }
 
+    /// Marks the field mandatory: the grammar will not let the call close
+    /// without it.
     pub fn required(mut self) -> Self {
         self.required = true;
         self
@@ -99,10 +130,13 @@ impl ArgSchema {
         Self::object(vec![])
     }
 
+    /// An object with these fields, in this order. A tool's root schema is
+    /// always one of these.
     pub fn object(fields: Vec<Field>) -> Self {
         Self::from_kind(SchemaKind::Object { fields })
     }
 
+    /// An unbounded array of `item`. Add bounds with [`ArgSchema::length`].
     pub fn array(item: ArgSchema) -> Self {
         Self::from_kind(SchemaKind::Array {
             item: Box::new(item),
@@ -111,16 +145,23 @@ impl ArgSchema {
         })
     }
 
+    /// Free text with no declared ceiling — see [`SchemaKind::Text`] on why the
+    /// grammar still imposes one.
     pub fn text() -> Self {
         Self::from_kind(SchemaKind::Text { max_length: None })
     }
 
+    /// A closed set. PREFER THIS OVER `text()` wherever the tool's body accepts
+    /// a fixed list: the values are compiled into the grammar literally, so an
+    /// invalid one cannot be generated instead of being refused a turn later.
     pub fn choice<S: Into<String>>(choices: impl IntoIterator<Item = S>) -> Self {
         Self::from_kind(SchemaKind::Choice {
             choices: choices.into_iter().map(Into::into).collect(),
         })
     }
 
+    /// A number that may have a fractional part. Bound it with
+    /// [`ArgSchema::range`].
     pub fn number() -> Self {
         Self::from_kind(SchemaKind::Number {
             is_integer: false,
@@ -129,6 +170,7 @@ impl ArgSchema {
         })
     }
 
+    /// A whole number: the grammar will not offer a decimal point.
     pub fn integer() -> Self {
         Self::from_kind(SchemaKind::Number {
             is_integer: true,
@@ -137,10 +179,13 @@ impl ArgSchema {
         })
     }
 
+    /// `true` or `false`.
     pub fn bool() -> Self {
         Self::from_kind(SchemaKind::Bool)
     }
 
+    /// The sentence the model reads for this field. It is prompt text, so it is
+    /// charged against the token budget — short and imperative.
     pub fn description(mut self, text: impl Into<String>) -> Self {
         self.description = Some(text.into());
         self
@@ -180,6 +225,8 @@ impl ArgSchema {
         }
     }
 
+    /// The root object's fields — an empty slice if this schema is not an
+    /// object, which callers rely on to avoid matching on the kind.
     pub fn fields(&self) -> &[Field] {
         match &self.kind {
             SchemaKind::Object { fields } => fields,

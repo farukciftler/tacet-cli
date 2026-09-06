@@ -149,6 +149,9 @@ impl TokenMask {
         &self.empty_tokens
     }
 
+    /// How many token ids this mask knows about. A logit slice longer than this
+    /// has ids the mask can say nothing about, and the caller closes those —
+    /// silence is not permission.
     pub fn vocab_size(&self) -> usize {
         self.vocab_size
     }

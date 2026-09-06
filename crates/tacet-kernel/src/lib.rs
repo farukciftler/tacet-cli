@@ -24,6 +24,14 @@
 //! read there — only the mode a secret is allowed to sit at.
 //!
 //! NO NETWORK: nowhere in this crate, or below it, is there a network call.
+//!
+//! EVERY PUBLIC ITEM IS DOCUMENTED, and the lint below is what keeps it that
+//! way. This crate and `tacet-grammar` are the export surface — the pair anyone
+//! reusing the constraint takes with `cargo add`, and the pair docs.rs renders —
+//! so an undocumented `pub` here is a blank cell on the page a potential adopter
+//! opens first. The other nine crates are not held to this: they are the
+//! application, and holding them to it would buy noise rather than readers.
+#![warn(missing_docs)]
 
 pub mod catalog;
 pub mod constraint;

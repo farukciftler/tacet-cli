@@ -30,6 +30,12 @@ where
     Box::pin(future)
 }
 
+/// Everything a tool must be able to answer about itself.
+///
+/// The four required methods are the whole contract: a NAME the model calls, a
+/// DESCRIPTION saying when to call it, a SCHEMA the model is forced into, and a
+/// body. Everything else has a default, and the defaults are the conservative
+/// side of each question — see `taints_session` and `world_changed`.
 pub trait Tool: Send + Sync {
     /// The name the model calls. ASCII, snake_case, constant for the session.
     fn name(&self) -> &str;

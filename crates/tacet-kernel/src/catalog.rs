@@ -8,21 +8,33 @@
 use crate::tool::Tool;
 use std::sync::Arc;
 
+/// The tools this session may call, in the order they were added.
+///
+/// ORDER IS A DECISION, not an accident: the router shows the model only the
+/// first `MAX_TOOLS` after scoring, and when nothing scores, the catalog order
+/// is the whole of the selection — so a tool added last is a tool that is never
+/// seen on an unmatched message.
 #[derive(Default, Clone)]
 pub struct ToolCatalog {
     tools: Vec<Arc<dyn Tool>>,
 }
 
 impl ToolCatalog {
+    /// An empty catalog.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Appends a tool. NOTHING IS DEDUPED HERE — `find` returns the first match,
+    /// so a later tool taking an earlier one's name is simply unreachable. The
+    /// caller that mixes sources (a bridged MCP catalog, say) is the one that
+    /// has to notice; see `tacet_tools::mcp::feed_catalog`.
     pub fn add(&mut self, tool: Arc<dyn Tool>) -> &mut Self {
         self.tools.push(tool);
         self
     }
 
+    /// Every tool, in catalog order.
     pub fn tools(&self) -> &[Arc<dyn Tool>] {
         &self.tools
     }
@@ -56,6 +68,7 @@ impl ToolCatalog {
             .cloned()
     }
 
+    /// Every tool's name, in catalog order.
     pub fn names(&self) -> Vec<&str> {
         self.tools.iter().map(|t| t.name()).collect()
     }

@@ -56,6 +56,8 @@ impl Sha256 {
         }
     }
 
+    /// Adds more input. Call it as many times as convenient — a file read in
+    /// 64 KiB chunks hashes identically to the same file read whole.
     pub fn feed(&mut self, mut data: &[u8]) {
         self.total_bytes = self.total_bytes.wrapping_add(data.len() as u64);
         if self.filled > 0 {
@@ -84,6 +86,8 @@ impl Sha256 {
         }
     }
 
+    /// Pads, appends the length and returns the 32-byte digest, consuming the
+    /// hasher so it cannot be fed afterwards.
     pub fn finish(mut self) -> [u8; 32] {
         let bit_length = self.total_bytes.wrapping_mul(8);
         // Padding: 0x80, then zeros until 8 bytes are left for the length field.

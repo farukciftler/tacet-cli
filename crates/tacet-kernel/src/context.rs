@@ -10,11 +10,16 @@ use crate::reporter::{Reporter, TraceId, TraceUpdate};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// What a tool is handed when it runs: the store to put bulk data in, the
+/// directory it may not leave, the reporter it draws its chip on, and the
+/// session's taint.
 pub struct ToolContext {
     /// The bypass channel. Bulk data goes here, a short summary goes to the model.
     pub data_store: Arc<dyn DataStore>,
     /// The sandbox for file operations. Cannot be escaped.
     pub working_dir: PathBuf,
+    /// Where a tool announces what it is doing. The shell draws chips from it;
+    /// a test collects them instead.
     pub reporter: Arc<dyn Reporter>,
     /// Has a personal-data tool run SUCCESSFULLY at least once this session.
     ///
@@ -25,6 +30,7 @@ pub struct ToolContext {
 }
 
 impl ToolContext {
+    /// A fresh, untainted context.
     pub fn new(
         data_store: Arc<dyn DataStore>,
         working_dir: impl Into<PathBuf>,
@@ -38,6 +44,8 @@ impl ToolContext {
         }
     }
 
+    /// Has a personal-data tool run successfully this session. The approval
+    /// gate in front of every outbound tool reads this.
     pub fn session_tainted(&self) -> bool {
         self.session_tainted
     }
@@ -67,10 +75,13 @@ impl ToolContext {
 
     // --- Chip shortcuts ---
 
+    /// Opens a chip for work that is starting. Finish it with `update_chip`.
     pub fn start_chip(&self, icon: &str, text: &str) -> TraceId {
         self.reporter.start(icon, text)
     }
 
+    /// Fills in what an open chip turned out to be — state, text, the file it
+    /// wrote, the raw exchange behind it.
     pub fn update_chip(&self, id: TraceId, update: TraceUpdate) {
         self.reporter.update(id, update);
     }

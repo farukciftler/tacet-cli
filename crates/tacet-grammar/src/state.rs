@@ -452,6 +452,12 @@ const MAX_SPACE_RUN: u32 = 16;
 
 #[derive(Debug, Clone)]
 
+/// One generation's position inside a compiled grammar.
+///
+/// CHEAP TO CLONE ON PURPOSE: the mask asks "what would happen if this token
+/// arrived" by branching a copy, so every piece of state that decides an answer
+/// — including the whitespace run — has to live in here rather than beside it.
+/// State kept outside is state the mask and the automaton can disagree about.
 pub struct GrammarState {
     grammar: Arc<Grammar>,
     stack: Vec<Frame>,
@@ -466,6 +472,8 @@ pub struct GrammarState {
 }
 
 impl GrammarState {
+    /// A state at the very start of `grammar` — nothing consumed, the root value
+    /// still expected.
     pub fn new(grammar: Arc<Grammar>) -> Self {
         let root = grammar.root;
         Self {

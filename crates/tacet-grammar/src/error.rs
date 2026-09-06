@@ -12,11 +12,19 @@
 pub enum GrammarError {
     /// This character cannot be produced at this position under the grammar.
     #[error("position {position}: '{character}' is not valid here")]
-    UnexpectedCharacter { character: char, position: usize },
+    UnexpectedCharacter {
+        /// The character that arrived.
+        character: char,
+        /// How many characters had been accepted before it.
+        position: usize,
+    },
 
     /// The JSON closed but something (other than whitespace) followed it.
     #[error("position {position}: valid JSON ended, there is trailing input")]
-    TrailingInput { position: usize },
+    TrailingInput {
+        /// Where the JSON had finished.
+        position: usize,
+    },
 
     /// The input ran out while the stack was not empty (an open
     /// object/array/string remains).

@@ -28,6 +28,10 @@
 //! ```
 //!
 //! NO NETWORK, NO FILES: this crate is pure computation.
+//!
+//! EVERY PUBLIC ITEM IS DOCUMENTED — see the note on `tacet-kernel`'s root for
+//! why these two crates carry the lint and the other nine do not.
+#![warn(missing_docs)]
 
 mod call;
 mod compile;

@@ -14,6 +14,12 @@ use std::path::PathBuf;
 pub const ERROR_MODEL_TEXT: &str =
     "tool_failed: the action could not be completed; no result was produced";
 
+/// Everything a tool is allowed to fail with.
+///
+/// A CLOSED SET ON PURPOSE: the text the MODEL is shown for a failure is fixed
+/// (`ERROR_MODEL_TEXT`) so a failure cannot become a prompt-injection channel,
+/// while the user still sees the real variant. A tool that needs a failure mode
+/// not in this list is a tool asking to explain itself to the model.
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
     /// The model sent an argument that does not match the schema (missing
@@ -25,6 +31,7 @@ pub enum ToolError {
     #[error("required field missing: {0}")]
     MissingField(String),
 
+    /// The path resolved cleanly and there is nothing there.
     #[error("file not found: {0}")]
     FileNotFound(PathBuf),
 
@@ -32,6 +39,7 @@ pub enum ToolError {
     #[error("outside the permitted directory: {0}")]
     SandboxViolation(PathBuf),
 
+    /// The write could not be completed for want of disk.
     #[error("no space left on device")]
     OutOfSpace,
 
@@ -39,6 +47,8 @@ pub enum ToolError {
     #[error("user did not grant permission: {0}")]
     PermissionDenied(String),
 
+    /// The tool ran out of its own budget — a sandboxed script, a subprocess, a
+    /// request that never came back.
     #[error("the operation timed out")]
     Timeout,
 
@@ -46,6 +56,7 @@ pub enum ToolError {
     #[error("the file operation could not be completed")]
     Io(#[from] std::io::Error),
 
+    /// A wrapped JSON error.
     #[error("the data could not be parsed")]
     Serde(#[from] serde_json::Error),
 
@@ -84,4 +95,5 @@ impl ToolError {
     }
 }
 
+/// What every tool body returns.
 pub type ToolResult<T> = Result<T, ToolError>;

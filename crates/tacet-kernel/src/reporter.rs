@@ -61,14 +61,20 @@ pub struct TraceId(pub u64);
 /// stages erase each other's information.
 #[derive(Debug, Clone, Default)]
 pub struct TraceUpdate {
+    /// The chip's new state, if this stage knows it.
     pub state: Option<ToolState>,
+    /// The chip's new label.
     pub text: Option<String>,
+    /// What was sent — the arguments as the tool received them.
     pub raw_input: Option<String>,
+    /// What came back, for the detail view. Never shown to the model.
     pub raw_output: Option<String>,
+    /// A file this step produced.
     pub file_path: Option<PathBuf>,
 }
 
 impl TraceUpdate {
+    /// An update that changes only the state.
     pub fn state(state: ToolState) -> Self {
         Self {
             state: Some(state),
@@ -76,21 +82,25 @@ impl TraceUpdate {
         }
     }
 
+    /// Sets the label.
     pub fn text(mut self, text: impl Into<String>) -> Self {
         self.text = Some(text.into());
         self
     }
 
+    /// Sets the raw input shown in the detail view.
     pub fn raw_input(mut self, v: impl Into<String>) -> Self {
         self.raw_input = Some(v.into());
         self
     }
 
+    /// Sets the raw output shown in the detail view.
     pub fn raw_output(mut self, v: impl Into<String>) -> Self {
         self.raw_output = Some(v.into());
         self
     }
 
+    /// Names the file this step produced.
     pub fn file_path(mut self, v: impl Into<PathBuf>) -> Self {
         self.file_path = Some(v.into());
         self
@@ -100,15 +110,27 @@ impl TraceUpdate {
 /// A complete chip record — the view layer reads this.
 #[derive(Debug, Clone)]
 pub struct ToolTrace {
+    /// Its id, unique within the process.
     pub id: TraceId,
+    /// The glyph the chip is drawn with.
     pub icon: String,
+    /// The chip's label.
     pub text: String,
+    /// Running, done, failed, wrote something.
     pub state: ToolState,
+    /// The arguments the tool was called with, for the detail view.
     pub raw_input: Option<String>,
+    /// What the tool returned, for the detail view. Not the model's copy.
     pub raw_output: Option<String>,
+    /// The file this chip produced, if any.
     pub file_path: Option<PathBuf>,
 }
 
+/// Where a tool says what it is doing.
+///
+/// THE SECOND LAYER OF TRANSPARENCY: a chip is what the user sees while a turn
+/// runs, and opening one shows the raw exchange — which is a different question
+/// from what the model was told, and is deliberately answered separately.
 pub trait Reporter: Send + Sync {
     /// Drops a "running" chip and returns its id.
     fn start(&self, icon: &str, text: &str) -> TraceId;
@@ -127,10 +149,12 @@ pub struct TraceCollector {
 }
 
 impl TraceCollector {
+    /// An empty collector.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Every chip of the current turn, in the order they opened.
     pub fn traces(&self) -> Vec<ToolTrace> {
         self.traces.lock().expect("trace lock").clone()
     }

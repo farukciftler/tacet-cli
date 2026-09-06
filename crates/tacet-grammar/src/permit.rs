@@ -85,6 +85,9 @@ impl AllowedSet {
         self.text_body
     }
 
+    /// Is whitespace the only thing allowed here. The caller uses it to tell a
+    /// structural position apart from one inside a string, which is where the
+    /// termination bound applies and where it must not.
     pub fn is_space_free(&self) -> bool {
         self.space
     }

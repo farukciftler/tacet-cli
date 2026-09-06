@@ -20,6 +20,7 @@ use std::sync::Mutex;
 pub struct SourceRef(pub String);
 
 impl SourceRef {
+    /// The reference as written — this is the exact text the model sees.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -34,6 +35,7 @@ impl std::fmt::Display for SourceRef {
 /// A single record put into the store.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Record {
+    /// Its address in the store, and the only part of it the model is given.
     pub source_ref: SourceRef,
     /// A coarse kind label ("calendar", "document", "file") — used when producing
     /// the source_ref and when tools filter.
@@ -44,9 +46,14 @@ pub struct Record {
     pub body: String,
 }
 
+/// THE BYPASS CHANNEL. Bulk data goes in here and a short summary goes to the
+/// model, so a 40 000-row spreadsheet costs a sentence of context rather than a
+/// window. The next tool that needs the body fetches it by reference.
 pub trait DataStore: Send + Sync {
     /// Stores the data and returns its reference.
     fn put(&self, kind: &str, summary: &str, body: String) -> SourceRef;
+    /// The record behind a reference, if the store still holds it. `None` for a
+    /// reference the model invented, which is the case that matters.
     fn take(&self, source_ref: &SourceRef) -> Option<Record>;
     /// The records of the given kind, in insertion order.
     fn of_kind(&self, kind: &str) -> Vec<Record>;
@@ -68,6 +75,7 @@ struct Inner {
 }
 
 impl InMemoryDataStore {
+    /// An empty in-memory store.
     pub fn new() -> Self {
         Self::default()
     }
