@@ -573,6 +573,25 @@ archives, code and git, web, memory and calendar, 45 irrelevance cases, and 29
 multi-step chains. They were drafted by a multi-agent pass and then cut down by
 the gate below; what survived is what a fresh install can actually be asked.
 
+**And they have now been run against a model.** qwen3-4B on the rented 3090,
+6 Sep 2026, all ten files, `--skip-missing` because that box has no `calendar`
+(macOS-only), no sandbox and no web addon — so 145 of the 319 cases carry a tool
+expectation that could be scored there. The report is at
+[`baselines/tr-corpus-qwen3-4b-cuda.json`](https://github.com/farukciftler/tacet-cli/blob/main/crates/tacet-eval/baselines/tr-corpus-qwen3-4b-cuda.json).
+
+| axis | Turkish corpus | the 184-case suite, same model |
+|---|---|---|
+| tool selection | **105/145** · 72.4% | 85.0% |
+| irrelevance | **95/97** · 97.9% | 100% |
+| step chain | 243/289 · 84.1% | 87.4% |
+| answer quality | 195/289 · 67.5% | 80.9% |
+
+**Thirteen points below the curated suite on tool selection, and that gap is the
+reason the corpus was written.** These are sentences a Turkish user would
+actually type, including a group that holds the job constant and varies only the
+register; the older suite's Turkish half was written alongside the English one
+and reads like it. The corpus is harder because it is more like the field.
+
 **`benchmarks/tr/` holds 319 more, in Turkish, written as Turkish** — 6 Sep 2026.
 Not translated: the questions are about fatura, taksit, kira, veli toplantısı,
 noter, mesai, and they are phrased the way people type into a phone, including

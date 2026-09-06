@@ -1,0 +1,121 @@
+{
+ "benchmark": "benchmarks/tr — 319 native Turkish cases, ten files",
+ "source": "this repository",
+ "harness": "tacet bench run --skip-missing",
+ "model": "qwen3-4b",
+ "device": "cuda (RTX 3090, vast.ai)",
+ "date": "2026-09-06",
+ "note": "bench run refuses a case whose tool the host lacks; --skip-missing skips those. This box had no calendar (macOS-only), no run_code/write_code (bwrap cannot create a namespace in an unprivileged container) and no web tools (addon gate closed), so 145 of the 319 cases carry a tool expectation that could be scored here.",
+ "files": {
+  "agiz-kayit": {
+   "tool_passed": 12,
+   "tool_total": 14,
+   "irrelevance_passed": 7,
+   "irrelevance_total": 7,
+   "step_passed": 20,
+   "step_total": 22,
+   "answer_passed": 12,
+   "answer_total": 22
+  },
+  "alakasiz": {
+   "tool_passed": 0,
+   "tool_total": 0,
+   "irrelevance_passed": 39,
+   "irrelevance_total": 39,
+   "step_passed": 39,
+   "step_total": 39,
+   "answer_passed": 39,
+   "answer_total": 39
+  },
+  "belgeler": {
+   "tool_passed": 17,
+   "tool_total": 26,
+   "irrelevance_passed": 6,
+   "irrelevance_total": 6,
+   "step_passed": 25,
+   "step_total": 35,
+   "answer_passed": 22,
+   "answer_total": 35
+  },
+  "cikarim": {
+   "tool_passed": 20,
+   "tool_total": 27,
+   "irrelevance_passed": 9,
+   "irrelevance_total": 9,
+   "step_passed": 36,
+   "step_total": 43,
+   "answer_passed": 28,
+   "answer_total": 43
+  },
+  "cok-adimli": {
+   "tool_passed": 14,
+   "tool_total": 22,
+   "irrelevance_passed": 0,
+   "irrelevance_total": 0,
+   "step_passed": 37,
+   "step_total": 46,
+   "answer_passed": 27,
+   "answer_total": 46
+  },
+  "dosya-arsiv": {
+   "tool_passed": 13,
+   "tool_total": 22,
+   "irrelevance_passed": 7,
+   "irrelevance_total": 9,
+   "step_passed": 25,
+   "step_total": 37,
+   "answer_passed": 18,
+   "answer_total": 37
+  },
+  "hafiza-takvim": {
+   "tool_passed": 6,
+   "tool_total": 6,
+   "irrelevance_passed": 6,
+   "irrelevance_total": 6,
+   "step_passed": 12,
+   "step_total": 12,
+   "answer_passed": 11,
+   "answer_total": 12
+  },
+  "hesap-zaman": {
+   "tool_passed": 21,
+   "tool_total": 23,
+   "irrelevance_passed": 7,
+   "irrelevance_total": 7,
+   "step_passed": 33,
+   "step_total": 35,
+   "answer_passed": 24,
+   "answer_total": 35
+  },
+  "kod-git": {
+   "tool_passed": 2,
+   "tool_total": 5,
+   "irrelevance_passed": 7,
+   "irrelevance_total": 7,
+   "step_passed": 9,
+   "step_total": 13,
+   "answer_passed": 9,
+   "answer_total": 13
+  },
+  "web": {
+   "tool_passed": 0,
+   "tool_total": 0,
+   "irrelevance_passed": 7,
+   "irrelevance_total": 7,
+   "step_passed": 7,
+   "step_total": 7,
+   "answer_passed": 5,
+   "answer_total": 7
+  }
+ },
+ "totals": {
+  "tool_passed": 105,
+  "tool_total": 145,
+  "irrelevance_passed": 95,
+  "irrelevance_total": 97,
+  "step_passed": 243,
+  "step_total": 289,
+  "answer_passed": 195,
+  "answer_total": 289
+ }
+}
