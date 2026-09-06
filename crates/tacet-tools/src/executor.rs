@@ -396,7 +396,28 @@ fn last_identifier(text: &str) -> &str {
         .last()
         .map(|(i, _)| i)
         .unwrap_or(text.len());
-    &text[emit..]
+    let candidate = &text[emit..];
+    // A NAME DOES NOT START WITH A DIGIT, AND ARITHMETIC DOES.
+    //
+    // Found by running BFCL's irrelevance category (see
+    // `tacet-eval/examples/bfcl_irrelevance.rs`). Asked to solve `3x^2 - 2x - 5`
+    // with an unrelated tool offered, qwen3-4b wrote out the quadratic formula
+    // — and `2(3)`, the denominator `2a`, is `name(args)` to the parser: the
+    // last identifier before `(` is `2`, and `3` parses as JSON perfectly well.
+    // The turn was spent on a call to a tool named `2`, then twice more, three
+    // of the four passes gone before the model got to say it could not help.
+    //
+    // The header above argues that validation belongs at gate 1, where an
+    // unknown name is rejected with a message the model can use. That is right
+    // for a name that could have been a tool. It is not right for `2`: no tool
+    // in any catalog can be named that, in this project or in a bridged one —
+    // `simplify_name` cannot produce it and neither can a JSON Schema `name`
+    // that anyone would write. Refusing here costs nothing and stops ordinary
+    // arithmetic from consuming a turn.
+    match candidate.chars().next() {
+        Some(c) if c.is_ascii_digit() => "",
+        _ => candidate,
+    }
 }
 
 /// Strips the ```` ```json ... ``` ```` fence. The small model puts it there
@@ -1454,6 +1475,43 @@ mod tests {
         // even though the free-text tool is standing right next to it.
         let call = recover_nameless_json(r#"{"kind":"date"}"#, &catalog).expect("recovered");
         assert_eq!(call.name, "time");
+    }
+
+    /// ARITHMETIC IS NOT A CALL, and this one was found by someone else's
+    /// benchmark rather than by this suite.
+    ///
+    /// Running BFCL's irrelevance category — its questions, its functions, this
+    /// engine and this parser — qwen3-4b was asked to solve `3x^2 - 2x - 5` with
+    /// an unrelated tool in front of it. It correctly declined, in prose, having
+    /// written out the quadratic formula on the way. `2(3)` is the denominator
+    /// `2a`; it is also `name(args)`, with `3` as perfectly good JSON. Three of
+    /// the turn's four passes went to a tool named `2`.
+    ///
+    /// Nothing ran — gate 1 rejects the name — so this was never a safety
+    /// problem. It was a turn-budget one, and in any measurement it counts as
+    /// "the model called a tool" on a case whose whole point is that it must not.
+    #[test]
+    fn a_number_before_a_parenthesis_is_arithmetic_not_a_call() {
+        for arithmetic in [
+            "x = (-(-2) + sqrt(64)) / 2(3)",
+            "the discriminant is (-2)^2 - 4(3)(-5)",
+            "so the answer is 12(4)",
+            "2(3)",
+        ] {
+            assert!(
+                ToolCall::parse(arithmetic).is_none(),
+                "arithmetic was read as a call: {arithmetic:?} -> {:?}",
+                ToolCall::parse(arithmetic)
+            );
+        }
+
+        // AND THE HALF THAT MUST NOT REGRESS. A name may CONTAIN digits — a
+        // bridged server offering `serverim_islem_02` is ordinary — it just may
+        // not start with one.
+        let call = ToolCall::parse(r#"web_search({"query":"x"})"#).expect("a real call");
+        assert_eq!(call.name, "web_search");
+        let numbered = ToolCall::parse(r#"islem_02({"a":1})"#).expect("digits inside a name");
+        assert_eq!(numbered.name, "islem_02");
     }
 
     #[test]
