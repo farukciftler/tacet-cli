@@ -138,12 +138,41 @@ fn every_declared_choice_is_enforced_by_the_grammar() {
 }
 
 /// THE ONE THAT PAID FOR THE FILE, pinned by name so a revert is loud.
+///
+/// `calendar` IS macOS-ONLY — it speaks to Calendar/Reminders through
+/// `osascript`, and `production_catalog` registers it behind
+/// `#[cfg(target_os = "macos")]`. This test called `.expect("calendar is a
+/// built-in")` and went red on Linux and Windows for a reason that is not a
+/// defect (CI #110). The repository already had that trap written down, in the
+/// `HOST_CONDITIONAL` note in `main.rs`, and it caught me anyway.
+///
+/// THE FIX IS NOT `#[cfg(target_os = "macos")]` ON THE TEST, and not an early
+/// return either: both turn "not here" into "not tested" with nothing saying so.
+/// The platform rule is asserted FIRST, in both directions — present on macOS,
+/// absent everywhere else — so a registration that goes missing on a Mac fails
+/// here, and one that appears where it cannot work fails here too. Only then
+/// does the closed-set claim run, on the platform that has the tool.
 #[test]
 fn calendar_kind_is_a_closed_set() {
     let store = std::sync::Arc::new(tacet_tools::data_store::SharedStore::new());
     let memory = tacet_tools::memory::SharedMemory::in_memory();
     let (catalog, _, _) = tacet_tools::catalog::production_catalog(&store, &memory, Some(0));
-    let calendar = catalog.find("calendar").expect("calendar is a built-in");
+
+    let found = catalog.find("calendar");
+    let expected = cfg!(target_os = "macos");
+    assert_eq!(
+        found.is_some(),
+        expected,
+        "`calendar` is registered behind `#[cfg(target_os = \"macos\")]`, so it \
+         should be {} on this platform and it is {}",
+        if expected { "present" } else { "absent" },
+        if found.is_some() { "present" } else { "absent" }
+    );
+    let Some(calendar) = found else {
+        // Not a skip: the assertion above is this platform's whole claim about
+        // `calendar`, and it just ran.
+        return;
+    };
     let schema = calendar.schema();
     let kind = schema
         .fields()
