@@ -17,7 +17,13 @@ be added with an integer accumulator.
 import json, os, sys, math, random, struct
 import numpy as np
 
-BUCKETS = int(sys.argv[1]) if len(sys.argv) > 1 else 4096
+# ARGV IS READ ONLY WHEN THIS FILE IS THE PROGRAM. It was read on import too,
+# which meant every module that does `from train_slots import HEADS` inherited
+# this script's command line: `python3 export_gate.py <path>` died with
+# `invalid literal for int(): '<path>'` before it reached a single line of its
+# own. Nothing documents that argument, so every documented invocation worked
+# and the crash sat there unmet.
+BUCKETS = int(sys.argv[1]) if __name__ == "__main__" and len(sys.argv) > 1 else 4096
 NGRAMS = (3, 4, 5)
 
 HEADS = {

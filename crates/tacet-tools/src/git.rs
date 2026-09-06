@@ -532,7 +532,8 @@ impl Tool for GitTool {
     /// message-side list, so this tool only ever scores under the General profile
     /// ("summarize", "list", "find"...). With the first draft — "'status' = which
     /// files changed ... wants a commit message written" — the eval case
-    /// `git-commit-message` FELL OFF the budget of 8 and the model never saw the
+    /// `git-commit-message` FELL OFF the budget (8 then, `MAX_TOOLS` now) and the
+    /// model never saw the
     /// tool. The verbs were changed to the ones the General profile actually
     /// looks for ("lists", "write"); they are the natural words for what the tool
     /// does, so nothing was invented to game the score. Anyone rewording this

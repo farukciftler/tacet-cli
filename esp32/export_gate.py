@@ -1,9 +1,16 @@
 """Export just the `tool` head, for the router to embed.
 
 THE ROUTER DOES NOT NEED THE SLOTS. It needs to know whether a message is a
-request one of these two tools answers, and which — three classes. At 2048
-buckets that is 6 KiB, against 46 KiB for all six heads, and the measured cost
-is two cases of 131 against the 4096-bucket model.
+request one of these two tools answers, and which — three classes.
+
+WHAT SHIPS IS 16384 BUCKETS, 48 KiB — `train_slots.py 16384 && export_gate.py`,
+which reproduces `crates/tacet-tools/src/slot_gate.bin` byte for byte. This
+paragraph used to describe 2048 buckets at 6 KiB "against 46 KiB for all six
+heads", which was the FIRST version of the gate and is not what is in the tree:
+that one scored 117 of 131 on the task cases and was rejected, because it was
+trained without the other tools' work as negatives and called 38% of the other
+suites' messages an extraction request. The shipped one scores 107 on the same
+cases and does not. Both numbers are in `esp32/README.md` with the reason.
 
 The file is `<u32 buckets><u32 classes>` then the int8 weights, row-major by
 bucket. `slot_gate.rs` reads exactly that and nothing else.

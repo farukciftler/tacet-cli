@@ -1,4 +1,4 @@
-//! A 6 KiB learned answer to "is this a request one of the extraction tools
+//! A 48 KiB learned answer to "is this a request one of the extraction tools
 //! serves, and which one".
 //!
 //! WHY THIS EXISTS AND THE TRIGGER LIST DOES NOT SUFFICE. `IntentProfile`'s
@@ -13,7 +13,17 @@
 //! MEASURED, on the 131 human-written cases in `benchmarks/tasks/`, of which 95
 //! were written after this model was trained and none were used to train it:
 //! the trigger list reaches the right tool on 87 of the 105 that expect one;
-//! this picks it on 117 of 131. It is an easier problem — three classes against
+//! this picks it on 107 of 131.
+//!
+//! THAT NUMBER WAS 117 HERE, AND 117 IS A DIFFERENT MODEL'S SCORE — the first
+//! version of this gate, 2048 buckets, trained WITHOUT the other tools' work as
+//! negatives. That version is the one the commit that shipped this file called
+//! worse than useless: it labelled 38% of the other suites' 709 messages an
+//! extraction request and cost fourteen top-three positions. The blob beside
+//! this file is 16384 buckets WITH those negatives, and it scores 107 on this
+//! set — ten fewer, for the reason the test set cannot show. Re-derived and
+//! reproduced byte for byte on 6 Sep 2026 by
+//! `esp32/train_slots.py 16384 && esp32/export_gate.py`. It is an easier problem — three classes against
 //! the router's nine slots out of forty-seven tools — so it is used to RAISE the
 //! Extract profile's score, never to overrule the rest of the router.
 //!

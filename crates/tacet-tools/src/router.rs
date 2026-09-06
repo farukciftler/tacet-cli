@@ -1,7 +1,9 @@
 //! Router — the per-session tool budget.
 //!
-//! DECISION (inherited by the Swift side): AT MOST 8 tools are shown to the model
-//! in a session. The reason is measurement: a small model cannot pick the right
+//! DECISION (inherited by the Swift side): AT MOST `MAX_TOOLS` tools are shown
+//! to the model in a session — 8 when this line was written, 9 since, and the
+//! constant is the only place the number lives. The reason is measurement: a
+//! small model cannot pick the right
 //! one out of 20 tools; selection error grows fast with the tool count. As the
 //! catalog grows, the fix is not "push the model harder" but give it fewer
 //! options. The user does not see the selection — it is derived silently from the
@@ -1490,7 +1492,7 @@ pub fn score_intent(message: &str) -> IntentScores {
     let mut scores: Vec<(IntentProfile, usize)> = scores;
     let matched_by_trigger = scores.iter().any(|(_, total)| *total > 0);
 
-    // THE LEARNED HALF, AND IT ONLY ADDS. `slot_gate` is 6 KiB of int8 that
+    // THE LEARNED HALF, AND IT ONLY ADDS. `slot_gate` is 48 KiB of int8 that
     // answers "is this a request for one of the two extraction tools" where the
     // trigger list above cannot: 58 of 105 benchmark requests reach neither
     // tool by substring, and the ones carrying no place noun at all cannot be
@@ -2206,7 +2208,7 @@ mod tests {
     }
 
     #[test]
-    fn at_most_eight_tools_are_returned() {
+    fn no_more_than_max_tools_are_returned() {
         let c = catalog();
         assert_eq!(c.tools().len(), 10);
         let selection = Router::new().select("prepare a document for me", &c);
@@ -2705,7 +2707,7 @@ mod tests {
     fn the_budget_can_be_narrowed_but_not_exceeded() {
         let c = catalog();
         assert_eq!(Router::new().max(3).select("document", &c).len(), 3);
-        // Even if 50 is asked for, the cap is 8.
+        // Even if 50 is asked for, `MAX_TOOLS` is the cap.
         assert_eq!(
             Router::new().max(50).select("document", &c).len(),
             MAX_TOOLS

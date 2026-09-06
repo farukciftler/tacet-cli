@@ -310,7 +310,8 @@ pub fn production_catalog_gated(
     // the same rule as the order note above: it is never the right answer to a
     // message that carries no hint at all ("what is 12% of 40" does not want a
     // repository). Placed earlier it would push `run_code`/`write_code` off the
-    // budget of 8, and that regression was measured once already. It climbs when
+    // budget (8 at the time of that measurement, `MAX_TOOLS` since), and the
+    // regression was measured once already. It climbs when
     // the message earns it: "summarize my changes" scores under the General
     // profile and the tool's name and description carry that profile's hints.
     //

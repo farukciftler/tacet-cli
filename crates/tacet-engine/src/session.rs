@@ -47,11 +47,24 @@ pub const MAX_TURNS: usize = 4;
 /// Lesson drawn: a model of this size CANNOT SEPARATE AN ABSTRACT PATTERN FROM A
 /// CONCRETE EXAMPLE; every `xxx(...)` visible in the prompt is a copy candidate
 /// — placeholder or real tool alike — and so is every UPPERCASE word. That is
-/// why the instructions no longer carry any call example: the shape is
-/// described in words only. The gap the example left is already filled by the
-/// `<tools>` list — since the tool description moved to the short signature form
-/// (`calculate(expression: text, digits?: integer)`) the list itself shows the
-/// call shape, and without carrying a concrete ARGUMENT VALUE to copy. The call
+/// why the placeholder shapes were taken out and the instructions describe the
+/// form in words.
+///
+/// ONE CONCRETE EXAMPLE STAYED, and this paragraph used to say otherwise —
+/// "the instructions no longer carry any call example" while `SYSTEM_INSTRUCTIONS`
+/// forty lines below has carried `Example: calculate({"expression":"12*8"})`
+/// since the first commit. The decision that governs is in `lib.rs`
+/// (`the_system_instructions_contain_no_placeholder_tool_name`, which asserts
+/// both halves): removing that one example
+/// broke Qwen3-4B, so it must stay. Two live assertions already stop anyone
+/// acting on the old sentence, so nothing was ever at risk — but a comment that
+/// contradicts the code four screens away is how a reviewer loses trust in every
+/// other comment on the page.
+///
+/// The `<tools>` list carries the rest — since the tool description moved to the
+/// short signature form (`calculate(expression: text, digits?: integer)`) the
+/// list itself shows the call shape, and without carrying a concrete ARGUMENT
+/// VALUE to copy. The call
 /// is protected by two defences (grammar + catalog gate), but the prompt should
 /// push the model to the right place from the start — a wasted turn is a cost
 /// too.

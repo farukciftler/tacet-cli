@@ -15,7 +15,7 @@ Other good places to start:
 
 ## Four things that will save you a rewrite
 
-**1. Dependencies are architectural decisions, not conveniences.** The full list is `serde`, `serde_json`, `thiserror`, `clap`, `crossterm`, `ureq`, plus `candle` behind an off-by-default feature. Zip, deflate, CRC32, OOXML and the MCP client are written by hand because being able to read the whole dependency graph is part of what this tool offers. If you need a crate, say so in the PR and explain what it buys — the answer is not automatically no, but it is a conversation, and the reason goes in a comment at the top of the manifest.
+**1. Dependencies are architectural decisions, not conveniences.** The direct list is `serde`, `serde_json`, `thiserror`, `clap`, `crossterm` and `ureq`; behind the off-by-default `candle` feature, `candle-core`, `candle-transformers` and `tokenizers`. Nine, not seven — and `tokenizers` pulls `onig_sys`, so that feature is a second C build on top of `ring`'s. Zip, deflate, CRC32, OOXML and the MCP client are written by hand because being able to read the whole dependency graph is part of what this tool offers. If you need a crate, say so in the PR and explain what it buys — the answer is not automatically no, but it is a conversation, and the reason goes in a comment at the top of the manifest.
 
 **2. Only two crates may touch the network.** `tacet-web` and `tacet-mcp`. The HTTP dependency appears in exactly those two manifests, which means anyone can audit the privacy claim with `grep`. If your feature needs the network, it calls one of those two — it does not open a socket itself.
 
@@ -79,12 +79,12 @@ CI runs all of it on macOS, Linux and Windows. Neither of these loads weights or
 |---|---|---|---|
 | `eval` | Tacet's LOGIC, on a mock engine | milliseconds | yes |
 | `eval --routing` | which tools the ROUTER puts in the prompt | milliseconds | yes |
-| `eval --tool-selection --model <name>` | the MODEL's choice, on real weights | ~20 minutes | no |
+| `eval --tool-selection --model <name>` | the MODEL's choice, on real weights | ~44 min on Metal (~6 min on a 3090) | no |
 
 Reach for `--routing` first when a tool "stops being called". The router shows the
 model at most nine tools out of the catalog, and **a tool that is not in those
 nine cannot be called however well the model reasons** — so a routing defect
-looks exactly like a model regression, arrives twenty minutes later, and gets
+looks exactly like a model regression, arrives three quarters of an hour later, and gets
 fixed in the wrong place. `--routing` answers it in milliseconds and prints the
 rank the expected tool landed at. `tacet why "<message>"` explains one message
 in the same terms.
@@ -111,7 +111,11 @@ bootstrap interval, and states a verdict. It works on any of the three reports.
 ### The model measurement is run by a human, on purpose
 
 `eval --tool-selection` needs real weights (a 2.5 GB GGUF, `--features metal` on
-a Mac or `--features candle` elsewhere) and about twenty minutes. **It does not
+a Mac or `--features candle` elsewhere) and about three quarters of an hour: the
+measured figure on Metal is 44 minutes for both languages, because
+`selection_suite()` runs both by default. `--turkish` runs one of them. This said
+"about twenty minutes" in two places while the README measured 44 for the same
+command. **It does not
 gate PRs and it is not automated in CI**, and that is a decision rather than a
 gap. On a GitHub-hosted runner the same suite would take hours of 2-vCPU CPU
 inference, would evict the build cache every PR depends on, and — worst — would

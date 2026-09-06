@@ -1,5 +1,17 @@
 # Built here, not shipped: the weights are 92 KiB of int8 that `train_slots.py`
-# reproduces in about a minute, and a binary blob in review is a blob nobody reads.
+# reproduces in 5.7 s (measured, M-series, 6 Sep 2026 — this said "about a
+# minute", which was never measured), and a binary blob in review is a blob
+# nobody reads.
+#
+# THE FULL PIPELINE, in order, because two of these files are inputs to the next:
+#   python3 extract_msgs.py > msgs.txt      # the 131 benchmark messages
+#   python3 gen_slots.py 1200 train.jsonl   # 2,306 synthetic rows
+#   python3 train_slots.py                  # 4096 buckets -> slots.bin (92 KiB)
+#   cc -O2 -o slots slots.c && ./slots < msgs.txt
+#   python3 budget.py                       # the numbers on the README
+# The ROUTER's 48 KiB gate is a different configuration of the same model:
+#   python3 train_slots.py 16384 && python3 export_gate.py
+# which reproduces crates/tacet-tools/src/slot_gate.bin byte for byte.
 slots.bin
 slots
 msgs.txt

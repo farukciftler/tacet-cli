@@ -226,8 +226,9 @@ mod tests {
         // Nothing must be written after the anchor. In particular, DO NOT
         // PRE-FILL `<think></think>`: it was tried, it turns thinking off but
         // breaks the tool call format (Qwen3-4B measurement 7/10 -> 2/10). The
-        // reasoning is in the anchor comment in `prompt.rs`. This test locks that
-        // reversal in.
+        // reasoning is in the module header of `thinking.rs`, which is where the
+        // record actually lives — this pointed at `prompt.rs`, where the word
+        // `think` does not appear. This test locks the reversal in.
         assert!(m.ends_with("<|im_start|>assistant\n"), "\n{m}");
     }
 

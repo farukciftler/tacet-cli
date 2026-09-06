@@ -30,7 +30,7 @@
 //!
 //! THE FLAG CANNOT VARY BY ACTION, so a WRITE taints too. `Tool::taints_session`
 //! takes no arguments — it is asked of the tool, not of the call — and splitting
-//! read and write into two catalog entries would spend two of the router's eight
+//! read and write into two catalog entries would spend two of the router's nine
 //! slots on one capability (the reasoning `git.rs` writes down for its three
 //! actions). Tainting on write is the conservative side of that trade, and it is
 //! not absurd: a write puts model-composed text where every other application on

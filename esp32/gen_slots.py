@@ -1,8 +1,9 @@
 """Labelled slot examples, TR + EN, from templates.
 
-THE TEST SET IS NOT GENERATED HERE. It is the 36 human-written cases in
-benchmarks/tasks/, so the phrasings this trains on and the phrasings it is
-scored on come from different hands. A generator that also wrote the test would
+THE TEST SET IS NOT GENERATED HERE. It is the 131 human-written cases in
+benchmarks/tasks/ (it was 36 when this was written; `c14645e` tripled them and
+this line did not follow), so the phrasings this trains on and the phrasings it
+is scored on come from different hands. A generator that also wrote the test would
 measure how well a linear model memorises its own templates, which is a number
 nobody needs.
 

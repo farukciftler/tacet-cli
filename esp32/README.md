@@ -1,7 +1,7 @@
 # A slot classifier that fits in an ESP32-S3
 
 92 KiB of int8 beats a distilled 135M model at filling `search_filter`'s and
-`message_intent`'s closed fields, on the same held-out cases, using 4,380
+`message_intent`'s closed fields, on the same held-out cases, using 4,266
 integer operations per message.
 
 ## Why a classifier and not a model
@@ -44,20 +44,36 @@ cannot add.
 
 ## Measured
 
-Trained on 1,894 generated examples, scored on the **131 human-written cases** in
-`benchmarks/tasks/`. The generator's templates are deliberately not the benchmark
-sentences, so this is generalisation to another hand's phrasing, not
-memorisation — and **95 of those cases were written after this model was
-trained**, without looking at what it gets wrong.
+Scored on the **131 human-written cases** in `benchmarks/tasks/`. The generator's
+templates are deliberately not the benchmark sentences, so this is generalisation
+to another hand's phrasing, not memorisation — and **95 of those cases were
+written after this model was trained**, without looking at what it gets wrong.
 
-| head | correct | size |
-|---|---|---|
-| `gate` | 124/131 | 8 KiB |
-| `tool` | 119/131 | 12 KiB |
-| `audience` | 123/131 | 20 KiB |
-| `price` | 118/131 | 16 KiB |
-| `when` | 123/131 | 16 KiB |
-| `intent` | 116/131 | 20 KiB |
+Two columns, because the training set changed and the difference is the
+interesting part. The **1,894** column is the generator as it was when this page
+was first written. The **2,306** column is the generator today: it also produces
+the *other tools'* work as negatives — read a file, add two numbers, check a
+repository — which is what `gen_slots.py` calls `other_examples`.
+
+| head | 1,894 rows | 2,306 rows | size |
+|---|---|---|---|
+| `gate` | **124/131** | 111/131 | 8 KiB |
+| `tool` | **119/131** | 100/131 | 12 KiB |
+| `audience` | 123/131 | 123/131 | 20 KiB |
+| `price` | 118/131 | 117/131 | 16 KiB |
+| `when` | **123/131** | 120/131 | 16 KiB |
+| `intent` | **116/131** | 109/131 | 20 KiB |
+
+**The right-hand column is worse and it is the one that ships.** Both are
+reproducible — `OTHER=0 python3 gen_slots.py 1200 train.jsonl` gives the left,
+the default gives the right (measured 6 Sep 2026, M-series, both at 4096
+buckets). What the negatives buy is not on this test set at all: without them the
+`gate` head called **38% of the 709 messages** of the other suites — files,
+arithmetic, git, memory — an extraction request, and wiring that into the router
+cost fourteen top-three positions. This table is scored only on messages that
+ARE extraction work, so it can only see the price and never the thing bought.
+That is worth saying plainly rather than publishing the flattering column: a test
+set that cannot see a defect will always prefer the model that has it.
 
 For scale on the `tool` row: Tacet's own router reached these two tools on
 **87 of the 105** cases that expect one, using a hand-written list of substring
@@ -66,7 +82,8 @@ model, wired in as an additional signal and measured to cost the routing eval
 nothing. See below.
 
 Against the distilled 135M from [training/](../training/), on the same held-out
-task cases it was scored on:
+task cases it was scored on — **measured 5 Sep 2026 against the 1,894-row model
+and not re-derived since**, so read it beside the left-hand column above:
 
 | | SmolLM2-135M | this, 92 KiB |
 |---|---|---|
@@ -79,19 +96,43 @@ Nine cases is a small denominator, and the comparison is only about the closed
 fields — the 135M is doing a harder job, end to end, including the open-text
 arguments this cannot touch.
 
-`slots.c` counts its own operations: **4,380 per message** at a 50-byte mean
-(1,127 hash, 3,253 accumulate). The device figures below are that number divided
+`slots.c` counts its own operations: **4,266 per message** at a 48.9-byte mean
+(1,098 hash, 3,168 accumulate). The device figures below are that number divided
 by documented ESP32-S3 characteristics — **arithmetic, not silicon**. Nothing
 here has been run on a board.
 
 | cycles/op | per message at 240 MHz | |
 |---|---|---|
-| 1.0 | 18 µs | optimistic: everything single-cycle |
-| 2.5 | 46 µs | likely: int8 load and add, no SIMD |
-| 5.0 | 91 µs | pessimistic: loop overhead and misses |
+| 1.0 | 17.8 µs | optimistic: everything single-cycle |
+| 2.5 | 44.4 µs | likely: int8 load and add, no SIMD |
+| 5.0 | 88.9 µs | pessimistic: loop overhead and misses |
 
-Bucket count is the dial: 1024 buckets is 23 KiB, 4096 is 92 KiB, 8192 is
-184 KiB.
+**These numbers replace 4,380 / 50 bytes / 18-46-91 µs, and the correction is the
+kind this repository has a rule against needing.** Those were the numbers of the
+**36**-message benchmark. `c14645e` grew it to 131 and re-derived the accuracy
+tables, which still reproduce exactly — but never re-ran the op count, so a
+measured figure kept a date and a decimal point while describing a set that no
+longer existed. Worse, `budget.py` PRINTED "on the 36 benchmark messages" while
+reading 131, so re-running the script to check this page gave a different answer
+with nothing to explain it. It prints the count it actually read now.
+
+Bucket count is the dial, and it costs accuracy as well as flash. Measured on the
+shipping (2,306-row) training set, 6 Sep 2026 — the accuracy column is the `tool`
+head, so the size beside it is that head's, and the last column is what all six
+heads come to:
+
+| buckets | `tool` head | `tool` correct | all six heads |
+|---|---|---|---|
+| 1024 | 3 KiB | — | 23 KiB |
+| 2048 | 6 KiB | 88/131 | 46 KiB |
+| 4096 | 12 KiB | 100/131 | **92 KiB** |
+| 8192 | 24 KiB | 102/131 | 184 KiB |
+| 16384 | **48 KiB** | 107/131 | 368 KiB |
+
+The router does not embed all six heads: it takes the `tool` head alone at 16384
+buckets, which is the **48 KiB** blob at `crates/tacet-tools/src/slot_gate.bin`.
+`python3 train_slots.py 16384 && python3 export_gate.py` reproduces that file
+byte for byte from this directory (verified 6 Sep 2026).
 
 ## The trainer and the device must compute the same thing
 

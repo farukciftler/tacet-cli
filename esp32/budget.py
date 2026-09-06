@@ -16,19 +16,24 @@ PSRAM_BW   = 40e6            # octal PSRAM, conservative sustained bytes/s
 def measure_ops():
     out = subprocess.run(["./slots", "500"], stdin=open("msgs.txt"),
                          capture_output=True, text=True).stdout
-    ops = size = mean = None
+    ops = size = mean = count = None
     for line in out.splitlines():
         if "ops per inference" in line:
             ops = float(line.split("=")[-1])
         if "weights " in line and "bytes" in line:
             size = int(line.split()[1])
         if "mean" in line:
+            # "  messages           131, mean 48.9 bytes"
+            count = int(line.split()[1].rstrip(","))
             mean = float(line.split("mean")[1].split()[0])
-    return ops, size, mean
+    return ops, size, mean, count
 
-ops, weights, mean_len = measure_ops()
+ops, weights, mean_len, count = measure_ops()
 
-print("MEASURED (by slots.c, on the 36 benchmark messages)")
+# THE COUNT COMES FROM THE RUN, NOT FROM A LITERAL. This line said "on the 36
+# benchmark messages" while reading 131 of them, so a reader who re-ran the
+# script to check the page got a different number with nothing to explain it.
+print(f"MEASURED (by slots.c, on the {count} benchmark messages)")
 print(f"  weights                {weights:,} bytes ({weights/1024:.1f} KiB), int8")
 print(f"  mean message           {mean_len:.0f} bytes")
 print(f"  ops per inference      {ops:,.0f}   (FNV hash + int8 accumulate)")

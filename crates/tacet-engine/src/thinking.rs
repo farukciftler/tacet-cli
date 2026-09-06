@@ -10,9 +10,13 @@
 //! this comment used to claim otherwise. It described a first layer in
 //! `prompt.rs` that pre-wrote an empty `<think></think>` pair on the generation
 //! anchor (Qwen3's official `enable_thinking=false` path). That layer was TRIED
-//! AND REVERTED — see the measurement record at the end of `Prompt::chatml_text`:
-//! it really did turn thinking off and it BROKE THE TOOL CALL FORMAT with it
-//! (Qwen3-4B 7/10 -> 2/10). Anyone reading this file must not go on believing
+//! AND REVERTED: it really did turn thinking off and it BROKE THE TOOL CALL
+//! FORMAT with it (Qwen3-4B 7/10 -> 2/10). The measurement is stated here and
+//! locked in by `the_chatml_template_separates_roles_with_fences` in `lib.rs`; this line
+//! used to point at "the measurement record at the end of
+//! `Prompt::chatml_text`", and `prompt.rs` does not contain the word `think`
+//! anywhere — a reference that costs a reader a file search and gives them
+//! nothing. Anyone reading this file must not go on believing
 //! there is a cheaper layer upstream catching most of the cases.
 //!
 //! What is left upstream is the SOFT SWITCH (`/think` / `/no_think` appended to

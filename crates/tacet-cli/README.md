@@ -56,9 +56,14 @@ The sentence used to read "invalid tool calls are impossible", and measuring it 
 
 **Bulk data never enters the model.** A tool that reads a 40 000-row spreadsheet puts the data in a store and hands the model a short summary plus a reference. The next tool that needs it fetches it by reference. The context window is a budget, not a bottleneck.
 
-**Almost no dependencies.** OOXML (`.xlsx`, `.docx`) generation, zip, deflate and CRC32 are written by hand. So is the MCP client — JSON-RPC 2.0 over Streamable HTTP with SSE, in ~430 lines with a single `use std`. The full dependency list is `serde`, `serde_json`, `thiserror`, `clap`, `crossterm`, `ureq`, plus `candle` behind an off-by-default feature. Adding to that list is an architectural decision documented at the top of the file, not a convenience.
+**Almost no dependencies.** OOXML (`.xlsx`, `.docx`) generation, zip, deflate and CRC32 are written by hand. So is the MCP client — JSON-RPC 2.0 over Streamable HTTP with SSE, OAuth, elicitation and task polling, in **3,342 non-test lines across twelve files** (4,667 with the tests; 11 `use std` lines in 6 of them; re-derived 6 Sep 2026). That sentence said "~430 lines with a single `use std`" for a long time: true at the first commit, and never re-derived while the protocol grew. The claim it is here to support survives the correction — there is no client library underneath, and 3,342 lines of plain Rust is still a thing one person can read — but a number in a paragraph about auditability has to be the real one.
 
-One honest note on what "the full list" means: those are the DIRECT dependencies, and they are the ones a reader can audit. Transitively, `ureq` brings `rustls`, which brings `ring` — and `ring` compiles C. Nothing here calls it and it changes no claim about what the program does, but it is what sets the build prerequisite on Windows: not the MSVC linker it looks like, but a C compiler, however you get one. Measured, with the three routes and their sizes, in [CONTRIBUTING](https://github.com/farukciftler/tacet-cli/blob/main/CONTRIBUTING.md).
+The direct dependency list is `serde`, `serde_json`, `thiserror`, `clap`, `crossterm` and `ureq`. Behind the off-by-default `candle` feature there are three more: `candle-core`, `candle-transformers` and `tokenizers`. Adding to that list is an architectural decision documented at the top of the file, not a convenience.
+
+One honest note on what "the full list" means: those are the DIRECT dependencies, and they are the ones a reader can audit. Two of them pull a C build transitively, and both are worth naming rather than glossing:
+
+* `ureq` brings `rustls`, which brings `ring`, and `ring` compiles C. Nothing here calls it and it changes no claim about what the program does, but it is what sets the build prerequisite on Windows: not the MSVC linker it looks like, but a C compiler, however you get one. Measured, with the three routes and their sizes, in [CONTRIBUTING](https://github.com/farukciftler/tacet-cli/blob/main/CONTRIBUTING.md).
+* `tokenizers` brings `onig` → `onig_sys` → `cc`, and `esaxx-rs` alongside it — a **second** C build, on the `candle` feature. This paragraph disclosed the first and not the second, which made the off-by-default feature look cheaper than it is. It is off by default and the CLI runs without it; if you build with it, you are building C.
 
 ## Install
 
@@ -280,7 +285,7 @@ fingerprint, so the next run can be compared against it rather than against a
 memory of how things used to go:
 
 ```bash
-tacet eval --tool-selection --model qwen3-4b     # both languages, ~40 min
+tacet eval --tool-selection --model qwen3-4b     # both languages, ~44 min
 tacet eval --tool-selection --model qwen3-4b --turkish   # Turkish only
 ```
 
@@ -295,8 +300,17 @@ Qwen3-4B-Instruct-2507 Q4_K_M on Metal, 184 cases in both languages, 44 min —
 the weights `tacet models download qwen3-4b` fetches, pinned by digest, with the
 fingerprint recorded in the baseline.
 
+**This block is the Metal run; the model table further down is the same suite on
+a rented RTX 3090.** They agree on tool selection, irrelevance and the step chain
+and differ on the answer axis (41/47 here, 43/47 there), which is why the two
+`/47`s on this page are not a contradiction. Wall time is the one number neither
+can prove: `wall_ms` is `0` in the checked-in baseline, so both the 44 min and
+the 6.4 min are hand-recorded — and this paragraph said 6.2 while the table said
+6.4 for the same model, card and suite. The next baseline written should populate
+`wall_ms`, which is what makes a timing re-derivable instead of remembered.
+
 **Six minutes on a GPU — and the model matters more than the card.** The same
-184 cases on a rented RTX 3090: 6.2 minutes with these weights, and 53.7 minutes
+184 cases on a rented RTX 3090: 6.4 minutes with these weights, and 53.7 minutes
 with `Qwen/Qwen3-4B`, the *other* model of the same name and size, which spends a
 median of 237 generated tokens per turn against 19. Before reaching for a bigger
 card, check which file is loaded. And when you do reach for one: running several
@@ -475,6 +489,7 @@ noted. **Score is out of 100** with the weights above — irrelevance 0.40, tool
 | model | score | tool selection | irrelevance gate | step chain | answer | wall |
 |---|---|---|---|---|---|---|
 | **Qwen3-4B-Instruct-2507** | **91.1** | 133/160 · 83.1% | **24/24** | 162/190 | 43/47 | 6.4 min |
+
 | Qwen3-8B | 81.3 | 128/160 · 80.0% | **20/24** | 153/190 | 37/47 | 54.6 min |
 | Qwen3-0.6B (Q8_0) | 64.0 | 52/160 · 32.5% | **24/24** | 79/190 | 28/47 | 21.3 min |
 | FunctionGemma-270M (F16) | 47.4 | **0/160** | **24/24** | 24/190 | 23/47 | 28.6 min |
@@ -638,10 +653,15 @@ Trained on generated examples, scored on the 131 human-written cases in
 `benchmarks/tasks/` — 95 of them written after the model was trained. Against the
 distilled 135M, on the held-out cases it was scored on:
 
+The classifier column is the 1,894-row training set, measured 5 Sep 2026; the
+generator has since grown the other tools' work as negatives, which costs
+accuracy on these cases and buys a false-positive rate the cases cannot see. Both
+columns, and the reason, are in [esp32/README.md](https://github.com/farukciftler/tacet-cli/blob/main/esp32/README.md).
+
 | | SmolLM2-135M | classifier |
 |---|---|---|
 | size | 528 MiB resident | **92 KiB** |
-| work per message | ~200 tokens generated | **4,380 integer ops** |
+| work per message | ~200 tokens generated | **4,266 integer ops** |
 | `search_filter` tool | 4/5 | **5/5** |
 | `search_filter` slots | 1/5 | **15/15** |
 | `message_intent` intent | 0/4 | **3/4** |
@@ -650,7 +670,7 @@ distilled 135M, on the held-out cases it was scored on:
 step reads every weight once, so `tokens/s <= bandwidth / size`, and that board's
 PSRAM sustains ~40 MB/s: a 135M model at Q4 is 68 MB and cannot beat 0.59 tok/s
 even if it fitted, which it does not. At 92 KiB the weights are 18% of the
-*internal* SRAM and the bandwidth wall never applies — 4,380 ops is 46 µs at
+*internal* SRAM and the bandwidth wall never applies — 4,266 ops is 44.4 µs at
 240 MHz, on the middle of three stated cycle assumptions.
 
 **And 48 KiB of it now ships inside the router.** The trigger list reaches these
@@ -689,8 +709,19 @@ serve):
 | tool | 133/160 | 31/34 | 28/30 | 29/33 | 28/34 | 26/32 | 23/33 |
 | irrelevance | 24/24 | 13/13 | 13/13 | 13/13 | 13/13 | 13/13 | 13/13 |
 
-**The irrelevance gate holds in all seven** — 91 of 91 across the six cores. What
-moves is tool selection, and Turkish is now the weakest rather than the
+**The irrelevance gate holds in all seven** — **78 of 78** across the six cores,
+plus 24 of 24 in the `en` column, 102 in total. It said "91 of 91 across the six
+cores", which was never derivable from anything: the six cores hold thirteen
+irrelevance cases each.
+
+**And the `en` column is not a core.** There is no `core-en.json`. Those figures
+are the 184-case English+Turkish baseline (`crates/tacet-eval/baselines/qwen3-4b-both.json`)
+— a different instrument, four times larger, 66 of whose cases are Turkish. It
+sits in this table because it is the only English number there is, not because it
+is the seventh member of the set. Read the six cores across the row; read `en`
+against the tables higher up the page.
+
+What moves is tool selection, and Turkish is now the weakest rather than the
 strongest, which is the reverse of what the English/Turkish suite shows. The two
 are not the same cases: these were written natively per language, and the
 comparison to make is across this row, not against the older suite.

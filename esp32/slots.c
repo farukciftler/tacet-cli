@@ -169,7 +169,7 @@ int main(int argc, char **argv)
                 /* THE ACCUMULATORS, NOT THE ARGMAX. Dumping only the winning
                  * class made the cross-check unable to fail: breaking the fold
                  * so that `ı` stops folding to `i` changes the features of every
-                 * Turkish message and did not flip a single argmax on the 36
+                 * Turkish message and did not flip a single argmax on the 131
                  * benchmark cases. A guard that survives its own defect is worth
                  * nothing, so what is compared is every accumulator — where a
                  * one-letter difference cannot hide. */
