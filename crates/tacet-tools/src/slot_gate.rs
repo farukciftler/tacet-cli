@@ -41,13 +41,19 @@ const CLASSES: [&str; 3] = ["none", "search_filter", "message_intent"];
 /// letters onto their bare forms, drop everything else that is not ASCII,
 /// collapse runs of whitespace, and pad with a space at each end.
 ///
+/// PUBLIC SO IT CAN BE CROSS-CHECKED. `esp32/check.py` compares the trainer
+/// against the C on the microcontroller; this one — the fold every Tacet user
+/// actually runs — was compared against nothing but seven fixed strings, under
+/// a test named `the_fold_matches_the_trainer` that never consulted the trainer.
+/// It is exported so all three implementations can be driven over one corpus.
+///
 /// THE TWO SIDES MUST FOLD IDENTICALLY or the hashes address weights fitted to
 /// different n-grams, and the only symptom is an accuracy that is merely worse.
 /// Two bugs came out of that in the Python and C pair: `İ` lowercases to TWO
 /// codepoints in Python, and reading every non-ASCII character as two bytes
 /// mistakes an em dash for a Turkish letter. Both are why this reads the UTF-8
 /// length from the lead byte and maps only the two-byte letters.
-fn fold(message: &str) -> String {
+pub fn fold(message: &str) -> String {
     let bytes = message.as_bytes();
     let mut out = String::with_capacity(bytes.len() + 2);
     out.push(' ');
@@ -90,14 +96,25 @@ fn fold(message: &str) -> String {
                 _ => continue,
             }
         };
-        // EVERY ASCII WHITESPACE, not just space and tab. Python's `str.split`
-        // breaks on `\n`, `\r`, `\v` and `\f` too, and keeping them as
-        // characters here fed the model n-grams it was never fitted to. It
-        // survived the cross-check because no benchmark message contains a
-        // newline — and `message_intent` exists to classify PASTED messages,
-        // where they are the rule. `is_ascii_whitespace` is not used: it omits
-        // `\v`, which `str.split` does break on.
-        if matches!(mapped, ' ' | '\t' | '\n' | '\r' | '\u{0b}' | '\u{0c}') {
+        // EVERY ASCII WHITESPACE THE TRAINER COLLAPSES, enumerated to match it
+        // exactly. `is_ascii_whitespace` is not used: it omits `\v`, and it
+        // omits the four ASCII separators `\x1c`-`\x1f` (file, group, record,
+        // unit) that `str.split` does break on — and that pasted EDI, CSV and
+        // SMS content carries. Stopping short of them gave the same n-gram
+        // COUNT with different bytes, which no length check can see and which
+        // was measured flipping an argmax.
+        if matches!(
+            mapped,
+            ' ' | '\t'
+                | '\n'
+                | '\r'
+                | '\u{0b}'
+                | '\u{0c}'
+                | '\u{1c}'
+                | '\u{1d}'
+                | '\u{1e}'
+                | '\u{1f}'
+        ) {
             if !space {
                 out.push(' ');
                 space = true;
@@ -203,10 +220,16 @@ mod tests {
         }
     }
 
-    /// The fold is the one thing shared with the C on the microcontroller, so
-    /// its rules are asserted rather than assumed.
+    /// A FEW FIXED SHAPES, and deliberately not a claim to match the trainer.
+    ///
+    /// This test used to be called `the_fold_matches_the_trainer` and never
+    /// consulted the trainer — it asserted seven strings someone had typed. The
+    /// comparison that earns that name is `esp32/check.py`, which now drives the
+    /// trainer, the C and THIS fold over one corpus and fails if any two
+    /// disagree. What is left here is a fast smoke test of the rules, so an
+    /// obvious break shows up in `cargo test` without a Python round trip.
     #[test]
-    fn the_fold_matches_the_trainer() {
+    fn the_fold_obeys_its_own_rules() {
         assert_eq!(fold("Çok İyi"), " cok iyi ");
         assert_eq!(fold("a  b\tc"), " a b c ");
         // A PASTED MESSAGE HAS NEWLINES IN IT, and this is the case that was

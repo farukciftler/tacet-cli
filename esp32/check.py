@@ -1,4 +1,4 @@
-"""The device and the trainer must compute the same thing.
+"""The trainer, the device and the SHIPPED RUST must compute the same thing.
 
 A hashed-feature model has no way of complaining when the two sides disagree:
 the C fold drops a letter the Python fold keeps, the n-grams differ, the buckets
@@ -9,7 +9,7 @@ the numbers the device would produce.
 """
 import json, os, subprocess, sys
 import numpy as np
-from train_slots import HEADS, BUCKETS, features, read_benchmark
+from train_slots import HEADS, BUCKETS, features, fold, read_benchmark
 import struct
 
 def load_bin(path="slots.bin"):
@@ -43,6 +43,15 @@ SHAPES = [
     "İYİ BAYRAMLAR, ĞÜŞÖÇ upper case",
     "an em — dash and an emoji 🙂 and a nbsp\u00a0here",
     "a",
+    # The four ASCII separators. `str.split()` breaks on them; a hand-written
+    # fold that stops at \f does not, and pasted EDI, CSV and SMS content really
+    # carries them. Same n-gram count, different bytes, different buckets.
+    "unit\x1fsep and record\x1esep",
+    "group\x1dsep and file\x1csep",
+    # U+212A KELVIN SIGN. Python's `str.lower()` maps it to an ASCII `k`, which
+    # survives the ASCII filter; C and Rust see three bytes they cannot fold and
+    # drop them whole. One codepoint, two feature vectors.
+    "temperature 300\u212a today",
 ]
 # An EMPTY message is tested in slot_gate.rs instead: it cannot survive a
 # line-oriented transport, and inventing a sentinel for it would test the
@@ -86,6 +95,55 @@ for row_i, r in enumerate(rows):
         d = [i for i, (a, b) in enumerate(zip(py_acc, c_acc)) if a != b]
         print(f"ACCUMULATORS: {r['text'][:44]!r} differ in {len(d)} of {NCLASS}")
 print(f"\n{len(rows)} messages, {mismatch} disagreements between the C and the trainer")
+
+# ---------------------------------------------------------------- the Rust
+# THE THIRD IMPLEMENTATION, and the one that ships. Until this block existed the
+# cross-check compared the trainer against the microcontroller and left the fold
+# every Tacet user runs to seven fixed strings — one of which asserted a value
+# the trainer does not produce, under a test named `the_fold_matches_the_trainer`.
+def rust_folds(messages):
+    out = subprocess.run(
+        ["cargo", "run", "-q", "-p", "tacet-tools", "--example", "fold_dump"],
+        cwd=os.path.dirname(os.path.abspath(__file__)) + "/..",
+        input="\n".join(escape(m) for m in messages) + "\n",
+        capture_output=True, text=True,
+    )
+    if out.returncode != 0:
+        print("could not run the Rust fold:\n" + out.stderr[-800:])
+        return None
+    return [unescape(l) for l in out.stdout.splitlines()]
+
+
+def unescape(s):
+    r = []
+    i = 0
+    while i < len(s):
+        if s[i] != "\\":
+            r.append(s[i]); i += 1; continue
+        n = s[i + 1] if i + 1 < len(s) else "\\"
+        if n == "x":
+            r.append(chr(int(s[i + 2:i + 4], 16))); i += 4
+        else:
+            r.append({"n": "\n", "r": "\r", "t": "\t", "v": "\v", "f": "\f",
+                      "\\": "\\"}.get(n, n)); i += 2
+    return "".join(r)
+
+
+rust = rust_folds(msgs)
+if rust is None:
+    mismatch += 1
+elif len(rust) != len(msgs):
+    print(f"the Rust fold returned {len(rust)} lines for {len(msgs)} messages")
+    mismatch += 1
+else:
+    rust_bad = 0
+    for m, got in zip(msgs, rust):
+        want = fold(m)
+        if got != want:
+            rust_bad += 1
+            print(f"RUST FOLD: {m[:44]!r}\n    trainer {want!r}\n    rust    {got!r}")
+    print(f"{len(msgs)} messages, {rust_bad} disagreements between the Rust and the trainer")
+    mismatch += rust_bad
 
 # And the accuracy, from the C side's own accumulators — over the BENCHMARK
 # cases only. The shapes above exercise the fold, they are not labelled data.

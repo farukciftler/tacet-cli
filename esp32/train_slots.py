@@ -38,20 +38,46 @@ HEADS = {
 UPPER = {"İ":"i","I":"i","Ğ":"g","Ü":"u","Ş":"s","Ö":"o","Ç":"c","Â":"a","Î":"i"}
 LOWER = {"ı":"i","ğ":"g","ü":"u","ş":"s","ö":"o","ç":"c","â":"a","î":"i"}
 
+# ASCII WHITESPACE, ENUMERATED, because `str.split()` is not a set a device can
+# implement. It also breaks on the four ASCII separators \x1c-\x1f (file, group,
+# record, unit) — which pasted EDI, CSV and SMS content really does carry —
+# where a hand-written C or Rust fold stops at \f. Same n-gram count, different
+# bytes, different buckets: invisible to a length check, visible only as a
+# slightly worse accuracy nobody can explain.
+SPACES = set(" \t\n\r\v\f\x1c\x1d\x1e\x1f")
+
 def fold(text):
     """Lowercase, and fold the Turkish letters the way the device does.
 
+    EXPLICIT ASCII LOWERCASING, not `str.lower()`. Python's is Unicode-aware:
+    it maps U+212A KELVIN SIGN to an ASCII `k`, which then survives the ASCII
+    filter — while C and Rust see three bytes they cannot fold and drop them
+    whole. One codepoint, two different feature vectors. Enumerating the
+    mapping is the only version a device can match.
+
     ANYTHING STILL NON-ASCII AFTER THE MAPPING IS DROPPED, because that is what
     a device that only decodes the two-byte Turkish letters does with an em dash
-    or an emoji. Keeping them here and dropping them there is a difference of a
-    few n-grams, which is invisible in the accuracy and fatal to the guarantee
-    that the two sides compute the same features.
+    or an emoji.
     """
-    t = "".join(UPPER.get(ch, ch) for ch in text).lower()
-    for a, b in LOWER.items():
-        t = t.replace(a, b)
-    t = "".join(ch for ch in t if ch.isascii())
-    return " " + " ".join(t.split()) + " "
+    out = []
+    space = True
+    out.append(" ")
+    for ch in text:
+        ch = UPPER.get(ch, LOWER.get(ch, ch))
+        if "A" <= ch <= "Z":
+            ch = chr(ord(ch) + 32)
+        if not ch.isascii():
+            continue
+        if ch in SPACES:
+            if not space:
+                out.append(" ")
+                space = True
+        else:
+            out.append(ch)
+            space = False
+    if not space:
+        out.append(" ")
+    return "".join(out)
 
 def features(text):
     """Bucket indices for one message. FNV-1a, so the C side is four lines."""

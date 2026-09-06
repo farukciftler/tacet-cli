@@ -65,11 +65,13 @@ static size_t fold(const uint8_t *in, size_t n, uint8_t *out)
             if (!m) continue;                            /* drop what we cannot fold */
         }
 
-        /* EVERY ASCII WHITESPACE. Python's str.split breaks on \n \r \v \f as
-         * well, and treating them as characters here feeds the model n-grams it
-         * was never fitted to. No benchmark message contains a newline, which is
-         * why the cross-check did not catch it. */
-        if (m == ' ' || m == '\t' || m == '\n' || m == '\r' || m == '\v' || m == '\f') {
+        /* EVERY ASCII WHITESPACE, INCLUDING THE FOUR SEPARATORS. Python's
+         * str.split also breaks on \x1c-\x1f (file, group, record, unit), which
+         * pasted EDI, CSV and SMS content really does carry. Stopping at \f gave
+         * the same n-gram COUNT and different bytes — invisible to a length
+         * check, and enough to flip an argmax. */
+        if (m == ' ' || m == '\t' || m == '\n' || m == '\r' || m == '\v' || m == '\f'
+            || m == 0x1c || m == 0x1d || m == 0x1e || m == 0x1f) {
             if (!space) { out[j++] = ' '; space = 1; }
         }
         else { out[j++] = m; space = 0; }
