@@ -40,7 +40,7 @@ use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tacet_engine::{EngineProvider, Prompt, SamplingSetting, TokenCounter, Turn, wait};
+use tacet_engine::{EngineProvider, Prompt, SamplingSetting, TokenCounter, Turn, WEB_NUDGE, wait};
 use tacet_eval::FakeSelector;
 use tacet_grammar::CallConstraint;
 use tacet_kernel::{
@@ -786,7 +786,7 @@ pub fn chat(run: ChatRun) -> ExitCode {
         // the SINGLE skill matching the message, into that turn's prompt behind a
         // `<guidance>` fence. Turn-distance repeat suppression via
         // `injection_state`: the same skill is not added again on every turn.
-        let mut guide = skill_store
+        let guide = skill_store
             .matching(&message, Some(&selected_names))
             .and_then(|s| {
                 if injection_state.is_needed(&s.name) {
@@ -804,14 +804,13 @@ pub fn chat(run: ChatRun) -> ExitCode {
         // a second turn — the small model simply does not reach for web_search
         // on its own. One guide sentence, only on turns whose dominant intent
         // is the web, fixes the reach without touching any other question.
-        if web_addon_open && addon::is_web_request(&message) {
-            const WEB_NUDGE: &str = "this question needs live information from the internet. \
-                 Call the web_search tool first; do not answer it from memory.";
-            guide = Some(match guide {
-                Some(g) => format!("{g}\n{WEB_NUDGE}"),
-                None => WEB_NUDGE.to_string(),
-            });
-        }
+        // IT IS A NOTE, NOT PART OF THE GUIDE, and the difference was deleting
+        // it. Appended to the guide string it went through `GUIDE_LIMIT`, and
+        // sitting at the end it was the first thing the cap took: seven of the
+        // eighteen shipped guides are long enough that guide + nudge crosses
+        // 960 characters, and the line-boundary cut then walks back far enough
+        // to take the guide's own closing envelope with it.
+        let note = (web_addon_open && addon::is_web_request(&message)).then_some(WEB_NUDGE);
 
         // MEMORY INJECTION (600 limit): the notes matching the message, in the
         // system block.
@@ -915,6 +914,9 @@ pub fn chat(run: ChatRun) -> ExitCode {
             }
             if let Some(g) = &guide {
                 prompt = prompt.with_guide(g);
+            }
+            if let Some(n) = note {
+                prompt = prompt.with_note(n);
             }
             if let Some(m) = &memory_text {
                 prompt = prompt.with_memory(m);

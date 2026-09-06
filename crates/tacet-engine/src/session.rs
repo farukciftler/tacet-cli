@@ -156,6 +156,20 @@ language, short and direct. If it does not answer, call the right tool from the 
 the same tool with the same arguments a second time. Do not repeat the tool call or its JSON as \
 the answer; do not make up the result.";
 
+/// ONE SENTENCE, ON WEB-INTENT TURNS ONLY — the turn's NOTE, not part of a
+/// skill guide.
+///
+/// WHY IT EXISTS: measured without it, ferry times were answered from memory
+/// (wrong) and the user had to say "search the internet" as a second turn. The
+/// small model does not reach for `web_search` on its own.
+///
+/// WHY IT LIVES HERE and not at the two call sites. It had two copies — one in
+/// the shell's turn loop, one in the eval's — and the eval's entire claim is
+/// that it measures the shell. Two string literals with the same words are two
+/// strings, and only one of them gets edited.
+pub const WEB_NUDGE: &str = "this question needs live information from the internet. \
+Call the web_search tool first; do not answer it from memory.";
+
 /// What the LAST pass of a turn is told, in place of the call instructions.
 ///
 /// WHY IT IS NOT A REMINDER BUT A STATEMENT OF FACT: taking the `<tools>` block

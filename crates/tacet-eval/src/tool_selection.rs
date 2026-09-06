@@ -37,7 +37,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use tacet_engine::{
     EngineProvider, FINAL_PASS_INSTRUCTION, MAX_TURNS, Prompt, SYSTEM_INSTRUCTIONS,
-    SamplingSetting, Turn, wait,
+    SamplingSetting, Turn, WEB_NUDGE, wait,
 };
 use tacet_grammar::CallConstraint;
 use tacet_kernel::{
@@ -2338,23 +2338,17 @@ pub fn run_selection_case_in(
         traces.reset();
         let selected: ToolCatalog = router.select(&step.message, &catalog).into_iter().collect();
         let selected_names: Vec<String> = selected.names().into_iter().map(String::from).collect();
-        let mut guide = skills
+        let guide = skills
             .matching(&step.message, Some(&selected_names))
             .map(tacet_skills::injection_text);
-        // THE WEB NUDGE, on the same condition production uses. It is one
-        // sentence and it exists because the small model does not reach for
-        // `web_search` on its own; leaving it out of the measurement made the
-        // web cases look harder than they are in the app.
-        if tacet_tools::router::score_intent(&step.message).dominant()
-            == tacet_tools::router::IntentProfile::Web
-        {
-            const WEB_NUDGE: &str = "this question needs live information from the internet. \
-                 Call the web_search tool first; do not answer it from memory.";
-            guide = Some(match guide {
-                Some(g) => format!("{g}\n{WEB_NUDGE}"),
-                None => WEB_NUDGE.to_string(),
-            });
-        }
+        // THE WEB NUDGE, on the same condition production uses, and now in the
+        // same PLACE production puts it: its own prompt slot, not appended to
+        // the guide string. Appended, it went through `GUIDE_LIMIT` and was the
+        // first thing the cap took — so the measurement was quietly running
+        // without the sentence on exactly the long-guide turns.
+        let note = (tacet_tools::router::score_intent(&step.message).dominant()
+            == tacet_tools::router::IntentProfile::Web)
+            .then_some(WEB_NUDGE);
         let constraint = engine.vocab().map(|v| {
             if force_tool_name {
                 CallConstraint::new(&v, &selected)
@@ -2406,6 +2400,9 @@ pub fn run_selection_case_in(
             let mut prompt = Prompt::new(&system, question).with_history(previous);
             if let Some(g) = &guide {
                 prompt = prompt.with_guide(g);
+            }
+            if let Some(n) = note {
+                prompt = prompt.with_note(n);
             }
             if !final_turn {
                 prompt = prompt.with_tools(&selected);

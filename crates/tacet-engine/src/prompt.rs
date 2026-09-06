@@ -74,6 +74,13 @@ pub enum Template {
 /// numbers in step; making them equal is what caused this.
 pub const GUIDE_LIMIT: usize = 960;
 
+/// The cap on the turn's NOTE — one or two sentences the caller chose for this
+/// message, budgeted separately from the guide. See `Prompt::with_note`.
+///
+/// Small on purpose. It is not a second guide: a note that needs more than two
+/// sentences is a skill, and skills have a file and a trigger list.
+pub const NOTE_LIMIT: usize = 240;
+
 /// The source of a conversation turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -178,6 +185,10 @@ pub struct Prompt {
     /// The ONE skill guide matching that message, fenced with `<guidance>`.
     /// Immediately before the question.
     pub guide: Option<String>,
+    /// THIS TURN'S NOTE: one or two sentences the caller chose for THIS message,
+    /// rendered at the end of the `<guidance>` fence and budgeted separately
+    /// from the guide. See `with_note` for why it is not part of `guide`.
+    pub note: Option<String>,
     /// This turn's user question. Truncated but NEVER dropped.
     ///
     /// IT MAY BE LEFT EMPTY and that has a specific meaning: "there is nothing
@@ -266,6 +277,33 @@ impl Prompt {
             }
         };
         self.guide = (!truncated.trim().is_empty()).then_some(truncated);
+        self
+    }
+
+    /// Adds the turn's note, capped at `NOTE_LIMIT`.
+    ///
+    /// SEPARATE FROM `with_guide` BECAUSE APPENDING TO THE GUIDE DELETED IT. The
+    /// web nudge is one sentence and the measured reason a small model reaches
+    /// for `web_search` at all; both callers appended it to the guide string, so
+    /// it went through `GUIDE_LIMIT` and, sitting at the end, was the first
+    /// thing the cap took. Seven of the eighteen shipped guides are long enough
+    /// for guide + nudge to cross 960 characters.
+    ///
+    /// The cut here takes the FRONT for the same reason `with_guide` does, but
+    /// it should never fire: a note that does not fit in two sentences is a
+    /// skill, not a note.
+    pub fn with_note(mut self, note: impl AsRef<str>) -> Self {
+        let n = note.as_ref();
+        let truncated: String = if n.chars().count() <= NOTE_LIMIT {
+            n.to_string()
+        } else {
+            let cut: String = n.chars().take(NOTE_LIMIT).collect();
+            match cut.rfind('\n') {
+                Some(i) => cut[..i].to_string(),
+                None => cut,
+            }
+        };
+        self.note = (!truncated.trim().is_empty()).then_some(truncated);
         self
     }
 
@@ -407,9 +445,33 @@ impl Prompt {
     }
 
     /// The `<guidance>` fence, or `None` when there is no guide.
+    /// The `<guidance>` fence: the skill guide, then the turn's note.
+    ///
+    /// THE NOTE IS A SEPARATE FIELD BECAUSE IT WAS BEING SILENTLY CUT. The web
+    /// nudge — one sentence, and the thing that measurably made a small model
+    /// reach for `web_search` at all — was appended to the guide STRING by both
+    /// callers, so it entered `with_guide` and was subject to `GUIDE_LIMIT`.
+    /// It sits at the END, so it is the first thing the cap takes. Measured over
+    /// the shipped skills: seven of eighteen guides are long enough that
+    /// guide + nudge crosses 960 characters, and `cut_at_line` then walks back
+    /// to the previous newline — taking the guide's own closing envelope with
+    /// it. A budget meant to protect the prompt was deleting the highest
+    /// priority sentence in it and nothing said so.
+    ///
+    /// Kept inside the same fence rather than given a fourth prompt slot: the
+    /// note IS guidance, the three templates each place this block by their own
+    /// rules, and a new slot would have to be placed correctly in all three.
     fn guidance_block(&self) -> Option<String> {
-        let g = self.guide.as_ref()?;
-        Some(format!("<guidance>\n{}\n</guidance>", g.trim()))
+        let body = match (self.guide.as_ref(), self.note.as_ref()) {
+            (None, None) => return None,
+            (Some(g), None) => g.trim().to_string(),
+            (None, Some(n)) => n.trim().to_string(),
+            // THE NOTE GOES LAST, and that is the point of it: this file's own
+            // header says the last blocks carry the most weight in a small
+            // model, and the note is the one instruction chosen for THIS turn.
+            (Some(g), Some(n)) => format!("{}\n{}", g.trim(), n.trim()),
+        };
+        Some(format!("<guidance>\n{body}\n</guidance>"))
     }
 
     /// ChatML: the system instructions and the tool description merge into a
@@ -562,6 +624,7 @@ impl Prompt {
             + self.question.len()
             + self.memory.as_ref().map_or(0, String::len)
             + self.guide.as_ref().map_or(0, String::len)
+            + self.note.as_ref().map_or(0, String::len)
             + self
                 .history
                 .iter()
