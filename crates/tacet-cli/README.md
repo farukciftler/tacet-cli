@@ -337,39 +337,58 @@ fingerprint, so the next run can be compared against it rather than against a
 memory of how things used to go:
 
 ```bash
-tacet eval --tool-selection --model qwen3-4b     # both languages, ~44 min
+tacet eval --tool-selection --model qwen3-4b     # both languages, ~48 min
 tacet eval --tool-selection --model qwen3-4b --turkish   # Turkish only
 ```
 
 | | |
 |---|---|
-| tool selection | **139/160** · 86.9% |
+| tool selection | **136/160** · 85.0% |
 | irrelevance gate | **24/24** · 100% |
-| step chain | 169/190 · 88.9% |
-| answer quality | 40/47 · 85.1% |
+| step chain | 166/190 · 87.4% |
+| answer quality | 38/47 · 80.9% |
+| *could not be measured* | 3 out of turns · 4 cut off |
 
-Qwen3-4B-Instruct-2507 Q4_K_M on Metal, 184 cases in both languages, **44.0 min**
+Qwen3-4B-Instruct-2507 Q4_K_M on Metal, 184 cases in both languages, **47.7 min**
 — the weights `tacet models download qwen3-4b` fetches, pinned by digest, with
 the fingerprint recorded in the baseline. Re-measured 6 Sep 2026 on this commit,
-and the baseline in `crates/tacet-eval/baselines/` is that run: **`wall_ms` is
-populated for the first time**, so the 44 minutes is now re-derivable instead of
-remembered. It said 44 before, hand-recorded; the machine agrees to within a
-tenth of a minute, which is the pleasant version of this kind of check.
+and the baseline in `crates/tacet-eval/baselines/` is that run, with `wall_ms`
+populated, so the wall clock is re-derivable rather than remembered.
 
-**The axes moved, and the instrument says the move is not distinguishable from
-noise.** Against the previous baseline: tool selection 133 → 139, step chain
-162 → 169, answer 41 → 40; ten cases fixed, four broken.
+**These numbers are LOWER than the ones this page carried this morning, and the
+drop is the instrument getting more honest rather than the model getting worse.**
+An audit of the eval found that a turn which spent all four passes calling tools
+and never said a word to the user scored as a HIT. Three steps did exactly that.
+The comparator, run against the morning's baseline on the same weights, is as
+clean a confirmation as this kind of change gets:
 
 ```
-  delta    +3.3 points   95% CI [-0.5, +7.6]
-  sign test p = 0.1796
+  fixed    0
+  broke    3   write_code-script, tr-web-site-oku, tr-web-arama
+  delta    -1.6 points   95% CI [-3.8, +0.0]
   verdict: NOT DISTINGUISHABLE from no change at 95%.
+           this instrument needs 368 paired cases to call a 1.6-point effect;
+           this suite has 184.
 ```
 
-So it is published as a new baseline, not as an improvement. Four of the ten
-fixed cases are Turkish, which is consistent with the router work in this commit
-range — but "consistent with" is not "caused by", and the instrument declines to
-say more than that.
+Nothing was fixed, three things broke, and they are by name the three the change
+was written for.
+
+**The last row is new and is the point.** A step now records WHY it stopped, and
+one that could not be measured is a pass on no axis: three ran out of turns, four
+stopped on the token cap. Under the old rule an engine error scored as a pass on
+the irrelevance axis — a dead engine calls nothing, and the rule was "called
+nothing" — so a run in which generation broke read as 0/160 tool selection and
+100% irrelevance, and the report called that the safety property holding.
+
+Two more scoring corrections are in the same run. `evidence` is checked against
+the ANSWER, where it used to be searched in a pool that also held the tool's own
+output — so a correctly called tool satisfied the claim whatever the model said
+(`tr-hesap-ortalama` asserts `20`, the model answered `30`, the step passed).
+And `forbidden`, documented as "tools that must NOT be called", is compared to
+the tools that were called; it was a substring search over prose, which made
+1505 assertions across the benchmark corpus inert and failed correct runs whose
+answer happened to write a tool's name.
 
 **This block is the Metal run; the model table further down is the same suite on
 a rented RTX 3090**, and that table has NOT been re-measured — it still reads

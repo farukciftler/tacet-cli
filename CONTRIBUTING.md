@@ -79,7 +79,7 @@ CI runs all of it on macOS, Linux and Windows. Neither of these loads weights or
 |---|---|---|---|
 | `eval` | Tacet's LOGIC, on a mock engine | milliseconds | yes |
 | `eval --routing` | which tools the ROUTER puts in the prompt | milliseconds | yes |
-| `eval --tool-selection --model <name>` | the MODEL's choice, on real weights | ~44 min on Metal (~6 min on a 3090) | no |
+| `eval --tool-selection --model <name>` | the MODEL's choice, on real weights | ~48 min on Metal (~6 min on a 3090) | no |
 
 Reach for `--routing` first when a tool "stops being called". The router shows the
 model at most nine tools out of the catalog, and **a tool that is not in those
@@ -112,7 +112,7 @@ bootstrap interval, and states a verdict. It works on any of the three reports.
 
 `eval --tool-selection` needs real weights (a 2.5 GB GGUF, `--features metal` on
 a Mac or `--features candle` elsewhere) and about three quarters of an hour: the
-measured figure on Metal is 44 minutes for both languages, because
+measured figure on Metal is 47.7 minutes for both languages, because
 `selection_suite()` runs both by default. `--turkish` runs one of them. This said
 "about twenty minutes" in two places while the README measured 44 for the same
 command. **It does not
