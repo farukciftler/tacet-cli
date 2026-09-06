@@ -1,0 +1,359 @@
+{
+ "name": "tr-alakasiz",
+ "language": "tr",
+ "requires": [],
+ "notes": "Araç gerektirmeyen cümleler (zor negatifler). Natively Turkish, not translated. Authored 6 Sep 2026 by a ten-way workflow and then put through an adversarial pass that rejected 221 of 521 for reading like a translation, for having two defensible answers, or for repeating a case that already existed. A further mechanical pass dropped duplicate names and messages against the whole of benchmarks/, and `bench check --portable` gates the rest. Ceiling, not floor: a case here can still be wrong, and a wrong `evidence` is worse than no case.",
+ "cases": [
+  {
+   "name": "zip-ne-demek",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "zip dosyası ne demek tam olarak, sıkıştırınca içindeki şeyler nereye gidiyor"
+    }
+   ]
+  },
+  {
+   "name": "sha256-nasil-calisir",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "sha256 denen şey nasıl çalışıyor, iki ayrı dosya aynı sonucu verebilir mi hiç"
+    }
+   ]
+  },
+  {
+   "name": "excel-mi-defter-mi",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "muhasebeyi excelde tutmak mı daha iyi yoksa defter mi, sen ne dersin"
+    }
+   ]
+  },
+  {
+   "name": "artik-yil-neden-var",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "artık yıl neden var, şubat niye bir gün eksik"
+    }
+   ]
+  },
+  {
+   "name": "markdown-ne-ise-yarar",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "ofiste markdown diye bir şeyden bahsettiler, ne işe yarıyormuş bu"
+    }
+   ]
+  },
+  {
+   "name": "emekli-gunler-tuhaf",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "emekli olalı üç ay oldu, günler bir tuhaf geçiyor ya"
+    }
+   ]
+  },
+  {
+   "name": "veli-toplantisi-gerginligi",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "yarın veli toplantısı var diye şimdiden gerildim, öğretmene ne desem bilemiyorum"
+    }
+   ]
+  },
+  {
+   "name": "kargocuya-sinir",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "kargocu yine kapıyı çalmadan gitmiş sabah sabah sinir oldum"
+    }
+   ]
+  },
+  {
+   "name": "faturalar-ust-uste",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "bu ay faturalar üst üste geldi, insanın keyfi kaçıyor valla"
+    }
+   ]
+  },
+  {
+   "name": "ilk-ihale-heyecani",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "ilk defa ihaleye gireceğiz, açıkçası içim titriyor"
+    }
+   ]
+  },
+  {
+   "name": "bayram-yollari-kalabalik",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "bayramda herkes yollara düşüyor, o kalabalıkta gezmenin ne zevki var anlamıyorum"
+    }
+   ]
+  },
+  {
+   "name": "taksit-rahatlatir-mi",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "taksitle almak insanı rahatlatıyor mu yoksa kandırıyor mu, kafam karıştı"
+    }
+   ]
+  },
+  {
+   "name": "bitirme-projesi-uykusuz",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "iki gündür bitirme projesi yüzünden uyumadım, gözlerim kapanıyor"
+    }
+   ]
+  },
+  {
+   "name": "python-mu-javascript-mi",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "yeni başlayan biri python mu öğrenmeli javascript mi, senin fikrin ne"
+    }
+   ]
+  },
+  {
+   "name": "git-neden-karisik",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "git neden bu kadar karışık ya, illa bu kadar komut olmak zorunda mıydı"
+    }
+   ]
+  },
+  {
+   "name": "commit-mesaji-dili",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "takımda commit mesajları türkçe mi yazılmalı ingilizce mi, senin görüşün ne"
+    }
+   ]
+  },
+  {
+   "name": "yedek-almayi-ertelemek",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "yedek almayı hep erteliyorum, başıma bir iş gelmeden akıllanmayacağım galiba"
+    }
+   ]
+  },
+  {
+   "name": "sifreleri-deftere-yazmak",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "şifreleri deftere yazmak çok mu kötü bir alışkanlık"
+    }
+   ]
+  },
+  {
+   "name": "eski-faturalari-saklamak",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "eski faturaları saklamak şart mı gerçekten, dolap doldu taştı"
+    }
+   ]
+  },
+  {
+   "name": "hesap-makinesi-oncesi",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "hesap makinesi çıkmadan önce insanlar bu kadar rakamı kafasında nasıl tutuyormuş"
+    }
+   ]
+  },
+  {
+   "name": "cocuga-matematigi-sevdirmek",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "oğlum matematikten iyice soğudu, nasıl sevdirebilirim sence"
+    }
+   ]
+  },
+  {
+   "name": "ogretmen-sesi-gitti",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "bu hafta yirmi saat derse girdim, sesim gitti resmen"
+    }
+   ]
+  },
+  {
+   "name": "bu-isler-nereye-gidiyor",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "sence bu işler nereye gidiyor, birkaç yıla herkes böyle mi çalışacak"
+    }
+   ]
+  },
+  {
+   "name": "sen-sikiliyor-musun",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "sen hiç sıkılmıyor musun aynı şeyleri anlata anlata"
+    }
+   ]
+  },
+  {
+   "name": "sana-nasil-hitap-etsem",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "sana abi mi desem hocam mı desem, bilemedim şimdi"
+    }
+   ]
+  },
+  {
+   "name": "arsiv-tozlu-odalar",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "arşiv deyince aklıma hep tozlu odalar geliyor, garip"
+    }
+   ]
+  },
+  {
+   "name": "haber-okumayi-biraktim",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "haber okumayı bıraktım, moralim çok daha iyi şimdi"
+    }
+   ]
+  },
+  {
+   "name": "randevu-almak-zorlasti",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "randevu almak neden bu kadar zorlaştı, herkes aynı dertten şikayetçi"
+    }
+   ]
+  },
+  {
+   "name": "cay-alip-geliyorum",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "kolay gelsin, ben bir çay alıp geliyorum"
+    }
+   ]
+  },
+  {
+   "name": "bulut-depolama-guvenli-mi",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "aç bakalım şu konuyu biraz, bulut depolama gerçekten güvenli mi"
+    }
+   ]
+  },
+  {
+   "name": "neden-son-guna-birakiliyor",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "söyle bakalım, insanlar neden her işi son güne bırakır"
+    }
+   ]
+  },
+  {
+   "name": "kafadan-hesap-olmadi",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "bir hesap yapayım dedim kafamdan, olmadı tabii"
+    }
+   ]
+  },
+  {
+   "name": "dukkana-isim-ariyorum",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "dükkana isim arıyorum, aklına ne gelirse söyle"
+    }
+   ]
+  },
+  {
+   "name": "ajanda-mi-takvim-mi",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "kağıt ajanda mı telefondaki takvim mi, sen hangisini savunursun"
+    }
+   ]
+  },
+  {
+   "name": "kahvaltisiz-cikmak",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "sabah kahvaltı yapmadan çıktım yine, öğlene kadar başım ağrıyor"
+    }
+   ]
+  },
+  {
+   "name": "toplantilarin-yarisi-gereksiz",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "toplantıların yarısı bir mesajla halledilebilirdi bence"
+    }
+   ]
+  },
+  {
+   "name": "cocuklar-tatilde-eve-sigmiyor",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "çocuklar tatilde eve sığmıyor, benim çocukluğumda sokaklar boş kalmazdı"
+    }
+   ]
+  },
+  {
+   "name": "bilgisayar-neden-ikilik",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "aklıma takıldı, bilgisayarlar neden hep ikili sayı kullanıyor"
+    }
+   ]
+  },
+  {
+   "name": "icime-sinmedi",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "yazıyı bitirdim ama içime sinmedi, bazen böyle oluyor işte"
+    }
+   ]
+  }
+ ]
+}

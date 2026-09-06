@@ -1,0 +1,769 @@
+{
+ "name": "tr-cok-adimli",
+ "language": "tr",
+ "requires": [
+  "archive",
+  "calculate",
+  "calendar",
+  "create_document",
+  "find_file",
+  "read_document",
+  "remember",
+  "time"
+ ],
+ "notes": "Çok adımlı diyaloglar. Natively Turkish, not translated. Authored 6 Sep 2026 by a ten-way workflow and then put through an adversarial pass that rejected 221 of 521 for reading like a translation, for having two defensible answers, or for repeating a case that already existed. A further mechanical pass dropped duplicate names and messages against the whole of benchmarks/, and `bench check --portable` gates the rest. Ceiling, not floor: a case here can still be wrong, and a wrong `evidence` is worse than no case.",
+ "cases": [
+  {
+   "name": "police-bul-sonra-teminata-bak",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Sağlık sigortası poliçem bir yerlerde duruyordu, bulabilir misin?",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search",
+      "read_document"
+     ]
+    },
+    {
+     "message": "Onu aç da teminat tutarı ne yazıyormuş bakayım.",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "taksidi-hesapla-sonra-kaydet",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Buzdolabı 27000 lira, altı taksit yapıyorlar. Aylığı kaça geliyor?",
+     "expect": "calculate",
+     "evidence": [
+      "4500"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    },
+    {
+     "message": "Şunu taksit.md diye bir dosyaya yazıver, eşime göstereceğim.",
+     "expect": "create_document",
+     "evidence": [
+      "taksit"
+     ],
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kargo-arsivini-ac-sonra-irsaliye-oku",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "kargo.zip'i bir açıver, içindekiler lazım oldu.",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "find_file"
+     ]
+    },
+    {
+     "message": "İçinden çıkan irsaliye dosyasını da oku bakalım ne yazıyor.",
+     "expect": "read_document",
+     "forbidden": [
+      "archive",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "sartnameyi-oku-sonra-ozet-dosyasi",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "ihale-sartname.md'yi okuyup ana maddeleri çıkarsana.",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "create_document"
+     ]
+    },
+    {
+     "message": "Bunları ozet.md adıyla ayrı bir markdown dosyasına koy.",
+     "expect": "create_document",
+     "evidence": [
+      "ozet"
+     ],
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "maas-kalanini-hesapla-sonra-akilda-tut",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Net maaşım 61500, kiraya 24000 gidiyor. Geriye ne kalıyor?",
+     "expect": "calculate",
+     "evidence": [
+      "37500"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    },
+    {
+     "message": "Kalanı benim aylık harçlığım olarak kalıcı kaydet, her defasında anlatmayayım.",
+     "expect": "remember",
+     "forbidden": [
+      "create_document",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bayrama-kac-gun-sonra-otel-hesabi",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Kurban Bayramına kaç gün var acaba, otel bakacağım.",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "web_search"
+     ]
+    },
+    {
+     "message": "Gecesi 3400 liraymış, dört gece kalacağız. Toplam kaça patlıyor?",
+     "expect": "calculate",
+     "evidence": [
+      "13600"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "faturalari-topla-sonra-odeme-hatirlaticisi",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Elektrik 1870, su 640, doğalgaz 2310. Toplam ne kadar tutuyor?",
+     "expect": "calculate",
+     "evidence": [
+      "4820"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    },
+    {
+     "message": "Bunu ayın 25'inde ödeyeceğim, o gün için hatırlatıcı koy.",
+     "expect": "calendar",
+     "forbidden": [
+      "remember",
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "haftalik-takvimi-dosyaya-dok",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Bu hafta takvimimde neler var, dökümünü versene.",
+     "expect": "calendar",
+     "forbidden": [
+      "find_file",
+      "time"
+     ]
+    },
+    {
+     "message": "Şunları haftalik-plan.md diye bir dosyaya yaz da çıktısını alayım.",
+     "expect": "create_document",
+     "evidence": [
+      "haftalik-plan"
+     ],
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "yedek-zipini-bul-sonra-listele",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Yedeklerin durduğu zip dosyası nerede kaldı, bulur musun?",
+     "expect": "find_file",
+     "forbidden": [
+      "archive",
+      "web_search"
+     ]
+    },
+    {
+     "message": "Buldun işte, onun içinde neler varmış listele bakalım.",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "borc-planini-oku-sonra-gun-say",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "borc-plani.md'yi aç, içinde ödeme tarihleri yazıyor.",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "calendar"
+     ]
+    },
+    {
+     "message": "İlk taksit 12 Ekim'deymiş. O güne kaç gün kalmış?",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "hakkedis-hesapla-sonra-stopaji-dus",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Günlük 1450 liradan 22 gün çalıştım, hakkedişim ne oldu?",
+     "expect": "calculate",
+     "evidence": [
+      "31900"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    },
+    {
+     "message": "Bunun %15'i stopaja gidiyormuş, elime ne geçer?",
+     "expect": "calculate",
+     "evidence": [
+      "27115"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "randevulari-say-sonra-ciroyu-hesapla",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Bugün kaç randevum varmış, takvime bakar mısın?",
+     "expect": "calendar",
+     "forbidden": [
+      "time",
+      "calculate"
+     ]
+    },
+    {
+     "message": "Her muayeneden 850 lira alıyorum, altı hastadan ne eder?",
+     "expect": "calculate",
+     "evidence": [
+      "5100"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "vergi-notunu-oku-sonra-musaviri-kaydet",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "vergi-notlari.md'de mali müşavirimin adı geçiyordu, bir bakıver.",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    },
+    {
+     "message": "Mali müşavirim Selim Bey'miş, bunu kalıcı olarak kaydet.",
+     "expect": "remember",
+     "forbidden": [
+      "create_document",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "hangi-gun-sonra-veli-toplantisi",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Perşembe mi oldu bugün, iyice şaşırdım",
+     "expect": "time",
+     "forbidden": [
+      "calendar",
+      "calculate"
+     ]
+    },
+    {
+     "message": "Perşembeyse akşam veli toplantım vardı, takvimde görünüyor mu bak.",
+     "expect": "calendar",
+     "forbidden": [
+      "time",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "projeyi-cikar-sonra-sozlesmeyi-ara",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "proje-yedek.zip'i şuraya çıkartıver.",
+     "expect": "archive",
+     "forbidden": [
+      "create_document",
+      "find_file"
+     ]
+    },
+    {
+     "message": "Çıkanların içinde adında sozlesme geçen var mı, arayıver.",
+     "expect": "find_file",
+     "forbidden": [
+      "archive",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kart-borcunu-bol-sonra-tarihi-say",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Kredi kartı borcum 18400, dört eşit taksit yapacağım. Taksit kaç lira?",
+     "expect": "calculate",
+     "evidence": [
+      "4600"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    },
+    {
+     "message": "İlk ödeme ayın 8'i. Bugünden ona kaç gün var?",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "mesai-gunu-yol-parasi-dosyasi",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Önümüzdeki hafta kaç gün mesaim varmış, takvime bakıver.",
+     "expect": "calendar",
+     "forbidden": [
+      "time",
+      "calculate"
+     ]
+    },
+    {
+     "message": "Beş günse, günlük 320 lira yol parası ne yapar?",
+     "expect": "calculate",
+     "evidence": [
+      "1600"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    },
+    {
+     "message": "Bu tutarı yol-gideri.md diye kaydet.",
+     "expect": "create_document",
+     "evidence": [
+      "yol-gideri"
+     ],
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kirtasiye-listesini-oku-sonra-eskisini-ara",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "kirtasiye.txt'de neler yazıyor, okuyuver.",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "create_document"
+     ]
+    },
+    {
+     "message": "Bir de geçen yılınki vardı bir yerlerde, onu bulabilir misin?",
+     "expect": "find_file",
+     "forbidden": [
+      "read_document",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "sabahci-oldugumu-kaydet-sonra-talep-dosyasi",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Ben sabahçıyım, toplantıları öğleden önceye koy; bunu unutma.",
+     "expect": "remember",
+     "forbidden": [
+      "calendar",
+      "create_document"
+     ]
+    },
+    {
+     "message": "Şimdi de bu haftaki toplantı taleplerini toplanti-talep.md diye bir dosyaya yaz.",
+     "expect": "create_document",
+     "evidence": [
+      "toplanti-talep"
+     ],
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "arsivi-say-sonra-sayfa-hesabi",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "arsiv-2025.zip'in içinde neler varmış, bakıver.",
+     "expect": "archive",
+     "forbidden": [
+      "find_file",
+      "read_document"
+     ]
+    },
+    {
+     "message": "34 dosya varmış, her biri ortalama 12 sayfa. Toplam kaç sayfa eder?",
+     "expect": "calculate",
+     "evidence": [
+      "408"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "randevu-dosyasini-oku-sonra-mr-hatirlaticisi",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "randevular.md dosyasını aç, hangi gün ne varmış yazıyor.",
+     "expect": "read_document",
+     "forbidden": [
+      "calendar",
+      "find_file"
+     ]
+    },
+    {
+     "message": "Oradaki MR randevusu için bir gün öncesine hatırlatıcı kur.",
+     "expect": "calendar",
+     "forbidden": [
+      "remember",
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "servis-sozlesmesini-bul-sonra-yenileme-hatirlaticisi",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Servis sözleşmesinin dosyası nerede, arayıver.",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search",
+      "read_document"
+     ]
+    },
+    {
+     "message": "Yenileme tarihi 3 Kasım'mış, o gün için hatırlatıcı kur.",
+     "expect": "calendar",
+     "forbidden": [
+      "time",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "personeli-oku-bordroyu-hesapla-ozetle",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "personel.xlsx'i açıp maaş sütununa bakıver.",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    },
+    {
+     "message": "Dokuz kişi varmış, ortalama 47000 maaş. Aylık bordro kaç eder?",
+     "expect": "calculate",
+     "forbidden": [
+      "run_code"
+     ]
+    },
+    {
+     "message": "Çıkan rakamı bordro-ozet.md adıyla kaydet.",
+     "expect": "create_document",
+     "evidence": [
+      "bordro-ozet"
+     ],
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fotograf-arsivini-listele-sonra-dosyaya-dok",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Fotoğrafların olduğu zipin içindekileri bir sırala.",
+     "expect": "archive",
+     "forbidden": [
+      "find_file",
+      "read_document"
+     ]
+    },
+    {
+     "message": "O listeyi arsiv-icerik.md diye bir markdown dosyasına dök.",
+     "expect": "create_document",
+     "evidence": [
+      "arsiv-icerik"
+     ],
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "teklifi-yaz-sonra-teslim-hatirlaticisi",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "İhaleye sunacağım teklifi teklif.md diye bir dosyaya yaz: birim fiyat 8200, adet 150.",
+     "expect": "create_document",
+     "evidence": [
+      "teklif"
+     ],
+     "forbidden": [
+      "edit_document"
+     ]
+    },
+    {
+     "message": "Teslim tarihi 22 Ekim, o gün için hatırlatıcı kur.",
+     "expect": "calendar",
+     "forbidden": [
+      "time",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tarihi-al-sonra-dilekce-yaz",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Bugünün tarihi ne, dilekçenin altına yazacağım.",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "create_document"
+     ]
+    },
+    {
+     "message": "Zaten dilekçeyi de sen yaz: dilekce.md olsun, konusu fazla mesai alacağım.",
+     "expect": "create_document",
+     "evidence": [
+      "dilekce"
+     ],
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kargo-tutarini-hesapla-sonra-faturayla-karsilastir",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Kargo başına 89 lira, 47 gönderi yaptım. Ne kadar tuttu?",
+     "expect": "calculate",
+     "evidence": [
+      "4183"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    },
+    {
+     "message": "Kargocunun yolladığı kargo-fatura.md ile tutuyor mu, aç bak.",
+     "expect": "read_document",
+     "forbidden": [
+      "checksum",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bordro-klasorunu-bul-sonra-yerini-kaydet",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Emekli maaş bordrolarımın dosyası nerede kaldı, arasana.",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search",
+      "read_document"
+     ]
+    },
+    {
+     "message": "Bordroları o klasörde tuttuğumu kalıcı kaydet, bir daha arattırmayayım.",
+     "expect": "remember",
+     "forbidden": [
+      "create_document",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "harclik-dosyasini-bul-oku-yillik-hesapla",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Öğrenci harçlıklarını yazdığım dosya vardı, bulur musun?",
+     "expect": "find_file",
+     "forbidden": [
+      "web_search",
+      "read_document"
+     ]
+    },
+    {
+     "message": "Onu aç, aylık ne kadar veriyormuşum bakalım.",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    },
+    {
+     "message": "Ayda 3500 veriyormuşum, dokuz aylık dönemde kaç para etti?",
+     "expect": "calculate",
+     "evidence": [
+      "31500"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "vize-gunu-say-hatirlat-evraki-yaz",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Vize başvurusunun son gününe, 5 Aralık'a kaç gün var?",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "run_code"
+     ]
+    },
+    {
+     "message": "O günden bir hafta öncesine hatırlatıcı koy.",
+     "expect": "calendar",
+     "forbidden": [
+      "remember",
+      "time"
+     ]
+    },
+    {
+     "message": "Gereken evrakları da evrak-listesi.md diye kaydet.",
+     "expect": "create_document",
+     "evidence": [
+      "evrak-listesi"
+     ],
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "gelir-gideri-oku-sonra-excele-cevir",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "gelir-gider.md'yi oku, kalemleri bir göreyim.",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "create_document"
+     ]
+    },
+    {
+     "message": "Bunu excel tablosuna çevirip kaydet.",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  }
+ ]
+}

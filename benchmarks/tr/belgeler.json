@@ -1,0 +1,480 @@
+{
+ "name": "tr-belgeler",
+ "language": "tr",
+ "requires": [
+  "create_document",
+  "edit_document",
+  "read_document"
+ ],
+ "notes": "Belge okuma, oluşturma ve düzenleme. Natively Turkish, not translated. Authored 6 Sep 2026 by a ten-way workflow and then put through an adversarial pass that rejected 221 of 521 for reading like a translation, for having two defensible answers, or for repeating a case that already existed. A further mechanical pass dropped duplicate names and messages against the whole of benchmarks/, and `bench check --portable` gates the rest. Ceiling, not floor: a case here can still be wrong, and a wrong `evidence` is worse than no case.",
+ "cases": [
+  {
+   "name": "kdv-beyani-oku",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "kdv-beyan.xlsx te hangi ay ne kadar çıkmış bi bakar mısın",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kargo-listesi-goster",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "kargo-listesi.xlsx i açıp içindeki kalemleri göster",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "recete-notunu-oku",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Doktorun yazdığı ilaçları recete.md ye kaydetmiştim, bir okuyuver",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "sozlesmede-depozito",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "kira-sozlesme.txt yi aç, depozitoyla ilgili kısmı bul",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "taksit-dosyasini-oku",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "banka-taksit.md yi açıp kalan borç ne kadarmış söyler misin",
+     "expect": "read_document",
+     "forbidden": [
+      "calculate",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "randevu-notunu-oku",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "hastane-randevu.md de saat kaç yazıyormuş bakıver",
+     "expect": "read_document",
+     "forbidden": [
+      "time",
+      "calendar",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kargo-takip-dosyasi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "kargo-takip.txt diye düz metin bir dosya aç, takip numaralarını oraya gireceğim",
+     "expect": "create_document",
+     "evidence": [
+      "kargo-takip"
+     ],
+     "forbidden": [
+      "edit_document",
+      "write_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "gunluk-ciro-tablosu",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Dükkanın günlük cirosunu tutacağım bir excel tablosu hazırla, sütunlar tarih nakit kart olsun",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ders-programi-excel",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Çocuğun ders programını excele döker misin, pazartesiden cumaya",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "doktora-sorular-notu",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Doktora soracaklarımı sorular.md diye kaydet: uyku düzeni, tansiyon ilacı, kontrol tarihi",
+     "expect": "create_document",
+     "evidence": [
+      "sorular"
+     ],
+     "forbidden": [
+      "edit_document",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "sozlesmeye-paragraf-ekle",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "sozlesme.txt nin sonuna bir paragraf ekle, gecikme olursa ne olacağını anlatsın",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "listeden-satir-cikar",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "alisveris.md den zeytinyağı satırını çıkar, onu aldım zaten",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kdv-oranini-guncelle",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "fiyat-listesi.xlsx te kdv oranı hepsinde 18 yazıyor, 20 yap",
+     "expect": "edit_document",
+     "forbidden": [
+      "calculate",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "sutun-adini-degistir",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "ciro.xlsx te nakit sütununun adını peşin yap",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "rehberdeki-numarayi-guncelle",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "rehber.md de servisin numarası değişmiş, 0216 445 12 30 olarak güncelle",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "excel-ogrenmek-zor-mu",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Excel öğrenmek zor mudur, bu yaştan sonra geç mi kaldım",
+     "forbidden": [
+      "web_search",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "yedeklemek-gerekli-mi",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Belgeleri yedeklemek gerçekten şart mı sence",
+     "forbidden": [
+      "checksum",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "dosyayi-kendim-buldum",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Boş ver, dosyayı sonunda kendim buldum",
+     "forbidden": [
+      "find_file",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "markdown-ne-demek",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Markdown tam olarak ne demek, kısaca anlatsana",
+     "forbidden": [
+      "web_search",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bordroyu-oku-sonra-duzelt",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "bordro.xlsx i aç bakalım neler varmış",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "create_document"
+     ]
+    },
+    {
+     "message": "Kesinti satırındaki rakam yanlış, 1240 olacak düzeltiver",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kamp-listesi-uc-adim",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Kamp için malzeme listesini kamp.md diye kaydet: çadır, uyku tulumu, fener",
+     "expect": "create_document",
+     "evidence": [
+      "kamp"
+     ],
+     "forbidden": [
+      "edit_document"
+     ]
+    },
+    {
+     "message": "İçinde ne yazdığını bir göster bakayım",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    },
+    {
+     "message": "Termos da ekle listeye",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "stokta-kac-kalem-var",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "stok.xlsx te kaç kalem ürün varmış bir bakıver",
+     "expect": "read_document",
+     "forbidden": [
+      "calculate",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "muayene-raporunu-sadelestir",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "muayene-raporu.txt te doktor ne yazmış, sade bir dille anlatıver",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "dilekce-taslaginin-uslubu",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Muhtarlığa vereceğim dilekçenin taslağı dilekce-taslak.txt te, üslup resmi olmuş mu bir bak",
+     "expect": "read_document",
+     "forbidden": [
+      "edit_document",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "odev-yonergesi-dosyasi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Öğrencilere dağıtacağım ödev yönergesini yazıver, biçimli olmasına gerek yok.",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document",
+      "write_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "gezi-izin-yazisi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Sınıf gezisi için veliye gönderilecek izin yazısını hazırla, 12 Mayıs Kapadokya.",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "stoga-yeni-mal-gir",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "stok.xlsx e yeni gelen malı da gir: vida 200 adet",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document",
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "menude-sali-degisikligi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "yemek-menusu.md de salıyı tavuk sote yap, köfte bitti",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "raporda-yil-ifadesi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "faaliyet-raporu.md de her yerde geçen yıl yazmışız, bu yıl olarak değiştir",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document",
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tutanaga-katilimci-ekle",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "tutanak.txt te katılımcılar kısmına muhasebeciyi de ekle, o da oradaydı",
+     "expect": "edit_document",
+     "forbidden": [
+      "create_document",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "her-sey-yazili-olacakmis",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Bizim iş yerinde her şey yazılı olacak diye tutturdular, sözlü anlaşma kalmadı",
+     "forbidden": [
+      "create_document",
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "elle-yazinca-akilda-kaliyor",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Kalemle yazdığımı daha iyi hatırlıyorum, bilgisayara geçince aklımda kalmıyor nedense",
+     "forbidden": [
+      "create_document",
+      "remember"
+     ]
+    }
+   ]
+  }
+ ]
+}

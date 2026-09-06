@@ -1,0 +1,390 @@
+{
+ "name": "tr-hafiza-takvim",
+ "language": "tr",
+ "requires": [
+  "calendar",
+  "remember"
+ ],
+ "notes": "Hafıza ve takvim. Natively Turkish, not translated. Authored 6 Sep 2026 by a ten-way workflow and then put through an adversarial pass that rejected 221 of 521 for reading like a translation, for having two defensible answers, or for repeating a case that already existed. A further mechanical pass dropped duplicate names and messages against the whole of benchmarks/, and `bench check --portable` gates the rest. Ceiling, not floor: a case here can still be wrong, and a wrong `evidence` is worse than no case.",
+ "cases": [
+  {
+   "name": "kan-grubu-akilda-tut",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Kan grubum 0 Rh negatif, aklında tutar mısın. Doktora her gidişimde soruyorlar.",
+     "expect": "remember",
+     "forbidden": [
+      "create_document",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "emekli-oldugumu-kaydet",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Emekliyim ben, çalışan biri gibi plan yapma. Bunu da kaydet ki her seferinde anlatmayayım.",
+     "expect": "remember",
+     "forbidden": [
+      "create_document",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kedi-alerjisi-unutma",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Kedi tüyüne alerjim var, sakın unutma.",
+     "expect": "remember",
+     "forbidden": [
+      "create_document",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "oglum-dorduncu-sinif",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Oğlum dördüncü sınıfa gidiyor, bunu aklında tut.",
+     "expect": "remember",
+     "forbidden": [
+      "create_document",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "arabam-dizel-kaydet",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "arabam dizel, kaydet bunu bir daha benzinli diye hesap yapma",
+     "expect": "remember",
+     "forbidden": [
+      "create_document",
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "eski-is-yerini-unut",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Eski iş yerimle ilgili ne kaydettiysen unut, oradan ayrıldım.",
+     "expect": "remember",
+     "forbidden": [
+      "edit_document",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bugun-takvimde-ne-var",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Bugün neyim var takvimde, sabahtan mı başlıyor işler?",
+     "expect": "calendar",
+     "forbidden": [
+      "time",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "yarin-ogleden-sonra-bos-mu",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Yarın öğleden sonra boş muyum, kuaföre gideceğim de.",
+     "expect": "calendar",
+     "forbidden": [
+      "time",
+      "search_filter"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "veli-toplantisi-var-miydi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Bu hafta okulda veli toplantısı var mıydı, bir bakıver.",
+     "expect": "calendar",
+     "forbidden": [
+      "time",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "cuma-randevusu-kacta",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Cuma günkü muayene randevum kaçtaydı ya",
+     "expect": "calendar",
+     "forbidden": [
+      "time",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "aksam-bir-yere-gidecek-miydim",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Bu akşam bir yere gitmem gerekiyor muydu, unuttum gitti.",
+     "expect": "calendar",
+     "forbidden": [
+      "remember",
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "yarin-dokuza-ekip-toplantisi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Yarın sabah 9'a ekip toplantısı koy.",
+     "expect": "calendar",
+     "forbidden": [
+      "create_document",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tansiyon-ilaci-hatirlat",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Akşam 8'de tansiyon ilacımı içmemi hatırlat bana.",
+     "expect": "calendar",
+     "forbidden": [
+      "remember",
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kargoyu-oglen-al",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "kargoyu yarın öğlen almam lazım hatırlatır mısın",
+     "expect": "calendar",
+     "forbidden": [
+      "remember",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kira-yatirmayi-unutma",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Cuma akşamı kirayı yatırmayı unutmayayım, bir hatırlatma ekleyiver.",
+     "expect": "calendar",
+     "forbidden": [
+      "remember",
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "on-bes-dakika-sonra-ocak",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "15 dakika sonra ocaktaki yemeği kontrol etmemi söyle.",
+     "expect": "calendar",
+     "forbidden": [
+      "time",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "pazar-anneme-ugra",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Pazar günü anneme uğramayı hatırlat, yine unutacağım yoksa.",
+     "expect": "calendar",
+     "forbidden": [
+      "remember",
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "hafizan-nasil-calisiyor",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Senin hafızan nasıl çalışıyor, ben söylemeden de bir şeyler kaydediyor musun?",
+     "forbidden": [
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "unutkanim-yaslandik",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Ben çok unutkanım ya, yaşlandık iyice.",
+     "forbidden": [
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "randevuya-gec-kalmak",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Randevuya geç kalmak dünyada en sevmediğim şey.",
+     "forbidden": [
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "hatirlatici-kurmayi-unutuyorum",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Hatırlatıcı kurmayı hep unutuyorum, kötü bir huy oldu artık.",
+     "forbidden": [
+      "calendar",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bayram-tatili-gelse",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Bayram tatili gelse de biraz dinlensek be.",
+     "forbidden": [
+      "calendar",
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ajanda-tutmayi-biraktim",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Ajanda tutmayı bıraktım ben, artık her şeyi aklımda tutuyorum.",
+     "forbidden": [
+      "remember",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "takvime-bak-sonra-hatirlatici-kur",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Yarın takvimimde neler varmış, bir bakar mısın?",
+     "expect": "calendar",
+     "forbidden": [
+      "time",
+      "remember"
+     ]
+    },
+    {
+     "message": "Sabahki toplantıdan yarım saat önce beni uyar, hatırlatıcı koy.",
+     "expect": "calendar",
+     "forbidden": [
+      "remember",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "hatirlatici-kur-sonra-gune-bak",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Salı 11'e muhasebeciyle görüşme hatırlatıcısı kur.",
+     "expect": "calendar",
+     "forbidden": [
+      "remember",
+      "create_document"
+     ]
+    },
+    {
+     "message": "O gün başka neyim varmış, takvime de bakıver.",
+     "expect": "calendar",
+     "forbidden": [
+      "time",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "seker-hastaligi-sonra-kan-tahlili",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Şeker hastasıyım, bunu aklında tut.",
+     "expect": "remember",
+     "forbidden": [
+      "create_document",
+      "calendar"
+     ]
+    },
+    {
+     "message": "Bir de yarın sabah aç karnına kan vereceğim, 8'e hatırlatma koy.",
+     "expect": "calendar",
+     "forbidden": [
+      "remember",
+      "time"
+     ]
+    }
+   ]
+  }
+ ]
+}

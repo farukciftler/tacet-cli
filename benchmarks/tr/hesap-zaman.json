@@ -1,0 +1,454 @@
+{
+ "name": "tr-hesap-zaman",
+ "language": "tr",
+ "requires": [
+  "calculate",
+  "time"
+ ],
+ "notes": "Gündelik aritmetik ve saat/tarih. Natively Turkish, not translated. Authored 6 Sep 2026 by a ten-way workflow and then put through an adversarial pass that rejected 221 of 521 for reading like a translation, for having two defensible answers, or for repeating a case that already existed. A further mechanical pass dropped duplicate names and messages against the whole of benchmarks/, and `bench check --portable` gates the rest. Ceiling, not floor: a case here can still be wrong, and a wrong `evidence` is worse than no case.",
+ "cases": [
+  {
+   "name": "benzin-deposu-tutari",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Depoya 42 litre benzin aldım, litresi 51 lira 20 kuruş. Kaç para eder bu?",
+     "expect": "calculate",
+     "forbidden": [
+      "run_code",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kdv-haric-tutar",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Fişte 3600 yazıyor, KDV yüzde 20 dahilmiş. KDV hariç tutar ne kadar?",
+     "expect": "calculate",
+     "evidence": [
+      "3000"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kira-zammi-sonrasi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Ev sahibi kiraya yüzde 25 istiyor, şu an 14500 ödüyorum. Yeni kira ne olacak?",
+     "expect": "calculate",
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ceyrek-altin-toplami",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Çeyrek 8450 liraymış, düğün için 6 tane alsam ne kadar tutar?",
+     "expect": "calculate",
+     "forbidden": [
+      "run_code",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fazla-mesai-ucreti",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Bu ay 27 saat fazla mesai yaptım, saati 185 lira. Ne kadar alacağım çıkarıver.",
+     "expect": "calculate",
+     "evidence": [
+      "4995"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "daire-metrekare-fiyati",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Daireye 2850000 istiyorlar, 95 metrekare. Metrekaresi kaça geliyor?",
+     "expect": "calculate",
+     "forbidden": [
+      "run_code",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "emekli-maas-farki",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Emekli maaşım 16800'den 21500'e çıkmış, aradaki fark ne kadar oluyor?",
+     "expect": "calculate",
+     "evidence": [
+      "4700"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "esnaf-kar-hesabi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Malı 340'a alıp 495'e satıyorum, bu ay 60 tane gitti. Kârım ne oldu?",
+     "expect": "calculate",
+     "evidence": [
+      "9300"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "lokanta-bahsisi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Hesap 1740 geldi, yüzde 10 bahşiş bıraksam ne kadar bırakmam lazım?",
+     "expect": "calculate",
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "servis-ucreti-aylik",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "servis ücreti yıllık 46800 9 aya bölünüyor aylık ne kadar eder",
+     "expect": "calculate",
+     "evidence": [
+      "5200"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ekmek-zam-orani",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "ekmek 15 liradan 18 e çıkmış yüzde kaç zam gelmiş buna",
+     "expect": "calculate",
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kredi-geri-odeme-toplami",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Aylık 4750 lira, 36 ay ödeyeceğim. Toplamda ne kadar geri ödemiş oluyorum?",
+     "expect": "calculate",
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "market-sonrasi-kalan",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Cebimde 2000 vardı, market 1345 tuttu. Geriye ne kaldı bana?",
+     "expect": "calculate",
+     "evidence": [
+      "655"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ankarada-saat-kac",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Ankara'da saat kaç oldu, arayacağım da rahatsız etmeyeyim adamı.",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ogle-arasi-saati",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Öğle arası bitti mi ki, bir saate baksana.",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "web_search",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tutanaga-tarih-ve-saat",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Tutanağa tam tarih ve saat yazmam gerekiyor, ikisini birden verir misiniz?",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kargo-gunu-cuma-mi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Bugün cuma mı? Bizim mahalleye kargo cumaları geliyor da.",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "maas-gunune-kalan",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Ayın 15'ine kaç gün var? Maaş o gün yatıyor da ona göre idare edeceğim.",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "hesap-kitaptan-usanmak",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Bu ay hesap kitap yapmaktan usandım ya, ne yapsam yetmiyor."
+    }
+   ]
+  },
+  {
+   "name": "matematikle-aram-yok",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Okulda matematikle hiç aram olmadı benim, hep kaçardım o dersten."
+    }
+   ]
+  },
+  {
+   "name": "zaman-cabuk-geciyor",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Zaman ne çabuk geçiyor ya, daha dün gibi çocuğu okula yazdırmıştık."
+    }
+   ]
+  },
+  {
+   "name": "zam-ustune-zam",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "zam üstüne zam geliyor ama yine yetişemiyoruz garip bir durum"
+    }
+   ]
+  },
+  {
+   "name": "kurusun-degeri-kalmadi",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Eskiden kuruşun bile değeri vardı, şimdi kimse yerden almıyor."
+    }
+   ]
+  },
+  {
+   "name": "kostururken-yorulmak",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Sabahtan beri saat saat koşturuyorum, çok yoruldum vallahi."
+    }
+   ]
+  },
+  {
+   "name": "toplanti-oncesi-gerginlik",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Yarınki veli toplantısı için biraz gerginim, kalabalıkta konuşmayı sevmiyorum."
+    }
+   ]
+  },
+  {
+   "name": "yazlik-fatura-bolusme",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Yazlıkta doğalgaz 2340, elektrik 1180 gelmiş. Toplamı ne eder?",
+     "expect": "calculate",
+     "evidence": [
+      "3520"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    },
+    {
+     "message": "Bunu dört kardeş bölüşeceğiz, kişi başı ne düşüyor?",
+     "expect": "calculate",
+     "evidence": [
+      "880"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "faturanin-son-odeme-gunu",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Bugün ayın kaçında olduğumuzu söyler misin, faturayı yatıracağım da.",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "web_search"
+     ]
+    },
+    {
+     "message": "Son ödeme günü 28 Eylül'müş, kaç günüm kalmış?",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bozdurma-sonrasi-komisyon",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "620 doları 41,80'den bozdurdum, kaç lira etti?",
+     "expect": "calculate",
+     "forbidden": [
+      "run_code",
+      "web_search"
+     ]
+    },
+    {
+     "message": "Bankada yüzde 2 komisyon kesmişler, cebime ne kalıyor?",
+     "expect": "calculate",
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tatil-oncesi-harcama",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Tatil 22 Ocak'ta başlıyor, kaç gün kaldı ona?",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "run_code"
+     ]
+    },
+    {
+     "message": "Dokuz gün tatildeyiz, günde 1200 harcarsak ne eder toplam?",
+     "expect": "calculate",
+     "evidence": [
+      "10800"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "buzdolabi-taksit-mi-pesin-mi",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Buzdolabı 28500 lira, altı eşit taksit yapıyorlar. Taksidi ne tutar?",
+     "expect": "calculate",
+     "evidence": [
+      "4750"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    },
+    {
+     "message": "Peşin alana yüzde 10 indirim varmış, peşin fiyat kaça geliyor?",
+     "expect": "calculate",
+     "evidence": [
+      "25650"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,449 @@
+{
+ "name": "tr-web",
+ "language": "tr",
+ "requires": [
+  "web_fetch",
+  "web_search"
+ ],
+ "notes": "İnternet araması ve adres getirme. Natively Turkish, not translated. Authored 6 Sep 2026 by a ten-way workflow and then put through an adversarial pass that rejected 221 of 521 for reading like a translation, for having two defensible answers, or for repeating a case that already existed. A further mechanical pass dropped duplicate names and messages against the whole of benchmarks/, and `bench check --portable` gates the rest. Ceiling, not floor: a case here can still be wrong, and a wrong `evidence` is worse than no case.",
+ "cases": [
+  {
+   "name": "asgari-ucret-zam-haberi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "asgari ücrete ara zam gelecek mi, ortalıkta bir sürü şey konuşuluyor",
+     "expect": "web_search",
+     "forbidden": [
+      "web_fetch",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kar-tatili-durumu",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Yarın okullar tatil mi acaba, kar yağacak diyorlar.",
+     "expect": "web_search",
+     "forbidden": [
+      "web_fetch",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bayram-tatili-kac-gun",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Bayram tatilini kaç gün yapmışlar, açıkladılar mı resmi olarak?",
+     "expect": "web_search",
+     "forbidden": [
+      "web_fetch",
+      "time",
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "vize-randevusu-son-durum",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "almanya vizesinde randevular açılmış mı, son durum ne",
+     "expect": "web_search",
+     "forbidden": [
+      "web_fetch",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "borsa-nasil-kapandi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "borsa bugün nasıl kapandı",
+     "expect": "web_search",
+     "forbidden": [
+      "web_fetch",
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "meb-duyuru-sayfasi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "https://www.meb.gov.tr/duyurular/ şu sayfayı açıp bugün ne duyurmuşlar söyler misin",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "resmi-gazete-teblig",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "https://www.resmigazete.gov.tr/eskiler/2026/03/20260315-5.htm bu tebliğde ne değişmiş, sade bir dille anlat.",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "arkadasin-attigi-haber-linki",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "arkadaş şu linki attı https://www.ornekgazete.com.tr/ekonomi/kira-artis-orani-haberi ne diyormuş",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "edevlet-randevu-sayfasi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "www.turkiye.gov.tr/randevu sayfasını aç da randevu nasıl alınıyormuş bir oku.",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "su-idaresi-kesinti-sayfasi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "https://www.iski.istanbul/web/tr-TR/kesinti burada bizim mahalle geçiyor mu",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ihale-ilani-son-teklif",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "İhale ilanı şurada https://ekap.kik.gov.tr/EKAP/Ilan/IlanDetay?ilanId=88214 son teklif ne zamanmış?",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "veli-toplantisi-linki",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Okuldan gelen link bu https://okul.example.edu.tr/duyuru/veli-toplantisi toplantı saat kaçtaymış?",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kargo-takip-linki",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "kargo takip linki geldi https://kargotakip.example.com/takip/8814523 paketim nerede kalmış",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "elektrik-tarife-sayfasi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "https://www.epdk.gov.tr/Detay/Icerik/3-0-0-121/elektrik-tarifeleri şu tarifeyi okuyup bana anlatır mısın",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tahlil-sonucu-sayfasi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Tahlil sonuçları buraya düşmüş https://enabiz.gov.tr/Rapor/Detay/9921 ne yazıyor, okur musun?",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "is-ilani-sartlari",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "https://kariyer.example.com/ilan/45217 bu ilanın şartları neymiş, tecrübe istiyor mu",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kur-tablosu-adresi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "https://www.tcmb.gov.tr/kurlar/today.xml şu adresteki kur tablosunu getir bana",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "taksit-yazisi-blog",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "abim şu yazıyı yolladı https://blog.example.org/2026/kredi-taksit-hesabi taksit nasıl hesaplanıyormuş anlatmış mı",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fazla-mesai-yonetmeligi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Fazla mesai yönetmeliği burada yazıyormuş https://calisma.example.gov.tr/mevzuat/fazla-mesai oku da özetle.",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "magaza-kampanya-sayfasi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "www.ornekmagaza.com.tr/kampanya bu sayfada indirim ne kadarmış",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "calculate",
+      "search_filter"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "internette-vakit-kaybi",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "İnternete girince saatler nasıl geçiyor hiç anlamıyorum ya.",
+     "forbidden": [
+      "web_search",
+      "web_fetch",
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "haber-takibini-biraktim",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "haber okumayı bıraktım valla, kafam daha rahat şimdi",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "arama-tembellik-sohbeti",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Sence her şeyi internette aramak insanı tembelleştiriyor mu?",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "sayfaya-kendim-baktim",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "sağ ol, sayfayı kendim açtım baktım zaten",
+     "forbidden": [
+      "web_search",
+      "web_fetch",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "hava-durumuna-bakmam",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Hava durumuna hiç bakmadan çıkıyorum, sonra da ıslanıyorum işte.",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "sen-internete-girer-misin",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Sen internete gerçekten girebiliyor musun, hep merak etmişimdir.",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "sosyal-medyada-kur-tartismasi",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "kur şöyle oldu böyle oldu diye millet sosyal medyada birbirini yiyor",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "altin-arayip-yorumu-acmak",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "altın bu hafta ne yaptı, yükseldi mi",
+     "expect": "web_search",
+     "forbidden": [
+      "web_fetch"
+     ]
+    },
+    {
+     "message": "Peki şu yorumu da aç bakalım https://ekonomi.example.com/altin-yorum-2026",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "mgm-okuyup-vedalasmak",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "https://www.mgm.gov.tr/tahmin/il-ve-ilceler.aspx?il=Trabzon şuraya bakıp yarın yağmur var mı söyler misin",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "search_filter"
+     ]
+    },
+    {
+     "message": "tamam sağ ol, ben çıkıyorum artık",
+     "forbidden": [
+      "web_search",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "iki-kredi-sayfasini-acmak",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "https://www.ornekbanka.com.tr/kampanya/konut-kredisi bu sayfadaki faiz oranı ne yazıyor",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "calculate"
+     ]
+    },
+    {
+     "message": "Bir de şuna bak https://www.ornekbanka.com.tr/kampanya/tasit-kredisi burada oran kaçmış?",
+     "expect": "web_fetch",
+     "forbidden": [
+      "web_search",
+      "calculate"
+     ]
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,454 @@
+{
+ "name": "tr-kod-git",
+ "language": "tr",
+ "requires": [
+  "calculate",
+  "create_document",
+  "git",
+  "run_code",
+  "write_code"
+ ],
+ "notes": "Kod çalıştırma, kod yazma ve depo. Natively Turkish, not translated. Authored 6 Sep 2026 by a ten-way workflow and then put through an adversarial pass that rejected 221 of 521 for reading like a translation, for having two defensible answers, or for repeating a case that already existed. A further mechanical pass dropped duplicate names and messages against the whole of benchmarks/, and `bench check --portable` gates the rest. Ceiling, not floor: a case here can still be wrong, and a wrong `evidence` is worse than no case.",
+ "cases": [
+  {
+   "name": "rakamlari-tek-tek-topla",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "12345678 sayısının rakamlarını tek tek toplarsan kaç ediyor",
+     "expect": "run_code",
+     "evidence": [
+      "36"
+     ],
+     "forbidden": [
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "uce-ve-bese-bolunenler",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "1'den 30'a kadar hem 3'e hem 5'e bölünenleri dök bakalım",
+     "expect": "run_code",
+     "evidence": [
+      "15",
+      "30"
+     ],
+     "forbidden": [
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "isimleri-alfabetik-diz",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "şu isimleri alfabetik sıraya sok: Zeynep, Ali, Mehmet, Ayşe, Burak",
+     "expect": "run_code",
+     "forbidden": [
+      "create_document",
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tekrar-eden-barkodlar",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "elimdeki barkodlarda tekrar eden var mı: 8691, 4520, 8691, 7733, 4520, 1180",
+     "expect": "run_code",
+     "forbidden": [
+      "find_file",
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "cumlede-kac-kelime-var",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "şu cümlede kaç kelime var say bakayım: bugün pazara gittim domates ve biber aldım",
+     "expect": "run_code",
+     "forbidden": [
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "birikimi-ay-ay-dok",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Her ay 7500 lira biriktirsem 24 ay boyunca ay sonlarında elimde ne kadar olur, ay ay dök.",
+     "expect": "run_code",
+     "forbidden": [
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "en-yuksek-uc-not",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Sınıfın notları 68, 91, 45, 77, 83, 52, 90. En yüksek üçünü ayıklayıver.",
+     "expect": "run_code",
+     "forbidden": [
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "yedinin-carpim-tablosu",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "7'nin çarpım tablosunu 1'den 10'a kadar çıkar oğluma göstereceğim",
+     "expect": "run_code",
+     "evidence": [
+      "70"
+     ],
+     "forbidden": [
+      "calculate",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "taksit-vadelerini-siral",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "18000 lirayı 6 taksite böldüm, 15 Ekim 2026'dan başlayarak her taksitin vade tarihini sırala",
+     "expect": "run_code",
+     "forbidden": [
+      "calendar",
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kdv-betigini-kaydet",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "kdv.py diye bir python betiği yaz, girilen tutara %20 kdv ekleyip yazsın",
+     "expect": "write_code",
+     "evidence": [
+      "kdv"
+     ],
+     "forbidden": [
+      "run_code",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "sifre-uretici-js-dosyasi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "javascript ile rastgele şifre üreten bir dosya hazırla, adı uretici.js olsun",
+     "expect": "write_code",
+     "evidence": [
+      "uretici"
+     ],
+     "forbidden": [
+      "run_code",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kargo-ucreti-scripti",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Kargo ücretini ağırlığa göre hesaplayan bir python scripti yaz da dursun bende, her seferinde uğraşmayayım.",
+     "expect": "write_code",
+     "forbidden": [
+      "run_code",
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "asal-kontrol-betigi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "asal.py yaz bana, verdiğim sayı asal mı değil mi söylesin",
+     "expect": "write_code",
+     "evidence": [
+      "asal"
+     ],
+     "forbidden": [
+      "run_code",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tarih-formati-ceviren-js",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "tarihi gün.ay.yıl formatına çeviren bir js dosyası hazırlar mısın",
+     "expect": "write_code",
+     "forbidden": [
+      "run_code",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fatura-hatirlatan-betik",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "her ayın 5'inde fatura hatırlatan basit bir python betiği yaz ve dosyaya koy",
+     "expect": "write_code",
+     "forbidden": [
+      "calendar",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "metin-temizleyen-betik",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "metindeki fazla boşlukları temizleyen bir betik yaz, temizle.py olarak kalsın bende",
+     "expect": "write_code",
+     "evidence": [
+      "temizle"
+     ],
+     "forbidden": [
+      "run_code",
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "dukkan-envanter-programi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Dükkandaki ürün sayısını takip eden minik bir python programı yaz da kaydedeyim.",
+     "expect": "write_code",
+     "forbidden": [
+      "run_code",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "son-bes-commiti-listele",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Son beş commiti listeler misin, ne yapmışız bir hatırlayayım.",
+     "expect": "git",
+     "forbidden": [
+      "read_document",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "commitlenmemis-kaldi-mi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "commitlemediğim bir şey kaldı mı acaba, kontrol eder misin",
+     "expect": "git",
+     "forbidden": [
+      "find_file",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "push-oncesi-farka-bak",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "push etmeden önce değişikliklere bir bakayım, göster hele",
+     "expect": "git",
+     "forbidden": [
+      "read_document",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "son-commitin-basligi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "en son attığım commitin başlığı neydi hatırlamıyorum",
+     "expect": "git",
+     "forbidden": [
+      "remember",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "python-mu-js-mi-ogrensem",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Python mu javascript mi öğrensem sence, hangisi daha mantıklı olur?"
+    }
+   ]
+  },
+  {
+   "name": "bu-yasta-kod-ogrenmek",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "bu yaşta kod yazmayı öğrenebilir miyim ya, 47 yaşındayım"
+    }
+   ]
+  },
+  {
+   "name": "branch-mantigi-kafama-girmiyor",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "git'in şu branch mantığı bir türlü kafama girmiyor, zor geliyor bana"
+    }
+   ]
+  },
+  {
+   "name": "commit-mesaji-hangi-dilde",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "commit mesajlarını türkçe mi yazmalı ingilizce mi, sence hangisi daha doğru"
+    }
+   ]
+  },
+  {
+   "name": "depo-mu-repo-mu",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "türkçede depo mu diyoruz repo mu, hep karıştırıyorum ben bunu"
+    }
+   ]
+  },
+  {
+   "name": "muhendislik-okusun-mu",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "oğlum bilgisayar mühendisliği okusun mu sence, iş bulabiliyor mu çocuklar"
+    }
+   ]
+  },
+  {
+   "name": "gerisini-ben-calistiririm",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "tamam anladım, gerisini ben hallederim, kodu kendim çalıştırırım artık"
+    }
+   ]
+  },
+  {
+   "name": "sirala-sonra-dosyaya-koy",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "9, 4, 15, 2, 27 sayılarını küçükten büyüğe diz",
+     "expect": "run_code",
+     "forbidden": [
+      "calculate"
+     ]
+    },
+    {
+     "message": "aynı işi yapan bir dosya da yaz bana, adı sirala.py olsun",
+     "expect": "write_code",
+     "forbidden": [
+      "run_code",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fiyat-betigi-sonra-tutar",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "fiyat.py diye bir betik yaz, kilo başı fiyattan toplam tutarı bulsun",
+     "expect": "write_code",
+     "forbidden": [
+      "run_code",
+      "create_document"
+     ]
+    },
+    {
+     "message": "peki 3.5 kilo alsam, kilosu 180 liraysa kaç eder",
+     "expect": "calculate",
+     "evidence": [
+      "630"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "commitleri-getir-sonra-ozetle",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "geçen ayki commitleri bir getir bakalım",
+     "expect": "git",
+     "forbidden": [
+      "find_file"
+     ]
+    },
+    {
+     "message": "bunları anlatan kısa bir özet dosyası yaz, ozet.md olsun",
+     "expect": "create_document",
+     "forbidden": [
+      "edit_document",
+      "write_code"
+     ]
+    }
+   ]
+  }
+ ]
+}

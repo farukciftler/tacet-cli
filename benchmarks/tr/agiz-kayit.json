@@ -1,0 +1,490 @@
+{
+ "name": "tr-agiz-kayit",
+ "language": "tr",
+ "requires": [
+  "calculate",
+  "calendar",
+  "create_document",
+  "find_file",
+  "git",
+  "read_document",
+  "remember",
+  "run_code",
+  "web_search"
+ ],
+ "notes": "Aynı işler, farklı kayıt ve ağız. Natively Turkish, not translated. Authored 6 Sep 2026 by a ten-way workflow and then put through an adversarial pass that rejected 221 of 521 for reading like a translation, for having two defensible answers, or for repeating a case that already existed. A further mechanical pass dropped duplicate names and messages against the whole of benchmarks/, and `bench check --portable` gates the rest. Ceiling, not floor: a case here can still be wrong, and a wrong `evidence` is worse than no case.",
+ "cases": [
+  {
+   "name": "mazot-litre-tutari-caps",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "MAZOT LITRESI 42 LIRA 35 LITRE ALDIM NE TUTAR SOYLE",
+     "expect": "calculate",
+     "evidence": [
+      "1470"
+     ],
+     "forbidden": [
+      "run_code",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "yevmiye-alacagi-yasli",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "evladım benim kafam basmıyor bu işlere, yevmiye 1150 liradan 6 gün çalıştım, kaç para alacağım",
+     "expect": "calculate",
+     "evidence": [
+      "6900"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kargo-paketleme-toplami",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "kargo tanesi 89 lira 4 tane gönderiyorum bide 150 lira paketleme var toplam ne kadar tutuyo",
+     "expect": "calculate",
+     "evidence": [
+      "506"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tapu-fotokopisi-bulunamadi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "evladım geçen sene taradığım tapu fotokopisi bilgisayarda bir yerdeydi, ben bulamadım, sen bir arar mısın",
+     "expect": "find_file",
+     "forbidden": [
+      "read_document",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fatura-kdv-satiri-ne-yaziyor",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "abi fatura.xlsx'i bi aç da kdv satırında ne yazıyo onu söyle",
+     "expect": "read_document",
+     "forbidden": [
+      "calculate",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "konyada-yagmur-var-mi-gorem",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "gorem bakalım bu hafta konyada yağmur var mı, ekin biçeceğiz de",
+     "expect": "web_search",
+     "forbidden": [
+      "web_fetch",
+      "search_filter"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kargo-ucretlerine-zam-emoji",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "kargo ücretlerine zam gelmiş mi acaba 📦 bi bakıver internetten",
+     "expect": "web_search",
+     "forbidden": [
+      "web_fetch",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "esimin-adini-unutma",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "eşimin adı Zeynep bunu aklında tut bir daha sorma bana",
+     "expect": "remember",
+     "forbidden": [
+      "create_document",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "yarin-takvimde-ne-var",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "yarın ne var takvimde",
+     "expect": "calendar",
+     "forbidden": [
+      "time",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "veli-toplantisi-hatirlatmasi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Rica etsem 12 Mart saat 14:00'teki veli toplantısı için bana bir hatırlatma kurar mısınız?",
+     "expect": "calendar",
+     "forbidden": [
+      "remember",
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ilac-saati-hatirlat-caps",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "AKSAM 8DE ILACIMI ALMAM LAZIM HATIRLAT BANA",
+     "expect": "calendar",
+     "forbidden": [
+      "remember",
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "boyle-kalsin-simdilik-caps",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "TAMAM ANLADIM BOYLE KALSIN SIMDILIK"
+    }
+   ]
+  },
+  {
+   "name": "cocuklar-tatilde-emoji",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "çocuklar tatilde eve sığmıyoruz 😅 valla yoruldum bugün"
+    }
+   ]
+  },
+  {
+   "name": "oylesine-yazdim",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "hiç, öylesine yazdım işte"
+    }
+   ]
+  },
+  {
+   "name": "gideri-oku-sonra-topla",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "abi şu gider.md'yi bi aç bakalım ne yazmışız",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    },
+    {
+     "message": "iyi de 4300 ile 2750 toplamı kaç tutuyo onu da hesaplayıver",
+     "expect": "calculate",
+     "evidence": [
+      "7050"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "takvime-bak-sonra-berber-hatirlat",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "hafta sonu takvimde bi şey var mı bi görem",
+     "expect": "calendar",
+     "forbidden": [
+      "time",
+      "find_file"
+     ]
+    },
+    {
+     "message": "yoksa cumartesi 11e berber için hatırlatma koy o zaman",
+     "expect": "calendar",
+     "forbidden": [
+      "remember",
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "toplantiya-katilim-yuzdesi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Sınıfın 40 mevcudundan 34'ü toplantıya katıldı, bu yüzde kaça denk geliyor?",
+     "expect": "calculate",
+     "evidence": [
+      "85"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bilet-yetiskin-cocuk-emoji",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "4 yetişkin bileti 850 den 2 çocuk bileti 400 den aldık toplam ne ödedik 🎟️",
+     "expect": "calculate",
+     "evidence": [
+      "4200"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "maastan-geriye-ne-kaliyor",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "maaşımın yarısı kiraya gidiyor kalanın da yüzde 20si faturalara, 62000 liradan geriye ne kalıyor",
+     "expect": "calculate",
+     "evidence": [
+      "24800"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "teslimat-programi-caps",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "TESLIMAT-PROGRAMI.XLSX I AC PAZARTESI KIME GIDIYOR BI BAK",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kurumdan-gelen-yazidaki-sure",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Kurumdan gelen yazi.txt dosyasını inceleyip bize ne kadar süre verildiğini söyler misiniz?",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file",
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "numaralari-dosyaya-yazdir",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "evladım şu numaraları bir dosyaya yazıver de unutmayayım, adı numaralar.txt olsun: servis 0532 111 22 33, tesisatçı 0533 444 55 66",
+     "expect": "create_document",
+     "evidence": [
+      "numaralar"
+     ],
+     "forbidden": [
+      "remember",
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "gecen-carsamba-neredeymisim",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "geçen çarşamba neredeymişim, takvimde yazıyor mudur",
+     "expect": "calendar",
+     "forbidden": [
+      "time",
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "hangi-branchteyim",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "hangi branch'teyim ben ya, karıştırdım iyice",
+     "expect": "git",
+     "forbidden": [
+      "run_code",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tc-kimlik-algoritma-kontrol",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "10000000146 numarasının tc kimlik algoritmasına uyup uymadığını hesaplat bakalım",
+     "expect": "run_code",
+     "forbidden": [
+      "calculate",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "harman-makineyle-kalkiyor",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "bizim oralarda bu vakitler harman kalkardı, şimdi makine bir günde bitiriyo hepsini"
+    }
+   ]
+  },
+  {
+   "name": "elektrikler-gitti-caps",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "ELEKTRIKLER GITTI YINE, MUM ISIGINDA OTURUYORUZ"
+    }
+   ]
+  },
+  {
+   "name": "pazarda-domates-emoji",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "pazarda domates kilosu 30 lira olmuş 😳 alamadan döndüm"
+    }
+   ]
+  },
+  {
+   "name": "evraki-kendim-teslim-edecegim",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Gerekli evrakı hazırladım, yarın kuruma kendim teslim edeceğim. Bilginize."
+    }
+   ]
+  },
+  {
+   "name": "notlari-oku-sonra-ayikla",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "kursiyer-notlari.xlsx i bi aç bakalım kim kaç almış",
+     "expect": "read_document",
+     "forbidden": [
+      "find_file"
+     ]
+    },
+    {
+     "message": "60ın altında kalanları ayıklayıp listele bakayım",
+     "expect": "run_code",
+     "forbidden": [
+      "calculate",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kura-cek-sonra-dosyaya-yaz",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "kura çekeceğiz, şu altı ismi ikişerli eşleştirip listele: Ahmet, Mehmet, Ayşe, Fatma, Hasan, Hüseyin",
+     "expect": "run_code",
+     "forbidden": [
+      "calculate",
+      "create_document"
+     ]
+    },
+    {
+     "message": "çıkan eşleşmeleri kura.md diye bir dosyaya yaz da asalım",
+     "expect": "create_document",
+     "evidence": [
+      "kura"
+     ],
+     "forbidden": [
+      "edit_document",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "noterde-isim-var-miydi-sonra-vekaletname",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "salı günü noterde işim var mıydı, takvime bakar mısınız",
+     "expect": "calendar",
+     "forbidden": [
+      "time",
+      "find_file"
+     ]
+    },
+    {
+     "message": "vekaletnamenin taraması bir yerdeydi, onu da bulur musunuz",
+     "expect": "find_file",
+     "forbidden": [
+      "read_document",
+      "archive"
+     ]
+    }
+   ]
+  }
+ ]
+}

@@ -515,6 +515,23 @@ archives, code and git, web, memory and calendar, 45 irrelevance cases, and 29
 multi-step chains. They were drafted by a multi-agent pass and then cut down by
 the gate below; what survived is what a fresh install can actually be asked.
 
+**`benchmarks/tr/` holds 319 more, in Turkish, written as Turkish** — 6 Sep 2026.
+Not translated: the questions are about fatura, taksit, kira, veli toplantısı,
+noter, mesai, and they are phrased the way people type into a phone, including
+one group (`agiz-kayit.json`) that keeps the job constant and varies only the
+register — formal, WhatsApp-short, elderly, Anatolian, no punctuation, ALL CAPS,
+emoji. That axis was never measured before, and a router built from a trigger
+list is exactly the thing it should be measured against. **Turkish now stands at
+518 cases across the tree**, against 187 before.
+
+They cost 650 drafts. Two workflow rounds authored them; an adversarial pass in
+each round threw out **279** for reading like a translation, for having two
+defensible answers, or for asking something the corpus already asked — the
+rejection notes name the case they duplicate, which is how a 42% rejection rate
+is a sign of a working filter rather than a broken one. A mechanical pass then
+dropped duplicate names and messages against the whole of `benchmarks/`, and
+`bench check --portable` gates every file.
+
 Three things about the format are deliberate:
 
 **`requires` is not paperwork.** It is what makes the runner *stop* when the
@@ -522,6 +539,26 @@ machine lacks a tool, instead of scoring every case that needs it as a model
 failure and publishing that as a result — the same defect `eval --compare` was
 taught to refuse when a Linux run paired against a macOS baseline read nineteen
 absent-tool failures as a regression.
+
+**And it found the same thing again, in Turkish, at four times the scale.** Of
+297 verified Turkish questions, **30 expected a tool the router never shows** —
+so they were kept out of the files and written down instead, in
+[`benchmarks/tr/ULASILAMAYANLAR.md`](https://github.com/farukciftler/tacet-cli/blob/main/benchmarks/tr/ULASILAMAYANLAR.md), with the
+sentence and the tool. The shape of the list is the finding:
+
+| tool | sentences it never reaches |
+|---|---|
+| `web_search` | **14** — "Ankara'da şu an kaç derece", "dün akşamki maç kaç kaç bitti", "merkez bankası faizi indirdi mi", "e-devlet çöktü mü" |
+| `remember` | **8** — "dükkan pazartesi kapalı, aklında olsun", "tercihlerimi göster", "şu bilgiyi sil" |
+| `search_filter` | 3 · `message_intent` 2 · `checksum` 2 · `archive` 1 |
+
+The English half of exactly this was done and is described above: seven web
+questions scored zero on every profile, the triggers went in, the questions
+stayed. **The Turkish half was never done**, and fourteen of the most ordinary
+current-information questions a Turkish user asks are the proof. The fix is not
+a trigger per sentence — the file says so and means it — it is to make the class
+measurable by `eval --routing` first and decide from the measurement. That is
+named as the next step rather than done under a deadline.
 
 **`bench check` runs before any model does**, and it asks the question nobody
 writes by hand: the router shows the model nine tools, so *would the expected

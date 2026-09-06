@@ -161,6 +161,38 @@ carries one, and refuses one whose case names no longer match the suite — a
 baseline nobody can pair against still prints a verdict, which is worse than
 having none.
 
+### Writing benchmark cases, and the two ways they go wrong silently
+
+Both were found by adversarial verification over a batch of new cases, not by
+reading the runner, and both are now tests.
+
+**`evidence` is a plain substring.** So `"18"` is satisfied by an answer of
+`18000`, and `"7"` by any sentence with a seven in it. A case like that is green
+forever whatever the model says — worse than not having it, because it occupies a
+denominator and measures nothing.
+`no_evidence_value_can_be_satisfied_by_a_wrong_answer` refuses a single digit,
+and refuses a value that is a substring of a number the QUESTION already gave the
+model, which is the shape where echoing the question back passes. A two-digit
+value is fine when nothing in the message contains it.
+
+**A case whose tool the router never shows measures the router and reports the
+model.** `bench check --portable` is the gate; run it before a file is committed
+and again after editing one. When it rejects a case, the choice is between
+fixing the ROUTER and dropping the CASE, and neither is automatic — a trigger
+added per failing sentence turns the check green and measures nothing, which is
+the rule this repository states in as many words. Drop it and write it down: 30
+Turkish sentences went into `benchmarks/tr/ULASILAMAYANLAR.md` for exactly this
+reason, and the list is more useful than the cases would have been, because it
+has a shape.
+
+**And when you author in a language, author IN it.** `benchmarks/tr/` was written
+as Turkish, not translated, and the adversarial pass rejected drafts specifically
+for reading like translations — the giveaway is the "Could you please …" skeleton
+surviving into "Rica etsem … eder misiniz". 279 of 650 drafts were thrown out
+across two rounds, most of them for that or for asking something the corpus
+already asked. Expect a rejection rate like that; a filter that passes everything
+is not a filter.
+
 ### Measuring against someone else's benchmark
 
 `crates/tacet-eval/examples/bfcl.rs` runs a BFCL relevance or irrelevance

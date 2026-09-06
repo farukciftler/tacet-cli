@@ -1,0 +1,445 @@
+{
+ "name": "tr-dosya-arsiv",
+ "language": "tr",
+ "requires": [
+  "archive",
+  "checksum",
+  "find_file",
+  "read_document"
+ ],
+ "notes": "Dosya bulma, arşiv ve bütünlük. Natively Turkish, not translated. Authored 6 Sep 2026 by a ten-way workflow and then put through an adversarial pass that rejected 221 of 521 for reading like a translation, for having two defensible answers, or for repeating a case that already existed. A further mechanical pass dropped duplicate names and messages against the whole of benchmarks/, and `bench check --portable` gates the rest. Ceiling, not floor: a case here can still be wrong, and a wrong `evidence` is worse than no case.",
+ "cases": [
+  {
+   "name": "sartname-adli-dosyalar",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Adında şartname geçen ne kadar dosya varsa çıkar karşıma.",
+     "expect": "find_file",
+     "forbidden": [
+      "read_document",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kdv-gecen-dosyalari-tara",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "İçeriğinde KDV yazan dosyaları bir tarasana.",
+     "expect": "find_file",
+     "forbidden": [
+      "read_document",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tapu-dosyasi-kayip",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "tapu diye bir dosya vardı bilgisayarda, nerdeydi ya",
+     "expect": "find_file",
+     "forbidden": [
+      "read_document",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "recete-taramasini-bul",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Doktorun verdiği reçeteyi taratıp atmıştım bir yere, dosyayı bulur musunuz?",
+     "expect": "find_file",
+     "forbidden": [
+      "read_document",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "sunum-dosyasini-bulamadim",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Yarın sunum var, sunum dosyasını nereye attım bilmiyorum. Sen bir bak hele.",
+     "expect": "find_file",
+     "forbidden": [
+      "read_document",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "taksit-tablosu-hangi-dosya",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "taksit tablosunu tuttugum dosya hangisiydi bulsana",
+     "expect": "find_file",
+     "forbidden": [
+      "read_document",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bayram-fotograflari-arsivi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Bayram fotoğrafları zip halinde geldi, şunu bir açsana klasöre.",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "matbaa-logo-paketi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Matbaadan logo paketi zip olarak geldi, çıkart da ne göndermişler görelim.",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kurulum-paketi-arsivi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "kurulum paketini indirdim ama zip. İçindekileri listele önce.",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "indirilen-kurulum-dogrula",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "setup.exe indirdim, sitede yazan özetle aynı mı bir bak.",
+     "expect": "checksum",
+     "forbidden": [
+      "read_document",
+      "run_code",
+      "web_fetch"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "veritabani-yedegi-bozuk-mu",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "veritabani.sql yedeğini alırken bağlantı kopmuştu, bozulmuş mu diye özetini alıver.",
+     "expect": "checksum",
+     "forbidden": [
+      "read_document",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bordro-kopyasi-ayni-mi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Masaüstündeki bordro.xlsx ile indirilenlerdeki bordro.xlsx aynı mı acaba",
+     "expect": "checksum",
+     "forbidden": [
+      "read_document",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "klasor-duzeni-tavsiyesi",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Dosyalarım iyice dağıldı ya, klasör düzeni için bir tavsiyen var mı?"
+    }
+   ]
+  },
+  {
+   "name": "sha256-ne-ise-yarar",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "sha256 tam olarak ne işe yarıyor, kısaca anlatır mısın?"
+    }
+   ]
+  },
+  {
+   "name": "ne-kadar-dosya-birikmis",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Ne kadar dosya biriktirmişim be, insan şaşırıyor gerçekten."
+    }
+   ]
+  },
+  {
+   "name": "bilgisayar-yavasladi",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Bilgisayar iyice yavaşladı, dosyalardan mıdır sence?"
+    }
+   ]
+  },
+  {
+   "name": "hash-turkcesi-nedir",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Hash'in Türkçesi özet mi oluyor, doğru mu kullanıyorum kelimeyi?"
+    }
+   ]
+  },
+  {
+   "name": "yedegi-bul-sonra-icini-listele",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Adında yedek geçen bir dosya var mı bakar mısın?",
+     "expect": "find_file",
+     "forbidden": [
+      "archive",
+      "web_search"
+     ]
+    },
+    {
+     "message": "Zipmiş demek, içinde neler varmış listele o zaman.",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "arsivi-cikar-sonra-izlenceyi-oku",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "kurs.zip'i klasöre çıkart.",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "create_document"
+     ]
+    },
+    {
+     "message": "İçinden çıkan izlence.md'yi de aç bakalım, ne yazıyormuş.",
+     "expect": "read_document",
+     "forbidden": [
+      "archive",
+      "find_file"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "arsivi-listele-sonra-ozetini-al",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "resimler.zip'in içindekileri göster.",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "find_file"
+     ]
+    },
+    {
+     "message": "Bir de bu zipin sha256'sını al, arkadaşımdakiyle karşılaştıracağım.",
+     "expect": "checksum",
+     "forbidden": [
+      "archive",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "arsivden-sonra-klasorde-ara",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "policeler.zip içinde neler var, listeler misin?",
+     "expect": "archive",
+     "forbidden": [
+      "read_document",
+      "find_file"
+     ]
+    },
+    {
+     "message": "Bunlardan biri klasörde ayrıca duruyor mu, adında poliçe geçenleri ara.",
+     "expect": "find_file",
+     "forbidden": [
+      "archive",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bordro-ozeti-sonra-kopyalarini-ara",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "bordro.xlsx'in sha256 özetini alıver.",
+     "expect": "checksum",
+     "forbidden": [
+      "read_document",
+      "run_code"
+     ]
+    },
+    {
+     "message": "Peki bunun bir kopyası daha var mıydı, adında bordro geçen dosyaları tarar mısın?",
+     "expect": "find_file",
+     "forbidden": [
+      "checksum",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "odev-klasorunde-matematik",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Ödevlerin durduğu klasörde matematik diye bir şey var mı bak.",
+     "expect": "find_file",
+     "forbidden": [
+      "read_document",
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kac-zip-birikmis",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Bilgisayarda kaç tane zip dosyası birikmiş, bir listeler misin?",
+     "expect": "find_file",
+     "forbidden": [
+      "archive",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ayni-dosyadan-iki-kopya",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Aynı dosyadan iki kopya duruyor galiba, kopya yazanları çıkar bakalım.",
+     "expect": "find_file",
+     "forbidden": [
+      "checksum",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "avukat-zipinde-kac-parca",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "Avukat evrakları tek bir zip halinde yollamış, içinde kaç parça var acaba?",
+     "expect": "archive",
+     "forbidden": [
+      "calculate",
+      "read_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "disketle-tasidigimiz-gunler",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Eskiden her şeyi disketle taşırdık, şimdi koca arşiv cebimde geziyor."
+    }
+   ]
+  },
+  {
+   "name": "fotograflar-telefonda-birikiyor",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Kızım bütün fotoğrafları telefonda tutuyor, bir gün hepsi uçacak diye ödüm kopuyor."
+    }
+   ]
+  },
+  {
+   "name": "silerken-elim-titriyor",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Dosyaları silerken hep elim titriyor, ya sonra lazım olur diye duruyor hepsi."
+    }
+   ]
+  },
+  {
+   "name": "dosya-isimleri-anlasilmiyor",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "Bu dosya isimlerini kim koyduysa bir daha koymasın, hiçbiri anlaşılmıyor."
+    }
+   ]
+  },
+  {
+   "name": "ses-kayitlarini-ara-sonra-vazgec",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "Eski telefondan gelen ses kayıtları bilgisayarda duruyor mu, arasana.",
+     "expect": "find_file",
+     "forbidden": [
+      "read_document"
+     ]
+    },
+    {
+     "message": "Yeter bu kadarı, kalanını akşam kendim ayıklarım."
+    }
+   ]
+  }
+ ]
+}

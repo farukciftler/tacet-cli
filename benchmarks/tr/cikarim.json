@@ -1,0 +1,575 @@
+{
+ "name": "tr-cikarim",
+ "language": "tr",
+ "requires": [
+  "calculate",
+  "calendar",
+  "create_document",
+  "message_intent",
+  "remember",
+  "search_filter",
+  "time"
+ ],
+ "notes": "Yapısı gizli cümleler — filtre ve niyet. Natively Turkish, not translated. Authored 6 Sep 2026 by a ten-way workflow and then put through an adversarial pass that rejected 221 of 521 for reading like a translation, for having two defensible answers, or for repeating a case that already existed. A further mechanical pass dropped duplicate names and messages against the whole of benchmarks/, and `bench check --portable` gates the rest. Ceiling, not floor: a case here can still be wrong, and a wrong `evidence` is worse than no case.",
+ "cases": [
+  {
+   "name": "gaziantep-aksam-uygun-yemek",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "gaziantepte bu akşam uygun fiyatlı bir yerde karnımızı doyuralım, nereye gidelim",
+     "expect": "search_filter",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "diyarbakir-cocuk-aktivitesi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "diyarbakırda hafta sonu çocuklara bir aktivite ayarlayalım, çok tuzlu olmasın",
+     "expect": "search_filter",
+     "forbidden": [
+      "web_search",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "hatay-is-seyahati-aksami",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "hataya iş için gidiyorum, akşamları tek başıma takılabileceğim yerler neresi",
+     "expect": "search_filter",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bayramdan-sonra-ilk-is",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'bayramdan sonra ilk iş ödemeyi yapacağım' demiş. bu cevabı nasıl kaydedeyim",
+     "expect": "message_intent",
+     "forbidden": [
+      "remember",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "onbes-ekim-yedibinbesyuz",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "şöyle bir cevap geldi: '15 Ekimde 7500 TL göndereceğim'. tutarı da çıkar bana",
+     "expect": "message_intent",
+     "evidence": [
+      "7500"
+     ],
+     "forbidden": [
+      "calculate",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "cek-ayin-yirmisinde",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "esnaf arkadaş 'çek ayın 20sinde ödenecek, o zaman size de veririm' yazmış. ne diyor",
+     "expect": "message_intent",
+     "forbidden": [
+      "calendar",
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "tutarda-yanlislik-var",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'tutarda bir yanlışlık var, ben bu kadar tüketmedim' yazmış, ne demek istiyor",
+     "expect": "message_intent",
+     "forbidden": [
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bozuk-urun-odemem",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "müşteri 'ürün elime bozuk geçti, parasını ödemem' demiş. bunu nasıl etiketleyelim",
+     "expect": "message_intent",
+     "forbidden": [
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "avukatima-verdim",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'avukatıma verdim, mahkemede görüşürüz' yazmış. bu mesaj ne söylüyor",
+     "expect": "message_intent",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "ucbinikiyuz-sabah-gonderdim",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'3200 lirayı sabah gönderdim, kontrol edin' demiş. tutarı da yazıver",
+     "expect": "message_intent",
+     "evidence": [
+      "3200"
+     ],
+     "forbidden": [
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "karta-taksitlendirdim",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'ödemeyi kredi kartıma taksitlendirdim, hesabınıza geçti bile' demiş. ne diyor bu",
+     "expect": "message_intent",
+     "forbidden": [
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "maca-gidiyor-musun",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'abi yarın maça gidiyor musun' yazmış. bunun ödemeyle bir alakası var mı, sınıflandır",
+     "expect": "message_intent",
+     "forbidden": [
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "soz-tutmayan-insanlar",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "sence insanlar neden verdikleri sözü tutmuyor",
+     "forbidden": [
+      "message_intent"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "hafta-sonu-diye-sey-kalmadi",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "bende hafta sonu diye bir şey kalmadı, sürekli dükkandayım",
+     "forbidden": [
+      "search_filter",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "esnaflik-zor-is",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "esnaflık zor iş vallahi, herkes veresiye istiyor",
+     "forbidden": [
+      "message_intent"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "cocuklarla-vakit-guzel",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "çocuklarla vakit geçirmek en güzeli ya, başka bir şeye benzemiyor",
+     "forbidden": [
+      "search_filter"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "mesaj-yazmak-sevmedigim-is",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "müşterilere mesaj yazmak en sevmediğim iş, kaçıyorum ondan",
+     "forbidden": [
+      "message_intent"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "afyon-hafta-sonu-plani",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "afyonda hafta sonu ne yapılır",
+     "expect": "search_filter",
+     "forbidden": [
+      "web_search"
+     ]
+    },
+    {
+     "message": "çocuklar da yanımızda olacak, ucuz bir şey olsun",
+     "expect": "search_filter",
+     "forbidden": [
+      "web_search"
+     ]
+    },
+    {
+     "message": "çıkanları hafta-sonu.md diye kaydediver",
+     "expect": "create_document",
+     "evidence": [
+      "hafta-sonu"
+     ],
+     "forbidden": [
+      "edit_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "odeme-sozu-sonra-hatirlatici",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "'ayın 10unda ödeyeceğim' yazmış müşteri, ne diyor bu",
+     "expect": "message_intent",
+     "forbidden": [
+      "calendar",
+      "remember"
+     ]
+    },
+    {
+     "message": "tamam, o gün için bana bir hatırlatma kur",
+     "expect": "calendar",
+     "forbidden": [
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "taksit-mesaji-sonra-hesap",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "'6 taksitin 4ünü ödedim' yazmış, bu mesaj ne diyor",
+     "expect": "message_intent",
+     "forbidden": [
+      "calculate"
+     ]
+    },
+    {
+     "message": "taksit 1450 liraysa kalan iki taksit kaç para eder",
+     "expect": "calculate",
+     "evidence": [
+      "2900"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "elazig-gezi-sonra-gun-sayimi",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "elazığda hafta sonu gezilecek bir yer bak",
+     "expect": "search_filter",
+     "forbidden": [
+      "web_search"
+     ]
+    },
+    {
+     "message": "bu arada hafta sonuna kaç gün kaldı",
+     "expect": "time",
+     "forbidden": [
+      "calculate",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "mugla-yeni-tasindik",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "muğlaya taşındık daha yeni, çocukları hafta içi götürebileceğim bir yer var mı buralarda",
+     "expect": "search_filter",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "sakarya-kahvalti-cep-dar",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "sakaryada yarın sabah kahvaltıya nereye gidelim, cebimiz pek müsait değil",
+     "expect": "search_filter",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "amasya-ogleden-sonra-tek-basima",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "amasyada yarın öğleden sonra tek başıma oyalanabileceğim bir yer var mı",
+     "expect": "search_filter",
+     "forbidden": [
+      "web_search",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "corum-pazar-gunu-kapali",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "çorumda bugün pazar, dükkanlar da kapalı; ailecek nereye gidebiliriz",
+     "expect": "search_filter",
+     "forbidden": [
+      "web_search",
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "manisa-musteri-yemegi",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "manisada yarın müşterileri yemeğe götüreceğim, orta bütçeli düzgün bir mekan lazım",
+     "expect": "search_filter",
+     "forbidden": [
+      "web_search",
+      "calendar"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kocaeli-misafir-agirlama",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "kocaelide bu akşam misafirlerimi ağırlayacağım, lüks bir mekan olsun",
+     "expect": "search_filter",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "hasat-parasi-eylul",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'hasat parası gelince kapatacağım, eylülü bulur' yazmış. bunu nasıl anlamalıyım",
+     "expect": "message_intent",
+     "forbidden": [
+      "calendar",
+      "time"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "oglum-elden-birakti",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'oğlum dükkana uğrayıp parayı elden bıraktı' yazmış. bu cevabı ne diye kaydedeyim",
+     "expect": "message_intent",
+     "forbidden": [
+      "remember"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "sonradan-zamlamissiniz",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'aramızda konuştuğumuz fiyat bu değildi, sonradan zamlamışsınız' demiş. bu cevabı ne diye işaretleyeyim",
+     "expect": "message_intent",
+     "forbidden": [
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "dukkan-kaca-kadar-acik",
+   "category": "tool",
+   "steps": [
+    {
+     "message": "'hayırlı işler abi, dükkan kaça kadar açık' yazmış. ödemeyle alakası var mı",
+     "expect": "message_intent",
+     "forbidden": [
+      "time",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bodrumdaki-otel-hatirasi",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "geçen sene bodrumda kaldığımız otel çok güzeldi, aklımdan hiç çıkmıyor",
+     "forbidden": [
+      "search_filter",
+      "web_search"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "gezdirmeye-para-yetismiyor",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "çocukları gezdirmeye para yetiştirmek ayrı bir dert oldu bu sene",
+     "forbidden": [
+      "search_filter",
+      "calculate"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "odeyecegim-diye-alti-ay",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "ödeyeceğim abi ödeyeceğim diye diye altı ay geçti, artık kimseye inanmıyorum",
+     "forbidden": [
+      "message_intent"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "whatsapptan-is-konusmak",
+   "category": "irrelevance",
+   "steps": [
+    {
+     "message": "whatsapptan iş konuşmak bana hiç doğru gelmiyor, sonradan ispatı olmuyor",
+     "forbidden": [
+      "message_intent",
+      "create_document"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kayseri-konaklama-sonra-kisi-basi",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "kayseride hafta sonu ailecek kalabileceğimiz bir yer bakalım",
+     "expect": "search_filter",
+     "forbidden": [
+      "web_search"
+     ]
+    },
+    {
+     "message": "aslında hafta sonu değil de yarın gitsek, yarına uygun bir yer var mı",
+     "expect": "search_filter",
+     "forbidden": [
+      "web_search"
+     ]
+    },
+    {
+     "message": "kişi başı 1850 lira alıyorlarmış, beş kişiyiz, ne tutar",
+     "expect": "calculate",
+     "evidence": [
+      "9250"
+     ],
+     "forbidden": [
+      "run_code"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "bursa-sakin-mekan-sonra-tercih-kaydi",
+   "category": "multi_turn",
+   "steps": [
+    {
+     "message": "bursada yarın akşam yetişkinlere göre sakin bir mekan bulalım",
+     "expect": "search_filter",
+     "forbidden": [
+      "web_search"
+     ]
+    },
+    {
+     "message": "ben gürültülü yerlerden hiç hoşlanmam, bunu kalıcı olarak aklında tut",
+     "expect": "remember",
+     "forbidden": [
+      "create_document",
+      "calendar"
+     ]
+    }
+   ]
+  }
+ ]
+}
