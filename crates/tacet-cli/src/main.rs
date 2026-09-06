@@ -1015,7 +1015,7 @@ fn refresh_session(
     memory: &SharedMemory,
     color: &Color,
     interactive: bool,
-    mcp_load: &mcp::LoadOutcome,
+    mcp_load: &mut mcp::LoadOutcome,
     engine: &Arc<dyn EngineProvider>,
     catalog: &mut ToolCatalog,
     executor: &mut ToolExecutor,

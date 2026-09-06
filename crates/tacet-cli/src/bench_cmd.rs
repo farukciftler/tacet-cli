@@ -44,8 +44,8 @@ fn read(path: &str) -> Result<BenchFile, String> {
 fn host_catalog(store: &Arc<tacet_tools::data_store::SharedStore>, color: &Color) -> ToolCatalog {
     let memory = SharedMemory::in_memory();
     let (mut catalog, _) = session_catalog(store, &memory, color, false);
-    let load = tacet_tools::mcp::load_from_default();
-    let _ = tacet_tools::mcp::feed_catalog(&mut catalog, &load);
+    let mut load = tacet_tools::mcp::load_from_default();
+    let _ = tacet_tools::mcp::feed_catalog(&mut catalog, &mut load);
     catalog
 }
 
@@ -304,8 +304,8 @@ and were SET ASIDE. The {} below are the ones this host can actually answer.",
         false,
         &|env, memory| {
             let (mut c, _) = session_catalog(&env.store, memory, &Color::setup(), false);
-            let load = tacet_tools::mcp::load_from_default();
-            let _ = tacet_tools::mcp::feed_catalog(&mut c, &load);
+            let mut load = tacet_tools::mcp::load_from_default();
+            let _ = tacet_tools::mcp::feed_catalog(&mut c, &mut load);
             c
         },
     );

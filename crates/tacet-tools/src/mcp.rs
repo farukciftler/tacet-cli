@@ -740,11 +740,42 @@ pub fn load_from_default_with(asker: Arc<dyn tacet_mcp::InputAsk>) -> LoadOutcom
 /// The returned names must be given to `bind_executor` — OTHERWISE the approval
 /// gate has no input and the Swift mistake at the head of this file repeats.
 #[must_use = "the returned names must be bound into ToolExecutor's external_tools list"]
-pub fn feed_catalog(catalog: &mut ToolCatalog, outcome: &LoadOutcome) -> Vec<String> {
+pub fn feed_catalog(catalog: &mut ToolCatalog, outcome: &mut LoadOutcome) -> Vec<String> {
+    let mut added = Vec::new();
+    let mut shadowed = Vec::new();
     for tool in &outcome.tools {
+        // A NAME CLASH IS A SILENT SWAP, so it is refused and said out loud.
+        //
+        // `ToolCatalog::add` is a `Vec::push` and `find` returns the first
+        // match, and built-ins are added before MCP tools in every production
+        // path. So a connection called `web` offering `search` becomes
+        // `web_search`, which resolves forever to the built-in: the remote tool
+        // is uncallable, and when the two schemas happen to be compatible the
+        // model's arguments for the server run against the built-in instead.
+        // Neither outcome reports anything.
+        //
+        // The existing guard `tool_names_are_unique_case_insensitively` runs
+        // over built-ins only and cannot see a name that arrives at runtime.
+        if catalog.find(tool.name()).is_some() {
+            shadowed.push(tool.name().to_string());
+            continue;
+        }
         catalog.add(Arc::clone(tool));
+        added.push(tool.name().to_string());
     }
-    outcome.names()
+    for name in shadowed {
+        outcome.skipped.push(SkippedTool {
+            connection: name
+                .split_once('_')
+                .map(|(c, _)| c.to_string())
+                .unwrap_or_default(),
+            remote_name: name.clone(),
+            reason: format!(
+                "the name '{name}' is already taken by another tool, so the model could not                  have reached this one — rename the connection in the config"
+            ),
+        });
+    }
+    added
 }
 
 /// Binds the MCP tools into the approval gate's `external_tools` list.
@@ -1034,7 +1065,7 @@ mod tests {
         }));
 
         let mut catalog = ToolCatalog::new();
-        let names = feed_catalog(&mut catalog, &outcome);
+        let names = feed_catalog(&mut catalog, &mut outcome);
 
         assert_eq!(names, vec!["ev_run".to_string()]);
         assert!(
@@ -1044,6 +1075,50 @@ mod tests {
         // An MCP tool is not a SOURCE of personal data: it must not enter the
         // tainting list.
         assert!(catalog.tainting_tools().is_empty());
+    }
+
+    /// A REMOTE NAME THAT COLLIDES WITH A BUILT-IN IS REFUSED, NOT PUSHED.
+    ///
+    /// `ToolCatalog::add` is a `Vec::push` and `find` returns the first match,
+    /// and built-ins go in first everywhere in production. So a connection named
+    /// `web` offering `search` produced `web_search`, which resolved forever to
+    /// the built-in: the remote tool was uncallable, and where the two schemas
+    /// happened to be compatible the model's arguments for the server ran
+    /// against the built-in instead. Nothing said so — not a log line, not an
+    /// error, not the tool list.
+    #[test]
+    fn a_remote_tool_cannot_shadow_a_name_the_catalog_already_has() {
+        let mut catalog = ToolCatalog::new();
+        catalog.add(Arc::new(FakeMCPTool {
+            name: "web_search".to_string(),
+        }));
+        let builtin = Arc::clone(&catalog.tools()[0]);
+
+        let mut outcome = LoadOutcome::default();
+        outcome.tools.push(Arc::new(FakeMCPTool {
+            name: build_tool_name("web", "search"),
+        }));
+        let names = feed_catalog(&mut catalog, &mut outcome);
+
+        assert!(
+            names.is_empty(),
+            "a shadowing tool must not be reported as added: {names:?}"
+        );
+        assert_eq!(
+            catalog.tools().len(),
+            1,
+            "the catalog must not hold two tools under one name"
+        );
+        assert!(
+            Arc::ptr_eq(&catalog.tools()[0], &builtin),
+            "the name must still resolve to the tool that had it"
+        );
+        assert_eq!(
+            outcome.skipped.len(),
+            1,
+            "the clash has to be reported, or it is the silent swap again"
+        );
+        assert!(outcome.skipped[0].reason.contains("already taken"));
     }
 
     #[test]

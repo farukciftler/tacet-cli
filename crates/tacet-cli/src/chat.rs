@@ -332,8 +332,8 @@ pub fn chat(run: ChatRun) -> ExitCode {
 
     // MCP CONNECTIONS — `mcp.json` in the config directory. If the file is
     // missing it does nothing and NO NETWORK CALL IS MADE.
-    let mcp_load = mcp::load_from_default_with(Arc::new(TerminalAsk));
-    let mcp_names = mcp::feed_catalog(&mut catalog, &mcp_load);
+    let mut mcp_load = mcp::load_from_default_with(Arc::new(TerminalAsk));
+    let mcp_names = mcp::feed_catalog(&mut catalog, &mut mcp_load);
     report_mcp(&mcp_load, &color);
 
     // THE APPROVAL GATE: a real question in interactive mode, SilentDeny in
@@ -641,7 +641,7 @@ pub fn chat(run: ChatRun) -> ExitCode {
                                 &memory,
                                 &color,
                                 interactive,
-                                &mcp_load,
+                                &mut mcp_load,
                                 &engine,
                                 &mut catalog,
                                 &mut executor,
@@ -707,7 +707,7 @@ pub fn chat(run: ChatRun) -> ExitCode {
                     &memory,
                     &color,
                     interactive,
-                    &mcp_load,
+                    &mut mcp_load,
                     &engine,
                     &mut catalog,
                     &mut executor,

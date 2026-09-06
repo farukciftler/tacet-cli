@@ -43,8 +43,8 @@ pub fn why(message: &str) -> ExitCode {
     let (mut catalog, _) = session_catalog(&store, &memory, &color, true);
     // The remote tools count too — they are the ones most likely to be missing
     // from a budget, since no profile knows their names.
-    let mcp_load = mcp::load_from_default();
-    let mcp_names = mcp::feed_catalog(&mut catalog, &mcp_load);
+    let mut mcp_load = mcp::load_from_default();
+    let mcp_names = mcp::feed_catalog(&mut catalog, &mut mcp_load);
     let router = Router::new().reserving(mcp_names);
     let explanation = router.explain(message, &catalog);
 
@@ -489,8 +489,8 @@ pub fn tools(print_schema: bool) -> ExitCode {
     // MCP tools must be visible HERE TOO: this command is the verbatim source of
     // "what the prompt says"; it must not print something different from the
     // catalog chat sees.
-    let mcp_load = mcp::load_from_default();
-    let _ = mcp::feed_catalog(&mut catalog, &mcp_load);
+    let mut mcp_load = mcp::load_from_default();
+    let _ = mcp::feed_catalog(&mut catalog, &mut mcp_load);
     report_mcp(&mcp_load, &color);
     for tool in catalog.tools() {
         println!(
