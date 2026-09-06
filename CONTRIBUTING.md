@@ -161,6 +161,32 @@ carries one, and refuses one whose case names no longer match the suite — a
 baseline nobody can pair against still prints a verdict, which is worse than
 having none.
 
+### Measuring against someone else's benchmark
+
+`crates/tacet-eval/examples/bfcl_irrelevance.rs` runs BFCL's `irrelevance`
+category through this stack with **BFCL's own function definitions**. It exists
+because every other number here is this project grading itself, and the
+"irrelevance gate" is BFCL's relevance/irrelevance detection under another name.
+
+```bash
+curl -sLO https://raw.githubusercontent.com/ShishirPatil/gorilla/main/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_irrelevance.json
+BFCL_JSON=crates/tacet-eval/baselines/bfcl-irrelevance-<model>-<device>.json \
+  cargo run --release -p tacet-eval --features metal --example bfcl_irrelevance \
+  -- ~/models/qwen3-4b/model.gguf BFCL_v4_irrelevance.json
+```
+
+The data is **not vendored**: it is someone else's benchmark and it moves. Three
+translations stand between their format and this one — their `dict`/`float` type
+names, names carrying characters this call format cannot express, and one turn
+rather than a conversation — and each is commented where it happens. **Report all
+three counts.** A harness that quietly rewrote 92 names and dropped 3 cases and
+said neither would be reporting a number for an easier set than the one it claims.
+
+An artifact in `baselines/` that declares `benchmark` and `source` is understood
+to be an external report and is exempt from the name-pairing check below — no
+suite here will ever match case names that belong to someone else. It is NOT
+exempt from the local-path check.
+
 `crates/tacet-eval/baselines/fake-engine.json` is the one baseline that needs no
 weights. It is a real `eval --json` report, byte-reproducible, and the nightly
 job pairs against it so the comparator itself is exercised. **Add a case and you

@@ -132,6 +132,19 @@ fn every_baseline_still_pairs_with_the_suite_it_came_from() {
     );
 
     for (file, report) in &files {
+        // AN EXTERNAL BENCHMARK IS NOT PAIRED BY NAME AND MUST NOT BE ASKED TO
+        // BE. `--compare` pairs a report against a suite this repository
+        // defines; a report of somebody ELSE'S benchmark — BFCL's irrelevance
+        // category, say — has case names that belong to them and no suite here
+        // will ever match. That is not the failure this test exists for.
+        //
+        // It is recognised by a field it must declare rather than by a filename
+        // convention, so the exemption cannot be claimed by accident: the local-
+        // path check below still applies to it, because that one is about the
+        // maintainer's home directory and holds for every file in this directory.
+        if report.get("benchmark").is_some() && report.get("source").is_some() {
+            continue;
+        }
         let mut names = case_names(report);
         names.sort();
         let matched = suites.iter().find(|(_, suite)| {

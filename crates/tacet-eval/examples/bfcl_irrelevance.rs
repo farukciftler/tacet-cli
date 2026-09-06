@@ -251,6 +251,47 @@ fn main() {
     }
 
     let total = passed + called.len();
+
+    // THE ARTIFACT. A number quoted on a page with nothing behind it is a number
+    // the next person has to take on trust, and this one is quoted on the README.
+    // Written next to the summary rather than instead of it: the file carries the
+    // environment stamp and every case that called something, so the rate can be
+    // recomputed rather than believed.
+    let artifact = serde_json::json!({
+        "benchmark": "BFCL v4 irrelevance",
+        "source": "gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_irrelevance.json",
+        "harness": "tacet-eval/examples/bfcl_irrelevance.rs",
+        "not_a_leaderboard_submission": "BFCL scores through its own harness, prompt and parser; this is the same questions and functions through this stack",
+        // THE BARE FILE NAME, NEVER THE PATH. `~/models/<name>/model.gguf` is
+        // where this lives on the machine that ran it, and this repository is
+        // public. The rule is CONTRIBUTING's, and `cargo test -p tacet-eval
+        // --test baselines` enforces it for the reports it knows about; this
+        // one writes it correctly rather than relying on someone remembering to
+        // scrub it afterwards.
+        "model": std::path::Path::new(model)
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown"),
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "entries_in_file": entries.len(),
+        "cases_scored": total,
+        "called_nothing": passed,
+        "rate": passed as f64 / total.max(1) as f64,
+        "tool_names_rewritten": renamed,
+        "schemas_untranslatable": untranslatable,
+        "wall_s": started.elapsed().as_secs(),
+        "called": called.iter().map(|(id, names, answer)| serde_json::json!({
+            "id": id, "called": names, "answer": answer,
+        })).collect::<Vec<_>>(),
+    });
+    if let Some(path) = std::env::var_os("BFCL_JSON") {
+        let text = serde_json::to_string_pretty(&artifact).expect("the report serialises");
+        std::fs::write(&path, text).expect("the report is writable");
+        eprintln!("wrote {}", std::path::Path::new(&path).display());
+    }
+
     println!("\nBFCL irrelevance (v4), single turn, BFCL's own functions");
     if limit != usize::MAX {
         println!("  *** CAPPED RUN: {limit} of the file, not the whole category ***");

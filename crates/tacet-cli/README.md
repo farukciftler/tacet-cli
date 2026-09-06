@@ -845,11 +845,53 @@ and auditable, not new.
 name.** The [Berkeley Function Calling
 Leaderboard](https://github.com/ShishirPatil/gorilla/tree/main/berkeley-function-call-leaderboard)
 has `irrelevance`, `live_irrelevance` and `live_relevance` categories measuring
-exactly this. **No headline number on this page is measured against any external
-benchmark**, and that is a real gap, not a stylistic one: every table here is
-this project grading itself on cases it wrote. [Measured against
-BFCL](#measured-against-someone-elses-benchmark) is the first step out of that,
-and it is one category deep.
+exactly this. Until 6 Sep 2026 **no number on this page was measured against any external
+benchmark** — every table was this project grading itself on cases it wrote.
+[Measured against someone else's benchmark](#measured-against-someone-elses-benchmark)
+is the first step out of that, and it is honestly one category deep: BFCL's
+irrelevance set, not the leaderboard.
+
+### Measured against someone else's benchmark
+
+**200 of 237, 84.4%** — BFCL v4's `irrelevance` category, qwen3-4B-Instruct-2507
+Q4_K_M on Metal, 8m 39s, 6 Sep 2026. Reproduced twice to the case: this decode is
+greedy, so the number is stable rather than merely repeated.
+
+BFCL's questions, **BFCL's own function definitions**, this engine, this prompt,
+this router and this grammar. Every case offers the model tools that do not
+answer the question; the correct behaviour on all 237 is to call nothing.
+
+```bash
+curl -sLO https://raw.githubusercontent.com/ShishirPatil/gorilla/main/\
+  berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v4_irrelevance.json
+BFCL_JSON=out.json cargo run --release -p tacet-eval --features metal \
+  --example bfcl_irrelevance -- ~/models/qwen3-4b/model.gguf BFCL_v4_irrelevance.json
+```
+
+The report is committed at
+[`crates/tacet-eval/baselines/bfcl-irrelevance-qwen3-4b-metal.json`](https://github.com/farukciftler/tacet-cli/blob/main/crates/tacet-eval/baselines/bfcl-irrelevance-qwen3-4b-metal.json),
+with every case that called something and what it answered.
+
+**This is not a leaderboard submission and the number is not comparable to the
+published board.** BFCL scores through its own harness, its own prompt and its
+own parser, and each of those is part of what is being measured there. What this
+answers is narrower: *given the same questions and the same functions, how often
+does this stack invent a call.* Three translations sit between the two and each
+is stated in the harness where it happens — BFCL writes `dict` and `float` where
+JSON Schema writes `object` and `number`; **92 function names had to be
+rewritten** because a dot cannot appear in a name this call format can express
+(`math.sum` would arm the automaton on `math`); **3 of 240 cases are not scored**
+because their only function's schema could not be expressed at all, and dropping
+them silently would have made the set easier.
+
+**It found a defect on its eighth case, which is the argument for doing this at
+all.** Asked to solve `3x^2 - 2x - 5`, the model declined correctly — and wrote
+the quadratic formula on the way. `2(3)` is the denominator `2a`; it is also
+`name(args)`, with `3` as perfectly good JSON. Three of the turn's four passes
+went to a tool named `2`. Nothing ran, because gate 1 rejects an unknown name, so
+it was never a safety problem — it was the turn budget, and in any measurement it
+counts as a call on a case whose whole point is that there must not be one. A
+name may contain digits; it may not start with one. Fixed, with the fixture.
 
 ### What is actually distinctive
 
