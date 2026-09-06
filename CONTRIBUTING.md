@@ -194,22 +194,39 @@ the workspace half-released — some crates on crates.io pointing at versions th
 do not exist yet.
 
 ```
-tacet-kernel     tacet-zip                        # no in-tree dependencies
-tacet-skills                                      # kernel
-tacet-memory                                      # kernel, skills
-tacet-grammar    tacet-web        tacet-mcp        # kernel (all three)
-tacet-engine                                      # kernel, grammar
-tacet-tools                                       # kernel, zip, memory, skills, web, mcp
-tacet-eval                                        # + engine, grammar
-tacet-cli                                         # everything
+tacet-kernel     tacet-zip                    # nothing in-tree
+tacet-grammar    tacet-web       tacet-mcp    # kernel
+tacet-engine                                  # kernel, grammar
+tacet-skills                                  # kernel, engine (DEV)
+tacet-memory                                  # kernel, skills
+tacet-tools                                   # kernel, zip, memory, skills, web, mcp, engine
+tacet-eval                                    # + grammar
+tacet-cli                                     # everything
 ```
 
-**`tacet-web` and `tacet-mcp` come BEFORE `tacet-tools`, not after.** This list
-had them after, which reads naturally — they are the outward-facing pair — and is
-wrong: `tacet-tools` depends on both, so that order fails on the first publish
-past `tacet-tools`. Derive the order from
-`awk '/^\[dependencies\]/{p=1} p&&/^tacet-/' crates/*/Cargo.toml` rather than
-from what the crates feel like.
+**DEV-DEPENDENCIES CONSTRAIN THE ORDER TOO, and that is not obvious.** `cargo
+publish` runs a verification build of the packaged tarball, and that build
+resolves `[dev-dependencies]` like any other. `tacet-skills` has ONE in-tree
+dependency in `[dependencies]` — the kernel — and a dev-dependency on
+`tacet-engine`, which is six crates further down. Ordered by `[dependencies]`
+alone it fails with `failed to select a version for the requirement
+tacet-engine = "^0.1.11"` and takes `tacet-memory`, `tacet-tools`, `tacet-eval`
+and `tacet-cli` with it, because each one waits on the last.
+
+Derive the order from ALL the dependency tables, never from what the crates feel
+like:
+
+```bash
+for f in crates/*/Cargo.toml; do
+  echo "$(basename $(dirname $f)): $(awk '/^\[(dependencies|build-dependencies|dev-dependencies|target\..*dependencies)\]/{p=1;next} /^\[/{p=0} p&&/^tacet-/{gsub(/\..*/,"",$1); printf "%s ", $1}' $f)"
+done
+```
+
+**And publish one crate per command, checking the exit status.** A loop of the
+form `cargo publish -p $c | tail` reports success for every crate no matter what:
+the pipeline's status is `tail`'s. That is how a run here reported eleven
+successes when three had failed — including one, `tacet-skills`, whose failure
+was the dev-dependency above.
 
 Before any of it, two things that have each cost a release here:
 
@@ -237,6 +254,18 @@ Before any of it, two things that have each cost a release here:
    curl -sL -A tacet "https://crates.io/api/v1/crates/tacet-mcp/0.2.0/download" | tar xz
    diff -rq tacet-mcp-0.2.0/src crates/tacet-mcp/src
    ```
+
+**After the chain, check the claim from outside the checkout.** Everything above
+proves the crates uploaded; it does not prove the reuse story works for someone
+who has never cloned this repository — which is the only place it can be false.
+
+```bash
+cargo new /tmp/reuse && cd /tmp/reuse
+cargo add tacet-grammar tacet-kernel serde_json
+cp <repo>/crates/tacet-grammar/examples/no_engine.rs src/main.rs
+cargo run                          # prints the allowed set and the closed token
+cargo tree | grep -c tacet-engine  # must be 0
+```
 
 **The version numbers in `[workspace.dependencies]` are FLOORS.** Roughly twenty
 comments there each record a fix that a lower resolution would quietly undo —

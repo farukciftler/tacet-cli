@@ -73,16 +73,12 @@ cargo install tacet-cli --features candle  # CPU
 cargo install tacet-cli                    # no inference; still runs eval, tools and the addon flow
 ```
 
-⚠️ **crates.io is behind this page, and on a Mac that is not cosmetic.**
-`cargo install tacet-cli` resolves to **0.1.25** today (6 Sep 2026) against
-**0.1.27** here. That build has no `bench` subcommand — which this page names
-twenty times — and pins `tacet-engine ^0.1.9`, one release below the **0.1.10**
-floor the workspace declares mandatory for constrained generation on Metal. Below
-that floor a constrained turn dies with `constraint rejected the token:
-4286578688`, so a Mac user who follows the line above installs the crash. Until
-the release goes out, take the binary from
-[Releases](https://github.com/farukciftler/tacet-cli/releases) or build from a
-checkout. The publish order and its checks are in
+All eleven crates were published on 6 Sep 2026, so `cargo install tacet-cli` is
+this page. It resolved to **0.1.25** until then — a build with no `bench`
+subcommand, which this page names twenty times, pinned to `tacet-engine ^0.1.9`,
+one release below the **0.1.10** floor for constrained generation on Metal. A Mac
+user following the line above was installing the `constraint rejected the token:
+4286578688` crash. The publish order and the checks that go with it are in
 [CONTRIBUTING](https://github.com/farukciftler/tacet-cli/blob/main/CONTRIBUTING.md#publishing-to-cratesio).
 
 ⚠️ **`cargo install` does not remember `--features`.** Upgrade without the flag
@@ -271,10 +267,21 @@ live in `tacet-engine`, which made a runtime-independent property look like
 something this engine provided, and made anyone who wanted it depend on GGUF
 loading and prompt budgeting to get three method signatures.
 
-Two things keep it honest. A test in the kernel implements a working constraint
+Three things keep it honest. A test in the kernel implements a working constraint
 importing *only* that module, so a signature that starts needing an inference
-type stops compiling. And `cargo run -p tacet-grammar --example no_engine` shows
-it end to end against a pretend runtime in thirty lines:
+type stops compiling. `cargo run -p tacet-grammar --example no_engine` shows it
+end to end against a pretend runtime in thirty lines. And the claim is checked
+from OUTSIDE the checkout, which is the only place it can actually be false —
+measured 6 Sep 2026 against the registry, not against these paths:
+
+```bash
+cargo new x && cd x
+cargo add tacet-grammar tacet-kernel serde_json
+cp .../examples/no_engine.rs src/main.rs && cargo run
+cargo tree | grep -c tacet-engine     # 0
+```
+
+The example prints:
 
 ```
 after `weather({"city":"London",` the grammar allows: ["\"", " "]
