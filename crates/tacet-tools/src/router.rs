@@ -316,6 +316,15 @@ impl IntentProfile {
                 "delete the line",
                 "add a section",
                 "new section",
+                // "PUT BOOK THE FLIGHT ON THE NEXT LINE" REACHED NOTHING HERE
+                // and fired `Web` on the word "flight", which is how a request
+                // to append to a to-do list came back with `web_search` at rank
+                // 1 and `edit_document` outside the nine. `bench check
+                // --portable` had it as a permanently-failing step in
+                // `multi-turn.json`, scored against the model. The line is
+                // where the second turn of an append names its position.
+                "next line",
+                "on the line",
             ],
             IntentProfile::Clock => &[
                 // CAME FROM MEASUREMENT (the user's real session): "what time is it
@@ -851,6 +860,19 @@ impl IntentProfile {
                 "otel",
                 "parkur",
                 "etkinlik",
+                // THE SAME CATEGORY RULE, two more nouns and one audience. Two
+                // steps of `search_filter.json` name no city and no place noun
+                // at all — "hafta sonu icin ucuz bir kacamak" and "yaslilar
+                // icin bugun yapilacak sakin aktiviteler" — and scored zero,
+                // which `bench check --portable` reports as a step that can
+                // never pass. `aktivite` is `etkinlik`'s everyday twin and
+                // `kacamak` is what a short trip is called; the audience
+                // phrases mirror the English "with the kids"/"family friendly".
+                "aktivite",
+                "kacamak",
+                "yaslilar icin",
+                "cocuklar icin",
+                "aileler icin",
                 // The quoting frames, which is how a message to classify
                 // arrives in Turkish: someone else's words plus a verb of
                 // saying.
@@ -864,6 +886,15 @@ impl IntentProfile {
                 "mesaji geldi",
                 "nasil siniflandir",
                 "ne diyor",
+                // BARE "diyor" — "someone SAYS", the frame Turkish puts around
+                // quoted speech. "ne diyor" above needs the question word, and
+                // the message that exposed the gap has none:
+                // "'Kartla odedim zaten, dekont elimde' diyor" scored ZERO on
+                // every profile and filled the budget with the head of the
+                // catalog. It shares the sentence with `read_document`'s "belge
+                // ne diyor"; that one also fires `Document`, whose hint product
+                // is larger, so the two do not collide.
+                "diyor",
                 "que hacer",
                 "sitios para",
                 "que quiere decir",
@@ -908,6 +939,41 @@ impl IntentProfile {
                 // the naming word carries the file half.
                 "adiyla",
                 "olustur",
+                // THE OTHER FIVE LANGUAGES — see the note under `Files`. Both
+                // halves of this profile are here: the words for READING a
+                // document and the words for MAKING one, because the profile is
+                // shared and the hint product separates the two tools.
+                // es / fr / de / ru / zh
+                "documento",
+                "informe",
+                "resume",
+                "lee el",
+                "crea un archivo",
+                // French "document" is NOT here: it is spelled exactly like the
+                // English trigger already in `message_triggers`, and
+                // `score_intent` chains the two lists without dedup, so the word
+                // would be weighted twice. `no_trigger_is_listed_twice_in_a_profile`
+                // is what said so.
+                "rapport",
+                "lis-moi",
+                "cree un fichier",
+                "dokument",
+                "bericht",
+                "lies",
+                "vorlesen",
+                "zusammenfass",
+                "erstelle eine datei",
+                "документ",
+                "отчет",
+                "прочитай",
+                "открой",
+                "создай",
+                "文档",
+                "报告",
+                "念给我",
+                "写了些啥",
+                "建个",
+                "创建",
             ],
             IntentProfile::Clock => &[
                 "yarin",
@@ -1051,7 +1117,41 @@ impl IntentProfile {
                 // "sil" is three letters and therefore matches as a whole term
                 // only — which is what is wanted: "sil" (delete) must not be
                 // reached from "silinmis" or "silahli".
-                "sil", "degistir", "ekle", "guncelle", "satiri", "satirini",
+                "sil",
+                "degistir",
+                "ekle",
+                "guncelle",
+                "satiri",
+                "satirini",
+                // THE OTHER FIVE LANGUAGES — see the note under `Files`. Four of
+                // the seven unreachable steps were an EDIT asked as a
+                // continuation ("再加一行", "убери его из списка"), where the
+                // sentence names no document at all and the verb is the only
+                // signal there is.
+                // es / fr / de / ru / zh
+                "anade",
+                "agrega",
+                "quita",
+                "elimina la linea",
+                "ajoute",
+                "remplace",
+                "enleve",
+                "supprime la ligne",
+                "fuge hinzu",
+                "ersetze",
+                "zeile",
+                "kurze",
+                "in einen satz",
+                "добавь",
+                "убери",
+                "удали строку",
+                "замени",
+                "加一行",
+                "再加",
+                "改成",
+                "压成",
+                "补上",
+                "删掉",
             ],
             IntentProfile::Repo => &[
                 // The repository is named in English even in a Turkish
@@ -1087,6 +1187,40 @@ impl IntentProfile {
                 // trigger; without a Files phrase of its own the sentence asked
                 // to CREATE a file.
                 "hangi dosya",
+                // THE OTHER FIVE LANGUAGES. `Memory`, `Web`, `Archive` and
+                // `Integrity` were given them when a natively-authored
+                // benchmark in each was gated; `Files`, `Document` and `DocEdit`
+                // were not, and nothing measured the omission until
+                // `every_benchmark_step_can_pass` ran `bench check` over the
+                // whole corpus for the first time. Seven steps of
+                // `benchmarks/core/` — German, Russian and Chinese — expected a
+                // tool the router does not show, so they could never pass and
+                // every run booked the failure against the model.
+                //
+                // SPELLED AS `simplify` LEAVES THEM: it folds the Turkish
+                // letters (so German "ü" is written "u") and lowercases, and
+                // touches nothing else, so Cyrillic and Chinese pass through and
+                // French keeps its accents.
+                // es / fr / de / ru / zh
+                "archivo",
+                "carpeta",
+                "donde esta",
+                "fichier",
+                "dossier",
+                "ou est",
+                "datei",
+                "ordner",
+                "verzeichnis",
+                "wo liegt",
+                "wo ist",
+                "such sie",
+                "файл",
+                "папк",
+                "найди",
+                "в каком файле",
+                "文件",
+                "哪个文件",
+                "找一下",
             ],
             IntentProfile::Memory => &[
                 // THE OTHER FIVE LANGUAGES, added when a natively-authored
@@ -1250,6 +1384,24 @@ impl IntentProfile {
         match self {
             // WHAT SEPARATES THE TWO TOOLS THAT SHARE THIS PROFILE. The profile
             // score is the same for both; the product with these hints is not.
+            // `search` STAYS, AND IT REALLY DOES REACH `web_search` IN ITS NAME.
+            // The note at `slot_gate::predict` says so; the obvious repair was
+            // tried and MEASURED (6 Sep 2026, `eval --routing`, 166 cases):
+            //
+            //   as shipped                       REACH 166/166  TOP3 166/166  mean 1.33
+            //   `search` -> `search_filter`      REACH 166/166  TOP3 165/166  mean 1.31
+            //   both hints together              REACH 166/166  TOP3 166/166  mean 1.33
+            //
+            // Narrowing it costs `tr-dosya-ara`, which falls to rank 4 — because
+            // `search` was ALSO reaching `find_file` through its description,
+            // accidentally, and that accident was carrying a case. Adding
+            // `search_filter` beside it keeps the score identical and does not
+            // fix what it was meant to fix: `web_search` is lifted by the same
+            // amount either way, it merely loses to `search_filter` afterwards.
+            //
+            // So the collision is DOCUMENTED RATHER THAN REMOVED. What bounds it
+            // is the weaker claim already recorded at the boost: the learned hint
+            // never removes a tool the written table put in.
             IntentProfile::Extract => &["filter", "search", "intent", "message", "classif"],
             // "db" IS THE TOOL'S WHOLE NAME, which is the strongest evidence the
             // router has (`NAME_WEIGHT` is 4x a description match) and the thing

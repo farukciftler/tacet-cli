@@ -283,6 +283,21 @@ comparison did.
 suite, with one exception carrying its reason in the source, and asserts that no
 irrelevance case is handed a guide at all.
 
+**The same question, asked of the benchmark corpus, found seven more.** A tool
+that is not in the prompt cannot be called, so a benchmark step whose expected
+tool falls outside the nine is not a hard case — it is an impossible one, and
+every run books its failure against the model. `tacet bench check` has been able
+to say this since it was written and nothing ran it. Run over all 947 steps
+against the default catalog, it found **eleven**: four in the Turkish and task
+sets, and seven in `benchmarks/core/` — German, Russian and Chinese. The cause
+was one omission with a date on it: `Memory`, `Web`, `Archive` and `Integrity`
+were given triggers in the other five languages when a natively-authored
+benchmark in each was gated; `Files`, `Document` and `DocEdit` were not. So
+"再加一行" — *add another line* — reached no profile at all and `edit_document`
+sat outside the nine. All eleven now route, `eval --routing` is unchanged at
+166/166 with mean rank 1.33, and `every_benchmark_step_can_pass` runs the check
+over the whole corpus on every `cargo test`.
+
 ## MCP
 
 Connect servers you run yourself in `~/.tacet/mcp.json`. Their tools join the catalog and pass through the same four gates as built-in ones — a remote tool gets no privileges a local tool doesn't have.
