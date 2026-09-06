@@ -413,6 +413,14 @@ paired on 163 cases
   verdict: NOT DISTINGUISHABLE from no change at 95%.
 ```
 
+**And the suite is deterministic, which nothing here had ever checked.** Two
+identical runs on the same box, same commit, same weights: **184 of 184 case
+verdicts identical**, every axis count identical, only the wall clock moving
+(7m 35s against 8m 01s, 5.8% — machine noise). That matters more than it sounds:
+it means `--compare` between two runs on one machine measures the CHANGE and
+nothing else, so a one-case difference is a real one. It also means the gap
+below is device, not variance.
+
 **Same weights, two machines, no measurable difference in what the model chose** —
 which is the result worth having, because it says the numbers on this page are
 about the model and not about the card. The device line is new: `kv_cache_budget`
