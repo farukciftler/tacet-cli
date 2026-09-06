@@ -1,6 +1,6 @@
 ---
 name: web-search
-triggers: search the web, on the internet, the weather, weather in, latest news, exchange rate, look it up online
+triggers: search the web, on the internet, the weather, weather in, latest news, news, headlines, exchange rate, the dollar, stock price, price of, flight schedule, inflation rate, who won, look it up online, internette ara, haber, son dakika, hava nasıl, hava durumu, dolar kuru, enflasyon, güncel
 tools: web_search
 ---
 # Searching the web

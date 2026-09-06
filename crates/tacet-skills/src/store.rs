@@ -66,6 +66,12 @@ const PACKAGE_FILES: &[(&str, &str)] = &[
     ("archive", include_str!("../skills/archive.md")),
     ("checksum", include_str!("../skills/checksum.md")),
     ("web-search", include_str!("../skills/web-search.md")),
+    // SEPARATE FROM `web-search`, and the separation is the guide's whole
+    // content. Three cases in the suite handed a URL to `web_search`, which
+    // takes keywords and cannot be given one; the tool description was the
+    // proximate cause and this is the other half. `has_tools` demands
+    // `web_fetch`, so on a build without the web addon it can never be injected.
+    ("web-fetch", include_str!("../skills/web-fetch.md")),
     ("db", include_str!("../skills/db.md")),
     ("clipboard", include_str!("../skills/clipboard.md")),
     ("shell", include_str!("../skills/shell.md")),
@@ -393,31 +399,37 @@ mod tests {
         }
     }
 
-    /// A MEASURED LIMITATION, PINNED RATHER THAN FIXED: an ALL-CAPS English
-    /// message matches no trigger that contains the letter i.
+    /// THE LIMITATION THIS TEST USED TO PIN IS FIXED, AND THE FIX IS NOT WHERE
+    /// THE OLD COMMENT SAID IT WOULD HAVE TO BE.
     ///
-    /// `lowercase("HOW MUCH IS 250 LIRA")` is `"how much ıs 250 lıra"`, so calc's
-    /// shipped `how much is` scores zero on it. Measured here, today, on the real
-    /// matcher.
+    /// It read: an ALL-CAPS English message matches no trigger containing the
+    /// letter i, because `lowercase("HOW MUCH IS")` is `"how much ıs"`; and it
+    /// declined to fix it on the grounds that `I` -> `ı` is the correct Turkish
+    /// mapping and undoing it would break the language the rule exists for.
     ///
-    /// IT IS NOT FIXED HERE AND THE REASON IS THE RULE ITSELF: 'I' -> 'ı' is the
-    /// CORRECT Turkish mapping and `matching` says so at length; undoing it would
-    /// break the language the rule was written for. Making the mapping depend on
-    /// the message's language is a product decision, not a refactor, and it needs
-    /// a language signal this layer does not have. What is cheap and honest is to
-    /// write the cost down and to have it fail if somebody "fixes" `lowercase`
-    /// without noticing the Turkish half.
+    /// That reasoning was sound and the conclusion did not follow: the mapping
+    /// did not have to change, the COMPARISON did. `matching::same_letter` folds
+    /// `i` and `ı` when a trigger is matched, so `lowercase` still produces
+    /// `"how much ıs"` — asserted below, because that half must not drift — and
+    /// the trigger still fires.
+    ///
+    /// The cost was not hypothetical and it was not confined to all-caps. Any
+    /// English sentence OPENING with a capital-I word lost every trigger
+    /// beginning with `i`: "Insert a header line into document.md" matched no
+    /// skill at all, which `the_guide_and_the_expected_tool` caught. Turkish
+    /// typed without diacritics — "dosyayi bul", "kac gun" — gains from the same
+    /// fold rather than losing.
     #[test]
-    fn an_all_caps_english_message_misses_a_trigger_holding_an_i() {
+    fn an_all_caps_english_message_still_finds_a_trigger_holding_an_i() {
         let s = SkillStore::default_set();
         assert!(s.matching("how much is 250 lira", None).is_some());
         assert!(
-            s.matching("HOW MUCH IS 250 LIRA", None).is_none(),
-            "if this now matches, `lowercase` changed; check the Turkish cases in \
-             `matching` before celebrating"
+            s.matching("HOW MUCH IS 250 LIRA", None).is_some(),
+            "the i/ı fold in `matching::same_letter` is what makes this match; if \
+             it is gone, every English trigger beginning with `i` is dead again"
         );
-        // The mechanism, so the failure above is readable: it is the letter, not
-        // the phrase.
+        // The mapping itself is UNCHANGED, and that is the half the Turkish
+        // cases depend on.
         assert_eq!(lowercase("IS"), "ıs");
     }
 
@@ -451,6 +463,10 @@ mod tests {
             ("Unzip backup.zip for me", "archive"),
             ("What is the sha256 of this download?", "checksum"),
             ("Search the web for the exchange rate", "web-search"),
+            (
+                "Summarize the page at https://example.com/post",
+                "web-fetch",
+            ),
             ("Run a sql query against notes.sqlite", "db"),
             ("Put this on my clipboard", "clipboard"),
             ("Run the command ls in the terminal", "shell"),

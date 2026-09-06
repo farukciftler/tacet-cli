@@ -1,6 +1,6 @@
 ---
 name: read-document
-triggers: read, summarize, what does it say, what is inside, this document, this file, how many rows, as a table, show the table, show its content
+triggers: read, read the table, summarize, what does it say, what does the file, what does the document, file say, document say, inside the file, inside the document, this document, this file, how many rows, as a table, show the table, show its content, entire text of, oku, özet, ne yazıyor, içeriğinde, içeriğini, metnini göster, belgesini, tabloyu göster
 tools: read_document
 ---
 # Reading documents

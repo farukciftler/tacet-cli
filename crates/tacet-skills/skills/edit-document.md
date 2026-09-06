@@ -1,6 +1,6 @@
 ---
 name: edit-document
-triggers: add a row, delete the line, remove the line, change the title, edit the file, edit this document, update the document, rename the heading
+triggers: add a row, add the row, a row, the row, row with, add a line, add the line, delete the line, remove the line, change, change the title, edit the file, edit this document, update the document, update the file, rename the heading, replace line, replace the line, modify the, append a, append the, insert a header, insert a line, satır ekle, satır daha ekle, satırı sil, satırı değiştir, başlık ekle, ekler misin, düzenle, güncelle, değiştir
 tools: read_document, edit_document
 ---
 # Editing a document

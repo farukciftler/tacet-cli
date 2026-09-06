@@ -1,6 +1,6 @@
 ---
 name: create-document
-triggers: excel, xlsx, pdf, word, docx, create a file, make a file, report, export, dump, markdown, spreadsheet, make a table
+triggers: excel, xlsx, pdf, word, docx, create a file, make a file, save a file, write a file, new document, file named, save a new note, write a report, create a report, prepare a report, as a report, export, dump, markdown, spreadsheet, make a table, oluştur, belge oluştur, dosya oluştur, md adıyla, txt adıyla, xlsx adıyla, tablo yap, rapor hazırla, excel dosyası
 tools: create_document
 ---
 # Creating documents

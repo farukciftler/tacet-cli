@@ -1,6 +1,6 @@
 ---
 name: git
-triggers: git, commit message, what changed, my changes, staged, unstaged, recent commits
+triggers: git, git diff, git repo, git repository, in this repository, uncommitted, commit message, what changed, my changes, staged, unstaged, recent commits, commit mesajı, değişiklikleri, değişti, depoda
 tools: git
 ---
 # Repository state

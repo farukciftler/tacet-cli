@@ -1,6 +1,6 @@
 ---
 name: checksum
-triggers: sha256, checksum, hash of, fingerprint of, byte for byte
+triggers: sha256, checksum, hash of, fingerprint of, byte for byte, aynı mı, kontrol eder, özet değeri
 tools: checksum
 ---
 # File fingerprints

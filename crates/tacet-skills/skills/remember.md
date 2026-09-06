@@ -1,6 +1,6 @@
 ---
 name: remember
-triggers: remember, forget, keep in mind, note this about me, do not forget
+triggers: remember, forget, keep in mind, the notes, notes you keep, what note, note this about me, do not forget, unut, unutma, hatırla, aklında, kaydet, notları listele, aklımda tut
 tools: remember
 ---
 # Lasting notes

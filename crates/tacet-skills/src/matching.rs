@@ -53,6 +53,27 @@ pub fn lowercase(text: &str) -> String {
     output
 }
 
+/// `i` AND `ı` ARE THE SAME LETTER HERE, and this is not a Turkish nicety — it
+/// is the fix for a defect that silently disabled triggers on ENGLISH.
+///
+/// `lowercase` maps `I` to `ı`, which is right for Turkish and wrong for every
+/// other language. Triggers are stored already lowercased, so one written
+/// `insert a header` keeps its dotted `i` — and the message "Insert a header
+/// line into document.md" arrives as "ınsert a header line…". The trigger could
+/// never fire, and nothing said so: the message simply got no guide, which is
+/// the failure mode this codebase calls the cheap one and therefore the one
+/// nobody looks at. `the_guide_and_the_expected_tool` found it on the first run.
+///
+/// Folding the two directions is the conservative repair. It cannot create a
+/// false match between two Turkish words that differ only in the dot AND begin
+/// a term AND are somebody's trigger; it does restore every English trigger
+/// beginning with `i` after a capital letter. The asymmetry note above applies:
+/// missing is cheap, mismatching is expensive, and this trades a vanishing
+/// mismatch risk for a measured 1-in-165 miss.
+fn same_letter(a: char, b: char) -> bool {
+    a == b || matches!((a, b), ('i', 'ı') | ('ı', 'i'))
+}
+
 /// Does `text` (which MUST already be lowercased) contain `trigger` while
 /// respecting term boundaries.
 ///
@@ -85,7 +106,11 @@ pub fn contains(text: &str, trigger: &str) -> bool {
     let needs_whole_term = g.len() < WHOLE_TERM_LIMIT && !g.contains(&' ');
 
     for i in 0..=(t.len() - g.len()) {
-        if t[i..i + g.len()] != g[..] {
+        if !t[i..i + g.len()]
+            .iter()
+            .zip(g.iter())
+            .all(|(a, b)| same_letter(*a, *b))
+        {
             continue;
         }
         let at_start = i == 0 || !t[i - 1].is_alphanumeric();
@@ -127,6 +152,27 @@ mod tests {
         assert_eq!(lowercase("ISTANBUL"), "ıstanbul");
         assert_eq!(lowercase("İstanbul"), "istanbul");
         assert_eq!(lowercase("TABLE As"), "table as");
+    }
+
+    /// THE DOTLESS I. `lowercase` turns an English capital `I` into `ı`, so a
+    /// trigger beginning with `i` could never match a sentence that starts with
+    /// one. Found by the suite survey: "Insert a header line into document.md"
+    /// matched no skill at all.
+    #[test]
+    fn a_capital_i_does_not_hide_a_trigger() {
+        let text = lowercase("Insert a header line into document.md");
+        assert_eq!(
+            text.chars().take(6).collect::<String>(),
+            "ınsert",
+            "the mapping itself is unchanged; the fold is in the comparison"
+        );
+        assert!(contains(&text, "insert a header"));
+        assert!(contains(
+            &lowercase("Is it the same file?"),
+            "is it the same file"
+        ));
+        // And the Turkish direction still works, which is what the mapping is for.
+        assert!(contains(&lowercase("İçeriğinde ne var"), "içeriğinde"));
     }
 
     #[test]

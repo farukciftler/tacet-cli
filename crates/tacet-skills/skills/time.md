@@ -1,6 +1,6 @@
 ---
 name: time
-triggers: what time, what day is, which day, what is the date, todays date, how many days left, which month, current time
+triggers: what time, what day is, which day, what is the date, todays date, today's date, date today, how many days left, how many days, days until, days since, day of the week, day of the month, current year, which month, current time, utc time, saat kaç, şu an saat, saat ve dakika, ayın kaçı, kaç gün, kaç gün kaldı, kaç gün var, kaç gün geçti, günlerden, hangi ay, hangi yıl
 tools: time
 ---
 # Date and time

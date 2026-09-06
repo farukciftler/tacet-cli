@@ -1,6 +1,6 @@
 ---
 name: calendar
-triggers: my calendar, my schedule, remind me, set a reminder, appointment, meetings today
+triggers: my calendar, my schedule, remind me, set a reminder, appointment, schedule a meeting, meetings today, takvim, hatırlatıcı, randevu, toplantı ekle
 tools: calendar
 ---
 # Calendar and reminders

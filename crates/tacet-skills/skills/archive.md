@@ -1,6 +1,6 @@
 ---
 name: archive
-triggers: zip file, unzip, unpack, extract the archive, inside the zip, compressed archive
+triggers: zip, zip file, unzip, unpack, extract the archive, inside the zip, compressed, compressed archive, sıkıştırılmış, arşiv, zipten çıkar
 tools: archive
 ---
 # Zip archives

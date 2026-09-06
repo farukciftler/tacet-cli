@@ -1,6 +1,6 @@
 ---
 name: code
-triggers: run this code, run the script, execute, simulate, prime numbers, fibonacci, sort this list, python script, write a script, save the script
+triggers: run this code, run the script, execute, simulate, prime numbers, fibonacci, sort this list, python, python script, using python, in python, with python, script, write a script, save the script, asal sayı, beti, kod çalıştır, kod yaz, py adıyla, ekrana yazdır, yazdır, sırala
 tools: run_code, write_code
 ---
 # Running and writing code

@@ -1,6 +1,6 @@
 ---
 name: calc
-triggers: calculate, how much is, add up, multiply, divide, times, percent, how much money, what is the total
+triggers: calculate, how much is, add, add up, multiply, divide, times, minus, percent, square root, average of, power of, how much money, what is the total, hesapla, kaç eder, kaçtır, yüzde, topla, çarpı, bölü, eksi, karekök, ortalama, üzeri, kdv, ne kadar, kaç lira, indirim
 tools: calculate
 ---
 # Arithmetic

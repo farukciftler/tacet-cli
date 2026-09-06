@@ -1,6 +1,6 @@
 ---
 name: find-file
-triggers: find the file, which file, where is the file, search my files, look for a file, locate the file
+triggers: find the file, which file, my files, files with, extension, where is the, where is the file, search my files, my workspace, look for a file, locate the file, locate files, hangi dosya, hangi klasör, dosyayı bul, dosyaları bul, dosyaları, nerede, arat, dosya ara
 tools: find_file
 ---
 # Finding files

@@ -261,6 +261,22 @@ $ tacet why "how much is a ticket to Istanbul"
 
 That is the arithmetic guide on a price question, and no model had to run to see it.
 
+**Run over the whole suite, that check found more than a price question.** Of the
+166 steps the model suite scores, **42 English steps matched no skill at all and
+13 matched the wrong one**, and every one of the 47 Turkish steps was unguided —
+the shipped skills had no Turkish triggers, in a suite whose Turkish half is the
+larger one. Some were plain once seen (`create-document` triggered on the bare
+word `report`, so "What does the file report.md say?" was handed the guide for
+WRITING a document). One was invisible from either list: `lowercase` maps a
+capital `I` to `ı`, which is correct Turkish, so **an English sentence opening
+with a capital-I word lost every trigger beginning with `i`** — "Insert a header
+line into document.md" matched nothing. The mapping did not have to change; the
+comparison did.
+
+`the_guide_and_the_expected_tool` now holds both counts at zero over the whole
+suite, with one exception carrying its reason in the source, and asserts that no
+irrelevance case is handed a guide at all.
+
 ## MCP
 
 Connect servers you run yourself in `~/.tacet/mcp.json`. Their tools join the catalog and pass through the same four gates as built-in ones — a remote tool gets no privileges a local tool doesn't have.
