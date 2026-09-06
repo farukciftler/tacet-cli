@@ -1364,25 +1364,101 @@ pub struct StepOutcome {
     /// still when a real claim broke. A rate over steps that assert nothing is
     /// not a rate.
     pub claims: bool,
+    /// WHY THE TURN STOPPED. See `Ending`: a step that could not be measured is
+    /// not scored as a pass on either axis.
+    pub ended: Ending,
 }
 
-pub fn check_answer_quality(step: &SelectionStep, answer: &str, tool_outcomes: &[String]) -> bool {
-    let mut pool = String::with_capacity(answer.len() + 512);
-    pool.push_str(answer);
-    for t in tool_outcomes {
-        pool.push(' ');
-        pool.push_str(t);
+/// WHY A TURN STOPPED, and therefore whether it can be scored at all.
+///
+/// The loop used to leave this implicit and the report paid for it twice.
+/// `passed` was decided from `called` alone, so a turn that ran out of passes
+/// while still calling tools — never producing a word for the user — scored as a
+/// HIT, and a turn whose engine died scored as a PASS on the irrelevance axis,
+/// because a dead engine calls nothing. Both are in the shipped baseline: three
+/// steps passed with `answer == ""` after four tool calls, and the shell exits
+/// non-zero on exactly that outcome (`chat.rs`, `settled`), while this file
+/// claimed parity with the shell twice.
+///
+/// A turn that could not be measured is not a pass and not a failure. It is
+/// counted separately and named, so a run in which generation broke cannot read
+/// as the safety property holding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum Ending {
+    /// The model produced text for the user. The only ending that can be scored.
+    Answered,
+    /// Every pass of the loop was spent calling tools and none produced an
+    /// answer. The shell calls this a failed run.
+    OutOfTurns,
+    /// The engine returned an error.
+    EngineError,
+    /// Generation stopped on the token cap rather than on the model's own stop.
+    CutOff,
+    /// The environment could not be built — a host problem, not a model one.
+    HostFailed,
+}
+
+impl Ending {
+    /// Can a verdict be drawn from a turn that ended this way.
+    pub fn is_measurable(self) -> bool {
+        matches!(self, Ending::Answered)
     }
-    let pool_lower = pool.to_lowercase();
+
+    /// For the table and the report.
+    pub fn name(self) -> &'static str {
+        match self {
+            Ending::Answered => "answered",
+            Ending::OutOfTurns => "out of turns",
+            Ending::EngineError => "engine error",
+            Ending::CutOff => "cut off",
+            Ending::HostFailed => "host failed",
+        }
+    }
+}
+
+/// Does the step's claim about the ANSWER hold.
+///
+/// TWO CORRECTIONS, BOTH MEASURED ON THE SHIPPED BASELINE.
+///
+/// **`evidence` is checked against the answer, not against a pool that also
+/// holds the tool's output.** It used to search `answer + every tool result`,
+/// so a correctly-called tool satisfied the claim WHATEVER THE MODEL SAID —
+/// `tr-hesap-ortalama` carries evidence `["20"]`, the model answered `"30"`, and
+/// the step reads `answer_passed: true` because the tool's own result contained
+/// the 20. An axis printed as ANSWER QUALITY was reporting tool output. Four
+/// other places in this repository already document the answer-only rule; this
+/// is the one that did it.
+///
+/// **`forbidden` is compared against the tools that were CALLED.** `bench.rs`
+/// documents it as "tools that must NOT be called" and `bench check` reports the
+/// entries to their author as tool names, while the only reader was a substring
+/// search over text — 1505 such assertions across the benchmark corpus,
+/// every value a tool name, none of them doing anything. It also fired the wrong
+/// way: an answer that merely wrote the word `web_search` failed a step that had
+/// never called it.
+///
+/// The verdict stays on the ANSWER axis rather than on `passed`. Moving it would
+/// change `tool_total` and `step_passed` on every benchmark file at once and
+/// make every published table incomparable with the next run; the axis this
+/// belongs to is "did the model do something it was told not to", which is a
+/// quality claim.
+pub fn check_answer_quality(
+    step: &SelectionStep,
+    answer: &str,
+    called: &[String],
+    tool_outcomes: &[String],
+) -> bool {
+    let _ = tool_outcomes;
+    let answer_lower = answer.to_lowercase();
 
     for ev in &step.evidence {
-        if !pool_lower.contains(&ev.to_lowercase()) {
+        if !answer_lower.contains(&ev.to_lowercase()) {
             return false;
         }
     }
 
     for fb in &step.forbidden {
-        if pool_lower.contains(&fb.to_lowercase()) {
+        if called.iter().any(|c| c.eq_ignore_ascii_case(fb)) {
             return false;
         }
     }
@@ -2044,6 +2120,7 @@ pub fn run_selection_case_in(
                     // The host failed, not a claim. Counting it would put a
                     // machine problem into the answer-quality denominator.
                     claims: false,
+                    ended: Ending::HostFailed,
                 }],
             };
         }
@@ -2128,6 +2205,10 @@ pub fn run_selection_case_in(
         let mut turn_tools: Vec<Turn> = Vec::new();
         let mut called: Vec<String> = Vec::new();
         let mut answer = String::new();
+        // OUT OF TURNS UNTIL SOMETHING ELSE HAPPENS. Falling out of the loop
+        // without ever answering is the shell's failed run; making it the
+        // default means the loop has to earn any other ending.
+        let mut ended = Ending::OutOfTurns;
         // A duplicate call ends the tool phase — the shell does the same, and
         // this set exists to measure the shell.
         let mut must_answer = false;
@@ -2203,6 +2284,7 @@ pub fn run_selection_case_in(
                 Ok(g) => g,
                 Err(e) => {
                     answer = format!("engine error: {e}");
+                    ended = Ending::EngineError;
                     break;
                 }
             };
@@ -2226,6 +2308,7 @@ pub fn run_selection_case_in(
             ));
             if !generation.stop.is_complete() {
                 answer = "generation was cut off halfway".into();
+                ended = Ending::CutOff;
                 break;
             }
             // THE TOOL'S OWN TIME, separated from the model's. Without this the
@@ -2235,7 +2318,10 @@ pub fn run_selection_case_in(
             let tool_started = std::time::Instant::now();
             let Some(outcome) = wait(executor.execute_raw(&generation.text, ticket, &mut ctx))
             else {
+                // THE ONLY EXIT THAT PRODUCED AN ANSWER: the generation was not
+                // a call, so it is what the user is told.
                 answer = generation.text.clone();
+                ended = Ending::Answered;
                 break;
             };
             trace(&format!(
@@ -2253,17 +2339,28 @@ pub fn run_selection_case_in(
             turn_tools.push(Turn::tool(outcome.to_model.clone()));
         }
 
-        let passed = match &step.expected {
-            Some(name) => called.iter().any(|c| c == name),
-            None => called.is_empty(),
-        };
+        // A TURN THAT NEVER ANSWERED IS NOT A HIT, AND A DEAD ENGINE IS NOT AN
+        // IRRELEVANCE PASS.
+        //
+        // `called` alone decided this, so falling out of `for turn in
+        // 0..MAX_TURNS` — every pass spent calling tools, nothing said to the
+        // user — scored as a hit; three steps of the shipped baseline are
+        // exactly that. And an engine error leaves `called` empty, so
+        // `None => called.is_empty()` scored a broken run as the safety
+        // property holding.
+        let passed = ended.is_measurable()
+            && match &step.expected {
+                Some(name) => called.iter().any(|c| c == name),
+                None => called.is_empty(),
+            };
 
         if passed {
             write_distillation(&case.name, &turn_pairs);
         }
 
         let tool_outcomes_text: Vec<String> = turn_tools.iter().map(|t| t.text.clone()).collect();
-        let answer_passed = passed && check_answer_quality(step, &answer, &tool_outcomes_text);
+        let answer_passed =
+            passed && check_answer_quality(step, &answer, &called, &tool_outcomes_text);
 
         history.push(Turn::user(&step.message));
         history.extend(turn_tools);
@@ -2281,6 +2378,7 @@ pub fn run_selection_case_in(
             claims: !step.evidence.is_empty()
                 || !step.forbidden.is_empty()
                 || step.language.is_some(),
+            ended,
         });
     }
 
@@ -2605,6 +2703,7 @@ mod tests {
                     answer: String::new(),
                     answer_passed: false,
                     claims: false,
+                    ended: Ending::OutOfTurns,
                 }],
             },
             SelectionOutcome {
@@ -2619,6 +2718,7 @@ mod tests {
                     answer: String::new(),
                     answer_passed: true,
                     claims: false,
+                    ended: Ending::Answered,
                 }],
             },
         ];
@@ -2852,12 +2952,12 @@ mod trigger_lint {
         // The exact sentence the old check passed: "have" contains "ve",
         // "about" contains "bu".
         assert!(
-            !check_answer_quality(&turkish_step, "I have the answer about it: 1000.", &[]),
+            !check_answer_quality(&turkish_step, "I have the answer about it: 1000.", &[], &[]),
             "an English sentence must not satisfy the Turkish gate"
         );
         // And the reverse: "için" contains "in".
         assert!(
-            !check_answer_quality(&english_step, "Bunun için sonuç 1000 çıkıyor.", &[]),
+            !check_answer_quality(&english_step, "Bunun için sonuç 1000 çıkıyor.", &[], &[]),
             "a Turkish sentence must not satisfy the English gate"
         );
 
@@ -2865,11 +2965,13 @@ mod trigger_lint {
         assert!(check_answer_quality(
             &turkish_step,
             "Sonuç 1000 olarak çıktı.",
+            &[],
             &[]
         ));
         assert!(check_answer_quality(
             &english_step,
             "The result is 1000.",
+            &[],
             &[]
         ));
     }
@@ -2881,8 +2983,8 @@ mod trigger_lint {
     fn an_answer_with_no_words_is_not_judged_for_language() {
         for lang in [Language::Turkish, Language::English] {
             let step = SelectionStep::new("m", None).with_language(lang);
-            assert!(check_answer_quality(&step, "1000.", &[]));
-            assert!(check_answer_quality(&step, "", &[]));
+            assert!(check_answer_quality(&step, "1000.", &[], &[]));
+            assert!(check_answer_quality(&step, "", &[], &[]));
         }
     }
 
@@ -2892,7 +2994,12 @@ mod trigger_lint {
     #[test]
     fn the_ascii_capital_i_is_not_a_turkish_letter() {
         let turkish = SelectionStep::new("m", None).with_language(Language::Turkish);
-        assert!(!check_answer_quality(&turkish, "I READ THE REPORT.", &[]));
+        assert!(!check_answer_quality(
+            &turkish,
+            "I READ THE REPORT.",
+            &[],
+            &[]
+        ));
     }
 }
 

@@ -211,12 +211,39 @@ struct Case {
     tools: Vec<String>,
 }
 
-/// A whole report: its cases, and the catalog the run actually had. `catalog` is
-/// `None` for a report written before it was recorded, and for the routing
-/// report, which has no catalog of its own — both must keep comparing exactly as
-/// they did.
+/// Which array a report's cases were read from — and therefore WHAT WAS
+/// MEASURED.
+///
+/// `cases` is the logic and selection reports: a model ran. `outcomes` is the
+/// routing report: no model ran at all, a case "passes" when the expected tool
+/// merely REACHED the prompt. Pairing one against the other is not a comparison,
+/// it is two different questions sharing case names — and it produced a verdict
+/// on this machine: the routing report against the model baseline pairs on 155
+/// names and prints `A REAL LOSS at 95%`, p = 0.0000, exit 0.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    /// `cases[]` — a model was run.
+    Model,
+    /// `outcomes[]` — the router was run and nothing else.
+    Routing,
+}
+
+impl Shape {
+    fn describe(self) -> &'static str {
+        match self {
+            Shape::Model => "a model report (`cases`)",
+            Shape::Routing => "a routing report (`outcomes`) — no model ran",
+        }
+    }
+}
+
+/// A whole report: its cases, the shape it was read from, and the catalog the
+/// run actually had. `catalog` is `None` for a report written before it was
+/// recorded; the routing report DOES carry one (`RoutingReport::catalog`), and
+/// a comment here used to say it did not.
 struct Run {
     cases: Vec<Case>,
+    shape: Shape,
     catalog: Option<Vec<String>>,
 }
 
@@ -329,8 +356,13 @@ pub fn eval_compare(before_path: &str, after_path: &str) -> ExitCode {
 them measures the model as much as the change:\n  before  {ea}  {}\n  after   {eb}  {}\n\
 A sign test over paired cases answers whether THIS CHANGE helped, which needs one model \
 held still. Re-run one side against the other's weights.",
-                    &fa[..fa.len().min(16)],
-                    &fb[..fb.len().min(16)]
+                    // BY CHARACTER, NOT BY BYTE. `&fa[..16]` panics on a
+                    // fingerprint whose sixteenth byte is inside a multi-byte
+                    // character — an abort at exit 101 from the guard whose
+                    // whole job is to refuse cleanly. The test that covered this
+                    // used eight ASCII bytes, so the boundary was never reached.
+                    fa.chars().take(16).collect::<String>(),
+                    fb.chars().take(16).collect::<String>()
                 )
             )
         );
@@ -344,13 +376,18 @@ held still. Re-run one side against the other's weights.",
         // `cases` is the selection and logic reports; `outcomes` is the routing
         // one. A routing case "passes" when the expected tool reached the model
         // AT ALL — the same claim the routing gate is tied to.
-        let list = value
-            .get("cases")
-            .or_else(|| value.get("outcomes"))
-            .and_then(|v| v.as_array())
-            .ok_or_else(|| {
-                format!("{p}: no `cases` or `outcomes` array — is this an eval report?")
-            })?;
+        let (list, shape) = match value.get("cases").and_then(|v| v.as_array()) {
+            Some(l) => (l, Shape::Model),
+            None => (
+                value
+                    .get("outcomes")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| {
+                        format!("{p}: no `cases` or `outcomes` array — is this an eval report?")
+                    })?,
+                Shape::Routing,
+            ),
+        };
         let mut cases = Vec::new();
         for entry in list {
             let name = entry
@@ -358,9 +395,25 @@ held still. Re-run one side against the other's weights.",
                 .or_else(|| entry.get("case"))
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| format!("{p}: a case has no name"))?;
+            // A CASE WITH NEITHER `passed` NOR `rank` IS NOT A RESULT.
+            //
+            // The old code fell through to `false` for both, so a file of
+            // `{"name": "..."}` objects — any JSON with a `cases` array — scored
+            // every case as failed on BOTH sides and printed
+            // `0/50 · fixed 0 · broke 0 · NOT DISTINGUISHABLE`. Every line of
+            // that is arithmetically correct about data that was never read.
             let passed = match entry.get("passed").and_then(serde_json::Value::as_bool) {
                 Some(b) => b,
-                None => entry.get("rank").is_some_and(|r| !r.is_null()),
+                None => match entry.get("rank") {
+                    Some(r) => !r.is_null(),
+                    None => {
+                        return Err(format!(
+                            "{p}: case `{name}` carries neither `passed` nor `rank`, so there \
+                             is no result to compare. A report this command cannot read scores \
+                             every case as failed on both sides and still prints a verdict."
+                        ));
+                    }
+                },
             };
             cases.push(Case {
                 name: name.to_string(),
@@ -370,6 +423,7 @@ held still. Re-run one side against the other's weights.",
         }
         Ok(Run {
             cases,
+            shape,
             catalog: value.get("catalog").and_then(|c| c.as_array()).map(|a| {
                 a.iter()
                     .filter_map(serde_json::Value::as_str)
@@ -386,6 +440,35 @@ held still. Re-run one side against the other's weights.",
             return ExitCode::FAILURE;
         }
     };
+
+    // TWO REPORTS OF DIFFERENT SHAPES ARE NOT TWO MEASUREMENTS OF ONE THING.
+    //
+    // `cases` means a model ran; `outcomes` means only the router did, and a
+    // routing case "passes" when the expected tool merely reached the prompt.
+    // They share case names, so nothing stopped them pairing — and the routing
+    // report against the model baseline pairs on 155 of them and prints
+    // `A REAL LOSS at 95%`, p = 0.0000, exit 0. The router measured, the model
+    // reported, at whole-report scale.
+    //
+    // Refused rather than warned, for the reason the weights guard above states:
+    // a warning over a verdict is a warning people scroll past.
+    if before.shape != after.shape {
+        eprintln!(
+            "{}",
+            color.paint(
+                YELLOW,
+                &format!(
+                    "these two reports measure DIFFERENT THINGS:\n  before  {}\n  after   {}\n\
+A routing case passes when the expected tool reached the prompt; a model case passes when the \
+model called it. Pairing them by name compares the router against the model and prints a \
+verdict about neither.",
+                    before.shape.describe(),
+                    after.shape.describe()
+                )
+            )
+        );
+        return ExitCode::FAILURE;
+    }
 
     // THE TWO RUNS MUST HAVE HAD THE SAME TOOLS, and until now nothing checked
     // this either.
@@ -456,6 +539,9 @@ between the two BUILDS.",
         }
         _ => (before.cases, after.cases),
     };
+    // Kept before the two lists are flattened into (name, passed) pairs: the
+    // pairing floor below needs to know how much of each side it discarded.
+    let (before_total, after_total) = (before.len(), after.len());
     let before: Vec<(String, bool)> = before.into_iter().map(|c| (c.name, c.passed)).collect();
     let after: Vec<(String, bool)> = after.into_iter().map(|c| (c.name, c.passed)).collect();
 
@@ -483,8 +569,38 @@ between the two BUILDS.",
         .map(|(n, _)| n.as_str())
         .collect();
 
+    // A HANDFUL OF SHARED NAMES IS NOT A PAIRING.
+    //
+    // The only refusal was `pairs.is_empty()`, so the logic baseline against the
+    // model baseline — which is the DEFAULT pair the nightly job forms — throws
+    // away 250 of 256 cases, keeps the 6 whose names happen to collide, and
+    // prints a verdict from them. The nightly workflow tells its reader the
+    // command "will refuse to pair" in that situation; it did not.
+    //
+    // The floor is both absolute and relative: six cases cannot resolve
+    // anything, and a pairing that discards most of either side is measuring a
+    // sub-suite nobody chose.
+    const MIN_PAIRS: usize = 20;
     if pairs.is_empty() {
         eprintln!("error: the two reports share no case name — nothing to pair");
+        return ExitCode::FAILURE;
+    }
+    let smaller = before_total.min(after_total);
+    if pairs.len() < MIN_PAIRS || pairs.len() * 2 < smaller {
+        eprintln!(
+            "{}",
+            color.paint(
+                YELLOW,
+                &format!(
+                    "these two reports pair on only {} case(s) — {} in the smaller report, \
+{} in the larger.\nA verdict from that is a verdict about whichever sub-suite happened to \
+share names. Pair reports from the same suite.",
+                    pairs.len(),
+                    smaller,
+                    before_total.max(after_total)
+                )
+            )
+        );
         return ExitCode::FAILURE;
     }
 
@@ -870,11 +986,19 @@ mod compare_identity {
     fn a_comparison_across_two_models_is_refused() {
         let dir = std::env::temp_dir().join(format!("tacet-cmp-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
+        // TWENTY-FOUR CASES, NOT TWO. The pairing floor added alongside this
+        // guard refuses a verdict drawn from a handful of shared names, and a
+        // two-case fixture is exactly what it exists to stop — so the fixture
+        // has to be the size of a thing somebody would really compare.
         let write = |name: &str, fp: &str| {
             let path = dir.join(name);
+            let cases: Vec<String> = (0..24)
+                .map(|i| format!(r#"{{"name":"c{i}","passed":{}}}"#, i % 3 != 0))
+                .collect();
             let body = format!(
                 r#"{{"identity":{{"engine":"candle","model_fingerprint":"{fp}"}},
-                    "cases":[{{"name":"a","passed":true}},{{"name":"b","passed":false}}]}}"#
+                    "cases":[{}]}}"#,
+                cases.join(",")
             );
             std::fs::write(&path, body).expect("write");
             path.to_string_lossy().into_owned()
@@ -898,6 +1022,156 @@ mod compare_identity {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Writes a report of `n` cases with the given shape key (`cases` or
+    /// `outcomes`) and body, for the guards below.
+    fn report(dir: &std::path::Path, name: &str, body: String) -> String {
+        let path = dir.join(name);
+        std::fs::write(&path, body).expect("write");
+        path.to_string_lossy().into_owned()
+    }
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("tacet-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    /// A ROUTING REPORT AND A MODEL REPORT MEASURE DIFFERENT THINGS.
+    ///
+    /// `outcomes` means only the router ran and a case passes when the expected
+    /// tool REACHED the prompt; `cases` means a model ran and a case passes when
+    /// it CALLED the tool. They share case names, so nothing stopped them
+    /// pairing — and on this machine the routing report against the model
+    /// baseline paired on 155 names and printed `A REAL LOSS at 95%`,
+    /// p = 0.0000, exit 0. The router measured, the model reported.
+    #[test]
+    fn a_routing_report_and_a_model_report_are_not_paired() {
+        let dir = scratch("cmp-shape");
+        let entries: Vec<String> = (0..24)
+            .map(|i| format!(r#"{{"case":"c{i}","rank":1}}"#))
+            .collect();
+        let routing = report(
+            &dir,
+            "routing.json",
+            format!(r#"{{"outcomes":[{}]}}"#, entries.join(",")),
+        );
+        let entries: Vec<String> = (0..24)
+            .map(|i| format!(r#"{{"name":"c{i}","passed":true}}"#))
+            .collect();
+        let model = report(
+            &dir,
+            "model.json",
+            format!(r#"{{"cases":[{}]}}"#, entries.join(",")),
+        );
+        assert_eq!(
+            eval_compare(&routing, &model),
+            ExitCode::FAILURE,
+            "a routing report must not pair against a model report"
+        );
+        // NOT VACUOUS in either direction: two of each still compare.
+        assert_eq!(eval_compare(&routing, &routing), ExitCode::SUCCESS);
+        assert_eq!(eval_compare(&model, &model), ExitCode::SUCCESS);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// SIX SHARED NAMES OUT OF 256 IS NOT A PAIRING.
+    ///
+    /// The only refusal was "no shared names at all", so the logic baseline
+    /// against the model baseline — the default pair the nightly job forms —
+    /// discarded 250 of 256 cases, kept the six whose names collide, and printed
+    /// a verdict from them, while the workflow told its reader the command
+    /// "will refuse to pair".
+    #[test]
+    fn a_verdict_is_refused_when_most_of_the_suite_was_discarded() {
+        let dir = scratch("cmp-floor");
+        let big: Vec<String> = (0..80)
+            .map(|i| format!(r#"{{"name":"c{i}","passed":true}}"#))
+            .collect();
+        let small: Vec<String> = (0..6)
+            .map(|i| format!(r#"{{"name":"c{i}","passed":false}}"#))
+            .collect();
+        let a = report(
+            &dir,
+            "big.json",
+            format!(r#"{{"cases":[{}]}}"#, big.join(",")),
+        );
+        let b = report(
+            &dir,
+            "small.json",
+            format!(r#"{{"cases":[{}]}}"#, small.join(",")),
+        );
+        assert_eq!(
+            eval_compare(&a, &b),
+            ExitCode::FAILURE,
+            "six pairs out of eighty is a verdict about whichever names collided"
+        );
+        // NOT VACUOUS: a real pairing of the same suite still compares.
+        assert_eq!(eval_compare(&a, &a), ExitCode::SUCCESS);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A REPORT THIS COMMAND CANNOT READ IS NOT A REPORT OF ALL-FAILURES.
+    ///
+    /// A case with neither `passed` nor `rank` used to fall through to `false`,
+    /// so any JSON with a `cases` array printed
+    /// `0/50 · fixed 0 · broke 0 · NOT DISTINGUISHABLE` — every line
+    /// arithmetically correct about data that was never read.
+    #[test]
+    fn a_report_with_no_results_in_it_is_refused() {
+        let dir = scratch("cmp-unread");
+        let entries: Vec<String> = (0..24).map(|i| format!(r#"{{"name":"c{i}"}}"#)).collect();
+        let blank = report(
+            &dir,
+            "blank.json",
+            format!(r#"{{"cases":[{}]}}"#, entries.join(",")),
+        );
+        assert_eq!(eval_compare(&blank, &blank), ExitCode::FAILURE);
+        // NOT VACUOUS: `rank`-only (the routing shape) and `passed`-only both
+        // remain readable.
+        let ranked: Vec<String> = (0..24)
+            .map(|i| format!(r#"{{"case":"c{i}","rank":2}}"#))
+            .collect();
+        let r = report(
+            &dir,
+            "ranked.json",
+            format!(r#"{{"outcomes":[{}]}}"#, ranked.join(",")),
+        );
+        assert_eq!(eval_compare(&r, &r), ExitCode::SUCCESS);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// THE GUARD'S OWN INPUT MUST NOT ABORT IT. `&fa[..16]` panics when the
+    /// sixteenth byte falls inside a multi-byte character — exit 101 from the
+    /// code whose entire job is to refuse cleanly. The old fixture used eight
+    /// ASCII bytes, so the boundary was never reached.
+    #[test]
+    fn a_fingerprint_that_is_not_ascii_is_refused_not_aborted() {
+        let dir = scratch("cmp-utf8");
+        let cases: Vec<String> = (0..24)
+            .map(|i| format!(r#"{{"name":"c{i}","passed":true}}"#))
+            .collect();
+        let one = report(
+            &dir,
+            "one.json",
+            format!(
+                r#"{{"identity":{{"engine":"candle","model_fingerprint":"{}é"}},"cases":[{}]}}"#,
+                "a".repeat(15),
+                cases.join(",")
+            ),
+        );
+        let two = report(
+            &dir,
+            "two.json",
+            format!(
+                r#"{{"identity":{{"engine":"candle","model_fingerprint":"{}"}},"cases":[{}]}}"#,
+                "b".repeat(32),
+                cases.join(",")
+            ),
+        );
+        assert_eq!(eval_compare(&one, &two), ExitCode::FAILURE);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A report with no `identity` block still compares. The routing and
     /// fake-engine reports do not carry one, and they are the two this
     /// comparator is used on most.
@@ -906,11 +1180,10 @@ mod compare_identity {
         let dir = std::env::temp_dir().join(format!("tacet-cmp2-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let path = dir.join("plain.json");
-        std::fs::write(
-            &path,
-            r#"{"cases":[{"name":"a","passed":true},{"name":"b","passed":true}]}"#,
-        )
-        .expect("write");
+        let cases: Vec<String> = (0..24)
+            .map(|i| format!(r#"{{"name":"c{i}","passed":true}}"#))
+            .collect();
+        std::fs::write(&path, format!(r#"{{"cases":[{}]}}"#, cases.join(","))).expect("write");
         let p = path.to_string_lossy().into_owned();
         assert_eq!(eval_compare(&p, &p), ExitCode::SUCCESS);
         let _ = std::fs::remove_dir_all(&dir);
@@ -943,6 +1216,7 @@ mod compare_catalog {
                     tools: vec![(*tool).to_string()],
                 })
                 .collect(),
+            shape: Shape::Model,
             catalog: catalog.map(|c| c.iter().map(|s| (*s).to_string()).collect()),
         }
     }
