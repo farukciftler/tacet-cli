@@ -399,6 +399,12 @@ impl IntentProfile {
                 "agenda",
                 "this week",
                 "next week",
+                // "what does MY WEEK look like" names no calendar word at all —
+                // no "calendar", no "meeting", no "schedule" — and scored zero
+                // on every profile. It is the plainest way to ask the question
+                // the `days` span was added to answer.
+                "my week",
+                "rest of the week",
                 "upcoming",
             ],
             IntentProfile::Calc => &[
