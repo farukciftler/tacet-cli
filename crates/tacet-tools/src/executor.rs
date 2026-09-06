@@ -537,18 +537,75 @@ fn recover_marked_call(raw: &str, catalog: &ToolCatalog) -> Option<ToolCall> {
 /// never produced it in 115 cases; it appeared only once both languages ran,
 /// which is the second thing the combined suite bought.
 ///
-/// WHY IT IS SAFE WITHOUT A MARKER, and this is the whole argument: the licence
-/// to look is not a delimiter here but a COINCIDENCE that prose cannot arrange —
-/// a catalog tool's name immediately followed, with nothing between them, by a
-/// field name from THAT SAME tool's schema. `find_file` next to `pattern` is a
-/// call; `find_file` next to anything else is not touched. The remaining
-/// conditions are the ones `recover_nameless_json` already argued for.
+/// WHY IT IS SAFE WITHOUT A MARKER — and the first version of this argument was
+/// wrong, so it is worth stating carefully.
+///
+/// It used to say the licence was "a COINCIDENCE that prose cannot arrange": a
+/// tool's name immediately followed, with nothing between, by a field name from
+/// that same tool's schema. Prose arranges it constantly, because tool names and
+/// field names are ordinary English words that compound. MEASURED against the
+/// real catalog with no addons installed:
+///
+/// ```text
+/// "Keep the checksumpath=/etc/hosts entry as it is."
+///     -> checksum{path: "/etc/hosts entry as it is."}
+/// "Our web_searchquery: budget report is the config key."
+///     -> web_search{query: "budget report is the config key."}
+/// ```
+///
+/// The second one runs a NETWORK tool from a sentence about a config key. This
+/// path is reached on every generation the shell makes, addon-gated or not, and
+/// when it fires the user's actual answer is thrown away for a failed chip.
+///
+/// THE REAL LICENCE IS POSITION. Every case this function was written for —
+/// three Turkish failures out of 184, `find_filepattern: "bütçe"` — is the
+/// model's answer BEGINNING with the call. None of them is a tool name buried
+/// mid-sentence, and prose cannot arrange the compound at the start of a line
+/// without it being, to any reader, an attempt at a call. So the name must open
+/// the text or open a line; everything after that is the coincidence argument as
+/// before, which is sound once it is not being asked to carry the whole weight.
+///
+/// A WORD BOUNDARY WOULD NOT DO IT. `find_file` is followed by `p` in the shape
+/// this exists to catch, so requiring one on the right would delete the feature;
+/// requiring one on the left passes every false positive above, since they all
+/// have a space in front. Position is the discriminator, not spelling.
+/// Where `needle` opens the text or opens a line, if it does.
+///
+/// Only whitespace may sit between the previous newline and the name. That is
+/// what separates a model answering with a call from a sentence that happens to
+/// contain a compound word.
+fn find_at_line_start(haystack: &str, needle: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(rel) = haystack[from..].find(needle) {
+        let at = from + rel;
+        let line_start = haystack[..at].rfind('\n').map_or(0, |i| i + 1);
+        if haystack[line_start..at].chars().all(char::is_whitespace) {
+            return Some(at);
+        }
+        from = at + needle.len();
+    }
+    None
+}
+
 fn recover_glued_call(raw: &str, catalog: &ToolCatalog) -> Option<ToolCall> {
+    // Earliest in the TEXT, not first in the catalog — the same ordering bug
+    // `recover_marked_call` documents: a name that happens to sit early in the
+    // catalog should not outrank one the model actually wrote first.
+    let mut best: Option<(usize, &str)> = None;
     for tool in catalog.tools() {
-        let name = tool.name();
+        if let Some(at) = find_at_line_start(raw, tool.name())
+            && best.is_none_or(|(b, _)| at < b)
+        {
+            best = Some((at, tool.name()));
+        }
+    }
+    let (at, name) = best?;
+    for tool in catalog.tools() {
+        if tool.name() != name {
+            continue;
+        }
         let schema = tool.schema();
         let fields = schema.fields();
-        let Some(at) = raw.find(name) else { continue };
         let tail = &raw[at + name.len()..];
 
         // The next characters must BE a field name of this tool, with no
@@ -2007,6 +2064,54 @@ mod tests {
         .unwrap();
         assert_eq!(s.reason, ExecutionReason::Ok);
         assert_eq!(s.to_model, "data: 42");
+    }
+
+    /// PROSE THAT COMPOUNDS A TOOL NAME WITH A FIELD NAME IS NOT A CALL.
+    ///
+    /// `recover_glued_call` used to argue that its shape was "a coincidence
+    /// prose cannot arrange". Prose arranges it constantly, because tool names
+    /// and field names are ordinary English words. Measured against the real
+    /// catalog with no addons installed, all three of these ran a tool — and the
+    /// third one runs a NETWORK tool from a sentence about a config key.
+    #[test]
+    fn a_compound_word_mid_sentence_is_not_a_glued_call() {
+        let store = std::sync::Arc::new(crate::data_store::SharedStore::new());
+        let memory = crate::memory::SharedMemory::in_memory();
+        let (catalog, _, _) =
+            crate::catalog::production_catalog_with(&store, &memory, Some(0), true);
+
+        for prose in [
+            "Keep the checksumpath=/etc/hosts entry as it is.",
+            "Set archivepath: backups.zip, action: list in the config.",
+            "Our web_searchquery: budget report is the config key.",
+            "I looked at the find_filepattern: field in the docs.",
+        ] {
+            assert!(
+                recover_glued_call(prose, &catalog).is_none(),
+                "prose ran a tool: {prose:?} -> {:?}",
+                recover_glued_call(prose, &catalog)
+            );
+        }
+    }
+
+    /// AND THE SHAPE IT EXISTS FOR STILL WORKS — three of the eight Turkish
+    /// failures in the 184-case suite, where the model answered WITH the call.
+    #[test]
+    fn a_call_that_opens_the_answer_is_still_recovered() {
+        let store = std::sync::Arc::new(crate::data_store::SharedStore::new());
+        let memory = crate::memory::SharedMemory::in_memory();
+        let (catalog, _, _) =
+            crate::catalog::production_catalog_with(&store, &memory, Some(0), true);
+
+        for raw in [
+            "find_filepattern: \"bütçe\"",
+            "find_filepattern: \"markdown\", folder: \"dizin\")",
+            "Here you go.\nfind_filepattern: \"rapor\"",
+        ] {
+            let call = recover_glued_call(raw, &catalog)
+                .unwrap_or_else(|| panic!("a real glued call was refused: {raw:?}"));
+            assert_eq!(call.name, "find_file");
+        }
     }
 
     /// A TOOL NAME BURIED IN A LONGER WORD IS NOT A CALL.
