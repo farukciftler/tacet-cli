@@ -129,9 +129,13 @@ measurement under it rather than a claim.
 **What is still not measured** is the half that would separate arithmetic from
 memory. The op count does not move with the bucket width, so the same work run
 against weights in DRAM isolates the memory term exactly — a 1,024-bucket build
-(23 KiB) fits an ESP8266's heap and is compiled, but the board is behind a USB
-hub whose transfers corrupt the bootloader protocol and it could not be
-reflashed. [device/README.md](device/README.md) says what that would take.
+(23 KiB) fits an ESP8266's heap and is compiled, but the board could not be
+reflashed. Two causes, and only one yielded to software: esptool's reset drives
+the auto-reset lines with two ioctls and passes through a state that boots the
+sketch instead of the bootloader, which `device/enter_download.py` fixes; the
+transfer then corrupts anyway, intermittently and in proportion to its length,
+through the USB hub the board is reached by.
+[device/README.md](device/README.md) says what that would take.
 
 **These numbers replace 4,380 / 50 bytes / 18-46-91 µs, and the correction is the
 kind this repository has a rule against needing.** Those were the numbers of the

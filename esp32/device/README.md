@@ -51,14 +51,32 @@ against weights in flash and against weights in DRAM with nothing else changing,
 and the ratio is the memory term alone.
 
 At 4,096 buckets the DRAM half cannot run: 92 KiB does not fit in 49 KiB of
-heap, and the sketch reports `dram_weights=no`. A 1,024-bucket build (23 KiB,
-`slots.bin.1024`) fits and is compiled and ready; it has not been flashed
-because the board is behind a USB2.0 hub whose bulk transfers corrupt the
-bootloader protocol — `read_flash` failed at 57% and `write_flash` failed six
-times with `Timed out waiting for packet header` and truncated register reads.
-The running sketch's short request/response lines are unaffected, which is why
-the numbers above are trustworthy and the reflash is not. **Plug the board
-directly into the host, not through a hub, and the DRAM row completes.**
+heap, and the sketch reports `dram_weights=no`. A 1,024-bucket build (23 KiB)
+fits and is compiled and ready; it has not been flashed, and the reason split
+into two once it was measured rather than assumed.
+
+**The first half was esptool's reset and is fixed** — see `enter_download.py`.
+Six `write_flash` attempts and 0 of 6 `flash_id` calls failed before the board
+was ever asked to transfer a byte, because the auto-reset lines were driven by
+two separate ioctls and the pair passes through a state that boots the sketch
+instead. One `TIOCMSET` fixes it, confirmed against the ROM's own `boot
+mode:(1,6)`.
+
+**The second half is the link and is not fixed.** With the bootloader reliably
+reached, the transfer itself corrupts: `Invalid head of packet (0x16)`,
+`Packet content transfer stopped`, at 115200 and at 57600, with and without the
+RAM stub. It is intermittent rather than absolute — a 1 MiB `read_flash` at
+115200 completed cleanly and the 4,096-bucket firmware wrote and verified on the
+first attempt — and it scales with transfer length: a 4 MiB read died at 57%.
+The running sketch's short request/response lines are error-free across three
+141-message runs, which is why the numbers above are trustworthy and the reflash
+is not.
+
+That pattern — short exchanges clean, long ones corrupt, worsening over a
+session — is a marginal physical link, and the board is reached through a USB2.0
+hub that also carries a mass-storage device. **Connect the board directly to the
+host and the DRAM row completes.** No software change remains to try; the ones
+that existed are in this file.
 
 Until it does, this directory measures one regime and says so.
 
@@ -74,6 +92,12 @@ cc -O2 -o slots slots.c
 cd device
 python3 weights_header.py              # slots.bin -> slots_device/weights.h
 pio run                                # firmware.bin
+
+python3 enter_download.py /dev/cu.usbserial-XXX     # esptool's own reset is not enough
+esptool.py --chip esp8266 --port /dev/cu.usbserial-XXX --before no_reset \
+           --no-stub write_flash --flash_mode dio --flash_size detect \
+           0x0 .pio/build/nodemcuv2/firmware.bin
+
 python3 device_check.py /dev/cu.usbserial-XXX
 ```
 
