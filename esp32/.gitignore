@@ -16,3 +16,12 @@ slots.bin
 slots
 msgs.txt
 train.jsonl
+
+# THE DEVICE BUILD, all of it derived. weights.h is slots.bin re-expressed as a
+# 256 KiB C array — committing it would put the model in review twice, in the
+# form nobody can read. .pio/ is the container's build tree. slots.bin.<width>
+# are the working copies made when comparing bucket widths; `python3
+# train_slots.py <width>` reproduces either.
+device/slots_device/weights.h
+device/.pio/
+slots.bin.*

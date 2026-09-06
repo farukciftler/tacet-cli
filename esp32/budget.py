@@ -1,10 +1,16 @@
 """What fits on an ESP32-S3, and what the arithmetic says it would cost.
 
-THIS IS ARITHMETIC, NOT SILICON. Nothing here was run on a device. What IS
-measured is the operation count (slots.c counts its own ops) and the model size
-(bytes on disk); the device figures are those two numbers divided by documented
-ESP32-S3 characteristics, and every assumption is printed next to its result so
-a reader with a board can check it rather than trust it.
+THIS IS ARITHMETIC, NOT SILICON, and it stays that way: no ESP32-S3 has run it.
+What IS measured is the operation count (slots.c counts its own ops) and the
+model size (bytes on disk); the ESP32-S3 figures are those two numbers divided by
+documented characteristics of that part, and every assumption is printed next to
+its result so a reader with a board can check it rather than trust it.
+
+A READER WITH A BOARD DID. device/ runs the same loops on an ESP8266 and measures
+44.50 cycles/op against the 1.0/2.5/5.0 guessed below - nine times the
+pessimistic row, because there the 92 KiB does not fit in SRAM and lives in flash
+instead. That does not correct these numbers, which describe a part where it
+does; it prices the assumption they rest on. See device/README.md.
 """
 import json, os, subprocess
 
