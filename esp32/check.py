@@ -35,24 +35,7 @@ rows = read_benchmark()
 # so `\n` being kept as a character on one side and collapsed on the other was
 # invisible. `message_intent` classifies PASTED messages; multi-line input is
 # the rule there. Every shape the fold treats specially gets one row here.
-SHAPES = [
-    "Şunu yazdı:\n'Cuma günü ödeyeceğim'\nBu ne demek?",
-    "line one\r\nline two\r\nline three",
-    "tabs\tand\vvertical\fform feeds",
-    "  leading and trailing   ",
-    "İYİ BAYRAMLAR, ĞÜŞÖÇ upper case",
-    "an em — dash and an emoji 🙂 and a nbsp\u00a0here",
-    "a",
-    # The four ASCII separators. `str.split()` breaks on them; a hand-written
-    # fold that stops at \f does not, and pasted EDI, CSV and SMS content really
-    # carries them. Same n-gram count, different bytes, different buckets.
-    "unit\x1fsep and record\x1esep",
-    "group\x1dsep and file\x1csep",
-    # U+212A KELVIN SIGN. Python's `str.lower()` maps it to an ASCII `k`, which
-    # survives the ASCII filter; C and Rust see three bytes they cannot fold and
-    # drop them whole. One codepoint, two feature vectors.
-    "temperature 300\u212a today",
-]
+from shapes import SHAPES   # the list lives there so device_check.py shares it
 # An EMPTY message is tested in slot_gate.rs instead: it cannot survive a
 # line-oriented transport, and inventing a sentinel for it would test the
 # harness rather than the fold.

@@ -97,15 +97,41 @@ fields — the 135M is doing a harder job, end to end, including the open-text
 arguments this cannot touch.
 
 `slots.c` counts its own operations: **4,266 per message** at a 48.9-byte mean
-(1,098 hash, 3,168 accumulate). The device figures below are that number divided
-by documented ESP32-S3 characteristics — **arithmetic, not silicon**. Nothing
-here has been run on a board.
+(1,098 hash, 3,168 accumulate). The ESP32-S3 figures below are that number
+divided by documented characteristics of that part — **arithmetic, not
+silicon**. No ESP32-S3 has run this. An **ESP8266 has**, and what it measured is
+below the table.
 
 | cycles/op | per message at 240 MHz | |
 |---|---|---|
 | 1.0 | 17.8 µs | optimistic: everything single-cycle |
 | 2.5 | 44.4 µs | likely: int8 load and add, no SIMD |
 | 5.0 | 88.9 µs | pessimistic: loop overhead and misses |
+
+**One row of that guess has now been measured, on a different part.**
+[device/](device/) runs the same two loops on a NodeMCU (ESP8266EX, Xtensa
+LX106, 80 MHz, -O2) and compares all 23 accumulators against `slots.c` on every
+message: **141 of 141 agree, 0 disagreements**, reproduced identically three
+times. The cost there is **44.50 cycles per operation** — 188,576 cycles, 2,357
+µs, 424 messages/s (measured 6 Sep 2026).
+
+**That is nine times the pessimistic row, and it is not a refutation of it**,
+because it is not the same regime: the table above assumes the 92 KiB sits in
+internal SRAM, and an ESP8266 has 49 KiB of heap, so the weights live in flash
+and every one of the ~3,300 weight reads per message pays `pgm_read_byte` and a
+cache the buckets thrash. What the number prices is the claim at the top of this
+page — *"at 92 KiB the weights are 18% of the internal SRAM, so the PSRAM
+bandwidth wall never applies"*. That was the load-bearing assumption of the whole
+argument and it had never been costed. On a part where the weights do not fit, the identical
+code is an order of magnitude slower. The argument holds; it now has a
+measurement under it rather than a claim.
+
+**What is still not measured** is the half that would separate arithmetic from
+memory. The op count does not move with the bucket width, so the same work run
+against weights in DRAM isolates the memory term exactly — a 1,024-bucket build
+(23 KiB) fits an ESP8266's heap and is compiled, but the board is behind a USB
+hub whose transfers corrupt the bootloader protocol and it could not be
+reflashed. [device/README.md](device/README.md) says what that would take.
 
 **These numbers replace 4,380 / 50 bytes / 18-46-91 µs, and the correction is the
 kind this repository has a rule against needing.** Those were the numbers of the
@@ -208,6 +234,15 @@ python3 budget.py                       # the tables above
 OTHER=1 python3 gen_slots.py 1200 train.jsonl
 python3 train_slots.py 16384
 python3 export_gate.py                  # -> crates/tacet-tools/src/slot_gate.bin
+```
+
+The board, if there is one — the same model, measured rather than divided:
+
+```bash
+cd device
+python3 weights_header.py               # slots.bin -> slots_device/weights.h
+pio run                                 # arm64 Linux container; see device/README.md
+python3 device_check.py /dev/cu.usbserial-XXX
 ```
 
 `slot_gate.rs` has tests that pin what the blob does on fixed strings. If they
