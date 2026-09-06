@@ -156,6 +156,32 @@ language, short and direct. If it does not answer, call the right tool from the 
 the same tool with the same arguments a second time. Do not repeat the tool call or its JSON as \
 the answer; do not make up the result.";
 
+/// MAY A PASS THAT WAS CUT OFF BE TRADED FOR THE LAST PASS.
+///
+/// A CUT-OFF PASS IS A LOST PASS, NOT A LOST TURN. Killing the turn throws away
+/// every tool result the earlier passes collected — so a question where the
+/// model called correctly twice and then ran long on the third pass produced a
+/// one-line warning and no answer. Four steps of the shipped baseline ended
+/// exactly that way, one of them holding two successful `write_code` calls.
+///
+/// Going to the final pass instead keeps those results and gives the model the
+/// one thing it is missing: a pass with no tools and an instruction to answer.
+///
+/// A CANCEL IS NOT RETRIED. It is the one incomplete ending the user asked for,
+/// and offering another pass would be arguing with Ctrl-C.
+///
+/// WHY IT LIVES HERE. The eval had this rule and the shell did not, and the
+/// eval's whole claim is that it measures the shell. Two loops implementing one
+/// rule is how that divergence happened the first time.
+///
+/// `pass` is zero-based, matching `for pass in 0..MAX_TURNS`.
+pub fn cut_off_can_be_retried(stop: crate::StopReason, pass: usize) -> bool {
+    matches!(
+        stop,
+        crate::StopReason::Length | crate::StopReason::CallTooLong
+    ) && pass + 1 < MAX_TURNS
+}
+
 /// ONE SENTENCE, ON WEB-INTENT TURNS ONLY — the turn's NOTE, not part of a
 /// skill guide.
 ///

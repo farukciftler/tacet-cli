@@ -2530,7 +2530,11 @@ pub fn run_selection_case_in(
             // instruction to answer. If the cut-off happens ON the final pass
             // there is nothing left to try, and it still ends the turn.
             if !generation.stop.is_complete() {
-                if turn + 1 == MAX_TURNS {
+                // THE SHELL'S RULE, from the shell's crate. Both loops used to
+                // carry their own copy of this decision and they had already
+                // drifted: the eval traded a cut-off pass for the final pass and
+                // the shell killed the turn. See `cut_off_can_be_retried`.
+                if !tacet_engine::cut_off_can_be_retried(generation.stop, turn) {
                     answer = "generation was cut off halfway".into();
                     ended = Ending::CutOff;
                     break;

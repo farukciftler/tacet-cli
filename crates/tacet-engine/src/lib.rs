@@ -51,7 +51,9 @@ pub use provider::{
     EngineIdentity, EngineProvider, Generation, GenerationFuture, SamplingSetting, StopReason,
     boxed_generation,
 };
-pub use session::{FINAL_PASS_INSTRUCTION, MAX_TURNS, SYSTEM_INSTRUCTIONS, WEB_NUDGE};
+pub use session::{
+    FINAL_PASS_INSTRUCTION, MAX_TURNS, SYSTEM_INSTRUCTIONS, WEB_NUDGE, cut_off_can_be_retried,
+};
 pub use thinking::extract as extract_thinking;
 pub use token::{
     CONTEXT_BUDGET, Device, GENERATION_SHARE, KV_CACHE_BUDGET_BYTES, TokenCounter,

@@ -1261,6 +1261,34 @@ pub fn chat(run: ChatRun) -> ExitCode {
                     }
                     _ => "cancelled",
                 };
+                // A CUT-OFF PASS IS A LOST PASS, NOT A LOST TURN — the rule the
+                // eval already follows, and the shell did not.
+                //
+                // This killed the whole turn and threw away every tool result
+                // the earlier passes had collected, so a question where the model
+                // called correctly twice and then ran long on the third pass got
+                // the user a one-line warning and no answer. The eval's own
+                // comment records four steps of the shipped baseline ending that
+                // way, one of them holding two successful `write_code` calls.
+                // The eval was fixed and this was not, which is the divergence
+                // the eval exists to prevent.
+                //
+                // A CANCEL IS NOT RETRIED. It is the one incomplete ending the
+                // user asked for, and giving them another pass would be arguing
+                // with Ctrl-C.
+                if tacet_engine::cut_off_can_be_retried(generation.stop, turn) {
+                    eprintln!(
+                        "{}",
+                        color.paint(
+                            YELLOW,
+                            &format!(
+                                "(cut short: {reason} — answering with what the tools returned)"
+                            )
+                        )
+                    );
+                    must_answer = true;
+                    continue;
+                }
                 eprintln!(
                     "{}",
                     color.paint(YELLOW, &format!("(generation was cut short: {reason})"))
