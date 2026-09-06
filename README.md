@@ -176,6 +176,7 @@ Then:
 tacet                                  # interactive shell
 tacet chat --message "what's 125 * 8"  # one shot
 tacet tools --schema                   # the exact schema the model sees
+tacet why "summarize my changes"       # which tools and which guide that message reaches
 tacet eval                             # 78-case behavioural suite
 ```
 
@@ -183,7 +184,7 @@ tacet eval                             # 78-case behavioural suite
 
 Out of the box, with nothing installed:
 
-`calculate` · `time` · `calendar` · `read_document` · `create_document` · `edit_document` · `find_file` · `run_code` · `write_code` · `git` · `remember` · `archive` · `checksum`
+`calculate` · `time` · `calendar` · `read_document` · `create_document` · `edit_document` · `find_file` · `run_code` · `write_code` · `git` · `remember` · `archive` · `checksum` · `search_filter` · `message_intent`
 
 Documents are real OOXML — an `.xlsx` produced by Tacet contains a working `=SUM()`, not a pre-computed number.
 
@@ -192,6 +193,8 @@ Documents are real OOXML — an `.xlsx` produced by Tacet contains a working `=S
 `archive` lists or extracts a `.zip` with the workspace's own inflate. It refuses the whole archive — never one entry — when a name would escape the destination, an entry is a symlink, the declared sizes cross the caps, or a name repeats: four gates that run on the central directory, so both actions apply them. The CRC and the declared-vs-actual size are proven on **extract** only, because listing decodes nothing — which is why a listing labels its numbers "declared" rather than reporting them as sizes. Extraction always goes into a **new** directory whose name is rotated until it is free, so there is no argument through which it could overwrite something.
 
 `checksum` is SHA-256 over a file: the digest, or a comparison against a published one, or against a second file. A mismatch comes back as an answer, not an error.
+
+`search_filter` and `message_intent` are the two whose whole job is the **arguments**. They compute almost nothing; what they carry is a schema with closed-vocabulary slots — `price` is `free`, `cheap`, `mid`, `premium` or `any` and the automaton cannot emit a sixth — so they are where the grammar stops being a safety property and becomes a capability. Neither touches the network or the disk, which is what lets a benchmark built on them run identically on every machine.
 
 `run_code` executes behind a sandbox that blocks the network. On macOS that is `sandbox-exec`; on Linux, `bwrap`. **If no sandbox is available, the tool is removed from the catalog rather than run unprotected** — the model is never handed an unguarded interpreter.
 
@@ -241,6 +244,22 @@ Do arithmetic with the `calculate` tool. Never compute it yourself.
 ```
 
 Drop it in `~/.tacet/skills/`.
+
+**Which skill a message actually gets is checkable without running a model.**
+`tacet why` prints the guidance block alongside the tool ranking: the winning
+skill, its score, the triggers that fired, and the runner-up with its margin.
+That last part is not decoration — a tie is broken by store order, so a one-point
+win is a decision nobody made on purpose. It is also the cheapest way to catch
+the failure this repository keeps producing: a skill's trigger list and the
+router's profile triggers are two separate lists, and nothing compares them.
+
+```
+$ tacet why "how much is a ticket to Istanbul"
+  the guidance block
+    calc  (11) · how much is
+```
+
+That is the arithmetic guide on a price question, and no model had to run to see it.
 
 ## MCP
 

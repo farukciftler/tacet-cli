@@ -95,6 +95,72 @@ pub fn why(message: &str) -> ExitCode {
         println!("    {}. {:<26} {}", i + 1, name, color.paint(DIM, &reason));
     }
 
+    // THE GUIDE IS THE ONLY PART OF THE PROMPT THAT CHANGES PER MESSAGE, and
+    // this command could not show it.
+    //
+    // `tacet why` explained the profile scores and the nine tools and stopped
+    // there, so the one layer that varies with the sentence was invisible — and
+    // it is the layer most likely to be wrong, because a skill's triggers and
+    // the router's profile triggers are two separate lists that nobody compares.
+    // Three proposals in a recent review asserted trigger edits that were not in
+    // the tree; this is what makes that checkable before it ships.
+    {
+        let mut store = SkillStore::default_set();
+        if let Some(d) = tacet_skills::user_dir()
+            && d.is_dir()
+        {
+            store.load_from_dir(&d);
+        }
+        let names: Vec<String> = catalog.names().into_iter().map(String::from).collect();
+        let lowered = message.to_lowercase();
+        let mut scored: Vec<(&str, usize, Vec<&str>)> = store
+            .all()
+            .filter(|s| s.has_tools(Some(&names)))
+            .map(|s| {
+                let fired: Vec<&str> = s
+                    .triggers
+                    .iter()
+                    .filter(|t| tacet_skills::matching::contains(&lowered, t))
+                    .map(String::as_str)
+                    .collect();
+                (
+                    s.name.as_str(),
+                    tacet_skills::matching::score(&lowered, &s.triggers),
+                    fired,
+                )
+            })
+            .filter(|(_, score, _)| *score > 0)
+            .collect();
+        scored.sort_by_key(|(_, score, _)| std::cmp::Reverse(*score));
+
+        println!();
+        println!("  {}", color.paint(BOLD, "the guidance block"));
+        match scored.first() {
+            None => println!(
+                "    {}",
+                color.paint(
+                    DIM,
+                    "no skill matched — the model gets no guide for this message"
+                )
+            ),
+            Some((name, score, fired)) => {
+                println!("    {name}  ({score}) · {}", fired.join(", "));
+                // THE RUNNER-UP MATTERS: a tie is broken by store order, so the
+                // margin is the whole reason one guide won, and a one-point win
+                // is a decision nobody made on purpose.
+                if let Some((second, s2, f2)) = scored.get(1) {
+                    println!(
+                        "    {}",
+                        color.paint(
+                            DIM,
+                            &format!("runner-up: {second} ({s2}) · {}", f2.join(", "))
+                        )
+                    );
+                }
+            }
+        }
+    }
+
     if !explanation.dropped.is_empty() {
         println!();
         println!("  {}", color.paint(BOLD, "left out"));
