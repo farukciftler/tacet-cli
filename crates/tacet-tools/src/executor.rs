@@ -34,7 +34,7 @@
 //! drop it, only a real new turn resets it.
 
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tacet_kernel::{ERROR_MODEL_TEXT, ToolCatalog, ToolContext, ToolError, ToolOutcome, ToolState};
@@ -66,6 +66,17 @@ pub const CANCEL_MODEL_TEXT: &str = "cancelled: the user stopped this turn";
 /// same risk applies.
 pub const REPEAT_MODEL_TEXT: &str = "duplicate_call: you already made this exact call in this turn and its result is above. \
      Do not repeat it. Either answer the user with what you have, or call a different tool.";
+
+/// The same gate, when the FIRST call failed.
+///
+/// `REPEAT_MODEL_TEXT` says "its result is above", and that is a false statement
+/// about the state the model is in whenever the earlier call did not produce
+/// one — which is exactly the occasion the model had a reason to try again. It
+/// is then told to answer from a result that does not exist. Same register, same
+/// no-capitals rule as its neighbour.
+pub const REPEAT_FAILED_MODEL_TEXT: &str = "duplicate_call: you already made this exact call in this turn and it FAILED — \
+     there is no result above to use. Repeating it will fail the same way. Change the arguments, \
+     call a different tool, or tell the user you could not do it.";
 
 // ---------------------------------------------------------------------------
 // Call
@@ -915,7 +926,14 @@ pub struct ToolExecutor {
     ///
     /// TURN SCOPED: it is legitimate for the user to ask "what time is it" a
     /// second time; getting the same result twice within one turn is not.
-    turn_calls: Mutex<HashSet<String>>,
+    /// The calls already made this turn, and WHETHER EACH ONE SUCCEEDED.
+    ///
+    /// It was a set, so the repeat gate could only say "you already made this
+    /// call". `REPEAT_MODEL_TEXT` then told the model "its result is above",
+    /// which is FALSE when the first call failed: the model is being sent to
+    /// read a result that does not exist, on the one occasion it had a reason to
+    /// try again.
+    turn_calls: Mutex<HashMap<String, bool>>,
 }
 
 impl ToolExecutor {
@@ -929,7 +947,7 @@ impl ToolExecutor {
             turn: AtomicU64::new(1),
             cancelled: AtomicU64::new(0),
             denied: Mutex::new(HashSet::new()),
-            turn_calls: Mutex::new(HashSet::new()),
+            turn_calls: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1114,16 +1132,21 @@ impl ToolExecutor {
         //    right answer is "permission_denied": the model must know it was
         //    denied, not that it repeated itself.
         let key = call_key(&name, &call.args);
-        if self
+        let previous = self
             .turn_calls
             .lock()
             .expect("turn calls lock")
-            .contains(&key)
-        {
+            .get(&key)
+            .copied();
+        if let Some(succeeded) = previous {
             return self.outcome(
                 &name,
                 ExecutionReason::RepeatedCall,
-                REPEAT_MODEL_TEXT.to_string(),
+                if succeeded {
+                    REPEAT_MODEL_TEXT.to_string()
+                } else {
+                    REPEAT_FAILED_MODEL_TEXT.to_string()
+                },
                 // THE CHIP TEXT IS EMPTY: the user must not see this as an
                 // "operation". The tool did not run, nothing happened in the
                 // world; showing a second line on screen would present work that
@@ -1164,10 +1187,21 @@ impl ToolExecutor {
             }
         }
 
-        // The record half of gate 5: the call really runs FROM HERE on.
-        self.turn_calls.lock().expect("turn calls lock").insert(key);
+        // The record half of gate 5: the call really runs FROM HERE on. It is
+        // recorded as NOT-YET-SUCCEEDED and updated below, so a call that dies
+        // inside the tool is remembered as a failure rather than as a result.
+        self.turn_calls
+            .lock()
+            .expect("turn calls lock")
+            .insert(key.clone(), false);
 
         let outcome: ToolOutcome = tool.run(call.args.clone(), ctx).await;
+        if matches!(outcome.state, ToolState::Read | ToolState::Written) {
+            self.turn_calls
+                .lock()
+                .expect("turn calls lock")
+                .insert(key, true);
+        }
 
         // The cancellation may have arrived WHILE the tool was running. We still
         // return the outcome, but if a write happened the flag is preserved —
@@ -1493,6 +1527,48 @@ mod tests {
     /// value outside the closed set, eliminated `remember` entirely, and
     /// recovered nothing — while the object was in fact `remember`'s own menu,
     /// which is evidence the call was meant for it.
+    /// A REPEAT OF A FAILED CALL IS NOT SENT TO READ A RESULT THAT IS NOT THERE.
+    ///
+    /// The gate said "its result is above" whatever happened the first time.
+    /// When the first call FAILED there is nothing above, and that is precisely
+    /// the occasion the model had a reason to try again — so it was told to
+    /// answer from a result that does not exist, which is the one instruction it
+    /// cannot carry out.
+    #[test]
+    fn the_repeat_gate_does_not_promise_a_result_that_failed() {
+        let store = Arc::new(InMemoryDataStore::new());
+        let traces = Arc::new(SilentReporter);
+        let dir = std::env::temp_dir();
+        let mut ctx = ToolContext::new(store as Arc<dyn tacet_kernel::DataStore>, &dir, traces);
+
+        let mut catalog = ToolCatalog::new();
+        catalog.add(Arc::new(CrashingTool));
+        catalog.add(Arc::new(PersonalTool));
+        let executor = ToolExecutor::new(catalog);
+        let ticket = executor.active_turn();
+
+        // A tool that always fails, called twice with the same arguments.
+        let call = r#"crashing({})"#;
+        let first = run(executor.execute_raw(call, ticket, &mut ctx)).expect("ran");
+        assert_eq!(first.reason, ExecutionReason::ToolFailed);
+        let second = run(executor.execute_raw(call, ticket, &mut ctx)).expect("gated");
+        assert_eq!(second.reason, ExecutionReason::RepeatedCall);
+        assert!(
+            !second.to_model.contains("result is above"),
+            "the model was sent to read a result of a call that failed: {:?}",
+            second.to_model
+        );
+        assert!(second.to_model.contains("FAILED"));
+
+        // NOT VACUOUS: a repeat of a call that SUCCEEDED still says the result
+        // is above, which is true and is what makes the model answer from it.
+        let ok = r#"personal_read({"what":"x"})"#;
+        run(executor.execute_raw(ok, ticket, &mut ctx)).expect("ran");
+        let again = run(executor.execute_raw(ok, ticket, &mut ctx)).expect("gated");
+        assert_eq!(again.reason, ExecutionReason::RepeatedCall);
+        assert!(again.to_model.contains("result is above"));
+    }
+
     #[test]
     fn a_pasted_alternation_on_an_optional_field_is_not_a_violation() {
         let store = std::sync::Arc::new(crate::data_store::SharedStore::new());

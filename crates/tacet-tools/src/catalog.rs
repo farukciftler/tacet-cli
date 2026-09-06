@@ -515,9 +515,17 @@ mod tests {
         /// time 388, calendar 300, remember 292, edit_document 213,
         /// create_document 190, find_file 181, **archive 167** — 2557 tokens.
         /// `archive` DISPLACED web_search (158) from the worst nine and
-        /// `checksum` (156) did not enter it. The margin under the ceiling is
-        /// therefore 43 tokens, not 58: the next description that wants to be
-        /// long has less room than the last one did.
+        /// `checksum` (156) did not enter it.
+        ///
+        /// RE-DERIVED 6 SEP 2026 by forcing the assertion, because the list has
+        /// moved since — `search_filter` and `message_intent` joined the catalog
+        /// and `calendar`'s description was shortened when its `kind` became a
+        /// choice. **The worst nine now cost ~2573 tokens, so the margin is 27,
+        /// not 43.** The direction is the point: every description that grows
+        /// takes room from the next one, and the number in this comment is the
+        /// only thing that tells the next author how much is left. Force the
+        /// assertion (`BLOCK_CEILING = 1`) and read the message rather than
+        /// trusting this line.
         ///
         /// READ THE NUMBER BEFORE MOVING IT. On the 4096-token FLOOR window —
         /// what a model that declares nothing gets (`tacet_engine::CONTEXT_BUDGET`)

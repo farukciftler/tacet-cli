@@ -1499,10 +1499,15 @@ pub fn score_intent(message: &str) -> IntentScores {
     // reached by a list without naming them one at a time, which is fitting the
     // router to its own test.
     //
-    // IT RAISES A SCORE AND NEVER OVERRULES ONE. Everything else the router
-    // decides is unchanged, so a wrong prediction costs one slot of the nine
-    // rather than the right tool — and `eval --routing` is the guard that says
-    // so, at 166/166 with this on.
+    // IT RAISES A SCORE AND NEVER OVERRULES ONE — but "costs one slot of the
+    // nine rather than the right tool" is TOO STRONG, and this comment claimed
+    // it until somebody checked. Raising the Extract profile also reorders what
+    // is already in the budget: the Extract hint `search` matches `web_search`
+    // IN ITS NAME, and a name match is worth `NAME_WEIGHT` times a description
+    // one, so a wrong prediction can move `web_search` up the list as well as
+    // push a ninth tool off it. The bound that survives is the weaker one: it
+    // never removes a tool the written table put in, and `eval --routing` holds
+    // at 166/166 with this on.
     //
     // The boost is the length of a typical trigger, so a learned hit weighs
     // about what one written trigger does rather than swamping the profile.

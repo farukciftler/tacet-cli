@@ -129,6 +129,43 @@ impl Tool for CalcTool {
                     // A single error exit point: a Turkish sentence to the chip,
                     // fixed text to the model.
                     let outcome = ToolOutcome::failed(&error);
+                    // EXCEPT WHEN THE MODEL HIT THE ALPHABET, in which case the
+                    // fixed text is the wrong thing to say.
+                    //
+                    // This parser takes digits, `. , ( )` and the four
+                    // operators, and nothing else — so `sqrt(81)`, `factorial(10)`
+                    // and `10!` all die on a letter, and the model is told
+                    // `tool_failed: the action could not be completed`, one
+                    // sentence for every cause. It cannot tell "you asked for
+                    // something impossible" from "the arithmetic broke", so it
+                    // retries the same shape and spends the turn.
+                    //
+                    // ORDINARY BAD SYNTAX KEEPS THE GENERIC TEXT: `12++*5` uses
+                    // only legal characters in an illegal order, and telling it
+                    // "this tool has no functions" would be false and would send
+                    // it looking for the wrong repair — which is the exact harm
+                    // this exception exists to undo.
+                    //
+                    // `run_code` next door already carves exactly this exception
+                    // for exactly this reason: the generic message drags the
+                    // model into the wrong repair.
+                    //
+                    // The vocabulary is AUTHORED HERE and never `format!`-ed
+                    // from the error — the error text is not a channel to the
+                    // model, and the closed error set exists so a tool cannot
+                    // become one. AND IT NAMES NO OTHER TOOL: a redirect saying
+                    // "use run_code" risks flipping the four square-root and
+                    // factorial cases out of a cluster the model currently gets
+                    // right by answering in prose, and that trade has not been
+                    // measured.
+                    let outcome = match &error {
+                        ToolError::InvalidArgument(m) if m.starts_with("no such operation") => {
+                            let mut o = outcome;
+                            o.to_model = ALPHABET_MODEL_TEXT.to_string();
+                            o
+                        }
+                        _ => outcome,
+                    };
                     ctx.update_chip(
                         trace,
                         TraceUpdate::state(outcome.state.clone()).text(outcome.chip_text.clone()),
@@ -139,6 +176,16 @@ impl Tool for CalcTool {
         })
     }
 }
+
+/// What the model is told when its expression used something this parser does
+/// not have. See the exception in `run`.
+///
+/// NO CAPITALS, the same register as `REPEAT_MODEL_TEXT` and the other constants
+/// that enter the model's context: capitals used for emphasis were measured to
+/// be taken as CONTENT here.
+const ALPHABET_MODEL_TEXT: &str = "calculate_alphabet: this tool evaluates arithmetic only — digits, + - * / % and \
+     parentheses. It has no functions, no names and no factorial. Do not retry the same \
+     expression.";
 
 // ---------------------------------------------------------------------------
 // Parser
@@ -167,10 +214,18 @@ pub fn calculate(expression: &str) -> ToolResult<f64> {
     let value = p.sum()?;
     p.skip_space();
     if p.position < p.input.len() {
-        return Err(ToolError::InvalidArgument(format!(
-            "unexpected character: '{}'",
-            p.input[p.position]
-        )));
+        // THE SAME TWO MISTAKES AS IN `atom`, and `10!` arrives HERE rather than
+        // there: the number parses, and the `!` is left over. A letter or a `!`
+        // after a complete expression is still the model reaching for an
+        // operation this parser does not have.
+        let c = p.input[p.position];
+        return Err(ToolError::InvalidArgument(
+            if c.is_alphabetic() || c == '!' {
+                format!("no such operation: '{c}'")
+            } else {
+                format!("unexpected character: '{c}'")
+            },
+        ));
     }
     finite(value)
 }
@@ -306,6 +361,18 @@ impl Parser<'_> {
                 Ok(value)
             }
             Some(c) if c.is_ascii_digit() || c == '.' || c == ',' => self.number(),
+            // TWO DIFFERENT MISTAKES, AND THE MODEL NEEDS TO BE TOLD WHICH.
+            //
+            // A LETTER or `!` means it reached for something this parser does
+            // not have — `sqrt(81)`, `factorial(10)`, `10!` — and retrying the
+            // same shape cannot work. Anything else is ordinary bad syntax
+            // (`12++*5` uses only legal characters, in an illegal order) and a
+            // retry is reasonable. The two used to share one message, and then
+            // one fixed sentence downstream, so the model could not tell "you
+            // asked for the impossible" from "the arithmetic broke".
+            Some(c) if c.is_alphabetic() || c == '!' => Err(ToolError::InvalidArgument(format!(
+                "no such operation: '{c}'"
+            ))),
             Some(c) => Err(ToolError::InvalidArgument(format!(
                 "unexpected character: '{c}'"
             ))),
@@ -392,6 +459,31 @@ fn truncate_for_chip(expression: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// THE MODEL IS TOLD WHICH MISTAKE IT MADE.
+    ///
+    /// `sqrt(81)` and `10!` are not arithmetic this parser has; `12++*5` is
+    /// arithmetic written wrongly. They used to produce the same error and then
+    /// the same fixed sentence downstream, so the model could not tell "retrying
+    /// cannot work" from "retrying might".
+    #[test]
+    fn a_name_or_a_factorial_is_a_different_failure_from_bad_syntax() {
+        for impossible in ["sqrt(81)", "factorial(10)", "10!", "2 + max(3,4)"] {
+            let e = calculate(impossible).expect_err("must fail");
+            assert!(
+                format!("{e}").contains("no such operation"),
+                "{impossible:?} did not report the alphabet: {e}"
+            );
+        }
+        for bad_syntax in ["12++*5", "(3 + 4", "5 5"] {
+            let e = calculate(bad_syntax).expect_err("must fail");
+            assert!(
+                !format!("{e}").contains("no such operation"),
+                "{bad_syntax:?} uses only legal characters and must not be told \
+                 the tool has no functions: {e}"
+            );
+        }
+    }
     use super::*;
     use serde_json::json;
     use std::sync::Arc;
