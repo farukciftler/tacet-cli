@@ -472,15 +472,68 @@ pub fn truncate_description(raw: &str) -> String {
 }
 
 /// The end CHARACTER index of the first sentence (punctuation included).
+///
+/// A FULL STOP IS NOT A SENTENCE END BY ITSELF, and the difference was live on a
+/// real catalog: two bridged tools that SEND EMAIL arrived described as
+///
+/// ```text
+/// Belirtilen alıcıya farukmakeitproduct@gmail.
+/// ```
+///
+/// — the dot inside the address, taken as the end of the author's first
+/// sentence. The cut appends no marker, so nothing on screen said the verb
+/// clause and the "this leaves the device" half had been dropped; the router
+/// then scored the tool on the stump (`tool_score` and `overlap` both read this
+/// string). The highest-consequence tools in the catalog were the ones it hit,
+/// because the rule only fires above `DESCRIPTION_LIMIT` and they are the long
+/// descriptions.
+///
+/// Two conditions, each bought by a fixture in the tests below:
+///
+/// * the terminator must be followed by whitespace or the end of the text —
+///   `@gmail.com`, `v1.2`, `3.5` are not sentence ends;
+/// * the word it terminates must not look like an abbreviation — `e.g.`,
+///   `i.e.`, `vs.`, `Dr.` end a word of two letters or fewer, or a word that
+///   already contains a dot. Being wrong here is cheap in one direction only:
+///   missing a real sentence end costs a `…` truncation at
+///   `DESCRIPTION_LIMIT`, while taking a false one silently deletes the verb.
 fn first_sentence_end(text: &str) -> Option<usize> {
-    let mut counter = 0usize;
-    for c in text.chars() {
-        counter += 1;
-        if matches!(c, '.' | '!' | '?') {
-            return Some(counter);
+    let chars: Vec<char> = text.chars().collect();
+    for (i, c) in chars.iter().enumerate() {
+        if !matches!(c, '.' | '!' | '?') {
+            continue;
         }
+        // Followed by whitespace, or nothing at all.
+        match chars.get(i + 1) {
+            Some(next) if !next.is_whitespace() => continue,
+            _ => {}
+        }
+        if *c == '.' && looks_like_an_abbreviation(&chars[..i]) {
+            continue;
+        }
+        return Some(i + 1);
     }
     None
+}
+
+/// Does the word ending here look like an abbreviation rather than a sentence?
+///
+/// `before` is everything up to but not including the dot.
+fn looks_like_an_abbreviation(before: &[char]) -> bool {
+    let word: Vec<char> = before
+        .iter()
+        .rev()
+        .take_while(|c| !c.is_whitespace())
+        .copied()
+        .collect();
+    // `e.g` — a dot already inside the word.
+    if word.contains(&'.') {
+        return true;
+    }
+    // `Dr`, `vs`, and the single letters of `A. B. Smith`. A one- or two-letter
+    // word before a dot is an abbreviation far more often than it is a
+    // sentence; an empty word is a stray dot, which is not one either.
+    word.len() <= 2
 }
 
 #[cfg(test)]
@@ -799,6 +852,62 @@ mod tests {
             !truncated.contains("wor…"),
             "it must not cut mid-word: {truncated}"
         );
+    }
+
+    /// THE ONE FROM THE LIVE CATALOG. A dot inside an e-mail address is not the
+    /// end of a sentence, and taking it as one deleted the verb from the
+    /// description of a tool that SENDS MAIL — on screen, in the prompt, and in
+    /// the two router functions that score against this string.
+    #[test]
+    fn a_dot_inside_a_word_does_not_end_the_sentence() {
+        // Verbatim shape, padded past DESCRIPTION_LIMIT the way the real one is.
+        let raw = "Belirtilen alıcıya farukmakeitproduct@gmail.com adresinden e-posta \
+                   gonderir; mesaj cihazdan cikar ve uzak sunucuya iletilir, bu yuzden \
+                   icerigi paylasmadan once kontrol edin.";
+        assert!(raw.chars().count() > DESCRIPTION_LIMIT);
+        let out = truncate_description(raw);
+        assert!(
+            !out.ends_with("@gmail."),
+            "the address was taken for a sentence end: {out}"
+        );
+        assert!(
+            out.contains("e-posta") || out.ends_with('…'),
+            "the verb clause must survive, or the cut must be marked: {out}"
+        );
+
+        // The same rule, three shapes that all used to cut early.
+        for (raw, forbidden) in [
+            (
+                format!("Version {} of the format.", "v1.2 ".repeat(60)),
+                "v1.",
+            ),
+            (
+                format!("Costs 3.50 per call{}", " and more".repeat(40)),
+                "3.",
+            ),
+            (
+                format!("Sends a file, e.g. a report{}", " to a list".repeat(40)),
+                "e.g.",
+            ),
+        ] {
+            let out = truncate_description(&raw);
+            assert!(
+                !out.trim_end().ends_with(forbidden),
+                "cut at `{forbidden}`, which does not end a sentence: {out}"
+            );
+        }
+    }
+
+    /// AND THE HALF THAT MUST NOT REGRESS: a real sentence end is still taken,
+    /// including the last one in the text, where nothing follows the dot.
+    #[test]
+    fn a_real_sentence_end_is_still_taken() {
+        let raw = format!("Reads one row. {}", "Details follow. ".repeat(40));
+        assert_eq!(truncate_description(&raw), "Reads one row.");
+
+        let ends_at_the_end = format!("{}. tail", "x".repeat(200));
+        assert!(truncate_description(&ends_at_the_end).ends_with('…'));
+        assert_eq!(first_sentence_end("Just this."), Some(10));
     }
 
     // --- THE PROMPT FENCE: a name is not a free text field ---
