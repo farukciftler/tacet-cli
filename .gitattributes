@@ -1,0 +1,11 @@
+# LINE ENDINGS ARE PINNED FOR MARKDOWN, and the reason is a test.
+#
+# `crates/tacet-cli/README.md` is GENERATED from the root README by
+# `crates/tacet-cli/tests/readme_mirror.rs`, and the generated header is a Rust
+# string literal — always LF. On a Windows checkout with git's default
+# `core.autocrlf=true` the committed files arrive with CRLF, so the mirror and
+# the freshly generated text differed by five bytes and the test failed on
+# windows-latest alone. Pinning the checkout is the root fix; the test also
+# normalises, because a claim about what two documents SAY should not rest on a
+# git setting.
+*.md text eol=lf

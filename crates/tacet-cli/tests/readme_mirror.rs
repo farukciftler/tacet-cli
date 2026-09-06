@@ -88,20 +88,46 @@ fn the_crates_io_page_matches_the_repository_readme() {
     let got = std::fs::read_to_string(&mirror_path)
         .unwrap_or_else(|e| panic!("{} is readable: {e}", mirror_path.display()));
 
-    if got != want {
+    // LINE ENDINGS ARE NOT DRIFT, and comparing bytes said they were.
+    //
+    // On a Windows checkout with git's default `core.autocrlf=true` every `.md`
+    // file arrives with CRLF, while `HEADER` above is a Rust string literal and
+    // is therefore always LF. So `want` was LF header + CRLF body and `got` was
+    // CRLF throughout: the same document, five bytes apart, on a test whose
+    // subject is CONTENT. It failed on windows-latest and nowhere else, and the
+    // message it printed was worse than useless — `str::lines()` strips the
+    // trailing `\r`, so every line compared EQUAL and the report read
+    // "792 lines against 792, first difference at line 793", a line that does
+    // not exist. Reproduced locally by converting both files to CRLF.
+    //
+    // `.gitattributes` now pins `*.md` to LF, which fixes the checkout. This
+    // normalisation stays anyway: the claim being tested is that the two files
+    // say the same thing, and that claim should not depend on a git setting.
+    let normalise = |text: &str| text.replace("\r\n", "\n");
+    if normalise(&got) != normalise(&want) {
         let (g, w) = (got.lines().count(), want.lines().count());
-        let first = got
-            .lines()
-            .zip(want.lines())
-            .position(|(a, b)| a != b)
-            .unwrap_or(g.min(w));
-        panic!(
-            "the crates.io page has drifted from the repository README \
-             ({g} lines against {w}), first difference at line {}. \
-             This is the page a new user reads before anything else. Fix it with:\n  \
-             TACET_UPDATE_README=1 cargo test -p tacet-cli --test readme_mirror",
-            first + 1
-        );
+        match got.lines().zip(want.lines()).position(|(a, b)| a != b) {
+            Some(first) => panic!(
+                "the crates.io page has drifted from the repository README \
+                 ({g} lines against {w}), first difference at line {}:\n  \
+                 mirror: {}\n  README: {}\n\
+                 This is the page a new user reads before anything else. Fix it with:\n  \
+                 TACET_UPDATE_README=1 cargo test -p tacet-cli --test readme_mirror",
+                first + 1,
+                got.lines().nth(first).unwrap_or("<none>"),
+                want.lines().nth(first).unwrap_or("<none>"),
+            ),
+            // Every shared line matches, so the difference is length or the
+            // trailing newline. Say which, rather than naming a line number one
+            // past the end of the file.
+            None => panic!(
+                "the crates.io page has {g} lines against the README's {w}, and \
+                 every line they share is identical — so the difference is at the \
+                 end of the file (a missing or extra trailing newline), not in the \
+                 text. Fix it with:\n  \
+                 TACET_UPDATE_README=1 cargo test -p tacet-cli --test readme_mirror"
+            ),
+        }
     }
 }
 
