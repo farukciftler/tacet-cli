@@ -1646,25 +1646,54 @@ impl Router {
 
     pub fn select(&self, message: &str, catalog: &ToolCatalog) -> Vec<Arc<dyn Tool>> {
         let scores = score_intent(message);
-        let mut ordered: Vec<(usize, usize, Arc<dyn Tool>)> = catalog
+        let message_stems = stems(&simplify(message));
+        // BOTH SORT KEYS ARE COMPUTED ONCE PER TOOL, NOT ONCE PER COMPARISON.
+        //
+        // The profile score was already memoised into the tuple; `overlap` was
+        // not, and it sat inside `then_with` — so it ran on EVERY comparison the
+        // sort made, and it is the expensive half: a `format!`, a `simplify`
+        // allocation, and `stems` with an O(n^2) `contains` dedup over
+        // descriptions up to 1354 characters. Most tools score zero on most
+        // messages, so `then_with` fires on nearly every comparison rather than
+        // rarely.
+        //
+        // MEASURED on this machine (M-series, release, 48 tools = 17 built-ins
+        // with every addon gate open plus 29 MCP-shaped remotes, 2000 iterations
+        // after 100 warm-up):
+        //
+        //     message                           before      after
+        //     "Dolar kuru su an ne durumda?"    1.3 ms      651 us   2.0x
+        //     "summarize … budget-2026.md"      1.6 ms      1.1 ms   1.5x
+        //     "tesekkurler, cok yardimci…"      512 us      324 us   1.6x
+        //
+        // Three runs each side, spread under 2%. `examples/router_bench.rs` is
+        // the stopwatch; it is committed so the number can be re-derived rather
+        // than believed. The middle message improves least because a message
+        // that fires a profile leaves fewer ties for `then_with` to break —
+        // which is the mechanism, stated as a prediction the numbers keep.
+        //
+        // `overlap` is a pure function of `(tool, message_stems)` — the `why`
+        // path above already memoises it the same way — so hoisting it changes
+        // no selection. That is asserted, not assumed:
+        // `the_selection_is_deterministic` plus a byte-identical routing report.
+        let mut ordered: Vec<(usize, usize, usize, Arc<dyn Tool>)> = catalog
             .tools()
             .iter()
             .enumerate()
-            .map(|(i, t)| (self.tool_score(t.as_ref(), &scores), i, t.clone()))
+            .map(|(i, t)| {
+                (
+                    self.tool_score(t.as_ref(), &scores),
+                    overlap(t.as_ref(), &message_stems),
+                    i,
+                    t.clone(),
+                )
+            })
             .collect();
 
         // The key is (-profile score, -word overlap, catalog order): fully
         // deterministic, and the middle term is what lets a tool the profiles
         // have never heard of reach the model at all (see `overlap`).
-        let message_stems = stems(&simplify(message));
-        ordered.sort_by(|a, b| {
-            b.0.cmp(&a.0)
-                .then_with(|| {
-                    overlap(b.2.as_ref(), &message_stems)
-                        .cmp(&overlap(a.2.as_ref(), &message_stems))
-                })
-                .then(a.1.cmp(&b.1))
-        });
+        ordered.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
         let budget = self.budget(catalog.tools().len());
         // THE RESERVATION IS FOR SILENCE, NOT FOR COMPETITION. It exists so a
         // question in a language the trigger table has never seen can still
@@ -1681,7 +1710,7 @@ impl Router {
         let mut chosen: Vec<Arc<dyn Tool>> = ordered
             .iter()
             .take(budget)
-            .map(|(_, _, t)| t.clone())
+            .map(|(_, _, _, t)| t.clone())
             .collect();
 
         // THE RESERVATION, applied last and only when it changes something: if
@@ -1698,7 +1727,7 @@ impl Router {
                 let wanted = RESERVED_SLOTS - already;
                 let extra: Vec<Arc<dyn Tool>> = ordered
                     .iter()
-                    .map(|(_, _, t)| t)
+                    .map(|(_, _, _, t)| t)
                     .filter(|t| self.reserved.iter().any(|n| n == t.name()))
                     .filter(|t| !chosen.iter().any(|c| c.name() == t.name()))
                     .take(wanted)
