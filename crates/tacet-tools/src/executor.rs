@@ -1044,11 +1044,28 @@ impl ToolExecutor {
         ticket: TurnTicket,
         ctx: &mut ToolContext,
     ) -> Option<ExecutionOutcome> {
-        let call = ToolCall::parse(raw)
+        let call = self.parse_call(raw)?;
+        Some(self.execute(&call, ticket, ctx).await)
+    }
+
+    /// WHAT `execute_raw` WOULD RUN, without running it.
+    ///
+    /// The four recoveries below are the reason this is public. A caller that
+    /// wants the arguments a call was made with — the eval, writing them into
+    /// its report — cannot get them from `ToolCall::parse` alone: three of the
+    /// four shapes this accepts fail that parse and are recovered here, so a
+    /// caller doing its own parse would record `null` for exactly the calls
+    /// whose arguments are most worth seeing.
+    ///
+    /// `ExecutionOutcome` does not carry the arguments and deliberately is not
+    /// being taught to: it is constructed at five sites, three of which run
+    /// before the call is fully known, and threading a value through them to
+    /// serve a report would put report-shaped code on the execution path.
+    pub fn parse_call(&self, raw: &str) -> Option<ToolCall> {
+        ToolCall::parse(raw)
             .or_else(|| recover_nameless_json(raw, &self.catalog))
             .or_else(|| recover_marked_call(raw, &self.catalog))
-            .or_else(|| recover_glued_call(raw, &self.catalog))?;
-        Some(self.execute(&call, ticket, ctx).await)
+            .or_else(|| recover_glued_call(raw, &self.catalog))
     }
 
     /// Runs a single tool call through the gates.

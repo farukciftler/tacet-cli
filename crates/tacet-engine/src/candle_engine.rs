@@ -1065,7 +1065,11 @@ SmolLM2 and TinyLlama work; a Llama-3 chat model needs its own template first.",
             // clears it by a third and turns a runaway from fifteen minutes into
             // about two.
             if call_over_budget(armed_at, produced.len(), TOOL_CALL_CAP) {
-                stop = StopReason::Length;
+                // NOT `Length`. The caller's cap and the call's own cap were the
+                // same variant, so a report could not say whether a step died
+                // because the window was too small or because the model got
+                // stuck inside a call — opposite fixes, one word.
+                stop = StopReason::CallTooLong;
                 break;
             }
             if backstop_runs(structural) && is_looping(&produced) {

@@ -1368,6 +1368,51 @@ pub struct StepOutcome {
     /// WHY THE TURN STOPPED. See `Ending`: a step that could not be measured is
     /// not scored as a pass on either axis.
     pub ended: Ending,
+    /// ONE ENTRY PER PASS OF THE TOOL LOOP. See `PassRecord`.
+    pub passes: Vec<PassRecord>,
+}
+
+/// WHAT ONE PASS OF THE LOOP COST AND WHAT IT DID.
+///
+/// WHY THIS EXISTS. The trace printed all of this to stderr and the report threw
+/// every word of it away, so a 48-minute run produced a JSON file from which the
+/// most ordinary follow-up questions could not be answered: which pass was slow,
+/// what arguments the model actually wrote, whether a call was refused before it
+/// ran. Answering any of them meant running the 48 minutes again — and the
+/// answers are not stable across runs on a sampled model, so the re-run answers
+/// a different question than the one that was asked.
+///
+/// It is per PASS rather than per step because that is where the information
+/// lives. A step's `called` is a list of names; it cannot say that the second
+/// call was the same as the first and was refused, or that the third pass spent
+/// 40 seconds producing nine tokens.
+#[derive(Debug, Clone, Serialize)]
+pub struct PassRecord {
+    /// 1-based, matching what the trace prints.
+    pub pass: usize,
+    pub tokens: usize,
+    pub seconds: f64,
+    /// `StopReason`, by name. `CallTooLong` and `Length` are different defects
+    /// and this is where the difference becomes visible in a report.
+    pub stop: String,
+    /// Was this the final pass, the one offered no tools.
+    pub no_tools_offered: bool,
+    /// The tool that ran, canonically spelled. `None` when the pass produced
+    /// prose, or when a call was written on the last pass and deliberately not
+    /// executed.
+    pub tool: Option<String>,
+    /// The arguments as the EXECUTOR parsed them, compact JSON — recovered
+    /// shapes included, which is why this comes from `parse_call` rather than
+    /// from a parse of our own.
+    pub args: Option<String>,
+    /// `ExecutionReason` by name: `Ok`, `RepeatedCall`, `InvalidArguments`,
+    /// `UnknownTool`, `ApprovalDenied`, `Cancelled`, `ToolFailed`. A call that
+    /// never ran is not the same event as one that ran and failed, and `called`
+    /// alone records them identically.
+    pub reason: Option<String>,
+    /// The tool's own wall clock, separated from the model's. `calendar-day`
+    /// reads as a 39 s case, of which 30 s is `osascript`.
+    pub tool_seconds: Option<f64>,
 }
 
 /// WHY A TURN STOPPED, and therefore whether it can be scored at all.
@@ -2229,6 +2274,7 @@ pub fn run_selection_case_in(
                     // machine problem into the answer-quality denominator.
                     claims: false,
                     ended: Ending::HostFailed,
+                    passes: Vec::new(),
                 }],
             };
         }
@@ -2319,6 +2365,7 @@ pub fn run_selection_case_in(
 
         let mut turn_tools: Vec<Turn> = Vec::new();
         let mut called: Vec<String> = Vec::new();
+        let mut passes: Vec<PassRecord> = Vec::new();
         let mut answer = String::new();
         // OUT OF TURNS UNTIL SOMETHING ELSE HAPPENS. Falling out of the loop
         // without ever answering is the shell's failed run; making it the
@@ -2421,6 +2468,21 @@ pub fn run_selection_case_in(
                 generation.token_count as f64 / gen_secs.max(1e-9),
                 generation.stop
             ));
+            // THE SAME LINE, INTO THE REPORT. It is pushed here rather than at
+            // the end of the pass so that every exit below — cut off, prose,
+            // a call on the last pass — leaves the record behind; the fields the
+            // pass has not earned yet are filled in where they happen.
+            passes.push(PassRecord {
+                pass: turn + 1,
+                tokens: generation.token_count,
+                seconds: gen_secs,
+                stop: format!("{:?}", generation.stop),
+                no_tools_offered: final_turn,
+                tool: None,
+                args: None,
+                reason: None,
+                tool_seconds: None,
+            });
             // A CUT-OFF PASS IS A LOST PASS, NOT A LOST TURN.
             //
             // This killed the whole turn and threw away every tool result the
@@ -2495,6 +2557,18 @@ pub fn run_selection_case_in(
                 tool_started.elapsed().as_secs_f64(),
                 case_started.elapsed().as_secs_f64()
             ));
+            if let Some(record) = passes.last_mut() {
+                record.tool = Some(outcome.tool_name.clone());
+                record.reason = Some(format!("{:?}", outcome.reason));
+                record.tool_seconds = Some(tool_started.elapsed().as_secs_f64());
+                // FROM THE EXECUTOR'S OWN PARSE, not a second one of ours: three
+                // of the four call shapes it accepts do not survive
+                // `ToolCall::parse`, and those are the calls whose arguments a
+                // reader most wants to see.
+                record.args = executor
+                    .parse_call(&generation.text)
+                    .map(|c| c.args.to_string());
+            }
             called.push(outcome.tool_name.clone());
             if outcome.reason == tacet_tools::executor::ExecutionReason::RepeatedCall {
                 must_answer = true;
@@ -2542,6 +2616,7 @@ pub fn run_selection_case_in(
                 || !step.forbidden.is_empty()
                 || step.language.is_some(),
             ended,
+            passes,
         });
     }
 
@@ -2867,6 +2942,7 @@ mod tests {
                     answer_passed: false,
                     claims: false,
                     ended: Ending::OutOfTurns,
+                    passes: Vec::new(),
                 }],
             },
             SelectionOutcome {
@@ -2882,6 +2958,7 @@ mod tests {
                     answer_passed: true,
                     claims: false,
                     ended: Ending::Answered,
+                    passes: Vec::new(),
                 }],
             },
         ];

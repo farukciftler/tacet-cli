@@ -1250,6 +1250,13 @@ pub fn chat(run: ChatRun) -> ExitCode {
                 // branch is the cap.)
                 let reason = match generation.stop {
                     tacet_engine::StopReason::Length => "the token cap filled",
+                    // A DIFFERENT SENTENCE FOR A DIFFERENT DEFECT. This one is
+                    // not the window running out; it is a tool call that armed
+                    // the grammar and never closed. The user can do nothing
+                    // about the first and can usefully rephrase for the second.
+                    tacet_engine::StopReason::CallTooLong => {
+                        "a tool call ran past its own budget without finishing"
+                    }
                     _ => "cancelled",
                 };
                 eprintln!(

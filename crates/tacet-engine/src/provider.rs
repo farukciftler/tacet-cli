@@ -21,8 +21,24 @@ pub enum StopReason {
     Token,
     /// The constrainer reached an accepting state; the grammar is complete.
     ConstraintDone,
-    /// The token cap was hit. The output may be HALF-FINISHED.
+    /// The CALLER'S token cap was hit — `SamplingSetting::max_tokens` ran out.
+    /// The output may be HALF-FINISHED.
+    ///
+    /// SEPARATE FROM `CallTooLong` since the eval started reporting why a step
+    /// could not be measured. Both leave half-finished output and both used to
+    /// be this variant, so "cut off" named two opposite defects with one word:
+    /// this one says the budget the caller granted was not enough for what the
+    /// model wanted to say, which is a windowing decision; the other says the
+    /// model got stuck INSIDE a call, which is a grammar or a prompt problem.
+    /// A report that cannot tell them apart cannot point at either.
     Length,
+    /// A tool call armed the grammar and then ran past the call's own budget
+    /// (`TOOL_CALL_CAP`), counted from where the call started rather than from
+    /// the start of generation.
+    ///
+    /// The largest legitimate call measured in this repository is 1523 tokens,
+    /// so this is not a near miss on a normal call — it is a runaway inside one.
+    CallTooLong,
     /// A stop string appeared.
     StopString,
     /// The user CANCELLED generation (Ctrl-C in the shell).
@@ -42,10 +58,13 @@ pub enum StopReason {
 }
 
 impl StopReason {
-    /// Is the output complete — every ending except `Length` and `Cancelled` is
-    /// complete.
+    /// Is the output complete — every ending except the two caps and a cancel
+    /// is complete.
     pub fn is_complete(self) -> bool {
-        !matches!(self, StopReason::Length | StopReason::Cancelled)
+        !matches!(
+            self,
+            StopReason::Length | StopReason::CallTooLong | StopReason::Cancelled
+        )
     }
 
     /// Did the user cut it — this is how the shell separates a warning from
