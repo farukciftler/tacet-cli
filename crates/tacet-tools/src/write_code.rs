@@ -642,7 +642,7 @@ mod tests {
     /// panic carrying `diagnose()`. The gate is defined once, in
     /// `run_code::sandbox_must_run`, because the tests it silences are skipped
     /// by the same absent shield and must be re-enabled by the same switch:
-    /// 8 here and 14 in run_code.rs on Linux. Those two figures are DERIVED from
+    /// 8 here and 15 in run_code.rs on Linux. Those two figures are DERIVED from
     /// the source and checked against this sentence by
     /// `the_skip_count_the_documents_quote_is_the_count_in_the_source`; written
     /// out by hand they were "eight and sixteen", and sixteen was wrong. The syntax-check path

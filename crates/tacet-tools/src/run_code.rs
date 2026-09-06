@@ -712,6 +712,27 @@ pub fn run_program(
         }
         child.kill().ok();
         child.wait().ok();
+    } else {
+        // AND ON THE NORMAL PATH TOO. The sweep used to run on the timeout path
+        // ONLY, so a script that EXITED CLEANLY after starting a background
+        // child left that child running — outside every timeout, holding the
+        // sandbox directory and the pipe ends, burning CPU — while the tool
+        // reported success and the turn moved on.
+        //
+        // Today no such child can exist: the macOS profile refuses the spawn
+        // (`spawn EPERM`, measured) and Linux `bwrap` tears the pid namespace
+        // down with `--die-with-parent`. This is the third layer, and it is here
+        // because the first two are somebody else's configuration file. It costs
+        // one syscall that returns ESRCH when the group is already empty, which
+        // is every ordinary run.
+        //
+        // ORDER MATTERS: after the child has exited, so its own output is
+        // already in the pipe, and BEFORE the bounded join, so a survivor
+        // holding the pipe ends cannot make the readers wait out their deadline.
+        #[cfg(unix)]
+        unsafe {
+            killpg(group, SIGKILL);
+        }
     }
     let ms = start.elapsed().as_millis();
 
@@ -1830,7 +1851,7 @@ mod tests {
     ///
     /// `sandbox_must_run()` is what turns every `tool_or_skip()` in this crate
     /// from a skip into a failure, and it is switched on by three lines of YAML.
-    /// Delete them — or rename the variable on one side only — and 22 tests go
+    /// Delete them — or rename the variable on one side only — and 23 tests go
     /// back to passing without measuring anything, exactly as they did before
     /// this work, with nothing anywhere going red. That figure is not asserted
     /// from memory: `the_skip_count_the_documents_quote_is_the_count_in_the_source`
@@ -2453,6 +2474,93 @@ mod tests {
                 write_at.display()
             );
         }
+    }
+
+    /// THE END STATE: nothing the script started is still running when the tool
+    /// says it is done.
+    ///
+    /// THE HOLE THIS FOUND. The whole process group was killed on the TIMEOUT
+    /// path only. A script that exits normally after starting a background
+    /// child left that child running — outside every timeout, holding the
+    /// sandbox directory and the pipe ends, burning CPU — while the tool
+    /// reported success and the turn moved on. `--die-with-parent` covers it on
+    /// Linux; macOS `sandbox-exec` has no equivalent, and macOS is where this
+    /// project's numbers are measured.
+    ///
+    /// THE CANARY IS A FILE WITH A DELAY, not a process listing. Reading the
+    /// process table would measure this machine's other tenants; a file that
+    /// appears three seconds after the tool returned can only have been written
+    /// by something the tool left behind.
+    #[test]
+    fn nothing_survives_the_call() {
+        let Some(tool) = tool_or_skip() else { return };
+        let root = temp_dir("survivor");
+        let mut ctx = context(&root);
+        let canary = std::env::temp_dir().join(format!("tacet-survivor-{}.txt", nonce()));
+        std::fs::remove_file(&canary).ok();
+
+        struct Canary(PathBuf);
+        impl Drop for Canary {
+            fn drop(&mut self) {
+                std::fs::remove_file(&self.0).ok();
+            }
+        }
+        let _guard = Canary(canary.clone());
+
+        // Detached, so it is not the process we spawned; it writes OUTSIDE the
+        // sandbox on purpose, because a survivor that can only write inside a
+        // directory nobody reads again is not the failure being measured.
+        let code = match tool.interpreters()[0].key {
+            "python" => format!(
+                "import subprocess, sys\n\
+                 subprocess.Popen([sys.executable, '-c', \
+                 \"import time,os;time.sleep(3);open({canary:?},'w').write('alive')\"])\n\
+                 print('SPAWNED')\n"
+            ),
+            _ => format!(
+                "const {{spawn}}=require('child_process');\
+                 spawn(process.execPath,['-e',\
+                 `setTimeout(()=>require('fs').writeFileSync({canary:?},'alive'),3000)`],\
+                 {{detached:true,stdio:'ignore'}}).unref();\
+                 console.log('SPAWNED')"
+            ),
+        };
+
+        let outcome = hold(tool.run(json!({"code": code, "timeout_s": 20}), &mut ctx));
+        let output = outcome.raw_output.clone().unwrap_or_default();
+
+        // TWO ACCEPTABLE END STATES, and this machine takes the stronger one.
+        //
+        // MEASURED on macOS 15 (7 Sep 2026): the `sandbox-exec` profile refuses
+        // the spawn outright — node comes back `Error: spawn EPERM`, python the
+        // same — so a survivor is not killed afterwards, it never exists. On
+        // Linux `bwrap` gets there differently: `--unshare-pid` plus
+        // `--die-with-parent` tears the namespace down with the parent.
+        //
+        // The test accepts either, because the guarantee is about the END STATE
+        // and not about which layer delivers it. What it does not accept is a
+        // child that outlives the call.
+        let spawned = output.contains("SPAWNED");
+        if !spawned {
+            let refused = output.contains("EPERM")
+                || output.to_lowercase().contains("permission")
+                || output.contains("Operation not permitted");
+            assert!(
+                refused,
+                "the probe neither spawned nor was refused, so nothing was \
+                 measured — fix the probe rather than the assertion: {output}"
+            );
+        }
+
+        // Longer than the child's own delay, so a survivor has had its chance.
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        assert!(
+            !canary.exists(),
+            "a process the script started outlived the call and wrote {} after \
+             the tool had already reported done (spawn {}): {output}",
+            canary.display(),
+            if spawned { "succeeded" } else { "was refused" }
+        );
     }
 
     /// 9) AN INFINITE LOOP: on the timeout the process is KILLED and the

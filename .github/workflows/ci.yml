@@ -29,7 +29,7 @@ jobs:
       # `run_code` and `write_code` refuse to enter the catalog unless a shield
       # can be found AND measured, so on a runner without bubblewrap every one of
       # their process tests took the `tool_or_skip()` escape hatch and passed by
-      # printing a line. 22 on Linux — 14 in run_code.rs, 8 in write_code.rs: the
+      # printing a line. 23 on Linux — 15 in run_code.rs, 8 in write_code.rs: the
       # network cut, the write confinement, the timeout kill, the output cap, the
       # `node --check` / `python3 -m py_compile` verification path, and the
       # discovery assert, all reporting green having executed nothing.
