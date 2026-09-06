@@ -318,17 +318,30 @@ and were SET ASIDE. The {} below are the ones this host can actually answer.",
         },
     );
 
-    if json {
-        println!("{}", report.json());
-        return ExitCode::SUCCESS;
-    }
-
     let score = BenchScore::from_counts(
         (report.tool_passed, report.tool_total),
         (report.irrelevance_passed, report.irrelevance_total),
         (report.step_passed, report.step_total),
         (report.answer_passed, report.answer_total),
     );
+
+    if json {
+        // THE SCORE GOES INTO THE JSON TOO, and it did not.
+        //
+        // `--json` returned before `BenchScore` was ever built, so the ONE
+        // number this command exists to produce — the composite, with the axis
+        // weights that decide it — was available to a person reading a terminal
+        // and to nobody else. Every automated consumer had to re-derive it from
+        // the four pairs, which means re-implementing the renormalisation rule
+        // for a missing axis, which means two implementations of the arithmetic
+        // this project asks readers to check.
+        //
+        // ADDITIVE: the report's own fields are untouched, `score` and
+        // `score_weights` are new keys. A consumer reading `tool_passed` still
+        // reads it.
+        println!("{}", report_json_with_score(&report.json(), score));
+        return ExitCode::SUCCESS;
+    }
     let axis = |label: &str, v: Option<f64>, p: usize, t: usize| {
         match v {
             Some(v) => format!("  {label:<14} {p:>4}/{t:<4}  {:>5.1}%", 100.0 * v),
@@ -379,6 +392,34 @@ the safety axis is heaviest on purpose; an axis with no cases is left out, not z
         )
     );
     ExitCode::SUCCESS
+}
+
+/// The report, plus the score the terminal path prints.
+///
+/// ADDITIVE BY CONSTRUCTION: the report's own fields are serialised first and
+/// never touched; `score` and `score_weights` are new keys. A consumer reading
+/// `tool_passed` still reads it. A report that will not serialise as a JSON
+/// object falls back to the report's own rendering rather than inventing one.
+fn report_json_with_score(report_json: &str, score: BenchScore) -> String {
+    match serde_json::from_str::<serde_json::Value>(report_json) {
+        Ok(serde_json::Value::Object(mut map)) => {
+            map.insert(
+                "score".into(),
+                serde_json::to_value(score).unwrap_or(serde_json::Value::Null),
+            );
+            map.insert(
+                "score_weights".into(),
+                serde_json::Value::Object(
+                    tacet_eval::bench::WEIGHTS
+                        .iter()
+                        .map(|(n, w)| (n.to_string(), serde_json::json!(w)))
+                        .collect(),
+                ),
+            );
+            serde_json::to_string_pretty(&map).unwrap_or_else(|_| report_json.to_string())
+        }
+        _ => report_json.to_string(),
+    }
 }
 
 /// THE FOUR NUMBERS — and the first two are the whole point.
@@ -778,7 +819,7 @@ fn peak_memory_mib() -> Option<u64> {
 
 #[cfg(test)]
 mod gap_tests {
-    use super::started_a_call;
+    use super::{BenchScore, report_json_with_score, started_a_call};
 
     /// THE GENERATIONS THAT BROKE THE MEASUREMENT, kept verbatim. Every string
     /// here was produced by an unconstrained Qwen3-0.6B on
@@ -830,5 +871,52 @@ mod gap_tests {
             "weather({\"city\":\"istanbul\"})",
             &["time", "calculate"]
         ));
+    }
+
+    /// `--json` USED TO RETURN BEFORE THE SCORE WAS BUILT.
+    ///
+    /// The one number this command exists to produce was available to a person
+    /// reading a terminal and to nobody else; every automated consumer had to
+    /// re-derive the composite from the four pairs, which means re-implementing
+    /// the renormalisation rule for a missing axis — two implementations of the
+    /// arithmetic this project asks its readers to check.
+    #[test]
+    fn the_json_output_carries_the_score_and_the_weights() {
+        // The function takes the report's own JSON, so the test can hand it
+        // the shape a consumer actually reads without needing `SelectionReport`
+        // to be constructible from outside `tacet-eval`.
+        let report = serde_json::json!({
+            "identity": {"engine": "test"},
+            "wall_ms": 0,
+            "catalog": ["calculate"],
+            "cases": [],
+            "tool_passed": 7, "tool_total": 10,
+            "irrelevance_passed": 4, "irrelevance_total": 4,
+            "step_passed": 9, "step_total": 12,
+            "answer_passed": 3, "answer_total": 5,
+        })
+        .to_string();
+        let score = BenchScore::from_counts((7, 10), (4, 4), (9, 12), (3, 5));
+        let text = report_json_with_score(&report, score);
+        let value: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+
+        let got = value["score"]["composite"].as_f64().expect("a composite");
+        assert!(
+            (got - score.out_of_100()).abs() < 1e-9,
+            "the JSON composite ({got}) must be the number the terminal prints ({})",
+            score.out_of_100()
+        );
+        assert_eq!(
+            value["score_weights"]["irrelevance"].as_f64(),
+            Some(0.40),
+            "the weights travel with the score, so the arithmetic can be checked \
+             without reading this source"
+        );
+        // ADDITIVE: the report's own fields must survive untouched.
+        assert!(
+            value.get("identity").is_some() || value.get("catalog").is_some(),
+            "the report's own keys were lost: {}",
+            &text[..text.len().min(200)]
+        );
     }
 }

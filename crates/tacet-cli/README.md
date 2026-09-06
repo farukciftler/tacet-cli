@@ -757,10 +757,23 @@ noted. **Score is out of 100** with the weights above — irrelevance 0.40, tool
 | Qwen3-0.6B (Q8_0) | 64.0 | 52/160 · 32.5% | **24/24** | 79/190 | 28/47 | 21.3 min |
 | FunctionGemma-270M (F16) | 47.4 | **0/160** | **24/24** | 24/190 | 23/47 | 28.6 min |
 
-**Read the score with its floor in mind.** A model that never calls anything
-still passes every irrelevance case, and 0.40 of the weight is exactly that — so
-**40 is the floor, not zero**. FunctionGemma's 47.4 is a model that cannot call a
-single tool in this format; the number to read beside it is the 0/160.
+**Read the score with its floor in mind, and the floor is not 40.** A model that
+never calls anything passes every irrelevance case, which is 0.40 of the weight —
+that much was already on this page. What it left out is that the same silence
+also passes those cases' STEPS and their ANSWERS. Derived from the suite rather
+than asserted:
+
+```
+silence: tool 0/160 · irrelevance 24/24 · step 24/190 · answer 24/47  =>  47.6 / 100
+```
+
+`cargo test -p tacet-eval --test the_score_has_a_floor -- --nocapture` prints
+that line, and the test fails if this page and the suite disagree. **FunctionGemma's
+47.4 is two tenths BELOW the score of saying nothing at all** — it is not a weak
+tool-caller, it is a model that cannot call a single tool in this format and
+loses one answer on top. The number to read beside it is the 0/160. Quoting the
+floor as 40 made every row on this table look about eight points better than it
+is, which is more than the gap between two of them.
 
 **The 8B is worse than the 4B, and the axis it loses on is the safety one.**
 Twenty of twenty-four on the irrelevance gate means four messages that must not
