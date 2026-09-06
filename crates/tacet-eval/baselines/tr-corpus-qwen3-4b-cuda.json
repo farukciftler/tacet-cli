@@ -14,7 +14,7 @@
    "irrelevance_total": 7,
    "step_passed": 20,
    "step_total": 22,
-   "answer_passed": 12,
+   "answer_passed": 13,
    "answer_total": 22
   },
   "alakasiz": {
@@ -44,7 +44,7 @@
    "irrelevance_total": 9,
    "step_passed": 36,
    "step_total": 43,
-   "answer_passed": 28,
+   "answer_passed": 33,
    "answer_total": 43
   },
   "cok-adimli": {
@@ -54,7 +54,7 @@
    "irrelevance_total": 0,
    "step_passed": 37,
    "step_total": 46,
-   "answer_passed": 27,
+   "answer_passed": 29,
    "answer_total": 46
   },
   "dosya-arsiv": {
@@ -64,7 +64,7 @@
    "irrelevance_total": 9,
    "step_passed": 25,
    "step_total": 37,
-   "answer_passed": 18,
+   "answer_passed": 23,
    "answer_total": 37
   },
   "hafiza-takvim": {
@@ -84,7 +84,7 @@
    "irrelevance_total": 7,
    "step_passed": 33,
    "step_total": 35,
-   "answer_passed": 24,
+   "answer_passed": 30,
    "answer_total": 35
   },
   "kod-git": {
@@ -104,7 +104,7 @@
    "irrelevance_total": 7,
    "step_passed": 7,
    "step_total": 7,
-   "answer_passed": 5,
+   "answer_passed": 4,
    "answer_total": 7
   }
  },
@@ -115,7 +115,7 @@
   "irrelevance_total": 97,
   "step_passed": 243,
   "step_total": 289,
-  "answer_passed": 195,
+  "answer_passed": 213,
   "answer_total": 289
  }
 }

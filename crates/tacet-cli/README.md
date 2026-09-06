@@ -584,7 +584,16 @@ expectation that could be scored there. The report is at
 | tool selection | **105/145** · 72.4% | 85.0% |
 | irrelevance | **95/97** · 97.9% | 100% |
 | step chain | 243/289 · 84.1% | 87.4% |
-| answer quality | 195/289 · 67.5% | 80.9% |
+| answer quality | 213/289 · 73.7% | 80.9% |
+
+**The answer axis moved 195 → 213 in one commit, and none of it is the model.**
+The language gate demanded evidence FOR the language and failed an answer when it
+found none — and Turkish attaches its suffixes with an apostrophe, so `480'in`
+was split into a token `in` that is on the ENGLISH list, while Turkish's own
+proof letters exclude `ö ü` because German writes them too. Eighteen correct
+Turkish answers were being failed by the instrument. On the mixed 184-case suite
+the same fix is worth three; on a corpus that is entirely Turkish it is worth
+eighteen, which is what a blind spot looks like when you point a set at it.
 
 **Thirteen points below the curated suite on tool selection, and that gap is the
 reason the corpus was written.** These are sentences a Turkish user would
