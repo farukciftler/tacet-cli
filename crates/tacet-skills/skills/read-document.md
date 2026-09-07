@@ -5,7 +5,7 @@ tools: read_document
 ---
 # Reading documents
 
-Read the document in play with `read_document` — the one attached to the chat, or the file you just created.
+`read_document({"path":"notes.md"})`. `path` is the file the user named, copied as they wrote it; for the document already in play — the one attached to the chat, or the file you just created — pass its name the same way.
 
 ## Never break these
 - Never claim there is no document before calling the tool; it reports that itself.

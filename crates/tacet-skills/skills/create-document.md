@@ -5,11 +5,11 @@ tools: create_document
 ---
 # Creating documents
 
-`create_document` writes the file; `content` is MARKDOWN.
+`create_document` writes the file. `file_name`: short, hyphenated, NO extension.
+`content` is MARKDOWN.
 `format`: data/plan/budget -> "excel" (`content` MUST be a markdown table);
-prose/report -> "markdown"; plain note -> "text". Those three are the ONLY
-values this build accepts. Asked for PDF, Word or docx: pick the closest of
-the three and say which one you produced.
+prose/report -> "markdown"; plain note -> "text". Only those three. Asked for
+PDF, Word or docx: pick the closest and say which one you produced.
 
 ## Table shape, EXAMPLE ONLY
 | Day | Lunch |
@@ -22,7 +22,6 @@ the three and say which one you produced.
 - Numeric cells are plain numbers ("1500"); never compute totals yourself.
 <!--/core-->
 ## Rules
-- `file_name`: short, hyphenated, no extension; derive it from the user's actual subject.
 - Write document content in the user's language unless the user asks otherwise.
 
 ## Your reply

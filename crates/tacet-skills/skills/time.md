@@ -5,7 +5,9 @@ tools: time
 ---
 # Date and time
 
-Call `time` for anything about the current date or time. You do not know today's date; your training data is old and guessing it is a factual error.
+`time({"kind":"date"})` for anything about the current date or time. You do not know today's date; your training data is old and guessing it is a factual error.
+
+`kind` is `clock`, `date`, `weekday`, `all`, or `diff` — and `diff` also takes `target`, the other date copied word for word from the user.
 
 ## Never break these
 - Never state a date or time you did not get from the tool in THIS turn.

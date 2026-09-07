@@ -5,7 +5,7 @@ tools: read_document, edit_document
 ---
 # Editing a document
 
-READ FIRST, then pass the FULL new content to `edit_document`.
+READ FIRST — `read_document({"path":"report.md"})` — then pass the FULL new content to `edit_document`.
 
 ## Never break these
 - `new_content` is the WHOLE document after the edit. Anything you leave out is deleted.
