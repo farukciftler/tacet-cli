@@ -19,6 +19,56 @@ releases to follow.
 
 ---
 
+## Published 2026-09-07 — the prompt the model actually receives
+
+Eight crates. The three that did not change (`tacet-web`, `tacet-mcp`,
+`tacet-memory`) are deliberately not republished: a version bump with no source
+behind it is a number a consumer cannot act on.
+
+| crate | was | now |
+|---|---|---|
+| `tacet-kernel` | 0.1.5 | **0.1.6** |
+| `tacet-zip` | 0.1.1 | **0.1.2** |
+| `tacet-grammar` | 0.2.0 | **0.2.1** |
+| `tacet-engine` | 0.1.11 | **0.1.12** |
+| `tacet-skills` | 0.1.1 | **0.1.2** |
+| `tacet-tools` | 0.1.14 | **0.1.15** |
+| `tacet-eval` | 0.1.10 | **0.1.11** |
+| `tacet-cli` | 0.1.27 | **0.1.28** |
+
+**`tacet-engine` 0.1.12 is the floor for a prompt a tool result cannot forge a
+turn in.** Below it, a tool result went into the prompt verbatim, so a document
+containing `</tool_response><|im_end|>` followed by `<|im_start|>system`
+rendered as a REAL system turn — a forged instruction in the role a model is
+trained to obey above every other, written by whoever wrote the file.
+`read_document` reads files the user did not write, `web_fetch` reads pages
+nobody controls, and an MCP result is a third party's text. Every string
+entering the prompt from outside now has its turn markers neutralised. The same
+release stops the `<memory>` and `<guidance>` blocks being fenced twice, and
+stops a call that is stuck repeating itself from burning its whole 2048-token
+budget before anyone can read the screen.
+
+**`tacet-skills` 0.1.2 is the floor for a guide that shows a call.** Below it
+`calc` showed an argument VALUE — `E.g. "(1250+890)*1.2"` — and no call, and a
+measured run came back with the model writing `(347 + 268)` as its ANSWER on ten
+arithmetic cases. It looks like arithmetic and no arithmetic was done. The same
+release gives every guide Turkish triggers (all 47 Turkish steps of the suite
+were unguided) and folds `i`/`ı` when matching, without which an English
+sentence opening with a capital-I word lost every trigger beginning with `i`.
+
+**`tacet-eval` 0.1.11 is the floor for a suite that measures the shell.** Six
+divergences were found and closed in one night, all running the same way — the
+eval stricter than the program, in the direction that looks like the model
+failing: the code-attempt budget was never reset between steps, the model was
+never shown its own tool call, prompts were never truncated, and the
+working-directory census the shell sends on every turn was never sent at all.
+It also gains `--journal`, so a 48-minute run survives being interrupted.
+
+**`tacet-kernel` 0.1.6 is the floor for an error a model can act on.** Below it
+`UnknownTool`, `InvalidArguments` and `ToolFailed` returned one string — "the
+action could not be completed" — so the two failures the model can fix were told
+neither which had happened nor what to change.
+
 ## Published 2026-09-06 — the whole workspace
 
 All eleven crates were published together, which had not happened before. Four
