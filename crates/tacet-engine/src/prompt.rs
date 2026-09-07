@@ -522,12 +522,40 @@ impl Prompt {
     }
 
     /// The `<memory>` fence, or `None` when there are no memory notes.
+    /// The `<memory>` fence — WRAPPED ONLY IF IT IS NOT ALREADY THERE.
+    ///
+    /// MEASURED, IN THE SHIPPED PROMPT. `MemoryStore::injection_text` returns
+    /// its notes ALREADY fenced (its own budget arithmetic subtracts the fence
+    /// characters first, which is why the store owns it), and the shell feeds
+    /// that straight into `with_memory`. This wrapped it a second time, so what
+    /// the model actually received was
+    ///
+    /// ```text
+    /// <memory>
+    /// <memory>
+    /// - the user is vegetarian
+    /// </memory>
+    /// Use it.
+    /// </memory>
+    /// ```
+    ///
+    /// — a nested fence with a stray closing tag in the middle of it, in the
+    /// system block, on every turn a note matched. Nothing failed and nothing
+    /// said so; it is the kind of defect that only appears when somebody prints
+    /// the prompt and reads it.
+    ///
+    /// The check rather than moving the fence to one side: the store's budget
+    /// depends on owning it, and `with_memory` is public and may be handed raw
+    /// notes by a caller that is not the shell. Both are correct now.
     fn memory_block(&self) -> Option<String> {
         let m = self.memory.as_ref()?;
-        Some(format!("<memory>\n{}\n</memory>", m.trim()))
+        let m = m.trim();
+        if m.starts_with("<memory>") {
+            return Some(m.to_string());
+        }
+        Some(format!("<memory>\n{m}\n</memory>"))
     }
 
-    /// The `<guidance>` fence, or `None` when there is no guide.
     /// The `<guidance>` fence: the skill guide, then the turn's note.
     ///
     /// THE NOTE IS A SEPARATE FIELD BECAUSE IT WAS BEING SILENTLY CUT. The web
