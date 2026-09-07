@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  THE NIGHTLY, AS launchd SEES IT.
+
+  WHY A FILE IN THE REPOSITORY RATHER THAN A COMMAND IN A README. The job runs
+  at 03:07 on a machine nobody is watching; when it stops running, the way that
+  is discovered is by wondering where last week's numbers went. Keeping the
+  definition in the tree means `git log` says when it changed and why.
+
+  WHY 03:07 AND NOT 03:00. Every scheduled job in the world is on the hour. The
+  laptop is likelier to be idle at seven past, and nothing here needs the minute.
+
+  INSTALL
+      cp scripts/com.tacet.nightly-eval.plist ~/Library/LaunchAgents/
+      # then edit the two paths below if the checkout is not in the default place
+      launchctl load ~/Library/LaunchAgents/com.tacet.nightly-eval.plist
+
+  REMOVE
+      launchctl unload ~/Library/LaunchAgents/com.tacet.nightly-eval.plist
+      rm ~/Library/LaunchAgents/com.tacet.nightly-eval.plist
+
+  RUN IT NOW, to check it works rather than waiting a night:
+      launchctl start com.tacet.nightly-eval
+      tail -f ~/.tacet/nightly/latest.log
+
+  `RunAtLoad` IS FALSE ON PURPOSE. Loading the job should not start a
+  fifty-minute GPU run on whatever afternoon somebody installs it.
+
+  IT IS NOT `KeepAlive`. If the run fails, the right behaviour is to wait for
+  tomorrow and leave the log — not to restart a fifty-minute measurement in a
+  loop on a laptop.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.tacet.nightly-eval</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-lc</string>
+        <string>exec "$HOME/Documents/GitHub/tacet-cli/scripts/nightly-eval.sh"</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>3</integer>
+        <key>Minute</key><integer>7</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <!-- The script writes its own dated log; these two catch anything that goes
+         wrong BEFORE the script can, which is the case a dated log cannot
+         record. -->
+    <key>StandardOutPath</key>
+    <string>/tmp/tacet-nightly.out</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/tacet-nightly.err</string>
+
+    <!-- LOW PRIORITY. It runs at three in the morning, but if somebody is awake
+         and working, the eval is the thing that should wait. -->
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>Nice</key>
+    <integer>5</integer>
+</dict>
+</plist>

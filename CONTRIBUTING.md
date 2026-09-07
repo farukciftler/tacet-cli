@@ -154,6 +154,23 @@ The journal directory is keyed by commit, and its own stamp refuses a model or
 catalog it was not started with — so a report can never be half one build and
 half another.
 
+**And every night, if you want it.** `scripts/com.tacet.nightly-eval.plist` is
+the same script as a `launchd` job at 03:07 — off the hour on purpose, because
+every scheduled job in the world is on it. It is in the repository rather than
+in a shell command somebody typed once, so `git log` says when it changed:
+
+```bash
+cp scripts/com.tacet.nightly-eval.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.tacet.nightly-eval.plist
+launchctl start com.tacet.nightly-eval     # run it now rather than waiting
+launchctl unload ~/Library/LaunchAgents/com.tacet.nightly-eval.plist   # stop
+```
+
+`RunAtLoad` is false — installing it should not start a fifty-minute GPU run on
+whatever afternoon you installed it — and it is deliberately not `KeepAlive`: a
+failed run should wait for tomorrow and leave its log, not restart a
+fifty-minute measurement in a loop on a laptop.
+
 **Which weights, exactly.** `qwen3-4b` in the built-in catalog is
 **Qwen3-4B-Instruct-2507** Q4_K_M, 2 497 281 120 bytes, pinned by sha256. It is
 not `Qwen/Qwen3-4B` — that is the older hybrid model, it answers to the same
