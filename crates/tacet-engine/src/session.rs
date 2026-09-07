@@ -156,6 +156,121 @@ language, short and direct. If it does not answer, call the right tool from the 
 the same tool with the same arguments a second time. Do not repeat the tool call or its JSON as \
 the answer; do not make up the result.";
 
+/// How many names the listing shows before it starts counting instead.
+pub const DIR_CONTEXT_ENTRIES: usize = 40;
+/// The hard ceiling on the block, in bytes. SEE THE MEASUREMENT in
+/// `dir_context`: this number, not the entry count, is what actually bounds the
+/// cost, because one directory of long names can blow past a short list.
+pub const DIR_CONTEXT_BYTES: usize = 500;
+
+/// A short census of the working directory, fenced, or `None` when there is
+/// nothing worth saying.
+///
+/// IT LIVES HERE, BESIDE `SYSTEM_INSTRUCTIONS`, BECAUSE THE EVAL DID NOT HAVE
+/// IT. This block was in `tacet-cli` and the shell sent it on every turn; the
+/// eval built its system block from `SYSTEM_INSTRUCTIONS` alone. So the suite
+/// asked "which file is about the budget?" of a model that had not been told
+/// which files exist, while the shell tells it — and more than thirty of the
+/// suite's cases are about the files in the working directory. The eval was
+/// measuring a harder program than the one it claims to measure, which is the
+/// sixth time that has been found and the same shape as the other five.
+///
+/// WHY IT IS IN THE PROMPT AT ALL: "what's in here?" is the first thing a person
+/// types in a terminal assistant, and answering it used to cost a `run_code`
+/// round trip — a tool call, an approval-shaped pause and two more seconds — for
+/// a fact that fits in one line.
+///
+/// MEASURED COST — and it is NOT free, so here are the real numbers rather than
+/// an adjective. Estimated with `TokenCounter::estimate` (the same counter the
+/// budget uses), on 28 Jul 2026:
+///
+/// ```text
+/// directory                       bytes   tokens   % of the 4096 floor
+/// tacet-rs/crates (11 entries)      165       66        1.6%
+/// the ketum repo root (13)          240       96        2.3%
+/// the cap (500 bytes + tail)       ~568     ~228        5.6%
+/// ```
+///
+/// For scale, `SYSTEM_INSTRUCTIONS` alone is 442 tokens and a full 12-tool
+/// catalog description is ~2000, so a typical prompt was ~2480 before this
+/// block and ~2580 after. The block is therefore ~4% of what is already there —
+/// but it is ~20% of what is LEFT under `prompt_cap()`, which is the number that
+/// matters and the reason the byte cap is 500 and not 2000.
+///
+/// IT IS SENT ON EVERY TURN, and that is a choice, not an oversight. It sits in
+/// the system block, the one piece truncation never touches, so a "what's in
+/// here?" asked on turn 30 is answered exactly as well as one asked on turn 1.
+/// First-turn-only would have cost the same on turn 1 and then gone missing
+/// precisely when the conversation is long enough for the model to have
+/// forgotten. If this ever needs to shrink, shrink `DIR_CONTEXT_BYTES` — the
+/// cost is linear in it and the table above is the calibration.
+///
+/// HIDDEN FILES ARE EXCLUDED. `.env`, `.git/`, `.ssh/` and friends are where
+/// secrets live, and this block goes into a prompt on every turn; the user asked
+/// for an assistant, not for their dotfiles to be recited. The tools can still
+/// read them WHEN ASKED — that path has a sandbox check and an audit chip, which
+/// is the difference between "reached for" and "handed over".
+pub fn dir_context(dir: &str) -> Option<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return None;
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                return None;
+            }
+            let folder = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            Some(if folder { format!("{name}/") } else { name })
+        })
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    // SORTED, so the same directory produces a bit-identical prompt on two
+    // machines — `read_dir` order is the file system's, and a prompt that
+    // changes shape between runs makes every measurement incomparable.
+    names.sort();
+    let total = names.len();
+
+    let mut shown = 0usize;
+    let mut body = String::new();
+    for name in names.iter().take(DIR_CONTEXT_ENTRIES) {
+        // The +2 accounts for the separator and keeps the check honest about
+        // the string we are actually building.
+        if body.len() + name.len() + 2 > DIR_CONTEXT_BYTES {
+            break;
+        }
+        if !body.is_empty() {
+            body.push_str(", ");
+        }
+        body.push_str(name);
+        shown += 1;
+    }
+    if shown == 0 {
+        return None;
+    }
+    let mut block = format!("<cwd>\n{dir}\n{body}");
+    if shown < total {
+        // THE REMAINDER IS COUNTED, NOT SWALLOWED. A list that silently stops at
+        // forty teaches the model that the directory holds forty things, and it
+        // will then say so.
+        block.push_str(&format!("\n({} more not listed)", total - shown));
+    }
+    block.push_str("\n</cwd>");
+    Some(block)
+}
+
+/// The system block the model actually gets: the fixed instructions plus, if
+/// there is one, the directory census. Shared, for the reason in `dir_context`.
+pub fn system_text(dir_block: Option<&String>) -> String {
+    match dir_block {
+        Some(b) => format!("{SYSTEM_INSTRUCTIONS}\n\n{b}"),
+        None => SYSTEM_INSTRUCTIONS.to_string(),
+    }
+}
+
 /// MAY A PASS THAT WAS CUT OFF BE TRADED FOR THE LAST PASS.
 ///
 /// A CUT-OFF PASS IS A LOST PASS, NOT A LOST TURN. Killing the turn throws away

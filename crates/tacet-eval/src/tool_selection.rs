@@ -36,8 +36,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 use tacet_engine::{
-    EngineProvider, FINAL_PASS_INSTRUCTION, MAX_TURNS, Prompt, SYSTEM_INSTRUCTIONS,
-    SamplingSetting, Turn, WEB_NUDGE, wait,
+    EngineProvider, FINAL_PASS_INSTRUCTION, MAX_TURNS, Prompt, SamplingSetting, Turn, WEB_NUDGE,
+    wait,
 };
 use tacet_grammar::CallConstraint;
 use tacet_kernel::{
@@ -2584,6 +2584,10 @@ pub fn run_selection_case_in(
     let skills = tacet_skills::SkillStore::default_set();
     let counter = generation_counter(engine);
 
+    // See the note where `system` is built.
+    let base_system =
+        tacet_engine::system_text(tacet_engine::dir_context(&env.dir().to_string_lossy()).as_ref());
+
     for (step_index, step) in case.steps.iter().enumerate() {
         trace(&format!(
             "{} · step {}/{} · \"{}\"",
@@ -2666,10 +2670,25 @@ pub fn run_selection_case_in(
                     .chain(turn_tools.iter().cloned())
                     .collect()
             };
+            // THE SAME SYSTEM BLOCK THE SHELL BUILDS, census included.
+            //
+            // The shell sends a `<cwd>` listing of the working directory on
+            // every turn — it sits in the system block, the one piece truncation
+            // never touches — and this built its system block from
+            // `SYSTEM_INSTRUCTIONS` alone. So the suite asked "which file is
+            // about the budget?" of a model that had not been told which files
+            // exist, while a real user's model had. More than thirty of these
+            // cases are about the files in the working directory, and every one
+            // of them was a harder problem here than in the program.
+            //
+            // The census is built ONCE PER STEP rather than per pass: it is a
+            // directory listing and the tools in a turn can create files, but
+            // the shell reads it once per session and a step is the closest
+            // thing this loop has to that.
             let system = if final_turn {
-                format!("{SYSTEM_INSTRUCTIONS}\n\n{FINAL_PASS_INSTRUCTION}")
+                format!("{base_system}\n\n{FINAL_PASS_INSTRUCTION}")
             } else {
-                SYSTEM_INSTRUCTIONS.to_string()
+                base_system.clone()
             };
             let mut prompt = Prompt::new(&system, question).with_history(previous);
             if let Some(g) = &guide {

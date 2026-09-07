@@ -120,7 +120,6 @@ use eval_cmd::{
 };
 use models::{model_download, model_list};
 use tacet_engine::{EngineProvider, Turn};
-use tacet_eval::SYSTEM_INSTRUCTIONS;
 use tacet_grammar::CallConstraint;
 use tacet_kernel::ToolCatalog;
 use tacet_tools::data_store::SharedStore;
@@ -1210,110 +1209,6 @@ fn stdin_fence(piped: &PipedInput) -> String {
 // The working directory, as one short block in the prompt
 // ---------------------------------------------------------------------------
 
-/// How many names the listing shows before it starts counting instead.
-const DIR_CONTEXT_ENTRIES: usize = 40;
-/// The hard ceiling on the block, in bytes. SEE THE MEASUREMENT in
-/// `dir_context`: this number, not the entry count, is what actually bounds the
-/// cost, because one directory of long names can blow past a short list.
-const DIR_CONTEXT_BYTES: usize = 500;
-
-/// A short census of the working directory, fenced, or `None` when there is
-/// nothing worth saying.
-///
-/// WHY IT IS IN THE PROMPT AT ALL: "what's in here?" is the first thing a person
-/// types in a terminal assistant, and answering it used to cost a `run_code`
-/// round trip — a tool call, an approval-shaped pause and two more seconds — for
-/// a fact that fits in one line.
-///
-/// MEASURED COST — and it is NOT free, so here are the real numbers rather than
-/// an adjective. Estimated with `TokenCounter::estimate` (the same counter the
-/// budget uses), on 28 Jul 2026:
-///
-///     directory                       bytes   tokens   % of the 4096 floor
-///     tacet-rs/crates (11 entries)      165       66        1.6%
-///     the ketum repo root (13)          240       96        2.3%
-///     the cap (500 bytes + tail)       ~568     ~228        5.6%
-///
-/// For scale, `SYSTEM_INSTRUCTIONS` alone is 442 tokens and a full 12-tool
-/// catalog description is ~2000, so a typical prompt was ~2480 before this
-/// block and ~2580 after. The block is therefore ~4% of what is already there —
-/// but it is ~20% of what is LEFT under `prompt_cap()`, which is the number that
-/// matters and the reason the byte cap is 500 and not 2000.
-///
-/// IT IS SENT ON EVERY TURN, and that is a choice, not an oversight. It sits in
-/// the system block, the one piece truncation never touches, so a "what's in
-/// here?" asked on turn 30 is answered exactly as well as one asked on turn 1.
-/// First-turn-only would have cost the same on turn 1 and then gone missing
-/// precisely when the conversation is long enough for the model to have
-/// forgotten. If this ever needs to shrink, shrink `DIR_CONTEXT_BYTES` — the
-/// cost is linear in it and the table above is the calibration.
-///
-/// HIDDEN FILES ARE EXCLUDED. `.env`, `.git/`, `.ssh/` and friends are where
-/// secrets live, and this block goes into a prompt on every turn; the user asked
-/// for an assistant, not for their dotfiles to be recited. The tools can still
-/// read them WHEN ASKED — that path has a sandbox check and an audit chip, which
-/// is the difference between "reached for" and "handed over".
-fn dir_context(dir: &str) -> Option<String> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return None;
-    };
-    let mut names: Vec<String> = entries
-        .flatten()
-        .filter_map(|e| {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') {
-                return None;
-            }
-            let folder = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
-            Some(if folder { format!("{name}/") } else { name })
-        })
-        .collect();
-    if names.is_empty() {
-        return None;
-    }
-    // SORTED, so the same directory produces a bit-identical prompt on two
-    // machines — `read_dir` order is the file system's, and a prompt that
-    // changes shape between runs makes every measurement incomparable.
-    names.sort();
-    let total = names.len();
-
-    let mut shown = 0usize;
-    let mut body = String::new();
-    for name in names.iter().take(DIR_CONTEXT_ENTRIES) {
-        // The +2 accounts for the separator and keeps the check honest about
-        // the string we are actually building.
-        if body.len() + name.len() + 2 > DIR_CONTEXT_BYTES {
-            break;
-        }
-        if !body.is_empty() {
-            body.push_str(", ");
-        }
-        body.push_str(name);
-        shown += 1;
-    }
-    if shown == 0 {
-        return None;
-    }
-    let mut block = format!("<cwd>\n{dir}\n{body}");
-    if shown < total {
-        // THE REMAINDER IS COUNTED, NOT SWALLOWED. A list that silently stops at
-        // forty teaches the model that the directory holds forty things, and it
-        // will then say so.
-        block.push_str(&format!("\n({} more not listed)", total - shown));
-    }
-    block.push_str("\n</cwd>");
-    Some(block)
-}
-
-/// The system block the model actually gets: the fixed instructions plus, if
-/// there is one, the directory census.
-fn system_text(dir_block: Option<&String>) -> String {
-    match dir_block {
-        Some(b) => format!("{SYSTEM_INSTRUCTIONS}\n\n{b}"),
-        None => SYSTEM_INSTRUCTIONS.to_string(),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // The transcript on disk — the shell's half of `session.rs`
 // ---------------------------------------------------------------------------
@@ -1643,75 +1538,6 @@ mod tests {
     // -----------------------------------------------------------------------
     // The directory block
     // -----------------------------------------------------------------------
-
-    /// HIDDEN FILES STAY OUT. This block goes into a prompt on every turn, and
-    /// `.env` / `.git` / `.ssh` is where the things a user did not mean to
-    /// recite live.
-    #[test]
-    fn the_directory_block_skips_hidden_names_and_marks_folders() {
-        let dir = std::env::temp_dir().join(format!(
-            "tacet-dir-context-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::write(dir.join("notes.md"), b"x").unwrap();
-        std::fs::write(dir.join(".env"), b"SECRET=1").unwrap();
-        std::fs::create_dir_all(dir.join(".git")).unwrap();
-
-        let block = dir_context(&dir.display().to_string()).expect("no block");
-        assert!(block.contains("notes.md"), "{block}");
-        assert!(block.contains("src/"), "the folder is not marked: {block}");
-        assert!(!block.contains(".env"), "a dotfile leaked: {block}");
-        assert!(!block.contains(".git"), "a dotfile leaked: {block}");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// THE MEASURED CEILING. This block is a FIXED COST ON EVERY PROMPT, so the
-    /// thing that must not drift is its worst case — the table in `dir_context`
-    /// is only honest while this holds. A directory of two hundred long names
-    /// must not quietly become a thousand-token tax.
-    #[test]
-    fn the_directory_block_cannot_grow_past_its_measured_ceiling() {
-        let dir = std::env::temp_dir().join(format!(
-            "tacet-dir-cap-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        for i in 0..200 {
-            std::fs::write(
-                dir.join(format!("a-quite-long-file-name-number-{i:03}.txt")),
-                b"x",
-            )
-            .unwrap();
-        }
-        let block = dir_context(&dir.display().to_string()).expect("no block");
-        let tokens = TokenCounter::estimate(&block);
-        assert!(
-            tokens <= 250,
-            "the directory block costs {tokens} tokens — the comment in `dir_context` promises ~228 at the cap"
-        );
-        // AND IT DOES NOT LIE ABOUT THE REST. A list that silently stops teaches
-        // the model that the directory holds only what it can see.
-        assert!(block.contains("more not listed"), "{block}");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The block is glued to the instructions, not to the question: it must be
-    /// in the SYSTEM text, the one piece truncation never touches.
-    #[test]
-    fn the_directory_block_rides_in_the_system_instructions() {
-        let plain = system_text(None);
-        assert_eq!(plain, SYSTEM_INSTRUCTIONS);
-        let with = system_text(Some(&"<cwd>\n.\na, b/\n</cwd>".to_string()));
-        assert!(with.starts_with(SYSTEM_INSTRUCTIONS), "{with}");
-        assert!(with.contains("<cwd>"), "{with}");
-    }
 
     // -----------------------------------------------------------------------
     // Model packages: a lone .gguf is a whole package
@@ -2167,7 +1993,7 @@ mod tests {
         // model copies its shape verbatim. `tacet-engine` already asserts the
         // example is there; nothing asserted that the tool and the argument in
         // it EXIST, because that crate cannot see the catalog. This one can.
-        let example = SYSTEM_INSTRUCTIONS
+        let example = tacet_engine::SYSTEM_INSTRUCTIONS
             .split_once("Example: ")
             .map(|(_, rest)| rest)
             .and_then(|rest| rest.split_once("({"))

@@ -30,9 +30,9 @@ use crate::ui::{
 };
 use crate::{
     CANCEL, EXTERNAL_TOOLS, EngineChoice, STDIN_CONTEXT_LIMIT, TerminalApproval, TerminalAsk,
-    VERIFYING_TOOLS, announce_transcript, byte_text, dir_context, print_grammar, read_piped_stdin,
-    refresh_session, session_catalog, sessions, setup_engine, stdin_fence, system_text,
-    thinking_switch, to_engine_turns, tool_record,
+    VERIFYING_TOOLS, announce_transcript, byte_text, print_grammar, read_piped_stdin,
+    refresh_session, session_catalog, sessions, setup_engine, stdin_fence, thinking_switch,
+    to_engine_turns, tool_record,
 };
 use crate::{addon, config, filter, format, receipt, session, update};
 use crate::{input, ui};
@@ -40,7 +40,10 @@ use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tacet_engine::{EngineProvider, Prompt, SamplingSetting, TokenCounter, Turn, WEB_NUDGE, wait};
+use tacet_engine::{
+    EngineProvider, Prompt, SamplingSetting, TokenCounter, Turn, WEB_NUDGE, dir_context,
+    system_text, wait,
+};
 use tacet_eval::FakeSelector;
 use tacet_grammar::CallConstraint;
 use tacet_kernel::{

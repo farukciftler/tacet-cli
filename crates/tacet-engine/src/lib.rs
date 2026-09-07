@@ -52,7 +52,8 @@ pub use provider::{
     boxed_generation,
 };
 pub use session::{
-    FINAL_PASS_INSTRUCTION, MAX_TURNS, SYSTEM_INSTRUCTIONS, WEB_NUDGE, cut_off_can_be_retried,
+    DIR_CONTEXT_BYTES, DIR_CONTEXT_ENTRIES, FINAL_PASS_INSTRUCTION, MAX_TURNS, SYSTEM_INSTRUCTIONS,
+    WEB_NUDGE, cut_off_can_be_retried, dir_context, system_text,
 };
 pub use thinking::extract as extract_thinking;
 pub use token::{
