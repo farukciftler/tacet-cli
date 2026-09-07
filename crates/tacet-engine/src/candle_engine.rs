@@ -1529,7 +1529,10 @@ mod cuda_quant {
 
 #[cfg(test)]
 mod budget_and_backstop {
-    use super::{backstop_runs, call_over_budget};
+    use super::{
+        IN_CALL_LOOP_THRESHOLD, LOOP_SEQUENCE_LENGTH, LOOP_THRESHOLD, backstop_runs,
+        call_over_budget, is_looping, is_looping_with,
+    };
 
     /// THE BUG, AS AN ASSERTION. A constraint can be present and constraining
     /// nothing: Tacet's own `CallConstraint` is passed on every shell turn but

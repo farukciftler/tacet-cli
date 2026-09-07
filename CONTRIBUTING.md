@@ -66,12 +66,23 @@ ships MSVC, so the build simply works there and the prerequisite never appears.
 cargo build --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo test --workspace --features candle --no-run   # SEE BELOW — this one is not optional
 cargo fmt --all
 cargo run -p tacet-cli -- eval              # behavioural cases, deterministic, no model needed
 cargo run -p tacet-cli -- eval --routing    # the router's own choice, no model needed
 ```
 
 CI runs all of it on macOS, Linux and Windows. Neither of these loads weights or opens a socket.
+
+**The fourth line is the one people skip, and it is the one that bites.**
+`tacet-engine`'s whole `candle_engine` module — the decode loop, the loop
+backstop, the call budget, the greedy sampler and every test over them — is
+behind `#[cfg(feature = "candle")]`. A plain `cargo test --workspace` does not
+compile a line of it, so a change there can pass the local gate completely and
+fail to COMPILE in the nightly job. That has happened: a test module gained two
+tests referencing constants it did not import, `cargo test --workspace` was
+green, and the failure arrived hours later from CI. `--no-run` is enough — the
+cost is a compile, not the tests.
 
 ### The three measurements, and which one to reach for
 
