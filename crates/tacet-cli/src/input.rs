@@ -833,28 +833,23 @@ impl<'a> Editor<'a> {
 // The menu — the arrow-key picker every submenu shares
 // ---------------------------------------------------------------------------
 
-/// An interactive list: ↑↓ moves, Enter returns `Some(index)`, Esc (and
-/// ctrl-c / ctrl-d) returns `None`. The drawing dialect is the slash list's —
-/// brass caret on the selected row, a window that FOLLOWS the selection, every
-/// row clamped to one terminal line — so the two cannot drift apart visually.
+/// THE MENU'S FRAME, and the row count that goes with it.
 ///
-/// WITHOUT A TTY IT RETURNS `None` IMMEDIATELY; the caller must treat that as
-/// "fall back to the printed form", never as "the user said no" — piped
-/// sessions still get the old text output.
-///
-/// THE MENU ERASES ITSELF on the way out: what stays in the transcript is the
-/// OUTCOME (the command the choice produced), not the furniture. A transcript
-/// full of dead menus reads like a screenshot, not a conversation.
-pub fn menu(screen: &Screen, title: &str, items: &[(String, String)]) -> Option<usize> {
-    if !screen.tty() || items.is_empty() {
-        return None;
-    }
-    let _raw = RawMode::open();
-    let mut selection = 0usize;
-    let mut drawn = 0usize;
-    let wide = width();
-
-    let draw = |selection: usize, drawn: usize| -> usize {
+/// Split out of the closure so the invariant that broke can be ASSERTED: the
+/// number of rows the cursor ends up below where it started must equal the
+/// number the next redraw moves back up. They disagreed by one — the frame
+/// ended with a newline and reported `lines.len()` — and at the bottom of the
+/// screen that newline scrolls the terminal, so every arrow key ate one line of
+/// the user's scrollback. It is not visible anywhere but the last row of a full
+/// screen, which is why it was reported from a real session and not by a test.
+fn menu_frame(
+    title: &str,
+    items: &[(String, String)],
+    selection: usize,
+    drawn: usize,
+    wide: usize,
+) -> (String, usize) {
+    {
         let mut out = String::new();
         if drawn > 0 {
             out.push_str(&format!("\x1b[{drawn}A\r\x1b[J"));
@@ -893,12 +888,55 @@ pub fn menu(screen: &Screen, title: &str, items: &[(String, String)]) -> Option<
             lines.push(dim(&format!("    … {below} more")));
         }
         lines.push(dim("  ↑↓ move · enter select · esc back"));
+        // NO TRAILING NEWLINE, AND THE ARITHMETIC WAS NEVER THE PROBLEM.
+        //
+        // The frame used to end with `\r\n` and report `lines.len()` rows, and
+        // that is CONSISTENT — the cursor really was that far down, and the next
+        // redraw moved back up by exactly the same amount. It is still wrong, at
+        // one place: the bottom row of a full screen. There the newline has
+        // nowhere to go, so the terminal SCROLLS — the top line is pushed off
+        // and everything moves up one — and the cursor stays where it is. The
+        // redraw's cursor-up is then measured from a screen whose content has
+        // shifted, and one line of the user's scrollback is gone. Per keypress.
+        //
+        // Reported from a real session: "moving up and down in the picker
+        // deletes a line from the terminal and everything scrolls up".
+        //
+        // Leaving the cursor at the END of the last line writes no newline the
+        // terminal can scroll on. The slash-command field a few lines above has
+        // always drawn this way; the menu was the outlier.
         out.push_str(&lines.join("\r\n"));
-        out.push_str("\r\n");
+        (out, lines.len() - 1)
+    }
+}
+
+/// An interactive list: ↑↓ moves, Enter returns `Some(index)`, Esc (and
+/// ctrl-c / ctrl-d) returns `None`. The drawing dialect is the slash list's —
+/// brass caret on the selected row, a window that FOLLOWS the selection, every
+/// row clamped to one terminal line — so the two cannot drift apart visually.
+///
+/// WITHOUT A TTY IT RETURNS `None` IMMEDIATELY; the caller must treat that as
+/// "fall back to the printed form", never as "the user said no" — piped
+/// sessions still get the old text output.
+///
+/// THE MENU ERASES ITSELF on the way out: what stays in the transcript is the
+/// OUTCOME (the command the choice produced), not the furniture. A transcript
+/// full of dead menus reads like a screenshot, not a conversation.
+pub fn menu(screen: &Screen, title: &str, items: &[(String, String)]) -> Option<usize> {
+    if !screen.tty() || items.is_empty() {
+        return None;
+    }
+    let _raw = RawMode::open();
+    let mut selection = 0usize;
+    let mut drawn = 0usize;
+    let wide = width();
+
+    let draw = |selection: usize, drawn: usize| -> usize {
+        let (out, rows) = menu_frame(title, items, selection, drawn, wide);
         let mut so = std::io::stdout();
         let _ = so.write_all(out.as_bytes());
         let _ = so.flush();
-        lines.len()
+        rows
     };
 
     drawn = draw(selection, drawn);
@@ -1012,6 +1050,86 @@ fn word_start(s: &str, i: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+
+    /// THE PICKER MUST NOT END ITS FRAME WITH A NEWLINE, and it did — costing
+    /// the user one line of scrollback per keypress.
+    ///
+    /// The frame ended with `\r\n` and reported `lines.len()` rows, which is
+    /// CONSISTENT: the cursor really was that far down and the redraw moved back
+    /// up by the same amount. The defect is not arithmetic, which is why an
+    /// arithmetic test written first passed on the broken code. It is that on
+    /// the bottom row of a full screen the newline has nowhere to go, so the
+    /// terminal SCROLLS: the top line is pushed off, everything shifts up, the
+    /// cursor stays put, and the next cursor-up is measured against content that
+    /// has moved.
+    ///
+    /// Reported from a real session: "moving up and down in the picker deletes
+    /// a line from the terminal and everything scrolls up".
+    ///
+    /// So the property is the one that cannot be satisfied by a matching pair of
+    /// wrong numbers: the frame must leave the cursor ON the last line it drew.
+    #[test]
+    fn the_menu_frame_never_ends_with_a_newline() {
+        let items: Vec<(String, String)> = (0..7)
+            .map(|i| (format!("item-{i}"), format!("what item {i} does")))
+            .collect();
+
+        for (selection, drawn) in [(0usize, 0usize), (1, 9), (6, 9)] {
+            let (frame, rows) = super::menu_frame("pick one", &items, selection, drawn, 80);
+            assert!(
+                !frame.ends_with('\n') && !frame.ends_with('\r'),
+                "the frame ends with a line break, which scrolls the terminal on \
+                 its bottom row and eats a line of scrollback per keypress: \
+                 {:?}",
+                &frame[frame.len().saturating_sub(16)..]
+            );
+            assert!(rows > 0, "the frame draws something");
+            // AND THE COUNT STILL HAS TO MATCH, because the redraw moves back up
+            // by it. With no trailing break, the descent is the newline count.
+            let body = frame.rsplit("\x1b[J").next().unwrap_or(&frame);
+            assert_eq!(
+                body.matches('\n').count(),
+                rows,
+                "the frame descends {} rows and reports {rows}",
+                body.matches('\n').count()
+            );
+        }
+    }
+
+    /// The redraw must move up exactly what the previous frame moved down.
+    #[test]
+    fn a_redraw_moves_up_what_the_last_frame_moved_down() {
+        let items: Vec<(String, String)> = (0..7)
+            .map(|i| (format!("item-{i}"), String::new()))
+            .collect();
+        let (_, rows) = super::menu_frame("t", &items, 0, 0, 80);
+        let (second, _) = super::menu_frame("t", &items, 1, rows, 80);
+        assert!(
+            second.starts_with(&format!("\x1b[{rows}A\r\x1b[J")),
+            "{:?}",
+            &second[..second.len().min(24)]
+        );
+    }
+
+    /// A long list is windowed, so the frame's height must not grow with the
+    /// number of items — otherwise a picker over the 47-tool catalog would
+    /// redraw more rows than the terminal has.
+    #[test]
+    fn the_frame_height_does_not_grow_with_the_list() {
+        let small: Vec<(String, String)> = (0..3)
+            .map(|i| (format!("a{i}"), "hint".to_string()))
+            .collect();
+        let large: Vec<(String, String)> = (0..200)
+            .map(|i| (format!("a{i}"), "hint".to_string()))
+            .collect();
+        let (_, small_rows) = super::menu_frame("t", &small, 0, 0, 80);
+        let (_, large_rows) = super::menu_frame("t", &large, 100, 0, 80);
+        assert!(
+            large_rows <= small_rows + super::LIST_CAP + 2,
+            "the window is not bounded: {small_rows} rows for 3 items, \
+             {large_rows} for 200"
+        );
+    }
     use super::*;
 
     /// PASTED TEXT IS UNTRUSTED AND MUST NOT REACH EITHER THE TERMINAL OR THE
