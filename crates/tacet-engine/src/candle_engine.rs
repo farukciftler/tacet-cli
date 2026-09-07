@@ -865,6 +865,38 @@ SmolLM2 and TinyLlama work; a Llama-3 chat model needs its own template first.",
                 logits
             };
 
+            // A LOGIT THE TOKENIZER CANNOT NAME IS NOT A CANDIDATE, and this is
+            // where every path is cut down to the ones that are.
+            //
+            // Qwen3 PADS ITS OUTPUT LAYER: the tensor is 151936 wide and the
+            // GGUF's tokenizer carries 151669 entries. The 267 positions between
+            // them are padding — not rare tokens, not unused ids, nothing the
+            // decoder can name — and all three sampling branches below could
+            // choose one. The bound further down caught it AFTER the fact and
+            // killed the turn with "the sampler returned 151935, which is not a
+            // token id", which is an honest message about a state that should
+            // not have been reachable.
+            //
+            // MEASURED, 7 Sep 2026, qwen3-4b on Metal, 184 cases: three steps
+            // died this way, all on 151935 — the last index of the padded
+            // layer — and each was scored as unmeasurable. The previous run of
+            // the same suite had none, which is what a latent bug looks like:
+            // it needs the model uncertain enough that a padding logit wins.
+            //
+            // NARROWED ON THE TENSOR, not per branch. The constrained path holds
+            // a `Vec<f32>`, the greedy path another, and the sampled path passes
+            // the tensor straight to candle; cutting each one separately is three
+            // chances to forget, and the sampled path is the one where forgetting
+            // is invisible. Narrowed here, every branch below indexes a vector
+            // whose positions are token ids by construction.
+            let logits = if logits.dims1().is_ok_and(|n| n > self.vocab.len()) {
+                logits
+                    .narrow(0, 0, self.vocab.len())
+                    .map_err(|e| EngineError::Inference(e.to_string()))?
+            } else {
+                logits
+            };
+
             // THE CONSTRAINT IS APPLIED ON THE RAW LOGITS, before entering the
             // sampler.
             //

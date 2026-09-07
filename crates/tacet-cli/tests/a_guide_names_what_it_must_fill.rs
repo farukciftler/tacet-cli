@@ -122,3 +122,85 @@ fn every_guide_shows_a_complete_call_for_a_tool_it_guides() {
         missing.join("\n  ")
     );
 }
+
+/// A GUIDE MUST NOT CONTAIN A BARE EXPRESSION — A NEGATIVE EXAMPLE IS STILL AN
+/// EXAMPLE.
+///
+/// MEASURED TWICE, and the second time the fix was the cause.
+///
+/// Run A (baaeda4, 184 cases, qwen3-4b on Metal): `calc` showed
+/// `E.g. "(1250+890)*1.2"` — an argument value, no call — and ten arithmetic
+/// cases came back with the model ANSWERING `(347 + 268)`, `(2^10)`,
+/// `(480 * 18) / 100 = 86.4`. No call made.
+///
+/// Run B (50c33d7), after "fixing" it by adding the call: the guide also gained
+///
+///     - WRITE THE CALL, not the sum. `(347 + 268)` as an answer is a failure
+///
+/// and the suite's own case is "Could you add 347 and 268?". The model answered
+/// `(347 + 268)`. THE COUNTER-EXAMPLE WAS COPIED. Twelve arithmetic cases
+/// broke and the run was a REAL LOSS at 95% — the warning against the behaviour
+/// taught the behaviour.
+///
+/// This codebase already knew: `create-document` carries "The table above is a
+/// FORMAT example, never content. Never copy its rows", written after the same
+/// thing happened with a table. The rule generalises — a small model imitates
+/// what is in the last block before the question, and it does not read the word
+/// "not".
+///
+/// So an example in a guide may only ever be a CALL. Anything that looks like
+/// output — a bare parenthesised expression, an `=` with numbers on both sides —
+/// must not appear at all.
+#[test]
+fn no_guide_shows_something_that_looks_like_an_answer() {
+    let skills = tacet_skills::SkillStore::default_set();
+    let mut found: Vec<String> = Vec::new();
+
+    for skill in skills.all() {
+        let text = tacet_skills::injection_text(skill);
+        // Blank out every real call, then look at what is left. A call is
+        // exactly what a guide is FOR; the question is what else is in there.
+        let mut rest = text.clone();
+        for tool in &skill.tools {
+            while let Some(i) = rest.find(&format!("{tool}({{")) {
+                let end = rest[i..].find(")").map(|e| i + e + 1).unwrap_or(rest.len());
+                rest.replace_range(i..end, " ");
+            }
+        }
+        for line in rest.lines() {
+            let l = line.trim();
+            // A parenthesised group made only of digits, operators and spaces.
+            let mut depth = 0usize;
+            let mut group = String::new();
+            for c in l.chars() {
+                match c {
+                    '(' => {
+                        depth += 1;
+                        group.clear();
+                    }
+                    ')' if depth > 0 => {
+                        depth -= 1;
+                        let g = group.trim();
+                        let numeric = g.chars().any(|c| c.is_ascii_digit())
+                            && g.chars()
+                                .all(|c| c.is_ascii_digit() || " +-*/^%.".contains(c));
+                        if numeric && g.len() >= 3 {
+                            found.push(format!("{}: ({g}) in {l:?}", skill.name));
+                        }
+                    }
+                    _ if depth > 0 => group.push(c),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    assert!(
+        found.is_empty(),
+        "a guide contains a bare arithmetic expression outside a call. A small \
+         model imitates what is in the last block before the question and does \
+         not read the word \"not\" — writing the bad answer down IS teaching it, \
+         and it cost twelve arithmetic cases and a measured REAL LOSS:\n  {}",
+        found.join("\n  ")
+    );
+}
