@@ -190,6 +190,29 @@ ask; add your own entries in `~/.tacet/packages.json`.
 export TACET_MODEL=/path/to/model.gguf
 ```
 
+**But the engine loads more architectures than this project has measured, and
+the gap is large.** `qwen2`, `qwen3`, `gemma3` and `llama` GGUFs all load; every
+number on this page comes from a Qwen. Pointing Tacet at the other two is
+allowed and it will say so once, on stderr, before the first question:
+
+```
+(note: 'gemma3' is not one of the architectures this project measures
+ [qwen2, qwen3] — it will run, but no published number describes it)
+```
+
+That note exists because the difference is not subtle. The same binary, the
+same six messages, the same minute — `scripts/smoke.sh`, 7 Sep 2026, M-series,
+Metal, counting only answers that are unreadable rather than wrong:
+
+| model | answers a person cannot read |
+| --- | --- |
+| qwen3-4b (the catalog default) | **0 of 6** |
+| gemma3-4b | **4 of 6** |
+
+Gemma3's four were walls of `</tool.`, `Do not be.` eight times over, and a
+digit stuck in a loop where the date belonged. Re-derive it yourself with
+`scripts/smoke.sh ~/models/<folder>`; it needs a model and about four minutes.
+
 **No separate tokenizer file needed.** Tacet reads the tokenizer *out of the
 GGUF* — vocabulary, merges and token types — so a file from Ollama or LM Studio
 works as it is. `TACET_TOKENIZER=/path/to/tokenizer.json` still overrides, for a

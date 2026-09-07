@@ -200,7 +200,39 @@ pub struct EngineIdentity {
     pub device: String,
 }
 
+/// The architectures this project has ACTUALLY MEASURED ITSELF ON.
+///
+/// Not the ones it can load — `Architecture::resolve` accepts four, and loading
+/// is the easy half. Every number this repository publishes (the selection
+/// score, the baselines under `crates/tacet-eval/baselines/`, the timings in the
+/// README) was produced on a Qwen model. Nothing here has ever been run against
+/// gemma3 or a llama-family GGUF as a measured subject.
+///
+/// WHY THE DISTINCTION IS WORTH A CONSTANT: on 7 Sep 2026 the same binary, the
+/// same six messages and the same minute gave 0 of 6 unreadable answers on
+/// qwen3-4b and 4 of 6 on gemma3-4b — walls of `</tool.`, `Do not be.` repeated
+/// eight times, a digit stuck in a loop where the date should have been. The
+/// person who found that had `model = gemma3-4b` in their config and no reason
+/// to suspect it, because nothing in the program had ever mentioned that the
+/// number on the page and the model in the config were different things.
+///
+/// Loading an unmeasured architecture stays ALLOWED — somebody holding those
+/// weights is entitled to try them. It just stops being silent.
+pub const MEASURED_ARCHITECTURES: [&str; 2] = ["qwen2", "qwen3"];
+
 impl EngineIdentity {
+    /// The architecture in use, when it is one nothing here has been measured on.
+    ///
+    /// `None` also for an engine with no weights: the fake engine makes no claim
+    /// about a model, so there is nothing to warn about.
+    pub fn unmeasured_architecture(&self) -> Option<&str> {
+        if self.architecture.is_empty() {
+            return None;
+        }
+        (!MEASURED_ARCHITECTURES.contains(&self.architecture.as_str()))
+            .then_some(self.architecture.as_str())
+    }
+
     /// One line for a human: what ran.
     pub fn line(&self) -> String {
         if self.model_path.is_empty() {

@@ -84,12 +84,13 @@ tests referencing constants it did not import, `cargo test --workspace` was
 green, and the failure arrived hours later from CI. `--no-run` is enough — the
 cost is a compile, not the tests.
 
-### The three measurements, and which one to reach for
+### The measurements, and which one to reach for
 
 | Command | Measures | Cost | Gates CI |
 |---|---|---|---|
 | `eval` | Tacet's LOGIC, on a mock engine | milliseconds | yes |
 | `eval --routing` | which tools the ROUTER puts in the prompt | milliseconds | yes |
+| `scripts/smoke.sh [model-dir]` | whether the answer is READABLE, on real weights | ~4 min | no |
 | `eval --tool-selection --model <name>` | the MODEL's choice, on real weights | ~48 min on Metal (~6 min on a 3090) | no |
 
 Reach for `--routing` first when a tool "stops being called". The router shows the
@@ -99,6 +100,41 @@ looks exactly like a model regression, arrives three quarters of an hour later, 
 fixed in the wrong place. `--routing` answers it in milliseconds and prints the
 rank the expected tool landed at. `tacet why "<message>"` explains one message
 in the same terms.
+
+### The gap the smoke check fills, and why a release waits for it
+
+`cargo test` runs against `FakeEngine`, whose answers are scripted. It cannot
+see a bad answer — not because it was written carelessly, but BY CONSTRUCTION:
+there is no model in it to produce one. `eval --tool-selection` does load real
+weights and takes fifty minutes, and it scores WHICH TOOL was chosen, not
+whether the sentence the user reads is a sentence.
+
+So between "every test green" and "the person who installed it can read the
+output" there was nothing at all, and twice in one day a release crossed that
+gap and the user found what was on the other side: `<unused6088>` twelve times
+with an engine error behind it, then a wall of `to call to call to call`. Both
+were visible in a single message against a model sitting on the same disk.
+
+`scripts/smoke.sh` is that missing middle — six real messages in two languages
+through real weights, with the answers checked for the five things that have
+actually gone wrong: an empty answer, an engine error, a marker fragment
+(`<unused`, `<tool.`, `<|im_`), the same three words five times over, and a
+single character stuck in a loop. Its exit code is the number of failing
+messages, so it gates.
+
+```bash
+scripts/smoke-selftest.sh            # ~5 s, no weights: does the check go red?
+scripts/smoke.sh                     # ~4 min, the configured model
+scripts/smoke.sh ~/models/qwen3-4b   # ~4 min, a named one
+```
+
+**Run the self-test too, and run it first.** A guard nobody has watched fail is
+not a guard, and this one is easy to break silently — read the wrong stream,
+merge stderr into the JSON, get the threshold backwards, and it reports a clean
+run forever. `smoke-selftest.sh` drives every detector to red and two
+must-stay-green shapes to green, using `FakeEngine`, in about five seconds on
+any machine. It is the cheapest thing in this file and it is the reason the
+number above can be believed.
 
 ### Claiming an improvement
 
@@ -346,8 +382,13 @@ the pipeline's status is `tail`'s. That is how a run here reported eleven
 successes when three had failed — including one, `tacet-skills`, whose failure
 was the dev-dependency above.
 
-Before any of it, two things that have each cost a release here:
+Before any of it, three things that have each cost a release here:
 
+0. **Type into it first.** `scripts/smoke-selftest.sh` then `scripts/smoke.sh`,
+   in that order, and read the exit codes. Five minutes and four; two releases
+   in one day went out without either, and both times the user who installed the
+   binary was the one who discovered what it printed. Green tests are not the
+   same claim as a readable answer — see *The gap the smoke check fills* above.
 1. **A dry run only works one step ahead of the registry, and it is worth knowing
    that before you plan around it.** Measured 6 Sep 2026 with kernel 0.1.5 not yet
    published: `cargo publish --dry-run` succeeded for `tacet-kernel` and

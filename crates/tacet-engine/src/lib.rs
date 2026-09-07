@@ -48,8 +48,8 @@ pub use gguf_tokenizer::{
 };
 pub use prompt::{GUIDE_LIMIT, Prompt, Role, Template, Turn};
 pub use provider::{
-    EngineIdentity, EngineProvider, Generation, GenerationFuture, SamplingSetting, StopReason,
-    boxed_generation,
+    EngineIdentity, EngineProvider, Generation, GenerationFuture, MEASURED_ARCHITECTURES,
+    SamplingSetting, StopReason, boxed_generation,
 };
 pub use session::{
     DIR_CONTEXT_BYTES, DIR_CONTEXT_ENTRIES, FINAL_PASS_INSTRUCTION, MAX_TURNS, SYSTEM_INSTRUCTIONS,
@@ -233,6 +233,49 @@ mod tests {
         // record actually lives — this pointed at `prompt.rs`, where the word
         // `think` does not appear. This test locks the reversal in.
         assert!(m.ends_with("<|im_start|>assistant\n"), "\n{m}");
+    }
+
+    /// THE WARNING MUST FIRE, AND MUST NOT FIRE. Both halves are the test.
+    ///
+    /// A predicate that always answers `None` is indistinguishable from a
+    /// correct one on a Qwen machine, which is every machine the gate runs on;
+    /// a predicate that always answers `Some` would put a scary note above every
+    /// measured session and get deleted within a week. The empty case is here
+    /// because `FakeEngine` reports no architecture at all and has no model to
+    /// make a claim about.
+    #[test]
+    fn an_unmeasured_architecture_is_named_and_a_measured_one_is_not() {
+        let with = |architecture: &str| EngineIdentity {
+            architecture: architecture.to_string(),
+            ..Default::default()
+        };
+        assert_eq!(with("gemma3").unmeasured_architecture(), Some("gemma3"));
+        assert_eq!(with("llama").unmeasured_architecture(), Some("llama"));
+        assert_eq!(with("qwen3").unmeasured_architecture(), None);
+        assert_eq!(with("qwen2").unmeasured_architecture(), None);
+        assert_eq!(with("").unmeasured_architecture(), None);
+    }
+
+    /// EVERY ARCHITECTURE CALLED MEASURED MUST BE ONE THE ENGINE CAN LOAD.
+    ///
+    /// The two lists live in different files and nothing but this ties them
+    /// together. A typo in the constant — "qwen-3", "Qwen3" — would silently
+    /// mark the project's own measured model as unmeasured and print the note
+    /// on every single session, which is the fastest way to teach a user to
+    /// ignore it.
+    ///
+    /// GATED, because `Architecture` is: a plain `cargo test --workspace`
+    /// compiles none of `candle_engine`. This test is only seen by the fourth
+    /// gate command, `--features candle`.
+    #[cfg(feature = "candle")]
+    #[test]
+    fn every_measured_architecture_is_one_the_engine_actually_resolves() {
+        for name in MEASURED_ARCHITECTURES {
+            assert!(
+                Architecture::resolve(name).is_ok(),
+                "'{name}' is claimed as measured but the engine cannot load it"
+            );
+        }
     }
 
     /// GEMMA HAS NO SYSTEM ROLE. The easiest mistake is to copy ChatML, change

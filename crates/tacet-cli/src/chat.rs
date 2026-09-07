@@ -476,6 +476,33 @@ pub fn chat(run: ChatRun) -> ExitCode {
         println!();
     }
 
+    // AN UNMEASURED MODEL SAYS SO, ONCE, BEFORE THE FIRST QUESTION.
+    //
+    // The engine loads four architectures; this project has published numbers
+    // for two. That gap was invisible from inside the program, and it cost a
+    // user a night: their config said `model = gemma3-4b`, every answer came
+    // back as `</tool.` and `Do not be. Do not be.`, and the reasonable reading
+    // of that is "this tool is broken" rather than "this tool was never
+    // measured here". Both halves of the sentence below are load-bearing — it
+    // still works, and the numbers are not about it.
+    //
+    // ON STDERR AND OUTSIDE `if human`, deliberately. A scripted run is exactly
+    // where a wrong model does the most damage, and stderr keeps `--json`'s
+    // contract intact.
+    if let Some(arch) = engine.identity().unmeasured_architecture() {
+        eprintln!(
+            "{}",
+            color.paint(
+                YELLOW,
+                &format!(
+                    "(note: '{arch}' is not one of the architectures this project measures \
+                     [{}] — it will run, but no published number describes it)",
+                    tacet_engine::MEASURED_ARCHITECTURES.join(", ")
+                )
+            )
+        );
+    }
+
     // THE PIPE IS ANNOUNCED, AND ITS CUT IS ANNOUNCED LOUDER. On stderr, so it
     // never lands in `--json` output; the model is told separately, inside the
     // fence (see `stdin_fence`) — the user and the model need the same fact in
