@@ -1798,7 +1798,74 @@ impl SelectionReport {
             self.answer_total,
             self.answer_rate() * 100.0
         ));
+        s.push_str(&self.where_the_time_went());
         s
+    }
+
+    /// WHERE THE FORTY-EIGHT MINUTES WENT, and what was spent on nothing.
+    ///
+    /// WHY THIS IS PRINTED RATHER THAN LEFT IN THE JSON. `PassRecord` records
+    /// what each pass cost and what it did, and for a while nothing read it —
+    /// a field the report carries and no reader consults is a field that rots.
+    /// These three lines are the questions actually asked after a run, and each
+    /// one used to require re-running the suite with the trace on:
+    ///
+    ///   * WHICH CASE WAS SLOW. One case at 39 s among 184 at 15 s is not a
+    ///     slow model, it is one tool waiting on something.
+    ///   * HOW MANY PASSES WERE SPENT ON A CALL THAT NEVER RAN. A repeat, an
+    ///     unknown name and an invalid argument all cost a pass and all appear
+    ///     in `called` as if the tool had run.
+    ///   * HOW MANY PASSES ENDED ON A CAP rather than on the model's own stop.
+    ///     `CallTooLong` and `Length` are different defects and are counted
+    ///     apart, which is the whole reason they became separate variants.
+    fn where_the_time_went(&self) -> String {
+        let passes: Vec<&PassRecord> = self
+            .cases
+            .iter()
+            .flat_map(|c| c.steps.iter())
+            .flat_map(|s| s.passes.iter())
+            .collect();
+        if passes.is_empty() {
+            return String::new();
+        }
+
+        let refused = passes
+            .iter()
+            .filter(|p| p.reason.as_deref().is_some_and(|r| r != "Ok"))
+            .count();
+        let capped = passes.iter().filter(|p| p.stop == "Length").count();
+        let runaway = passes.iter().filter(|p| p.stop == "CallTooLong").count();
+
+        // The slowest cases by their own wall clock, model and tools together —
+        // which is the number a person watching the run experiences.
+        let mut by_case: Vec<(&str, f64)> = self
+            .cases
+            .iter()
+            .map(|c| {
+                let secs: f64 = c
+                    .steps
+                    .iter()
+                    .flat_map(|s| s.passes.iter())
+                    .map(|p| p.seconds + p.tool_seconds.unwrap_or(0.0))
+                    .sum();
+                (c.name.as_str(), secs)
+            })
+            .collect();
+        by_case.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let slowest: Vec<String> = by_case
+            .iter()
+            .take(3)
+            .map(|(n, s)| format!("{n} {s:.0}s"))
+            .collect();
+
+        let mut out = String::from("\n");
+        out.push_str(&format!(
+            "PASSES          {} · {refused} spent on a call that never ran · \
+             {capped} hit the token cap · {runaway} ran past a call's budget\n",
+            passes.len()
+        ));
+        out.push_str(&format!("SLOWEST         {}\n", slowest.join(" · ")));
+        out
     }
 
     pub fn json(&self) -> String {

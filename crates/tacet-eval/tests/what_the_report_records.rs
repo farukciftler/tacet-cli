@@ -94,3 +94,51 @@ fn a_refused_call_is_distinguishable_from_one_that_ran() {
          should say so rather than listing the tool name twice. reasons: {reasons:?}"
     );
 }
+
+/// The recorded passes must reach the printed table.
+///
+/// A FIELD NO READER CONSULTS IS A FIELD THAT ROTS. `PassRecord` carried the
+/// cost and the verdict of every pass and nothing read it, so the three
+/// questions actually asked after a run — which case was slow, how many passes
+/// were spent on a call that never ran, how many ended on a cap — still meant
+/// re-running the suite with the trace on.
+#[test]
+fn the_table_says_where_the_time_went() {
+    let engine: Arc<dyn EngineProvider> = Arc::new(FakeEngine::script([
+        r#"calculate({"expression":"125*8"})"#,
+        r#"calculate({"expression":"125*8"})"#,
+        "125 times 8 is 1000.",
+    ]));
+    let report = tacet_eval::run_selection(
+        &[case("probe", "What is 125 times 8?", "calculate")],
+        &engine,
+    );
+    let table = report.table();
+    assert!(
+        table.contains("PASSES"),
+        "the pass count and what it was spent on must be in the table:\n{table}"
+    );
+    assert!(
+        table.contains("1 spent on a call that never ran"),
+        "the repeat cost a pass and the table must say so:\n{table}"
+    );
+    assert!(
+        table.contains("SLOWEST"),
+        "one case at 39s among 184 at 15s is not a slow model, it is one tool \
+         waiting on something — and the table must name it:\n{table}"
+    );
+    assert!(
+        table.contains("probe"),
+        "the slowest line must name the case:\n{table}"
+    );
+}
+
+/// A report with no passes recorded — an older JSON read back, or a host
+/// failure — must print no section rather than a row of zeros that reads as a
+/// measurement.
+#[test]
+fn a_report_with_no_passes_prints_no_section() {
+    let engine: Arc<dyn EngineProvider> = Arc::new(FakeEngine::script(["hello"]));
+    let report = tacet_eval::run_selection(&[], &engine);
+    assert!(!report.table().contains("PASSES"));
+}

@@ -296,6 +296,24 @@ with a capital-I word lost every trigger beginning with `i`** — "Insert a head
 line into document.md" matched nothing. The mapping did not have to change; the
 comparison did.
 
+**And the sentence that makes the model reach for the web was being withheld
+from web questions.** The nudge — one line, the measured reason a small model
+calls `web_search` at all — fires on the *dominant* intent profile, which is a
+different rule from the one that ranks the tools, and nothing checked it. Three
+ways it failed: `search the web for the exchange rate`, the most explicit
+internet request there is, scored **web 3 against files 6**, because `Files`
+owns bare `search` and `Web` only had the word `web`; one word of diary flipped
+a weather question (`the weather in Istanbul tomorrow` → clock 8, calendar 8,
+web 7); and `is there a train strike going on in France` lost to the **learned**
+extraction head, which scored 12 with no written trigger behind it at all. The
+tool *ranking* survived all three, which is precisely why `eval --routing` — the
+measurement of the ranking — showed nothing. `slot_gate`'s boost is documented
+as raising a score and never overruling one; it now also cannot decide
+`dominant()`, so when the written table has an opinion it decides, and when it
+has none the learned half is all there is and still does.
+`the_web_nudge_reaches_a_web_question` pins nine questions that must nudge and
+eight that must not.
+
 `the_guide_and_the_expected_tool` now holds both counts at zero over the whole
 suite, with one exception carrying its reason in the source, and asserts that no
 irrelevance case is handed a guide at all.

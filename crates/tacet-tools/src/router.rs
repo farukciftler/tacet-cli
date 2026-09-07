@@ -498,6 +498,14 @@ impl IntentProfile {
                 "lately",
                 "going for",
                 "search for",
+                // "SEARCH THE WEB FOR THE EXCHANGE RATE" — the most explicit web
+                // request there is — scored web 3 and FILES 6, because `Files`
+                // owns bare "search" and `Web` only had the word "web". So the
+                // clearest possible internet question was not dominant-web and
+                // got no nudge. The phrase settles it without touching either
+                // profile's other cases.
+                "search the web",
+                "on the web",
                 "look up",
                 "online",
                 "find out",
@@ -527,6 +535,8 @@ impl IntentProfile {
                 "current inflation",
                 "currently trading",
                 "news",
+                "latest news",
+                "headlines",
                 "breaking",
                 // "weather forecast" WAS NOT ENOUGH: the eval case reads "what is
                 // the weather like in Istanbul?" and users ask that way too. Bare
@@ -534,6 +544,17 @@ impl IntentProfile {
                 // weather and does not occur in greetings.
                 "weather forecast",
                 "weather",
+                // "THE WEATHER" AND "WEATHER IN" ON TOP OF BARE "weather", and
+                // the reason is the WEB NUDGE rather than the tool ranking.
+                // `tacet why` on "what is the weather in Istanbul tomorrow"
+                // scored clock 8, calendar 8 and web 7 — one word of diary
+                // ("tomorrow") outweighing the subject of the sentence. The
+                // ranking survived that (`web_search` still led on the hint
+                // product) but the NUDGE did not: it fires on the DOMINANT
+                // profile, and the nudge is the measured reason a small model
+                // reaches for `web_search` at all.
+                "the weather",
+                "weather in",
                 // TIMETABLE / SHOWTIME — came from the user's real session. The
                 // message "what are the ortakoy uskudar ferry times" touched NO
                 // trigger: with the score at zero the selection fell back to
@@ -1550,6 +1571,8 @@ pub struct IntentScores {
     /// explicitly a supplement for messages the table cannot reach — so letting
     /// its boost answer "did the table recognise this" turned the reservation
     /// off on precisely the messages it was written for.
+    /// The scores BEFORE `slot_gate`'s boost. See `dominant`.
+    written: Vec<(IntentProfile, usize)>,
     matched_by_trigger: bool,
 }
 
@@ -1578,8 +1601,29 @@ impl IntentScores {
     /// and WHICH profile is named changes nothing about the selection. The
     /// variant here is a placeholder for "no intent", not a claim about the
     /// message.
+    /// THE LEARNED HALF DOES NOT DECIDE THIS, and that is a correction rather
+    /// than a design choice.
+    ///
+    /// `slot_gate`'s boost is documented as raising a score and never overruling
+    /// one, which is true of the TOOL RANKING and was not true here. "is there a
+    /// train strike going on in France" fired one written trigger — `Web`, on
+    /// "strike", for 6 — and the head predicted extraction, so `Extract` came
+    /// out at 12 with no trigger behind it and won. The only caller that reads
+    /// this besides `select` is the WEB NUDGE, so the sentence that is the
+    /// measured reason a small model reaches for `web_search` was withheld from
+    /// a question about a train strike on a learned guess.
+    ///
+    /// So when the written table has an opinion, it decides; when it has none —
+    /// the case the head exists for, a request carrying no place noun at all —
+    /// the head's score is all there is and it decides. The tool ranking is
+    /// untouched: `select` reads `scores`, which still carries the boost.
     pub fn dominant(&self) -> IntentProfile {
-        self.scores
+        let table = if self.matched_by_trigger {
+            &self.written
+        } else {
+            &self.scores
+        };
+        table
             .iter()
             .filter(|(_, s)| *s > 0)
             // max_by_key picks THE LAST on a tie; the iterator is reversed so the
@@ -1649,6 +1693,9 @@ pub fn score_intent(message: &str) -> IntentScores {
         .collect();
     let mut scores: Vec<(IntentProfile, usize)> = scores;
     let matched_by_trigger = scores.iter().any(|(_, total)| *total > 0);
+    // THE SCORES BEFORE THE LEARNED HALF, kept because `dominant()` must not be
+    // decided by it. See the note there.
+    let written = scores.clone();
 
     // THE LEARNED HALF, AND IT ONLY ADDS. `slot_gate` is 48 KiB of int8 that
     // answers "is this a request for one of the two extraction tools" where the
@@ -1679,6 +1726,7 @@ pub fn score_intent(message: &str) -> IntentScores {
     }
     IntentScores {
         scores,
+        written,
         matched_by_trigger,
     }
 }

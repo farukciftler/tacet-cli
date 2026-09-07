@@ -159,6 +159,20 @@ pub fn why(message: &str) -> ExitCode {
                 }
             }
         }
+
+        // THE TURN'S NOTE IS PART OF THE SAME FENCE and is decided by a
+        // different rule — the router's dominant profile, not a skill's
+        // triggers. Showing the guide and hiding the note would make this
+        // command's own output disagree with the prompt it describes, which is
+        // the failure it exists to catch elsewhere.
+        if tacet_tools::router::score_intent(message).dominant()
+            == tacet_tools::router::IntentProfile::Web
+        {
+            println!(
+                "    {}",
+                color.paint(DIM, "+ note: the web nudge (dominant intent is web)")
+            );
+        }
     }
 
     if !explanation.dropped.is_empty() {
