@@ -2678,6 +2678,33 @@ pub fn run_selection_case_in(
             if let Some(n) = note {
                 prompt = prompt.with_note(n);
             }
+            // THE SHELL TRUNCATES AND THIS DID NOT, and the floor is what makes
+            // that matter. `context_budget` returns `CONTEXT_BUDGET` — 4096 —
+            // when a model declares nothing or the device cannot afford more, so
+            // the prompt cap on such a machine is 3072. The worst prompt this
+            // suite can build measures 5617. On the measurement box the window
+            // is four times that and this is a no-op; on the floor the shell
+            // would drop old turns and then the guide, and the eval would send
+            // an over-budget prompt instead — measuring a different program on
+            // exactly the machines where the budget bites.
+            //
+            // The report is traced rather than discarded: a run where the guide
+            // was dropped is not the same measurement, and it must not look like
+            // one.
+            let truncation = counter.truncate(&mut prompt);
+            if truncation.dropped_turns > 0 || truncation.guide_dropped {
+                trace(&format!(
+                    "  turn {}/{} · TRUNCATED · {} turn(s) dropped{}",
+                    turn + 1,
+                    MAX_TURNS,
+                    truncation.dropped_turns,
+                    if truncation.guide_dropped {
+                        " · the guide was sacrificed"
+                    } else {
+                        ""
+                    }
+                ));
+            }
             if !final_turn {
                 prompt = prompt.with_tools(&selected);
             }
