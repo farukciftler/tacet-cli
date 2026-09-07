@@ -482,6 +482,19 @@ clean a confirmation as this kind of change gets:
 Nothing was fixed, three things broke, and they are by name the three the change
 was written for.
 
+**A fourth divergence, and the largest.** The shell pushes the model's own
+generation into the history as an `assistant` turn before the tool result, with
+a comment recording why: fed only the RESULT, the model saw a context-free line
+with the user's question below it, took the question for unanswered, and called
+the same tool again — up to the turn limit, without ever answering. That is the
+`OutOfTurns` ending this suite reports. **The eval pushed only the result.** So
+it measured a model with no record of its own actions, counted the repeats
+against it, and published the number as the shell's — and it is also a deviation
+from the template these weights were trained on, where a tool response follows
+the assistant turn that asked for it. Every divergence found tonight ran the
+same way: the eval stricter than the program, in the direction that looks like
+the model failing.
+
 **And a third divergence was found after those numbers were taken, so the table
 above still carries it.** The harness built its catalog with `production_catalog`
 — which returns three things — and kept only the first. The second is `run_code`'s

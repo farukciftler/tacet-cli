@@ -2848,6 +2848,22 @@ pub fn run_selection_case_in(
             if outcome.reason == tacet_tools::executor::ExecutionReason::RepeatedCall {
                 must_answer = true;
             }
+            // THE MODEL MUST SEE ITS OWN CALL IN THE HISTORY, and this measured a
+            // program in which it did not.
+            //
+            // The shell pushes the generation as an `assistant` turn before the
+            // result, with a comment recording why: fed only the RESULT, the
+            // model saw a context-free line with the user's question below it,
+            // took the question for unanswered and called the same tool again —
+            // up to the turn limit, without ever answering. That is the
+            // `OutOfTurns` ending this suite reports.
+            //
+            // The eval pushed only the result. So it measured a model with no
+            // record of its own actions, scored the repeats against it, and
+            // called the number the shell's. It is also a deviation from the
+            // template the model was trained on, where a tool response follows
+            // the assistant turn that asked for it.
+            turn_tools.push(Turn::assistant(generation.text.trim()));
             turn_tools.push(Turn::tool(outcome.to_model.clone()));
         }
 
