@@ -134,6 +134,26 @@ cargo run -p tacet-cli --features metal -- eval --tool-selection --json > after.
 cargo run -p tacet-cli -- eval --compare crates/tacet-eval/baselines/<baseline>.json after.json
 ```
 
+**Or overnight, without watching it.** `scripts/nightly-eval.sh` is the same two
+commands with the three things that make an unattended run trustworthy: it
+builds first (a run against a stale binary produces a number attributed to a
+commit it did not measure — that has happened here once already, on a line
+saying `cargo: command not found` that nobody read); it passes `--journal`, so a
+closed lid at case 180 costs one case rather than the 47 minutes behind it, and
+re-running the script continues where it stopped; and it writes everything to
+`~/.tacet/nightly/<date>-<commit>/run.log`, with `~/.tacet/nightly/latest.log`
+pointing at the newest, so `tail -f` is the live view and a number found later
+can be traced to what produced it.
+
+```bash
+scripts/nightly-eval.sh            # resumes if it can; safe to re-run
+tail -f ~/.tacet/nightly/latest.log
+```
+
+The journal directory is keyed by commit, and its own stamp refuses a model or
+catalog it was not started with — so a report can never be half one build and
+half another.
+
 **Which weights, exactly.** `qwen3-4b` in the built-in catalog is
 **Qwen3-4B-Instruct-2507** Q4_K_M, 2 497 281 120 bytes, pinned by sha256. It is
 not `Qwen/Qwen3-4B` — that is the older hybrid model, it answers to the same
