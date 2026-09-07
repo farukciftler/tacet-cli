@@ -106,13 +106,22 @@ fn call_over_budget(armed_at: Option<usize>, produced: usize, cap: usize) -> boo
     armed_at.is_some_and(|start| produced.saturating_sub(start) >= cap)
 }
 
+/// How many back-to-back repeats it takes INSIDE A CALL. See the call site: a
+/// false positive here abandons a valid call, so the bar is twice the one for
+/// prose.
+const IN_CALL_LOOP_THRESHOLD: usize = 6;
+
 fn is_looping(produced: &[u32]) -> bool {
-    let needed = LOOP_SEQUENCE_LENGTH * LOOP_THRESHOLD;
+    is_looping_with(produced, LOOP_THRESHOLD)
+}
+
+fn is_looping_with(produced: &[u32], threshold: usize) -> bool {
+    let needed = LOOP_SEQUENCE_LENGTH * threshold;
     if produced.len() < needed {
         return false;
     }
     let last = &produced[produced.len() - LOOP_SEQUENCE_LENGTH..];
-    (1..LOOP_THRESHOLD).all(|k| {
+    (1..threshold).all(|k| {
         let start = produced.len() - LOOP_SEQUENCE_LENGTH * (k + 1);
         &produced[start..start + LOOP_SEQUENCE_LENGTH] == last
     })
@@ -1072,7 +1081,35 @@ SmolLM2 and TinyLlama work; a Llama-3 chat model needs its own template first.",
                 stop = StopReason::CallTooLong;
                 break;
             }
-            if backstop_runs(structural) && is_looping(&produced) {
+            // A CALL THAT IS STUCK IS ABANDONED, NOT TRUNCATED.
+            //
+            // The backstop is skipped while the constraint is structural, and
+            // the reason given is right as far as it goes: a valid JSON call may
+            // contain repeated strings, and CUTTING one mid-string makes it
+            // unparseable. But cutting is not the only ending available. A call
+            // that has started may also be ABANDONED — which is exactly what
+            // `TOOL_CALL_CAP` does, and the turn already recovers from it by
+            // spending its next pass on an answer.
+            //
+            // MEASURED, 7 Sep 2026, gemma3-4b on Metal, "internette ara ortakoy
+            // uskudar vapur saatleri": the model armed a call and emitted
+            // `.search.search.search…` until the 2048-token cap. Roughly nine
+            // hundred repetitions and about two minutes, for a state the loop
+            // detector could have named in thirty-six tokens. The user reported
+            // it as a wall of text; the layered defence was working and the
+            // outermost layer was doing all of it.
+            //
+            // A HIGHER THRESHOLD INSIDE A CALL, because a false positive here
+            // costs a valid call rather than a paragraph. Six back-to-back
+            // repeats of the same twelve tokens is seventy-two tokens of exact
+            // repetition — `write_code` really can emit three identical lines,
+            // and six is past anything a formatter would produce.
+            if structural {
+                if is_looping_with(&produced, IN_CALL_LOOP_THRESHOLD) {
+                    stop = StopReason::CallTooLong;
+                    break;
+                }
+            } else if backstop_runs(structural) && is_looping(&produced) {
                 produced.truncate(produced.len() - LOOP_SEQUENCE_LENGTH * (LOOP_THRESHOLD - 1));
                 stop = StopReason::Loop;
                 break;
@@ -1516,7 +1553,7 @@ mod budget_and_backstop {
     /// And the half that must not regress: inside the arguments of a call, the
     /// backstop stays off (valid JSON repeats by nature) and the cap applies.
     #[test]
-    fn an_armed_call_keeps_its_cap_and_loses_the_backstop() {
+    fn an_armed_call_keeps_its_cap_and_loses_the_truncating_backstop() {
         assert!(
             !backstop_runs(true),
             "cutting a call mid-JSON would make it unparseable"
@@ -1525,5 +1562,63 @@ mod budget_and_backstop {
         assert!(!call_over_budget(Some(40), 2_000, 2048));
         assert!(!call_over_budget(Some(40), 2_087, 2048));
         assert!(call_over_budget(Some(40), 2_088, 2048));
+    }
+
+    /// Builds a sequence that ends in `repeats` back-to-back copies of the same
+    /// twelve tokens, after some ordinary text.
+    fn stuck(repeats: usize) -> Vec<u32> {
+        let mut v: Vec<u32> = (900..940).collect();
+        for _ in 0..repeats {
+            v.extend(0..LOOP_SEQUENCE_LENGTH as u32);
+        }
+        v
+    }
+
+    /// A STUCK CALL IS ABANDONED, AND IT TAKES SEVENTY-TWO TOKENS, NOT TWO
+    /// THOUSAND.
+    ///
+    /// The backstop is skipped while the constraint is structural because
+    /// CUTTING a call mid-string makes it unparseable — right, as far as it
+    /// goes, and cutting is not the only ending available. A started call can
+    /// also be ABANDONED, which is what `TOOL_CALL_CAP` does and what the turn
+    /// already recovers from.
+    ///
+    /// MEASURED, gemma3-4b on Metal, "internette ara ortakoy uskudar vapur
+    /// saatleri": the model armed a call and emitted `.search.search.search…`
+    /// until the 2048-token cap — about nine hundred repetitions and two
+    /// minutes, for a state the detector could name in thirty-six tokens.
+    #[test]
+    fn a_call_stuck_repeating_is_caught_long_before_its_budget() {
+        assert!(
+            !is_looping_with(&stuck(IN_CALL_LOOP_THRESHOLD - 1), IN_CALL_LOOP_THRESHOLD),
+            "one repeat short must not fire"
+        );
+        assert!(
+            is_looping_with(&stuck(IN_CALL_LOOP_THRESHOLD), IN_CALL_LOOP_THRESHOLD),
+            "a call repeating itself six times over must be caught"
+        );
+        // AND WELL INSIDE THE BUDGET: seventy-two tokens against two thousand.
+        let tokens = LOOP_SEQUENCE_LENGTH * IN_CALL_LOOP_THRESHOLD;
+        assert!(
+            tokens * 20 < 2048,
+            "{tokens} tokens is not meaningfully sooner than the cap"
+        );
+    }
+
+    /// THE BAR IS HIGHER INSIDE A CALL THAN IN PROSE, because a false positive
+    /// there abandons a valid call rather than trimming a paragraph.
+    /// `write_code` really can emit three identical lines.
+    #[test]
+    fn a_call_may_repeat_itself_more_than_prose_may() {
+        assert!(
+            IN_CALL_LOOP_THRESHOLD > LOOP_THRESHOLD,
+            "a call must be allowed more repetition than prose, not less"
+        );
+        let three = stuck(LOOP_THRESHOLD);
+        assert!(is_looping(&three), "prose is cut at three");
+        assert!(
+            !is_looping_with(&three, IN_CALL_LOOP_THRESHOLD),
+            "three identical lines inside a call must survive"
+        );
     }
 }
