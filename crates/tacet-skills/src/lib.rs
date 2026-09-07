@@ -63,7 +63,15 @@ mod tests {
 
         let text = injection_text(s);
         assert!(text.contains("<guidance name=\"calc\">"));
-        assert!(text.contains("never compute in your head"));
+        // THE CALL, not a phrase. `calc` used to open "never compute in your
+        // head" and show only an argument VALUE — `"(1250+890)*1.2"` — and a
+        // measured run came back with the model writing `(347 + 268)` as its
+        // ANSWER on ten arithmetic cases, imitating the example it was given.
+        // Every other guide shows a complete call; this asserts calc does too.
+        assert!(
+            text.contains(r#"calculate({"expression":"#),
+            "the guide must show the CALL, not the expression: {text}"
+        );
         assert!(text.chars().count() < INJECTION_LIMIT + 200, "fence + body");
     }
 

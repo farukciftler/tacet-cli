@@ -77,7 +77,10 @@ fn no_shipped_step_expects_a_tool_the_router_will_not_show() {
     let catalog = tacet_tools::catalog::production_catalog_with(&store, &memory, Some(0), true).0;
     let router = Router::new();
 
+    let catalog_names: Vec<&str> = catalog.tools().iter().map(|t| t.name()).collect();
+
     let mut impossible: Vec<String> = Vec::new();
+    let mut absent: Vec<String> = Vec::new();
     let mut steps = 0usize;
     for path in &files {
         let Ok(text) = std::fs::read_to_string(path) else {
@@ -99,6 +102,21 @@ fn no_shipped_step_expects_a_tool_the_router_will_not_show() {
                 let Some(want) = step.expect.as_deref() else {
                     continue;
                 };
+                // A TOOL THIS PLATFORM DOES NOT HAVE IS NOT A ROUTING FAILURE.
+                //
+                // `calendar` is macOS-only and `run_code`/`write_code` need a
+                // verified sandbox, so on Linux and Windows they are ABSENT from
+                // the catalog — the honest-refusal path, working as designed and
+                // documented on the front page. No router can show a tool that
+                // is not there, and asserting otherwise made this guard fail on
+                // two of the three platforms it was pushed to: 47 steps on
+                // Linux, 100 on Windows. That is the same platform-dependence
+                // this test exists to keep OUT of the corpus, committed into the
+                // test itself.
+                if !catalog_names.contains(&want) {
+                    absent.push(want.to_string());
+                    continue;
+                }
                 steps += 1;
                 let selected = router.select(&step.message, &catalog);
                 let shown: Vec<&str> = selected.iter().map(|t| t.name()).collect();
@@ -118,6 +136,31 @@ fn no_shipped_step_expects_a_tool_the_router_will_not_show() {
         "only {steps} steps were checked across {} files; the corpus did not load",
         files.len()
     );
+
+    // THE SKIP MUST NOT BE ABLE TO SWALLOW THE TEST. On a machine whose catalog
+    // is complete, nothing may be skipped — so the guard keeps its full force
+    // exactly where the published numbers are measured, and a tool quietly
+    // dropping out of the catalog shows up here as a sudden pile of skips
+    // rather than as a green tick.
+    let complete = ["calendar", "run_code", "write_code"]
+        .iter()
+        .all(|t| catalog_names.contains(t));
+    if complete {
+        assert!(
+            absent.is_empty(),
+            "the catalog has every tool and {} step(s) were still skipped as \
+             absent: {absent:?}",
+            absent.len()
+        );
+    } else {
+        absent.sort();
+        absent.dedup();
+        eprintln!(
+            "note: {} step(s) skipped — this platform's catalog has no {absent:?}. \
+             The router cannot show a tool that is not there.",
+            absent.len()
+        );
+    }
     assert!(
         impossible.is_empty(),
         "{} of {steps} benchmark steps expect a tool the router does not show, so they \

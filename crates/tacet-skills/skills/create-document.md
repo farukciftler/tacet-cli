@@ -5,20 +5,19 @@ tools: create_document
 ---
 # Creating documents
 
-`create_document` writes the file. `file_name`: short, hyphenated, NO extension.
-`content` is MARKDOWN.
+`create_document({"format":"markdown","file_name":"july-notes","content":"..."})`.
+`file_name` is short, hyphenated, NO extension; `content` is MARKDOWN.
 `format`: data/plan/budget -> "excel" (`content` MUST be a markdown table);
-prose/report -> "markdown"; plain note -> "text". Only those three. Asked for
-PDF, Word or docx: pick the closest and say which one you produced.
+prose/report -> "markdown"; note -> "text". Only those three. Asked for PDF,
+Word or docx: pick the closest and say which one you produced.
 
 ## Table shape, EXAMPLE ONLY
 | Day | Lunch |
 | --- | --- |
 | Monday | Lentils |
 
-- The table above is a FORMAT example, never content. Never copy its rows.
-- Bulk data another tool already read: do NOT retype it into `content`; pass
-  the `source_ref` that tool returned.
+- The table above is a FORMAT example. Never copy its rows.
+- Bulk data another tool read: pass the `source_ref` it returned, do not retype.
 - Numeric cells are plain numbers ("1500"); never compute totals yourself.
 <!--/core-->
 ## Rules

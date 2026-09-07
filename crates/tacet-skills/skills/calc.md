@@ -5,10 +5,13 @@ tools: calculate
 ---
 # Arithmetic
 
-Do arithmetic with the `calculate` tool. Route EVERY numeric calculation to it; never compute in your head.
+`calculate({"expression":"(1250+890)*1.2"})` — route EVERY numeric calculation
+to the tool.
 
 ## Never break these
-- `expression`: only digits and `+ - * / ( ) % . ^`. E.g. "(1250+890)*1.2".
+- WRITE THE CALL, not the sum. `(347 + 268)` as an answer is a failure: it looks
+  like arithmetic and no arithmetic was done.
+- `expression`: only digits and `+ - * / ( ) % . ^`.
 - Take the result from the tool; never make up a number.
 - Never claim you calculated something without a successful tool call.
 <!--/core-->
