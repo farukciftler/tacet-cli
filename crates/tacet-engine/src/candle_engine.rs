@@ -335,6 +335,12 @@ pub struct CandleEngine {
     context_length: Option<usize>,
     device: CandleDevice,
     stop_tokens: Vec<u32>,
+    /// MARKER TOKENS THE MODEL MAY NOT EMIT. See `marker_tokens`.
+    ///
+    /// Computed at load beside `stop_tokens`, because it is derived from the
+    /// same tokenizer and asking per token would decode the added vocabulary
+    /// thousands of times a second.
+    forbidden_markers: Vec<u32>,
     /// Token id -> SURFACE text. The prerequisite for setting up a constraint
     /// (see `vocab`). Produced once at load time: a decode call for 32k tokens is
     /// not cheap, but it is invisible next to the gguf load and repeating it per
@@ -412,6 +418,7 @@ impl CandleEngine {
         };
 
         let vocab = build_vocab(&tokenizer);
+        let forbidden_markers = marker_tokens(&tokenizer, &stop_tokens);
 
         // THE ONE ARCHITECTURE WHOSE TEMPLATE IS CHECKED RATHER THAN LOOKED UP.
         // `llama` names a family, not a wire format: SmolLM2 and TinyLlama were
@@ -460,6 +467,7 @@ SmolLM2 and TinyLlama work; a Llama-3 chat model needs its own template first.",
             context_length,
             device,
             stop_tokens,
+            forbidden_markers,
             vocab,
             identity,
         })
@@ -895,6 +903,28 @@ SmolLM2 and TinyLlama work; a Llama-3 chat model needs its own template first.",
                     .map_err(|e| EngineError::Inference(e.to_string()))?
             } else {
                 logits
+            };
+
+            // AND A MARKER IS NOT TEXT EITHER. See `marker_tokens`: gemma3 puts
+            // 6242 `<unusedNNNN>` placeholders in its vocabulary and marks them
+            // as ordinary, so they decode to their own literal text and reach
+            // the screen. Masked here, next to the narrowing, so all three
+            // sampling branches below inherit it — the sampled branch takes the
+            // tensor straight to candle and is the one where a per-branch fix
+            // would be silently forgotten.
+            let logits = if self.forbidden_markers.is_empty() {
+                logits
+            } else {
+                let mut v: Vec<f32> = logits
+                    .to_vec1()
+                    .map_err(|e| EngineError::Inference(e.to_string()))?;
+                for id in &self.forbidden_markers {
+                    if let Some(slot) = v.get_mut(*id as usize) {
+                        *slot = f32::NEG_INFINITY;
+                    }
+                }
+                Tensor::new(v.as_slice(), &self.device)
+                    .map_err(|e| EngineError::Inference(e.to_string()))?
             };
 
             // THE CONSTRAINT IS APPLIED ON THE RAW LOGITS, before entering the
@@ -1424,6 +1454,65 @@ fn find_stop_tokens(tokenizer: &Tokenizer) -> Vec<u32> {
 /// dated local measurement, not a standing guarantee — re-run it (the command is
 /// at the top of vocab_alphabet.rs) before trusting it against a tokenizer
 /// family that is not listed above.
+/// THE TOKENS THAT ARE MARKERS RATHER THAN TEXT, minus the ones that end a turn.
+///
+/// REPORTED FROM A REAL SESSION, gemma3-4b: asked for ferry times, the model
+/// emitted `<unused6088>` twelve times and then died on a token id past the
+/// vocabulary. Those placeholders are real ids the tokenizer can name — gemma3
+/// carries 6242 of them and marks them `special: false`, so they decode to
+/// their own literal text and land on the user's screen. Nothing the model was
+/// trained to say, and nothing a caller can use.
+///
+/// WHAT THIS IS NOT: "mask the added tokens". That rule was written first and
+/// is wrong — gemma3's added vocabulary contains `\n`, `\n\n`, `\n\n\n` and
+/// ninety-one more pieces of ORDINARY TEXT, so forbidding added tokens would
+/// forbid the model a newline. Measured by reading the tokenizer before
+/// shipping it rather than after.
+///
+/// "ANGLE-BRACKETED ADDED TOKEN" WAS THE SECOND WRONG RULE, and it was measured
+/// before it shipped too: on gemma3 it masked 6321 tokens including `</div>`,
+/// `</code>`, `</h1>` and every other HTML tag in that vocabulary, and on qwen3
+/// it masked `<think>` and `<tool_call>`. Forbidding a model to close a `<div>`
+/// is not a fix.
+///
+/// THE RULE THAT SURVIVES IS THE UNION OF TWO NARROW SETS, each with its own
+/// reason:
+///
+///   * TOKENS THE TOKENIZER MARKS SPECIAL, minus the stop tokens. These are
+///     structural: `<|im_start|>`, `<start_of_turn>`, `<pad>`, `<bos>`,
+///     `<image_soft_token>`. Fourteen on qwen3, nine on gemma3, and not one of
+///     them is something a user asked for. `<think>` and `<tool_call>` are
+///     added but NOT special, so a thinking model keeps them.
+///
+///   * PLACEHOLDERS, by name. gemma3's 6242 `<unusedNNNN>` slots are marked
+///     `special: false` — which is why they decode to their own literal text and
+///     reached the screen. `reserved_special_token` and `<|extra_` are the same
+///     idea in Llama's and Qwen's vocabularies.
+///
+/// Between them: 13 masked on qwen3 and 6250 on gemma3, and `\n`, `</div>` and
+/// `[multimodal]` in neither.
+///
+/// STOP TOKENS ARE EXEMPT — ending the turn is the one marker the model is
+/// supposed to produce.
+///
+/// IT ALSO CLOSES SOMETHING ELSE. `<start_of_turn>` and `<|im_start|>` are how a
+/// generation would forge a turn in its own output. The prompt side of that is
+/// handled in `tacet-engine::prompt`; this is the other side.
+pub fn marker_tokens(tokenizer: &Tokenizer, stop_tokens: &[u32]) -> Vec<u32> {
+    let placeholder = |text: &str| {
+        text.contains("unused") || text.contains("reserved_special") || text.starts_with("<|extra")
+    };
+    tokenizer
+        .get_added_vocabulary()
+        .get_added_tokens_decoder()
+        .iter()
+        .filter(|(id, token)| {
+            !stop_tokens.contains(id) && (token.special || placeholder(&token.content))
+        })
+        .map(|(id, _)| *id)
+        .collect()
+}
+
 pub fn build_vocab(tokenizer: &Tokenizer) -> Vec<String> {
     let size = tokenizer.get_vocab_size(true);
     (0..size as u32)
