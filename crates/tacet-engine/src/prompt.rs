@@ -231,6 +231,48 @@ fn defanged(text: &str) -> String {
     out
 }
 
+/// Defangs the text INSIDE a block whose own fence the caller wrote.
+///
+/// WHY THIS IS NOT JUST `defanged`. `tacet-skills::injection_text` and
+/// `MemoryStore::injection_from` both return their content ALREADY fenced —
+/// they own the fence because their character budgets subtract it first.
+/// Running the plain defang over that broke the caller's own closing tag:
+///
+/// ```text
+/// < /guidance>
+/// ```
+///
+/// — which left the guidance fence open from the model's point of view. That is
+/// the failure this codebase already has a rule about: half an order is worse
+/// than no order at all. It shipped for exactly as long as it took somebody to
+/// print a whole prompt and read it.
+///
+/// So the caller's OWN opening and closing tags are left alone and everything
+/// between and after them is defanged — which is where a foreign note, a
+/// user-authored skill body, or a bridged description actually sits.
+fn defanged_inside(text: &str, open_prefix: &str, close_tag: &str) -> String {
+    let Some(open_end) = text
+        .starts_with(open_prefix)
+        .then(|| text.find('>'))
+        .flatten()
+    else {
+        return defanged(text);
+    };
+    let Some(close_at) = text.rfind(close_tag) else {
+        return defanged(text);
+    };
+    if close_at < open_end {
+        return defanged(text);
+    }
+    format!(
+        "{}{}{}{}",
+        &text[..=open_end],
+        defanged(&text[open_end + 1..close_at]),
+        close_tag,
+        defanged(&text[close_at + close_tag.len()..])
+    )
+}
+
 /// The prompt to be sent to the model, in pieces.
 #[derive(Debug, Clone, Default)]
 pub struct Prompt {
@@ -320,7 +362,7 @@ impl Prompt {
         // A remembered note is text the model itself wrote into the store on
         // some earlier turn, from a message somebody else may have written. It
         // is the slowest of the injection routes and the most patient.
-        self.memory = (!n.is_empty()).then(|| defanged(n));
+        self.memory = (!n.is_empty()).then(|| defanged_inside(n, "<memory", "</memory>"));
         self
     }
 
@@ -348,8 +390,10 @@ impl Prompt {
         // sentences ending `...If it can be computed, compute`. The skills crate
         // records why that is worse than sending less: half an order is worse
         // than no order at all.
-        // A USER-AUTHORED SKILL FILE is also text this module did not write.
-        let g = &defanged(g);
+        // A USER-AUTHORED SKILL FILE is also text this module did not write —
+        // but the `<guidance>` fence around it belongs to `tacet-skills`, and
+        // defanging that broke the caller's own closing tag. See `defanged_inside`.
+        let g = &defanged_inside(g, "<guidance", "</guidance>");
         let truncated: String = if g.chars().count() <= GUIDE_LIMIT {
             g.to_string()
         } else {
@@ -573,6 +617,23 @@ impl Prompt {
     /// note IS guidance, the three templates each place this block by their own
     /// rules, and a new slot would have to be placed correctly in all three.
     fn guidance_block(&self) -> Option<String> {
+        // ALREADY FENCED BY `tacet-skills`, AND IT WAS BEING FENCED AGAIN — the
+        // same defect as `memory_block`, found in the same reading of a whole
+        // prompt. `injection_text` returns `<guidance name="calc">…</guidance>`
+        // plus the sentence that says what the block is for, and this wrapped
+        // the lot in a second bare `<guidance>`.
+        //
+        // The note still has to get inside SOMETHING, so when the guide brought
+        // its own fence the note is appended after it rather than nested in it:
+        // it is the turn's instruction, not part of the skill.
+        if let Some(g) = self.guide.as_ref()
+            && g.trim_start().starts_with("<guidance")
+        {
+            return Some(match self.note.as_ref() {
+                Some(n) => format!("{}\n{}", g.trim(), n.trim()),
+                None => g.trim().to_string(),
+            });
+        }
         let body = match (self.guide.as_ref(), self.note.as_ref()) {
             (None, None) => return None,
             (Some(g), None) => g.trim().to_string(),

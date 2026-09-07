@@ -65,6 +65,16 @@ nothing is censored and nothing can open a block. `cargo test -p tacet-engine
 --test a_tool_result_cannot_forge_a_turn` is the demonstration, in all three
 templates.
 
+**And then the whole prompt was printed and read, which found three more.** The
+`<memory>` block was **fenced twice** — a nested tag with a stray closing one in
+the middle, in the system block, on every turn a note matched. The `<guidance>`
+block was fenced twice for the same reason. And the fix above had broken the
+skill's own closing tag into `< /guidance>`, leaving that fence open — the
+failure this repository has a rule about, half an order being worse than no
+order, introduced by the change that closed the forged-turn hole. None of the
+three failed a test and none of them would have: they are visible only by
+looking at what the model is actually sent.
+
 **The network monopoly is checkable by eye.** Exactly two crates may open a socket, and the HTTP dependency appears in exactly those two manifests. You do not have to trust a privacy claim you cannot audit — `grep -v '^\s*#' crates/*/Cargo.toml | grep ureq` is the audit, and `cargo test -p tacet-cli --test network_monopoly` is the same audit as a failing build: it asserts that exactly those two manifests declare an HTTP client, that no other client was swapped in under a different name, and that nobody reached a socket through `std::net` instead — scanning every `.rs` file under `crates/*/{src,tests,examples,benches}`, not just the library code. (One honest asterisk: if you install the `shell` addon and put `curl` on its allow-list, you have handed a program the network. That is why `shell` sits behind the approval gate — see [Addons](#addons).)
 
 **Nothing leaves the device by default.** Everything with outside reach is an *addon* you install deliberately: web search against your own SearXNG, HTTP against hosts you name, a shell against programs you list. Until you install one, its tools are not merely disabled — they are **absent from the catalog the model is shown**, so it cannot call them or claim it did.
