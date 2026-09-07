@@ -9,10 +9,35 @@
 
 use std::path::PathBuf;
 
-/// The fixed error text returned to the model. Deliberately a `const`: letting
-/// call sites invent their own variant would break that guarantee.
+/// The fixed error text returned to the model when A TOOL ITSELF FAILED.
+///
+/// Deliberately a `const`: letting call sites invent their own variant would
+/// break the guarantee above. This one stays deliberately uninformative,
+/// because the reason a tool failed can come from a file, a web page or a
+/// remote server, and none of those may become a channel into the prompt.
 pub const ERROR_MODEL_TEXT: &str =
     "tool_failed: the action could not be completed; no result was produced";
+
+/// THE TWO FAILURES THAT ARE THE MODEL'S OWN, AND WERE TOLD NOTHING.
+///
+/// `ERROR_MODEL_TEXT` was returned for all three of `UnknownTool`,
+/// `InvalidArguments` and `ToolFailed`. The first two are the only ones the
+/// model can DO anything about — it wrote a name that is not in the list, or
+/// arguments the schema rejected — and "the action could not be completed" tells
+/// it neither which of those happened nor what to change. So its options were to
+/// repeat the same mistake (the duplicate gate then refuses it) or to give up.
+///
+/// SAYING WHICH IS SAFE, AND THAT IS THE WHOLE ARGUMENT. The rule these
+/// constants exist for is that a failure must not become a prompt-injection
+/// channel — no localized string, no error code, no path, nothing a file or a
+/// page or a remote tool could have written. These two verdicts are the
+/// HARNESS's own, reached by comparing the model's text against a catalog and a
+/// schema that both belong to this program. They are fixed strings like their
+/// neighbours and quote nothing.
+pub const UNKNOWN_TOOL_MODEL_TEXT: &str = "unknown_tool: no tool with that name is in the tools list. Use a name exactly as it is      written there, or answer the user without a tool.";
+
+/// See `UNKNOWN_TOOL_MODEL_TEXT`.
+pub const INVALID_ARGUMENTS_MODEL_TEXT: &str = "invalid_arguments: the call did not fit that tool's signature and the tool never ran.      Read the signature in the tools list and call it again with the fields it names.";
 
 /// Everything a tool is allowed to fail with.
 ///

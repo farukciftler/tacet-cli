@@ -37,7 +37,10 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use tacet_kernel::{ERROR_MODEL_TEXT, ToolCatalog, ToolContext, ToolError, ToolOutcome, ToolState};
+use tacet_kernel::{
+    INVALID_ARGUMENTS_MODEL_TEXT, ToolCatalog, ToolContext, ToolError, ToolOutcome, ToolState,
+    UNKNOWN_TOOL_MODEL_TEXT,
+};
 
 /// The FIXED text returned to the model when approval is denied.
 ///
@@ -1099,7 +1102,11 @@ impl ToolExecutor {
             return self.outcome(
                 &call.name,
                 ExecutionReason::UnknownTool,
-                ERROR_MODEL_TEXT.to_string(),
+                // NOT the generic failure text: this verdict is the HARNESS's,
+                // reached against a catalog that belongs to this program, so
+                // saying so cannot become an injection channel — and it is one
+                // of only two failures the model can act on.
+                UNKNOWN_TOOL_MODEL_TEXT.to_string(),
                 error.short_error(),
                 ToolState::Failed(error.short_error()),
                 None,
@@ -1127,7 +1134,8 @@ impl ToolExecutor {
             return self.outcome(
                 &call.name,
                 ExecutionReason::InvalidArguments,
-                ERROR_MODEL_TEXT.to_string(),
+                // The schema is ours too. See `UNKNOWN_TOOL_MODEL_TEXT`.
+                INVALID_ARGUMENTS_MODEL_TEXT.to_string(),
                 error.short_error(),
                 ToolState::Failed(error.short_error()),
                 None,
@@ -1868,8 +1876,20 @@ mod tests {
 
     // --- The gates ---
 
+    /// THE THREE ERROR TEXTS ARE NOT ONE TEXT, and the split is the point.
+    ///
+    /// All three of `UnknownTool`, `InvalidArguments` and `ToolFailed` returned
+    /// `ERROR_MODEL_TEXT` — "the action could not be completed" — so the two
+    /// failures the model can actually DO something about were told neither
+    /// which had happened nor what to change. Its options were to repeat the
+    /// mistake, which the duplicate gate then refuses, or to give up.
+    ///
+    /// Saying which is safe because these two verdicts are the HARNESS's own,
+    /// reached against a catalog and a schema that belong to this program.
+    /// `ToolFailed` keeps the uninformative text, because a tool's reason for
+    /// failing can come from a file, a page or a remote server.
     #[test]
-    fn an_unknown_tool_does_not_run_and_returns_the_fixed_text() {
+    fn an_unknown_tool_does_not_run_and_is_told_it_was_the_name() {
         let y = executor();
         let mut ctx = context();
         let s = run(y.execute(
@@ -1879,7 +1899,40 @@ mod tests {
         ));
         assert_eq!(s.reason, ExecutionReason::UnknownTool);
         assert!(s.is_error());
-        assert_eq!(s.to_model, ERROR_MODEL_TEXT);
+        assert_eq!(s.to_model, UNKNOWN_TOOL_MODEL_TEXT);
+        assert_ne!(
+            s.to_model,
+            tacet_kernel::ERROR_MODEL_TEXT,
+            "a name that is not in the list and a tool that broke are different \
+             events and the model can only fix one of them"
+        );
+        // AND IT QUOTES NOTHING. The rule these constants exist for is that a
+        // failure must not carry text from outside into the prompt; the model's
+        // own invented name is no exception, because there is no reason to echo
+        // it and every reason not to start.
+        assert!(!s.to_model.contains("yok_boyle"));
+    }
+
+    #[test]
+    fn the_three_error_texts_are_distinct_and_fixed() {
+        use std::collections::HashSet;
+        let all: HashSet<&str> = [
+            tacet_kernel::ERROR_MODEL_TEXT,
+            UNKNOWN_TOOL_MODEL_TEXT,
+            INVALID_ARGUMENTS_MODEL_TEXT,
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(all.len(), 3, "two of the three failures say the same thing");
+        // The rule from `tacet_kernel::error`: fixed, English, and carrying
+        // nothing a file or a page could have written.
+        for text in all {
+            assert!(text.is_ascii(), "{text:?} is not plain ASCII English");
+            assert!(
+                text.contains(':'),
+                "{text:?} does not start with a machine-readable tag"
+            );
+        }
     }
 
     #[test]

@@ -52,7 +52,9 @@ pub use constraint::{Constrainer, ConstraintError, ConstraintSession, FreeConstr
 pub use context::ToolContext;
 pub use data_store::{DataStore, InMemoryDataStore, Record, SourceRef};
 pub use env::{config_dir, config_path, env_var};
-pub use error::{ERROR_MODEL_TEXT, ToolError, ToolResult};
+pub use error::{
+    ERROR_MODEL_TEXT, INVALID_ARGUMENTS_MODEL_TEXT, ToolError, ToolResult, UNKNOWN_TOOL_MODEL_TEXT,
+};
 pub use fs::{create_private_dir, narrow_file, write_private};
 pub use hash::{Sha256, sha256, sha256_hex};
 pub use outcome::{ToolOutcome, source_ref_suffix};

@@ -696,8 +696,11 @@ fn document() -> Vec<EvalCase> {
                 r#"create_document({"format":"excel"})"#,
                 "Could you tell me the file name?",
             ])
-            .evidence(&["tool_failed"])
-            .forbidden(&["file_created"])
+            // `invalid_arguments`, NOT `tool_failed`. The two used to be the
+            // same string, so this case could not tell "the schema refused the
+            // call" from "the tool ran and broke" — and neither could the model.
+            .evidence(&["invalid_arguments"])
+            .forbidden(&["file_created", "tool_failed"])
             // UNCONSTRAINED: this case measures not the grammar but THE SCHEMA
             // GATE (GATE 2). With the constraint on, the model cannot skip the
             // required `file_name` field and close the object — `}` is masked,
@@ -1051,8 +1054,12 @@ fn edit() -> Vec<EvalCase> {
                 r##"edit_document({"path":"nowhere.md","new_content":"# New"})"##,
                 "I could not find that file.",
             ])
+            // `tool_failed` AND NOT `invalid_arguments`, which is the other
+            // side of the same split: the arguments here are perfectly valid,
+            // the tool RAN, and it could not find the file. A model told
+            // "the call did not fit the signature" would rewrite a correct call.
             .evidence(&["tool_failed"])
-            .forbidden(&["file_created"])
+            .forbidden(&["file_created", "invalid_arguments"])
             .once(),
         // FIND BY NAME. The fixture exists for exactly this (`BUDGET_FILE`).
         EvalCase::new("find-file-by-name", "Which file is about the budget?")
@@ -1282,7 +1289,10 @@ fn loop_guard() -> Vec<EvalCase> {
                 r#"ferry_times({"line":"1"})"#,
                 "I do not have a tool for ferry timetables.",
             ])
-            .evidence(&["tool_failed", "reason=UnknownTool"])
+            // `unknown_tool`, NOT `tool_failed`: this gate is reached because
+            // the NAME is not in the catalog, which is a verdict the harness
+            // reached against its own list and can therefore state.
+            .evidence(&["unknown_tool", "reason=UnknownTool"])
             .forbidden(&["18:30"])
             .grounded(),
     ]
