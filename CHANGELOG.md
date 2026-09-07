@@ -19,6 +19,56 @@ releases to follow.
 
 ---
 
+## Published 2026-09-07 — a marker is not text
+
+Three crates, hours after the last release, because a user hit a crash on it.
+
+| crate | was | now |
+|---|---|---|
+| `tacet-engine` | 0.1.12 | **0.1.13** |
+| `tacet-skills` | 0.1.2 | **0.1.3** |
+| `tacet-cli` | 0.1.28 | **0.1.29** |
+
+`tacet-skills` LEAVES THE SHARED WORKSPACE VERSION and takes its own. It has
+changed in three consecutive releases and `tacet-zip`, which shared that number
+with it, in none — so the shared version was forcing a no-change release of
+`tacet-zip` every time. Two crates that do not move together should not share a
+number.
+
+**`tacet-engine` 0.1.13 is the floor for a generation that only contains text.**
+Reported from a real session on gemma3-4b, two faults in one turn:
+
+    Tacet <unused6088><unused6088><unused6088>… (twelve of them)
+    engine error: the sampler returned 262207, which is not a token id
+                  (the vocabulary has 262145 entries)
+
+The first is the PADDED OUTPUT LAYER: qwen3 is 151936 wide against 151669 real
+tokens, gemma3 262208 against 262145, and every sampling branch could choose a
+padding position. Three steps of a 184-case run died this way. The second is
+gemma3's 6242 `<unusedNNNN>` placeholders, marked `special: false`, decoding to
+their own literal text and reaching the screen.
+
+Two rules were written for the second and both were wrong, each caught by
+reading the tokenizers rather than by shipping: masking the ADDED tokens forbids
+`\n` (gemma3 keeps newlines there), and masking the angle-bracketed added tokens
+forbids `</div>` (gemma3 carries the HTML tags; qwen3 carries `<think>`). What
+ships is the union of tokens the tokenizer marks SPECIAL, minus the stop tokens,
+and placeholders by name — 13 masked on qwen3, 6250 on gemma3.
+
+It also stops a generation forging `<|im_start|>` in its own output, which is
+the model side of the hole 0.1.12 closed on the prompt side.
+
+**`tacet-skills` 0.1.3 is the floor for a guide that does not teach the failure.**
+0.1.2 shipped this line in `calc`:
+
+    - WRITE THE CALL, not the sum. `(347 + 268)` as an answer is a failure
+
+and the suite's own case is "Could you add 347 and 268?". The model answered
+`(347 + 268)`. Twelve arithmetic cases broke and the run was a measured REAL
+LOSS at 95%. A small model imitates what is in the last block before the
+question and does not read the word "not", so a guide may contain a call and
+nothing that looks like an answer.
+
 ## Published 2026-09-07 — the prompt the model actually receives
 
 Eight crates. The three that did not change (`tacet-web`, `tacet-mcp`,

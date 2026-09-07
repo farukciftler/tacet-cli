@@ -103,7 +103,7 @@ tacet-grammar = { path = "crates/tacet-grammar", version = "0.2.1" }
 # vocabulary has four billion entries; it was never a token id, and the message
 # named the wrong layer. The greedy choice is now taken over the masked logits
 # we already hold on the CPU, so the answer is an index by construction.
-tacet-engine = { path = "crates/tacet-engine", version = "0.1.12" }
+tacet-engine = { path = "crates/tacet-engine", version = "0.1.13" }
 # 0.1.3 brought the addon gates and the five tools behind them; below it,
 # `catalog.rs` has no gate to ask and `shell`/`http`/`db` do not exist at all.
 # 0.1.4 IS THE FLOOR: below it `shell` is offered on Windows, where the timeout
@@ -157,7 +157,7 @@ tacet-engine = { path = "crates/tacet-engine", version = "0.1.12" }
 # which it then has to escape to write back inside a JSON argument. CI had been
 # red on windows-latest for exactly this.
 tacet-tools = { path = "crates/tacet-tools", version = "0.1.15" }
-tacet-skills = { path = "crates/tacet-skills", version = "0.1.2" }
+tacet-skills = { path = "crates/tacet-skills", version = "0.1.3" }
 tacet-memory = { path = "crates/tacet-memory", version = "0.1.2" }
 # THE NETWORK MONOPOLY: a network call exists ONLY in these two crates. No
 # other crate opens a socket; so the rule can be audited by eye rather than by
