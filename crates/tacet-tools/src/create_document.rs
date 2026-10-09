@@ -2,15 +2,15 @@
 //! contract and two engines (Excel/xlsx, plain text/markdown).
 //!
 //! A SINGLE WRITE GATE: the free function `write_document`. The trait only
-//! defines `write_raw`; preparing the folder, producing a unique name and the
-//! post-write file permission (0600) live in one place, OUTSIDE the trait. On
-//! the Swift side the same shape made it impossible to forget FileProtection.
-//! This used to be a trait method named `write` with a default body that relied
-//! on the comment "engines do not override this" — since nothing in Rust
-//! stopped them, a new engine could silently drop the permission stamp. There
-//! is nothing to override in a free function. `write_raw` receives the target
-//! path ALREADY RESOLVED — not even the choice of file name belongs to the
-//! engine, so two engines cannot produce two different naming rules.
+//! defines `render`; preparing the folder, producing a unique name, the write
+//! itself and the file permission (0600) live in one place, OUTSIDE the trait.
+//! On the Swift side the same shape made it impossible to forget
+//! FileProtection. This used to be a trait method named `write` with a default
+//! body that relied on the comment "engines do not override this" — since
+//! nothing in Rust stopped them, a new engine could silently drop the
+//! permission stamp. There is nothing to override in a free function. An
+//! engine never sees a path at all: it returns BYTES, so neither the naming
+//! rule nor the way the file is opened can differ between two engines.
 //!
 //! BYPASS CHANNEL: if `source_ref` is given the data DOES NOT PASS through
 //! the model; the body is read from the store. And the ref is BINDING: an
@@ -185,16 +185,21 @@ impl DocumentFormat {
 pub trait DocumentEngine: Send + Sync {
     fn format(&self) -> DocumentFormat;
 
-    /// The raw write. `target` is a RESOLVED and unique path; the engine only
-    /// produces the content and dumps it to disk. Callers DO NOT use this —
-    /// they go through `write_document`.
-    fn write_raw(
+    /// The file's bytes. The engine only produces the content; WHERE it goes
+    /// and HOW the file is opened belong to `write_document`.
+    ///
+    /// IT USED TO BE `write_raw(target, ..)`, AND EACH ENGINE CALLED
+    /// `fs::write(target)` (audit L15). That was a check-then-write: the gate
+    /// proved `target` was not a link, then the engine opened it BY NAME,
+    /// following whatever stood there by then. A link planted in between — a
+    /// concurrent `run_code` is allowed to write in the sandbox, and a link is
+    /// a write — was written through. Bytes cannot be written through anything.
+    fn render(
         &self,
-        target: &Path,
         title: Option<&str>,
         body: Option<&str>,
         table: Option<&Table>,
-    ) -> ToolResult<()>;
+    ) -> ToolResult<Vec<u8>>;
 }
 
 /// THE SINGLE WRITE GATE.
@@ -214,22 +219,84 @@ pub fn write_document(
     table: Option<&Table>,
     folder: &Path,
 ) -> ToolResult<PathBuf> {
+    // Rendered BEFORE a name is taken: a refused table (no rows, too many
+    // columns) must not leave a file behind.
+    let bytes = engine.render(title, body, table)?;
     prepare_folder(folder)?;
-    let target = target_path(file_name, engine.format(), folder);
-    // BELT AND BRACES. The naming loop already rotates past a link, but the write
-    // gate must not depend on the naming rule staying correct forever: if the
-    // target were a symlink, `write_raw`/`finish_up` would act on a file OUTSIDE
-    // the sandbox while we report the in-sandbox name back to the model.
-    if target
-        .symlink_metadata()
-        .map(|m| m.file_type().is_symlink())
-        .unwrap_or(false)
-    {
-        return Err(ToolError::SandboxViolation(target));
+    write_new_file(|| target_path(file_name, engine.format(), folder), &bytes)
+}
+
+/// How many names are tried before giving up. Each miss is a name that came
+/// into existence between the naming loop and the open — a race, not a
+/// collision — so a handful means something is planting files on purpose.
+const NAME_ATTEMPTS: usize = 16;
+
+/// Writes `bytes` to the first name `next_name` offers that can be CREATED.
+///
+/// THE NAMING LOOP IS ADVICE; THE OPEN IS THE GATE. `target_path` rotates past
+/// anything that exists — links included — but between its check and the write
+/// a link can appear (audit L15). The open is therefore `create_new`: it
+/// refuses a path that exists by then, dangling link or not, and the loop asks
+/// for the next name. There is no step left where the path is checked and then
+/// trusted.
+fn write_new_file(mut next_name: impl FnMut() -> PathBuf, bytes: &[u8]) -> ToolResult<PathBuf> {
+    for _ in 0..NAME_ATTEMPTS {
+        let target = next_name();
+        match create_exclusive(&target, bytes) {
+            Ok(()) => return Ok(target),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.into()),
+        }
     }
-    engine.write_raw(&target, title, body, table)?;
-    finish_up(&target)?;
-    Ok(target)
+    Err(ToolError::Other(format!(
+        "no free file name after {NAME_ATTEMPTS} attempts: names are being taken as they are chosen"
+    )))
+}
+
+/// Creates `target` — never opens anything that is already there — writes
+/// `bytes`, and stamps 0600 THROUGH THE HANDLE.
+///
+/// `create_new` is `O_CREAT|O_EXCL`, which POSIX requires to fail with
+/// `EEXIST` on an existing symlink, dangling or not; `O_NOFOLLOW` is the
+/// second belt, the same pair `run_code::create_script` uses (see the
+/// measurement on Windows recorded there: `create_new` alone holds). The
+/// permission used to be set with `fs::set_permissions(path)`, which resolves
+/// the NAME again and follows a link that replaced the file — through the
+/// handle there is no name left to swap. `mode(0o600)` closes the window in
+/// which the file existed with the umask's permissions.
+fn create_exclusive(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // No libc crate here (zero-dependency identity), so the value is
+        // spelled per platform, as in `run_code`. `0` means no extra flag;
+        // `create_new` still refuses an existing path.
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        const O_NOFOLLOW: i32 = 0x0100;
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        const O_NOFOLLOW: i32 = 0x20000;
+        #[cfg(not(any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "linux",
+            target_os = "android"
+        )))]
+        const O_NOFOLLOW: i32 = 0;
+        options.custom_flags(O_NOFOLLOW).mode(0o600);
+    }
+    let mut file = options.open(target)?;
+    let written = file.write_all(bytes).and_then(|()| finish_up(&file));
+    if written.is_err() {
+        // The name was created by this call a moment ago and holds a partial
+        // document; leaving it would be a file reported nowhere. `remove_file`
+        // removes a link itself, never its target.
+        drop(file);
+        let _ = fs::remove_file(target);
+    }
+    written
 }
 
 fn prepare_folder(folder: &Path) -> ToolResult<()> {
@@ -256,15 +323,16 @@ fn prepare_folder(folder: &Path) -> ToolResult<()> {
 /// written into the user's profile tree, and that is closed to other users by
 /// default. NOT MEASURED ON THIS MACHINE (no Windows); the basis is the
 /// operating system default, not a stamp we applied.
-fn finish_up(target: &Path) -> ToolResult<()> {
+fn finish_up(file: &fs::File) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(target, fs::Permissions::from_mode(0o600))?;
+        // Through the handle (`fchmod`), not the name: see `create_exclusive`.
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
     }
     #[cfg(not(unix))]
     {
-        let _ = target;
+        let _ = file;
     }
     Ok(())
 }
@@ -360,13 +428,12 @@ impl DocumentEngine for TextEngine {
         self.format
     }
 
-    fn write_raw(
+    fn render(
         &self,
-        target: &Path,
         title: Option<&str>,
         body: Option<&str>,
         table: Option<&Table>,
-    ) -> ToolResult<()> {
+    ) -> ToolResult<Vec<u8>> {
         // THE BODY IS BUILT FIRST, because whether the title gets written at all
         // depends on it.
         //
@@ -416,8 +483,7 @@ impl DocumentEngine for TextEngine {
         if !content.ends_with('\n') {
             content.push('\n');
         }
-        fs::write(target, content.as_bytes())?;
-        Ok(())
+        Ok(content.into_bytes())
     }
 }
 
@@ -445,14 +511,14 @@ impl DocumentEngine for ExcelEngine {
         DocumentFormat::Excel
     }
 
-    fn write_raw(
+    fn render(
         &self,
-        target: &Path,
         title: Option<&str>,
         body: Option<&str>,
         table: Option<&Table>,
-    ) -> ToolResult<()> {
+    ) -> ToolResult<Vec<u8>> {
         let (headers, lines) = to_table(title, body, table)?;
+        check_sheet_bounds(headers.len(), &lines)?;
         let sheet = sheet_xml(&headers, &lines);
 
         let entries = vec![
@@ -464,10 +530,8 @@ impl DocumentEngine for ExcelEngine {
             tacet_zip::ZipEntry::new("xl/worksheets/sheet1.xml", sheet.into_bytes()),
         ];
 
-        let package = tacet_zip::pack(&entries)
-            .map_err(|e| ToolError::Other(format!("the xlsx could not be packed: {e}")))?;
-        fs::write(target, package)?;
-        Ok(())
+        tacet_zip::pack(&entries)
+            .map_err(|e| ToolError::Other(format!("the xlsx could not be packed: {e}")))
     }
 }
 
@@ -539,11 +603,46 @@ fn to_table(
     Ok((vec![emit.to_string()], slices))
 }
 
+/// Excel's grid: 1,048,576 rows and 16,384 columns (`XFD`).
+const MAX_SHEET_ROWS: usize = 1_048_576;
+const MAX_SHEET_COLUMNS: usize = 16_384;
+
+/// Refuses a table the grid cannot hold, BEFORE any XML is built.
+///
+/// Nothing checked this (audit L13): a 16,385th column was written as `XFE1`
+/// and a row past the last as `r="1048577"`, and Excel answers either with
+/// "We found a problem with some content" and drops data while repairing. The
+/// Total row is counted, because it is written whenever a column is numeric.
+fn check_sheet_bounds(columns: usize, lines: &[Vec<String>]) -> ToolResult<()> {
+    if columns > MAX_SHEET_COLUMNS {
+        return Err(ToolError::InvalidArgument(format!(
+            "the table has {columns} columns; a spreadsheet holds at most {MAX_SHEET_COLUMNS}"
+        )));
+    }
+    // Header + data + the Total row when there may be one. The exact test for
+    // a numeric column is in `sheet_xml`; counting the Total row whenever there
+    // is data refuses at most one row more than strictly necessary.
+    let total_row = usize::from(!lines.is_empty());
+    let rows = 1 + lines.len() + total_row;
+    if rows > MAX_SHEET_ROWS {
+        return Err(ToolError::InvalidArgument(format!(
+            "the table needs {rows} rows (header, data and Total); a spreadsheet holds at most \
+             {MAX_SHEET_ROWS}"
+        )));
+    }
+    Ok(())
+}
+
 /// The sheet XML. Writes a REAL `=SUM()` formula under fully numeric columns.
 ///
 /// Writing a FORMULA rather than a computed constant is a deliberate decision:
 /// when the user opens the file and changes a cell, the total must update
 /// itself. A constant would carry a number that could quietly go wrong the
+/// moment one cell changed.
+///
+/// IT IS THE ONLY FORMULA WRITTEN. There is no date arithmetic here — the
+/// front page once showed a `=DATEDIF()` this code never produced (audit M21);
+/// `the_countdown_demo_writes_a_sum_and_nothing_else` holds the claim to this.
 fn sheet_xml(headers: &[String], lines: &[Vec<String>]) -> String {
     let column_count = headers.len();
 
@@ -597,14 +696,24 @@ fn sheet_xml(headers: &[String], lines: &[Vec<String>]) -> String {
     }
 
     // The summary (Total) row: only if there is at least one numeric column.
+    //
+    // THE LABEL GOES IN THE FIRST COLUMN THAT IS NOT SUMMED. It used to go in
+    // column A unconditionally, and column A was then never summed — so a
+    // one-column table of amounts (`| Amount |`, 100, 200) got a Total row
+    // reading "Total" and no total at all (audit M21-b). When EVERY column is
+    // numeric there is no free cell, and the row carries sums only: a label
+    // outside the table would widen it for every reader, ours included —
+    // `read_document` spans the header over the widest row, and
+    // `edit_document` would then warn about a column the user never had.
     if has_numeric && !lines.is_empty() {
         let first_data = 2;
         let last_data = lines.len() + 1;
         let total_rows = last_data + 1;
+        let label_column = numeric_column.iter().position(|numeric| !numeric);
         body.push_str(&format!("<row r=\"{total_rows}\">"));
         for (k, numeric) in numeric_column.iter().enumerate() {
             let cell_ref = format!("{}{total_rows}", column_letter(k));
-            if k == 0 {
+            if Some(k) == label_column {
                 body.push_str(&inline_cell(&cell_ref, "Total"));
             } else if *numeric {
                 let letter = column_letter(k);
@@ -681,13 +790,28 @@ fn xml_escape(text: &str) -> String {
             '>' => s.push_str("&gt;"),
             '"' => s.push_str("&quot;"),
             '\'' => s.push_str("&apos;"),
-            // XML 1.0 accepts this range with NO escape at all; dropping is the
-            // only option, otherwise the produced file cannot be opened.
-            c if (c as u32) < 0x20 && c != '\t' && c != '\n' && c != '\r' => {}
+            // XML 1.0 accepts these with NO escape at all — not even as a
+            // character reference; dropping is the only option, otherwise the
+            // produced file cannot be opened.
+            c if !is_xml_char(c) => {}
             c => s.push(c),
         }
     }
     s
+}
+
+/// XML 1.0's `Char` production: `#x9 | #xA | #xD | [#x20-#xD7FF] |
+/// [#xE000-#xFFFD] | [#x10000-#x10FFFF]`.
+///
+/// Only the C0 controls were dropped before, and U+FFFE / U+FFFF went into
+/// the sheet raw (audit L13, measured: the sheet XML held a raw U+FFFE, and
+/// Excel opens such a file only through "repair"). A Rust `char` is never a
+/// surrogate, so the D800–DFFF gap needs no arm of its own.
+fn is_xml_char(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x9 | 0xA | 0xD | 0x20..=0xD7FF | 0xE000..=0xFFFD | 0x10000..=0x10FFFF
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1611,6 +1735,207 @@ mod tests {
         ));
         assert!(matches!(outcome.state, ToolState::Failed(_)));
         assert_eq!(outcome.to_model, tacet_kernel::ERROR_MODEL_TEXT);
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// THE RACE ITSELF (audit L15). The naming loop saw a free name; before the
+    /// write, a dangling link `report.md -> <outside>` landed on that name. The
+    /// closure stands in for the moment between the two: it hands out the name
+    /// and plants the link in the same breath. The old gate checked the name
+    /// and then `fs::write`d it, which follows the link.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_planted_after_the_name_was_chosen_is_not_written_through() {
+        let root = temp_dir("race");
+        let outside = temp_dir("race-victim");
+        let victim = outside.join("planted.md");
+
+        let mut calls = 0;
+        let written = write_new_file(
+            || {
+                calls += 1;
+                if calls == 1 {
+                    let name = root.join("report.md");
+                    std::os::unix::fs::symlink(&victim, &name).expect("plant the link");
+                    name
+                } else {
+                    target_path("report", DocumentFormat::Markdown, &root)
+                }
+            },
+            b"body",
+        )
+        .expect("the next free name is used");
+
+        assert!(
+            !victim.exists(),
+            "the document was written through the link to {}",
+            victim.display()
+        );
+        assert_eq!(written.file_name().unwrap(), "report-2.md");
+        assert_eq!(fs::read_to_string(&written).unwrap(), "body");
+        assert!(
+            root.join("report.md")
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the planted link itself was replaced"
+        );
+        fs::remove_dir_all(&root).ok();
+        fs::remove_dir_all(&outside).ok();
+    }
+
+    /// The same gate for a REAL file that appears in the window: it is not
+    /// overwritten, and the permission stamp lands on the file that was made.
+    #[test]
+    fn a_file_that_appears_after_the_name_was_chosen_is_not_overwritten() {
+        let root = temp_dir("race-file");
+        let mut calls = 0;
+        let written = write_new_file(
+            || {
+                calls += 1;
+                let name = root.join(format!("notes-{calls}.md"));
+                if calls == 1 {
+                    fs::write(&name, "the user's own file").unwrap();
+                }
+                name
+            },
+            b"new",
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("notes-1.md")).unwrap(),
+            "the user's own file"
+        );
+        assert_eq!(written, root.join("notes-2.md"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&written).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "{mode:o}");
+        }
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// AUDIT L13: U+FFFE and U+FFFF are not XML characters, even escaped. They
+    /// reached the sheet raw; the C0 controls were the only ones dropped.
+    #[test]
+    fn characters_xml_cannot_carry_are_dropped() {
+        let xml = sheet_xml(
+            &["Na\u{FFFE}me".to_string()],
+            &[
+                vec!["a\u{FFFF}b\u{1}c\td".to_string()],
+                vec!["😀 ü".to_string()],
+            ],
+        );
+        assert!(!xml.contains('\u{FFFE}'), "U+FFFE reached the sheet");
+        assert!(!xml.contains('\u{FFFF}'), "U+FFFF reached the sheet");
+        assert!(!xml.contains('\u{1}'));
+        assert!(xml.contains(">Name<"), "{xml}");
+        assert!(xml.contains(">abc\td<"), "the tab is legal and kept: {xml}");
+        assert!(xml.contains("😀 ü"), "legal text outside the BMP is kept");
+    }
+
+    /// AUDIT L13: the grid has edges. A 16,385th column would be written as
+    /// `XFE`, a row past 1,048,576 as `r="1048577"` — both are a "repair" in
+    /// Excel. They are refused before any XML is built, and no file is left.
+    #[test]
+    fn a_table_past_the_grid_is_refused_and_writes_no_file() {
+        let root = temp_dir("grid");
+        let wide = Table::new(
+            (0..MAX_SHEET_COLUMNS + 1).map(|i| format!("c{i}")),
+            vec![vec!["1".to_string()]],
+        );
+        let refused = write_document(&ExcelEngine::new(), "wide", None, None, Some(&wide), &root);
+        assert!(
+            matches!(refused, Err(ToolError::InvalidArgument(ref m)) if m.contains("16384")),
+            "{refused:?}"
+        );
+
+        // Header + 1,048,575 data rows + Total = one row past the grid. Empty
+        // rows allocate nothing, so the fixture is ~25 MiB of `Vec` headers.
+        let tall = Table::new(["A"], vec![Vec::new(); MAX_SHEET_ROWS - 1]);
+        let refused = write_document(&ExcelEngine::new(), "tall", None, None, Some(&tall), &root);
+        assert!(
+            matches!(refused, Err(ToolError::InvalidArgument(ref m)) if m.contains("1048576")),
+            "{:?}",
+            refused.map(|p| p.display().to_string())
+        );
+        assert_eq!(
+            fs::read_dir(&root).unwrap().count(),
+            0,
+            "a file was left behind"
+        );
+
+        // The edges themselves fit.
+        assert!(check_sheet_bounds(MAX_SHEET_COLUMNS, &[vec![]]).is_ok());
+        assert!(check_sheet_bounds(1, &vec![Vec::new(); MAX_SHEET_ROWS - 2]).is_ok());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// AUDIT M21-b: `| Amount |` with 100 and 200 got a Total row whose only
+    /// cell was the word "Total" — column A was labelled and never summed.
+    #[test]
+    fn a_single_numeric_column_still_gets_its_total() {
+        let xml = sheet_xml(
+            &["Amount".to_string()],
+            &[vec!["100".to_string()], vec!["200".to_string()]],
+        );
+        assert!(
+            xml.contains("<c r=\"A4\"><f>SUM(A2:A3)</f></c>"),
+            "no total under the only column: {xml}"
+        );
+        assert!(
+            !xml.contains("r=\"B4\""),
+            "the Total row must not widen the table: {xml}"
+        );
+
+        // A numeric FIRST column next to a text one: the sum stays in A and the
+        // label moves to the first column that is not summed.
+        let xml = sheet_xml(
+            &["Amount".to_string(), "Note".to_string()],
+            &[vec!["5".to_string(), "x".to_string()]],
+        );
+        assert!(xml.contains("<c r=\"A3\"><f>SUM(A2:A2)</f></c>"), "{xml}");
+        assert!(
+            xml.contains("<c r=\"B3\" t=\"inlineStr\"><is><t xml:space=\"preserve\">Total</t>"),
+            "{xml}"
+        );
+    }
+
+    /// AUDIT M21, RE-DERIVED: the front page's demo ("put that in a spreadsheet
+    /// called countdown") claimed a live `=DATEDIF()`. This runs the tool on the
+    /// table that request produces and records what is really written: one data
+    /// row, and a `=SUM()` under the numeric column — the only formula there is.
+    #[test]
+    fn the_countdown_demo_writes_a_sum_and_nothing_else() {
+        let root = temp_dir("countdown");
+        let mut ctx = context(&root, Arc::new(SharedStore::new()));
+        let outcome = hold(CreateDocumentTool::new().run(
+            serde_json::json!({
+                "format": "excel",
+                "file_name": "countdown",
+                "content": "| Event | Date | Days left |\n| --- | --- | --- |\n| 14 March | 2027-03-14 | 229 |"
+            }),
+            &mut ctx,
+        ));
+        assert_eq!(outcome.state, ToolState::Written, "{}", outcome.to_model);
+        assert_eq!(outcome.to_model, "file_created (excel): countdown.xlsx");
+
+        let bytes = fs::read(root.join("countdown.xlsx")).unwrap();
+        let sheet = String::from_utf8(
+            tacet_zip::open_map(&bytes).unwrap()["xl/worksheets/sheet1.xml"].clone(),
+        )
+        .unwrap();
+        let formulas: Vec<&str> = sheet
+            .split("<f>")
+            .skip(1)
+            .filter_map(|f| f.split("</f>").next())
+            .collect();
+        assert_eq!(formulas, vec!["SUM(C2:C2)"], "{sheet}");
+        assert!(!sheet.contains("DATEDIF"));
+        // The date is text: nothing here does date arithmetic.
+        assert!(sheet.contains(">2027-03-14<"), "{sheet}");
         fs::remove_dir_all(&root).ok();
     }
 
