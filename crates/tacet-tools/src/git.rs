@@ -45,9 +45,10 @@
 //!
 //! "NOT A REPOSITORY" IS AN ANSWER, NOT A FAILURE. A tool error reaches the model
 //! as one fixed sentence (`ERROR_MODEL_TEXT`), from which it cannot tell "there
-//! is no git here" from "git crashed". Both of those, and "git is not installed",
-//! come back as ordinary read results with their own wording, so the model can
-//! tell the user what is actually going on.
+//! is no git here" from "git crashed". Both of those, "git is not installed"
+//! and "this git is too old to run with the H6 overrides" (`GitFailure`) come
+//! back as ordinary read results with their own wording, so the model can tell
+//! the user what is actually going on.
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -259,6 +260,29 @@ struct GitRun {
     stdout: String,
 }
 
+/// Why a git run produced no `GitRun` at all.
+///
+/// TWO VARIANTS BECAUSE THEY ARE TWO DIFFERENT ANSWERS. Folding `Unsupported`
+/// into `ok: false` made `probe` call every real repository "not a
+/// repository" on a git without `--show-scope` (git < 2.26, e.g. Ubuntu
+/// 20.04's 2.25.1) — measured by
+/// `a_git_too_old_for_the_overrides_is_not_reported_as_no_repository`.
+#[derive(Debug)]
+enum GitFailure {
+    /// The binary could not be started at all.
+    Spawn,
+    /// git ran but rejected the command line that keeps the repository from
+    /// running programs, or could not read the config that line is built
+    /// from. Running on without it is exactly what H6 forbids, so this is a
+    /// refusal — reported as one, not as the absence of a repository.
+    Unsupported,
+}
+
+/// git's exit status for a usage error, including an option it does not know.
+/// Every git option this file passes is fixed, so on a current git this code
+/// never appears; on an older one it means "too old for our overrides".
+const GIT_USAGE_EXIT: i32 = 129;
+
 /// THE ONLY PLACE A git `Command` IS BUILT: the base options, the base
 /// environment, the neutralizing overrides, then `args`.
 ///
@@ -345,7 +369,7 @@ fn neutralizing_args(raw: &str) -> Vec<String> {
 /// to `run_code`'s, and one that could not be measured by a test on this runner;
 /// this repository's recurring failure is precisely the mechanism that is built
 /// and never proven.
-fn run_git(program: &str, dir: &Path, args: &[&str]) -> std::io::Result<GitRun> {
+fn run_git(program: &str, dir: &Path, args: &[&str]) -> Result<GitRun, GitFailure> {
     let scan = git_command(
         program,
         dir,
@@ -359,21 +383,27 @@ fn run_git(program: &str, dir: &Path, args: &[&str]) -> std::io::Result<GitRun> 
             FILTER_KEYS,
         ],
     )
-    .output()?;
+    .output()
+    .map_err(|_| GitFailure::Spawn)?;
     // Exit 1 is git's "no key matched" — the common case. Anything else means
-    // the config could not be read, and running on WITHOUT the overrides would
-    // be running exactly the repository this guards against: fail closed.
+    // the config could not be read (129: `--show-scope` unknown, git < 2.26;
+    // 128: a config file git cannot parse), and running on WITHOUT the
+    // overrides would be running exactly the repository this guards against:
+    // fail closed, and say so.
     let neutralize = match scan.status.code() {
         Some(0) => neutralizing_args(&String::from_utf8_lossy(&scan.stdout)),
         Some(1) => Vec::new(),
-        _ => {
-            return Ok(GitRun {
-                ok: false,
-                stdout: String::new(),
-            });
-        }
+        _ => return Err(GitFailure::Unsupported),
     };
-    let out = git_command(program, dir, &neutralize, args).output()?;
+    let out = git_command(program, dir, &neutralize, args)
+        .output()
+        .map_err(|_| GitFailure::Spawn)?;
+    // git 2.26–2.30 has `--show-scope` but not `--config-env`, so it rejects
+    // the overrides of a repository that defines a filter. That is a usage
+    // error (129), never a "not a repository" (128) — keep them apart.
+    if out.status.code() == Some(GIT_USAGE_EXIT) {
+        return Err(GitFailure::Unsupported);
+    }
     Ok(GitRun {
         ok: out.status.success(),
         // Paths on disk are not guaranteed to be UTF-8; a lossy read is better
@@ -390,6 +420,8 @@ enum Repo {
     Absent,
     /// The binary could not be run at all.
     Unavailable,
+    /// git runs, but not with the overrides H6 needs (see `GitFailure`).
+    Unsupported,
 }
 
 /// Asks git itself instead of reading its error text.
@@ -400,7 +432,8 @@ enum Repo {
 /// structurally: exit status plus `true`/`false`.
 fn probe(program: &str, dir: &Path) -> Repo {
     match run_git(program, dir, &["rev-parse", "--is-inside-work-tree"]) {
-        Err(_) => Repo::Unavailable,
+        Err(GitFailure::Spawn) => Repo::Unavailable,
+        Err(GitFailure::Unsupported) => Repo::Unsupported,
         Ok(r) if r.ok && r.stdout.trim() == "true" => Repo::Present,
         // `false` = we are inside the `.git` directory itself; a non-zero exit =
         // no repository. Neither is something this tool can report on.
@@ -879,6 +912,15 @@ impl GitTool {
                 ToolOutcome::read_ok(
                     "git is not installed",
                     "git_unavailable: the git command line tool could not be run on this device",
+                ),
+                false,
+            )),
+            // Not tainted: git refused before reading anything of the user's.
+            Repo::Unsupported => Ok((
+                ToolOutcome::read_ok(
+                    "git too old for safe reading",
+                    "git_unsupported: this git is too old or the repository's config could \
+                     not be read (needs git >= 2.31), so it was not run",
                 ),
                 false,
             )),
@@ -1982,5 +2024,91 @@ mod tests {
         // One driver mentioned by two keys is neutralized once.
         assert_eq!(args.len(), 3 * 4, "{args:?}");
         assert!(neutralizing_args("").is_empty());
+    }
+
+    /// A stand-in for an OLDER git: a script that rejects one option the way
+    /// git rejects an unknown one (usage, exit 129) and hands everything else
+    /// to the real git. Leaked into a `&'static str` because that is the only
+    /// type the `program` seam takes — on purpose, see the field.
+    #[cfg(unix)]
+    fn git_rejecting(dir: &Path, option_glob: &str) -> &'static str {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("old-git");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nfor a in \"$@\"; do\n  case \"$a\" in\n    {option_glob}) \
+                 echo \"unknown option: $a\" >&2; exit 129;;\n  esac\ndone\nexec git \"$@\"\n"
+            ),
+        )
+        .expect("write wrapper");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod wrapper");
+        Box::leak(script.to_string_lossy().into_owned().into_boxed_str())
+    }
+
+    fn call_with(program: &'static str, root: &Path, action: &str) -> (ToolOutcome, ToolContext) {
+        let store = Arc::new(InMemoryDataStore::new());
+        let mut ctx = context(root, store);
+        let outcome =
+            block_on(GitTool::with_program(program).run(json!({ "action": action }), &mut ctx));
+        (outcome, ctx)
+    }
+
+    fn assert_unsupported(program: &'static str, root: &Path, what: &str) {
+        for action in ["status", "diff", "log"] {
+            let (outcome, ctx) = call_with(program, root, action);
+            assert!(
+                matches!(outcome.state, ToolState::Read),
+                "{what} {action}: {:?}",
+                outcome.state
+            );
+            assert!(
+                outcome.to_model.starts_with("git_unsupported"),
+                "{what} {action}: a real repository was reported as: {}",
+                outcome.to_model
+            );
+            assert!(!ctx.session_tainted(), "{what} {action} tainted");
+        }
+    }
+
+    /// AN OLD GIT IS NOT "NO REPOSITORY". The filter scan needs
+    /// `git config --show-scope` (git 2.26) and the overrides need
+    /// `--config-env` (git 2.31). Refusing to run without them is the H6 fix
+    /// working; calling a real, committed repository `no_git_repository` is a
+    /// false answer — the exact "no git here" vs "git failed" confusion the
+    /// module header rules out. Measured before the fix: both stand-ins below
+    /// made `status` say `no_git_repository`.
+    #[cfg(unix)]
+    #[test]
+    fn a_git_too_old_for_the_overrides_is_not_reported_as_no_repository() {
+        let root = temp_dir("old-git");
+        let bin = temp_dir("old-git-bin");
+        init_repo(&root);
+        write(&root, "a.txt", "one\n");
+        commit(&root, "first");
+
+        // Ubuntu 20.04's git 2.25: no `--show-scope`, in EVERY repository.
+        let pre_2_26 = git_rejecting(&bin, "--show-scope");
+        assert_unsupported(pre_2_26, &root, "git<2.26");
+
+        // git 2.26–2.30: the scan works, but a repository WITH a filter needs
+        // `--config-env`, which these versions reject.
+        let bin2 = temp_dir("old-git-bin2");
+        let pre_2_31 = git_rejecting(&bin2, "--config-env=*");
+        let (outcome, _) = call_with(pre_2_31, &root, "status");
+        // ...and without a filter there is nothing to override, so that git
+        // still answers normally — the refusal is no wider than the hole.
+        assert!(
+            outcome.to_model.contains("the working tree is clean"),
+            "git 2.26-2.30, no filter: {}",
+            outcome.to_model
+        );
+        git_fixture(&root, &["config", "filter.f.clean", "cat"]);
+        assert_unsupported(pre_2_31, &root, "git<2.31 with a filter");
+
+        for dir in [&root, &bin, &bin2] {
+            std::fs::remove_dir_all(dir).ok();
+        }
     }
 }
