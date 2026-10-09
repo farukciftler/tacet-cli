@@ -20,7 +20,8 @@ use tacet_engine::EngineProvider;
 use tacet_engine::fake::FakeEngine;
 use tacet_eval::env::Env;
 use tacet_eval::tool_selection::{
-    CaseJournal, SelectionCase, SelectionStep, run_selection_journalled, suite_catalog,
+    BuildProvenance, CaseJournal, JournalStamp, SelectionCase, SelectionStep,
+    run_selection_journalled, suite_catalog,
 };
 use tacet_tools::memory::SharedMemory;
 
@@ -77,18 +78,32 @@ fn spent_engine() -> Arc<dyn EngineProvider> {
     )
 }
 
-fn catalog_names() -> Vec<String> {
+fn catalog() -> tacet_kernel::ToolCatalog {
     let env = Env::setup().expect("an eval environment");
-    suite_catalog(&env, &SharedMemory::in_memory())
-        .catalog
-        .names()
-        .into_iter()
-        .map(String::from)
-        .collect()
+    suite_catalog(&env, &SharedMemory::in_memory()).catalog
+}
+
+/// A FIXED PROVENANCE, not the checkout this test runs in: the subject is what
+/// the journal does with a stamp, and a test whose stamp moved every time
+/// somebody edited a file could not say which way it was supposed to go.
+fn build(uncommitted: Option<&str>) -> BuildProvenance {
+    BuildProvenance {
+        commit: Some("4f1c1a806d3e45ed93f81df74d2f47cb8ef71a1e".into()),
+        uncommitted_sha256: uncommitted.map(str::to_string),
+    }
+}
+
+fn stamp_for(
+    engine: &Arc<dyn EngineProvider>,
+    cases: &[SelectionCase],
+    build: &BuildProvenance,
+    budget: Option<usize>,
+) -> JournalStamp {
+    JournalStamp::new(&engine.identity(), &catalog(), build, cases, budget, false)
 }
 
 fn open(dir: &std::path::Path, engine: &Arc<dyn EngineProvider>) -> Result<CaseJournal, String> {
-    CaseJournal::open(dir, &engine.identity(), &catalog_names())
+    CaseJournal::open(dir, &stamp_for(engine, &cases(), &build(None), None))
 }
 
 fn run(dir: &std::path::Path, engine: &Arc<dyn EngineProvider>) -> tacet_eval::SelectionReport {
@@ -135,9 +150,13 @@ fn a_second_run_reuses_what_the_first_one_measured() {
 fn a_half_finished_run_finishes() {
     let dir = tmp("half");
     // Journal only the first case by running a one-case suite into the dir.
+    // STAMPED FOR THE SUBSET, as an `--only` run is: the per-case hashes must
+    // let the full list continue a directory that never heard of its other
+    // cases, or resuming would cost the whole night after any filtered run.
     let one = vec![cases().remove(0)];
     let e = engine("x");
-    let journal = open(&dir, &e).expect("the journal opens");
+    let journal = CaseJournal::open(&dir, &stamp_for(&e, &one, &build(None), None))
+        .expect("the journal opens");
     let report = run_selection_journalled(&one, &e, None, false, &suite_catalog, Some(&journal));
     assert_eq!(report.cases.len(), 1);
 
@@ -198,5 +217,80 @@ fn a_half_written_file_is_run_again_and_kept() {
     assert!(
         torn.exists(),
         "the file must still be there after the re-run"
+    );
+}
+
+/// THE SAME MODEL ON DIFFERENT CODE IS A DIFFERENT RUN (audit M24).
+///
+/// The stamp was the model, the catalog and `CARGO_PKG_VERSION`, and the version
+/// only moves at a release. Two different sets of edits on one commit, or two
+/// commits on one version, stamped alike, and a resumed run joined cases from
+/// both into one report.
+#[test]
+fn a_journal_from_other_code_is_refused() {
+    let dir = tmp("code");
+    let e = engine("x");
+    let first = CaseJournal::open(&dir, &stamp_for(&e, &cases(), &build(Some("aaaa")), None))
+        .expect("the journal opens");
+    run_selection_journalled(&cases(), &e, None, false, &suite_catalog, Some(&first));
+
+    let edited = CaseJournal::open(&dir, &stamp_for(&e, &cases(), &build(Some("bbbb")), None));
+    let message = edited
+        .err()
+        .unwrap_or_else(|| panic!("cases from different uncommitted edits were mixed"));
+    assert!(
+        message.contains("build"),
+        "the refusal must name the build: {message}"
+    );
+
+    let other_commit = BuildProvenance {
+        commit: Some("0".repeat(40)),
+        uncommitted_sha256: Some("aaaa".into()),
+    };
+    assert!(
+        CaseJournal::open(&dir, &stamp_for(&e, &cases(), &other_commit, None)).is_err(),
+        "cases from a different commit were mixed"
+    );
+
+    // NOT VACUOUS: the same code still resumes.
+    assert!(
+        CaseJournal::open(&dir, &stamp_for(&e, &cases(), &build(Some("aaaa")), None)).is_ok(),
+        "the guard refuses everything, so it proves nothing"
+    );
+}
+
+/// A CASE REWRITTEN SINCE IT WAS MEASURED. Its file is a result for a question
+/// nobody asks any more; reading it back would score the new case with the old
+/// one's outcome.
+#[test]
+fn a_case_rewritten_since_it_was_measured_is_refused() {
+    let dir = tmp("rewritten");
+    run(&dir, &engine("x"));
+
+    let mut changed = cases();
+    changed[0].steps = vec![SelectionStep::new(
+        "What is 125 divided by 5?",
+        Some("calculate"),
+    )];
+    let refused = CaseJournal::open(&dir, &stamp_for(&engine("x"), &changed, &build(None), None));
+    let message = refused
+        .err()
+        .unwrap_or_else(|| panic!("a result for a rewritten case was accepted"));
+    assert!(
+        message.contains("probe-one") && !message.contains("probe-two"),
+        "the refusal must name the changed case and only it: {message}"
+    );
+}
+
+/// THE ROUTER'S BUDGET DECIDES WHICH TOOLS A CASE IS SHOWN. A journal measured
+/// at one budget is not a partial run at another.
+#[test]
+fn a_journal_for_one_budget_is_refused_for_another() {
+    let dir = tmp("budget");
+    run(&dir, &engine("x"));
+    let e = engine("x");
+    assert!(
+        CaseJournal::open(&dir, &stamp_for(&e, &cases(), &build(None), Some(3))).is_err(),
+        "a budget-3 run resumed a default-budget journal"
     );
 }

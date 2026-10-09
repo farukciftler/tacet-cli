@@ -36,8 +36,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 use tacet_engine::{
-    EngineProvider, FINAL_PASS_INSTRUCTION, MAX_TURNS, Prompt, SamplingSetting, Turn, WEB_NUDGE,
-    wait,
+    EngineProvider, FINAL_PASS_INSTRUCTION, MAX_TURNS, SamplingSetting, Turn, WEB_NUDGE, wait,
 };
 use tacet_grammar::CallConstraint;
 use tacet_kernel::{
@@ -47,6 +46,8 @@ use tacet_tools::executor::ToolExecutor;
 use tacet_tools::memory::SharedMemory;
 use tacet_tools::router::Router;
 use tacet_tools::run_code::CodeState;
+
+pub use crate::journal_stamp::{BuildProvenance, JournalStamp};
 
 /// The names of the tools that open the network — they are dried out in this set.
 const TO_DRY: &[&str] = &["web_search", "web_fetch"];
@@ -2243,6 +2244,15 @@ pub fn run_selection_journalled(
     // mismatch means. A library that printed a warning and carried on would be
     // doing the one thing the stamp exists to prevent — starting over quietly.
     if let Some(j) = journal {
+        // THE OPTIONS ARE PART OF THE STAMP, so a journal stamped for one
+        // budget must not collect results measured at another. Both come from
+        // the same caller; disagreeing is a bug in it, not a condition to
+        // handle.
+        assert_eq!(
+            j.options,
+            (budget, force_tool_name),
+            "the journal was stamped with different router options than this run uses"
+        );
         let done = j.done_count();
         if done > 0 {
             eprintln!(
@@ -2284,6 +2294,8 @@ pub fn run_selection_journalled(
 /// to. See `run_selection_journalled`.
 pub struct CaseJournal {
     dir: std::path::PathBuf,
+    /// The router options the directory was stamped with; see `open`.
+    options: (Option<usize>, bool),
 }
 
 impl CaseJournal {
@@ -2291,52 +2303,65 @@ impl CaseJournal {
         &self.dir
     }
 
-    /// The stamp every case in the directory must share. Model fingerprint,
-    /// engine, and the catalog the cases were scored against — the same three
-    /// things `--compare` refuses to pair across.
-    fn stamp(identity: &tacet_engine::EngineIdentity, catalog: &[String]) -> Value {
-        serde_json::json!({
-            "identity": identity,
-            "catalog": catalog,
-            "case_shape": env!("CARGO_PKG_VERSION"),
-        })
-    }
-
     /// Opens the directory, writing the stamp if it is new and REFUSING if it
-    /// holds cases from a different model, catalog or build. The caller decides
-    /// what a refusal means; `tacet eval` exits non-zero on one, because the
+    /// holds cases from a different model, catalog, build, prompt or router
+    /// options, or a result for a case whose definition has since changed. See
+    /// `JournalStamp` for why each of those is in it. The caller decides what a
+    /// refusal means; `tacet eval` exits non-zero on one, because the
     /// alternative is a night spent re-measuring without being told.
-    pub fn open(
-        dir: &std::path::Path,
-        identity: &tacet_engine::EngineIdentity,
-        catalog: &[String],
-    ) -> Result<Self, String> {
+    pub fn open(dir: &std::path::Path, stamp: &JournalStamp) -> Result<Self, String> {
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("{} is not usable: {e}", dir.display()))?;
         let stamp_path = dir.join("identity.json");
-        let want = Self::stamp(identity, catalog);
-        match std::fs::read_to_string(&stamp_path) {
+        let journal = Self {
+            dir: dir.to_path_buf(),
+            options: stamp.options(),
+        };
+        let to_write = match std::fs::read_to_string(&stamp_path) {
             Ok(text) => {
                 let have: Value = serde_json::from_str(&text)
                     .map_err(|e| format!("{} is not readable: {e}", stamp_path.display()))?;
-                if have != want {
-                    return Err(format!(
-                        "{} holds cases measured on a DIFFERENT model, catalog or build.\n\
+                stamp
+                    .admit(&have, &journal.journalled_names())
+                    .map_err(|why| {
+                        format!(
+                            "{} cannot be resumed: {why}.\n\
                          Mixing them into one report would be a mixture reported as a \
                          measurement.\nUse a new directory, or delete this one.",
-                        dir.display()
-                    ));
-                }
+                            dir.display()
+                        )
+                    })?
             }
-            Err(_) => {
-                let text = serde_json::to_string_pretty(&want).unwrap_or_default();
-                std::fs::write(&stamp_path, text)
-                    .map_err(|e| format!("{} is not writable: {e}", stamp_path.display()))?;
-            }
-        }
-        Ok(Self {
-            dir: dir.to_path_buf(),
-        })
+            Err(_) => stamp.to_value(),
+        };
+        // REWRITTEN ON EVERY OPEN, through a rename: a run of a larger case list
+        // adds its cases' hashes, and a crash mid-write must not leave a stamp
+        // that refuses the directory it describes.
+        let text = serde_json::to_string_pretty(&to_write).unwrap_or_default();
+        let tmp = stamp_path.with_extension("json.partial");
+        std::fs::write(&tmp, text)
+            .and_then(|_| std::fs::rename(&tmp, &stamp_path))
+            .map_err(|e| format!("{} is not writable: {e}", stamp_path.display()))?;
+        Ok(journal)
+    }
+
+    /// The names of the cases this directory holds a result for, read from the
+    /// files themselves rather than from their file names, which are sanitised.
+    fn journalled_names(&self) -> Vec<String> {
+        std::fs::read_dir(&self.dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|e| {
+                        e.path().extension().is_some_and(|x| x == "json")
+                            && e.file_name() != "identity.json"
+                    })
+                    .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+                    .filter_map(|t| serde_json::from_str::<SelectionOutcome>(&t).ok())
+                    .map(|o| o.name)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// A case name is not a file name: the suite's names are safe today, and a
@@ -2605,6 +2630,22 @@ pub fn run_selection_case_in(
         }
         let mut turn_pairs: Vec<(String, String)> = Vec::new();
         traces.reset();
+        // WHAT THE MODEL IS ASKED, as opposed to what the step says: the shell
+        // appends the Qwen soft switch to every ChatML turn, and this did not,
+        // so a hybrid Qwen3 build was measured in a thinking mode no user is
+        // ever given (audit M23). `Auto` because that is the default the
+        // published number has to describe. `step.message` stays the router's,
+        // the skill store's and the intent detector's input, as `message` does
+        // in the shell.
+        let asked = format!(
+            "{}{}",
+            step.message,
+            tacet_engine::thinking_switch::soft_switch(
+                engine.template(),
+                tacet_engine::thinking_switch::ThinkingSetting::Auto,
+                &step.message,
+            )
+        );
         let selected: ToolCatalog = router.select(&step.message, &catalog).into_iter().collect();
         let selected_names: Vec<String> = selected.names().into_iter().map(String::from).collect();
         let guide = skills
@@ -2659,14 +2700,14 @@ pub fn run_selection_case_in(
             // finish the turn with nothing said.
             let final_turn = turn + 1 == MAX_TURNS || must_answer;
             let first = turn_tools.is_empty();
-            let question = if first { step.message.as_str() } else { "" };
+            let question = if first { asked.as_str() } else { "" };
             let previous: Vec<Turn> = if first {
                 history.clone()
             } else {
                 history
                     .iter()
                     .cloned()
-                    .chain(std::iter::once(Turn::user(&step.message)))
+                    .chain(std::iter::once(Turn::user(&asked)))
                     .chain(turn_tools.iter().cloned())
                     .collect()
             };
@@ -2690,13 +2731,6 @@ pub fn run_selection_case_in(
             } else {
                 base_system.clone()
             };
-            let mut prompt = Prompt::new(&system, question).with_history(previous);
-            if let Some(g) = &guide {
-                prompt = prompt.with_guide(g);
-            }
-            if let Some(n) = note {
-                prompt = prompt.with_note(n);
-            }
             // THE SHELL TRUNCATES AND THIS DID NOT, and the floor is what makes
             // that matter. `context_budget` returns `CONTEXT_BUDGET` — 4096 —
             // when a model declares nothing or the device cannot afford more, so
@@ -2710,7 +2744,26 @@ pub fn run_selection_case_in(
             // The report is traced rather than discarded: a run where the guide
             // was dropped is not the same measurement, and it must not look like
             // one.
-            let truncation = counter.truncate(&mut prompt);
+            //
+            // AND IT TRUNCATES WITH THE TOOLS ALREADY IN, which this did not:
+            // the tools were attached after `truncate` had measured the prompt,
+            // so roughly two thousand tokens of descriptions were outside the
+            // budget (audit M22). `build_turn_prompt` is the shell's order, in
+            // one place both can call.
+            let (prompt, truncation) = crate::turn_prompt::build_turn_prompt(
+                &counter,
+                crate::turn_prompt::TurnParts {
+                    system: &system,
+                    question,
+                    history: previous,
+                    tools: (!final_turn).then_some(&selected),
+                    guide: guide.as_deref(),
+                    note,
+                    // The suite's memory store is empty and in-memory, so the
+                    // shell's `<memory>` block has nothing to carry here.
+                    memory: None,
+                },
+            );
             if truncation.dropped_turns > 0 || truncation.guide_dropped {
                 trace(&format!(
                     "  turn {}/{} · TRUNCATED · {} turn(s) dropped{}",
@@ -2723,9 +2776,6 @@ pub fn run_selection_case_in(
                         ""
                     }
                 ));
-            }
-            if !final_turn {
-                prompt = prompt.with_tools(&selected);
             }
 
             trace(&format!(
@@ -2936,7 +2986,9 @@ pub fn run_selection_case_in(
         let answer_passed =
             passed && check_answer_quality(step, &answer, &called, &tool_outcomes_text);
 
-        history.push(Turn::user(&step.message));
+        // `asked`, as the shell does: what is replayed on the next step is what
+        // the model was actually given.
+        history.push(Turn::user(&asked));
         history.extend(turn_tools);
         if !answer.is_empty() {
             history.push(Turn::assistant(&answer));
