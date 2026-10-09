@@ -37,6 +37,14 @@ tacet-kernel.workspace = true
 #
 # `ureq` was chosen: synchronous, chooses no runtime, hands TLS to rustls.
 # `default-features = false` + `rustls` only: the gzip, cookie, charset and
-# proxy features are not pulled in — we read plain JSON from SearXNG, anything
-# more is attack surface.
+# SOCKS-proxy features are not pulled in — we read plain JSON from SearXNG,
+# anything more is attack surface.
+#
+# THAT DOES NOT TURN PROXYING OFF. HTTP CONNECT proxy support is compiled into
+# ureq unconditionally, and its default config reads ALL_PROXY / HTTPS_PROXY /
+# HTTP_PROXY from the environment. This comment used to say the proxy feature
+# was "not pulled in", and the audit of 9 Oct 2026 (M12) watched a local
+# SearXNG query cross a proxy named only in the environment. Every agent now
+# starts in `src/net.rs`, which sets `proxy(None)`; `tests/no_env_proxy.rs`
+# holds that line.
 ureq = { version = "3", default-features = false, features = ["rustls"] }

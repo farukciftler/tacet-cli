@@ -188,21 +188,7 @@ impl WebSearchClient {
     /// the normal case. The gate belongs on the path where the address is
     /// chosen by somebody else — see `fetch_public`.
     fn fetch(&self, url: &str) -> WebResult<String> {
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(self.timeout))
-            // A redirect cap: so an endless redirect loop is cut without
-            // waiting out the timeout.
-            .max_redirects(5)
-            // THE SCHEME GATE MUST SURVIVE THE REDIRECT. `address_is_valid`
-            // only sees the FIRST address; without this flag a `302 Location:
-            // http://…` would silently downgrade the query — and a query is
-            // data too. The flag is DERIVED from the already validated address
-            // rather than set to a constant `true`, because the local network
-            // exception below is deliberate: a local SearXNG has no
-            // certificate and its traffic never leaves the machine.
-            .https_only(url.starts_with("https://"))
-            .build()
-            .into();
+        let agent = search_agent(url, self.timeout);
 
         match agent.get(url).call() {
             Ok(mut response) => response
@@ -227,14 +213,7 @@ impl WebSearchClient {
     /// `max_redirects_do_error` is false when the cap is zero), and the loop
     /// below re-runs the gate on every single hop.
     fn fetch_public(&self, address: &str) -> WebResult<String> {
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(self.timeout))
-            .max_redirects(0)
-            // Belt to the hand-driven braces: even if a hop slipped past the
-            // loop, ureq refuses a non-https address by itself.
-            .https_only(true)
-            .build()
-            .into();
+        let agent = public_agent(self.timeout);
 
         let mut current = address.to_string();
         for _ in 0..MAX_HOPS {
@@ -261,6 +240,39 @@ impl WebSearchClient {
         }
         Err(WebError::Unreachable("too many redirects".into()))
     }
+}
+
+/// The agent that talks to THE USER'S OWN search server. Split out so the
+/// proxy rule can be asserted on it (`net::every_agent`).
+pub(crate) fn search_agent(url: &str, timeout: Duration) -> ureq::Agent {
+    crate::net::builder()
+        .timeout_global(Some(timeout))
+        // A redirect cap: so an endless redirect loop is cut without waiting
+        // out the timeout.
+        .max_redirects(5)
+        // THE SCHEME GATE MUST SURVIVE THE REDIRECT. `address_is_valid` only
+        // sees the FIRST address; without this flag a `302 Location: http://…`
+        // would silently downgrade the query — and a query is data too. The
+        // flag is DERIVED from the already validated address rather than set to
+        // a constant `true`, because the local network exception is deliberate:
+        // a local SearXNG has no certificate and its traffic never leaves the
+        // machine.
+        .https_only(url.starts_with("https://"))
+        .build()
+        .into()
+}
+
+/// The agent for an address THE USER DID NOT CONFIGURE (`fetch_public`).
+pub(crate) fn public_agent(timeout: Duration) -> ureq::Agent {
+    crate::net::builder()
+        .timeout_global(Some(timeout))
+        // The redirect chain is driven by hand — see `fetch_public`.
+        .max_redirects(0)
+        // Belt to the hand-driven braces: even if a hop slipped past the loop,
+        // ureq refuses a non-https address by itself.
+        .https_only(true)
+        .build()
+        .into()
 }
 
 /// May this address be fetched on the say-so of the model or of a search
@@ -328,14 +340,18 @@ fn ip_is_off_limits(ip: IpAddr) -> bool {
         IpAddr::V4(v4) => ipv4_is_off_limits(v4),
         IpAddr::V6(v6) => {
             let parts = v6.segments();
+            // AN IPv4 ADDRESS WEARING AN IPv6 COAT IS JUDGED AS IPv4.
             // `::ffff:127.0.0.1` IS loopback, but `Ipv6Addr::is_loopback` says
-            // false for it — the v4 hidden in the last four bytes has to be
-            // judged by the v4 rules. The IPv4-compatible form (`::a.b.c.d`)
-            // is deprecated but still parses, so it is covered too. `::1` and
-            // `::` fall in here as well and come out refused (0.0.0.1 / 0.0.0.0).
-            if parts[..5] == [0, 0, 0, 0, 0] && (parts[5] == 0 || parts[5] == 0xffff) {
-                let o = v6.octets();
-                return ipv4_is_off_limits(Ipv4Addr::new(o[12], o[13], o[14], o[15]));
+            // false for it. The first version of this gate knew the mapped
+            // (`::ffff:a.b.c.d`) and compatible (`::a.b.c.d`) forms and nothing
+            // else, and the audit of 9 Oct 2026 walked five more past it, every
+            // one `Ok(())` in a harness: `[::ffff:0:7f00:1]` (the RFC 2765
+            // translated form), `[64:ff9b::7f00:1]` and `[64:ff9b::a9fe:a9fe]`
+            // (NAT64 — the second is the metadata service), a 6to4
+            // `[2002:7f00:1::]`, and site-local `[fec0::1]`. On a host with a
+            // NAT64 gateway or a 6to4 relay those reach the v4 address inside.
+            if let Some(v4) = embedded_ipv4(&parts) {
+                return ipv4_is_off_limits(v4);
             }
             v6.is_loopback()
                 || v6.is_unspecified()
@@ -344,7 +360,37 @@ fn ip_is_off_limits(ip: IpAddr) -> bool {
                 || (parts[0] & 0xfe00) == 0xfc00
                 // fe80::/10 link local
                 || (parts[0] & 0xffc0) == 0xfe80
+                // fec0::/10 site local — deprecated (RFC 3879) but still
+                // routed inside some networks, and never public.
+                || (parts[0] & 0xffc0) == 0xfec0
+                // 64:ff9b::/32 outside the well-known /96 — the local-use NAT64
+                // prefix `64:ff9b:1::/48` (RFC 8215) points into the LOCAL
+                // network by definition. The /96 itself returned above.
+                || (parts[0] == 0x64 && parts[1] == 0xff9b)
         }
+    }
+}
+
+/// The IPv4 address an IPv6 address carries, for the forms that DELIVER to
+/// it. `None` = a native IPv6 address, judged by the v6 rules.
+fn embedded_ipv4(parts: &[u16; 8]) -> Option<Ipv4Addr> {
+    let from =
+        |hi: u16, lo: u16| Ipv4Addr::new((hi >> 8) as u8, hi as u8, (lo >> 8) as u8, lo as u8);
+    match parts {
+        // `::a.b.c.d` (compatible, deprecated) and `::ffff:a.b.c.d` (mapped).
+        // `::1` and `::` land here as well and come out refused
+        // (0.0.0.1 / 0.0.0.0 are in 0/8).
+        [0, 0, 0, 0, 0, 0 | 0xffff, hi, lo] => Some(from(*hi, *lo)),
+        // `::ffff:0:a.b.c.d` — the RFC 2765 "translated" form.
+        [0, 0, 0, 0, 0xffff, 0, hi, lo] => Some(from(*hi, *lo)),
+        // `64:ff9b::a.b.c.d` — the well-known NAT64 prefix (RFC 6052).
+        [0x64, 0xff9b, 0, 0, 0, 0, hi, lo] => Some(from(*hi, *lo)),
+        // `2002:aabb:ccdd::/48` — 6to4: the relay hands it to a.b.c.d.
+        [0x2002, hi, lo, ..] => Some(from(*hi, *lo)),
+        // `2001:0::/32` — Teredo: the CLIENT address is the last 32 bits,
+        // inverted (RFC 4380 §4). That is the host the packet ends up at.
+        [0x2001, 0, _, _, _, _, hi, lo] => Some(from(!*hi, !*lo)),
+        _ => None,
     }
 }
 
@@ -776,6 +822,52 @@ mod tests {
             "https://8.8.8.8/x",
             "https://[2001:4860:4860::8888]/x",
             "https://93.184.216.34/",
+        ] {
+            assert!(target_is_public(address).is_ok(), "{address}");
+        }
+    }
+
+    /// AN IPv4 ADDRESS INSIDE AN IPv6 ONE (audit L4). Every address below was
+    /// `Ok(())` before the fix; the harness in the audit printed each one.
+    #[test]
+    fn an_ipv4_target_hidden_inside_an_ipv6_address_is_judged_as_ipv4() {
+        for address in [
+            // ::ffff:0:a.b.c.d — the RFC 2765 translated form of 127.0.0.1.
+            "https://[::ffff:0:7f00:1]/x",
+            "https://[::ffff:0:127.0.0.1]/x",
+            // NAT64, well-known prefix: loopback and the metadata service.
+            "https://[64:ff9b::7f00:1]/x",
+            "https://[64:ff9b::a9fe:a9fe]/latest/meta-data/",
+            "https://[64:ff9b::169.254.169.254]/latest/meta-data/",
+            "https://[64:ff9b::10.0.0.5]/x",
+            // NAT64 local-use prefix (RFC 8215): local by definition.
+            "https://[64:ff9b:1::808:808]/x",
+            // 6to4 for 127.0.0.1, 169.254.169.254 and 192.168.1.1.
+            "https://[2002:7f00:1::]/x",
+            "https://[2002:a9fe:a9fe::1]/x",
+            "https://[2002:c0a8:101::]/x",
+            // Teredo whose (inverted) client address is 127.0.0.1.
+            "https://[2001:0:4136:e378:8000:63bf:80ff:fffe]/x",
+            // Site local.
+            "https://[fec0::1]/x",
+            "https://[feff::1]/x",
+            // The mapped form, upper case — the parser must not care.
+            "https://[::FFFF:7F00:1]/x",
+        ] {
+            assert!(
+                matches!(target_is_public(address), Err(WebError::InvalidAddress(_))),
+                "the gate let {address} through"
+            );
+        }
+        // THE SAME FORMS CARRYING A PUBLIC v4 STILL PASS — a gate that refused
+        // every NAT64 address would break IPv6-only networks, where 64:ff9b::/96
+        // is how the whole public v4 internet is reached.
+        for address in [
+            "https://[64:ff9b::808:808]/x",
+            "https://[::ffff:0:808:808]/x",
+            "https://[::ffff:8.8.8.8]/x",
+            "https://[2002:808:808::1]/x",
+            "https://[2001:0:4136:e378:8000:63bf:f7f7:f7f7]/x",
         ] {
             assert!(target_is_public(address).is_ok(), "{address}");
         }
