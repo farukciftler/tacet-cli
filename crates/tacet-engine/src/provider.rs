@@ -91,6 +91,13 @@ impl Generation {
         // The split happens IN THE CONSTRUCTOR so no call site can skip this
         // step. Left to each engine to remember, the thinking would silently leak
         // to the screen the moment a new engine was added.
+        //
+        // THE PRICE OF "EVERY OUTPUT" IS THAT CALLS PASS THROUGH HERE TOO, and
+        // `extract` used to edit them (audit H5): the text the executor parses
+        // is `self.text`, so whatever this line changes inside a call's
+        // arguments is what runs. `extract` now leaves everything from the
+        // first call start onward byte-for-byte alone; the tests below hold
+        // that on the constructor itself, since it is the only door.
         let (thinking, visible) = crate::thinking::extract(&text.into());
         Self {
             text: visible,
@@ -344,5 +351,39 @@ pub trait EngineProvider: Send + Sync {
             }
             g
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Audit H5, at the door every engine goes through (`CandleEngine` and
+    /// `FakeEngine` both build their result with `Generation::new`). The two
+    /// strings are the audit's own; before the fix the first came back with
+    /// `Qwen emits  first` and the second as `write_file({"path":"X"})`.
+    #[test]
+    fn the_constructor_hands_the_executor_the_call_the_model_wrote() {
+        for call in [
+            r#"write_file({"path":"a.md","content":"Qwen emits <think> first"})"#,
+            r#"write_file({"path":"<think>","content":"</think>X"})"#,
+        ] {
+            let g = Generation::new(call, 12, StopReason::ConstraintDone);
+            assert_eq!(g.text, call);
+            assert!(g.thinking.is_none());
+        }
+    }
+
+    /// The other half: the constructor still strips a leading block, so the
+    /// fix did not buy call safety by turning the split off.
+    #[test]
+    fn the_constructor_still_strips_a_block_before_the_call() {
+        let g = Generation::new(
+            r#"<think>need a file</think>write_file({"path":"a.md","content":"<think>"})"#,
+            20,
+            StopReason::ConstraintDone,
+        );
+        assert_eq!(g.thinking.as_deref(), Some("need a file"));
+        assert_eq!(g.text, r#"write_file({"path":"a.md","content":"<think>"})"#);
     }
 }
