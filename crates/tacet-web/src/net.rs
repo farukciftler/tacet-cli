@@ -17,9 +17,10 @@
 //!
 //! ONE FUNCTION, NOT A FLAG AT FIVE CALL SITES: the five agents in this crate
 //! were written at different times, and a sixth written next month would copy
-//! whichever neighbour it was next to. `tests/no_env_proxy.rs` keeps the
-//! rule honest twice over — it routes real requests past a listening proxy,
-//! and it fails if any file in `src/` starts an agent anywhere but here.
+//! whichever neighbour it was next to. Two tests keep the rule honest:
+//! `tests/no_env_proxy.rs` routes real requests past a listening proxy, and
+//! `tests/agent_doors.rs` fails if any file in `src/` names a `ureq` path
+//! outside a short allow-list of types that cannot build an agent.
 //!
 //! WHAT IS GIVEN UP: a user who genuinely must go through a corporate proxy
 //! cannot, today. That is a capability to add with an explicit setting the

@@ -8,14 +8,16 @@
 //! listener on 127.0.0.1 that only counts, and the assertion is that it is
 //! never touched while real requests go to their real (local) destinations.
 //!
-//! A FILE OF ITS OWN, AND ONE TEST THAT TOUCHES THE ENVIRONMENT: `set_var` is
-//! process-wide. In the library's test binary it would race every other test;
-//! here this binary is the whole process and the variables are set before any
-//! agent exists.
+//! A FILE OF ITS OWN, AND ONE TEST IN IT: `set_var` is process-wide. In the
+//! library's test binary it would race every other test; here this binary is
+//! the whole process and the variables are set before any agent exists. The
+//! structural guard (no agent built outside `net.rs`) lives in
+//! `tests/agent_doors.rs` for the same reason: for one review cycle it sat in
+//! this file, and its `std::env::temp_dir()` read `TMPDIR` on a parallel thread
+//! while this test was calling `set_var`. Do not add a second test here.
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener};
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -120,8 +122,9 @@ fn no_agent_routes_through_an_environment_proxy() {
     let mirror = Listener::start(b"");
 
     let proxy_url = format!("http://127.0.0.1:{}", proxy.port);
-    // SAFETY: this binary has one test and no other thread reads the
-    // environment while these are set (the listeners do not).
+    // SAFETY: this binary has one test (see the top of the file) and no other
+    // thread reads the environment while these are set: the listener threads
+    // only accept and read sockets.
     unsafe {
         for name in [
             "ALL_PROXY",
@@ -193,103 +196,5 @@ fn no_agent_routes_through_an_environment_proxy() {
         0,
         "the proxy saw traffic: {:?}",
         proxy.seen()
-    );
-}
-
-/// EVERY AGENT STARTS IN `net.rs`. The test above checks the agents that
-/// exist; this one stops the next one from being written somewhere else with
-/// a bare `ureq::Agent::config_builder()` — the way all five were before.
-///
-/// THE NEEDLES ARE EVERY DOOR INTO A DEFAULT CONFIG, not only the one the five
-/// used. The first version looked for four spellings and read `src/` one
-/// level deep; a review on 10 Oct 2026 pointed out that
-/// `Agent::new_with_defaults()`, `Config::default()` and the `ureq::put` /
-/// `head` / `delete` family each build an agent that reads `ALL_PROXY` again,
-/// and that a module moved into `src/<dir>/` was never opened. Each needle was
-/// proved by a throwaway line in a real source file before it was kept.
-#[test]
-fn no_source_file_builds_an_agent_outside_net_rs() {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let net = src.join("net.rs");
-    let mut offenders = Vec::new();
-    let mut seen = 0usize;
-    for path in rust_files(&src) {
-        if path == net {
-            continue;
-        }
-        seen += 1;
-        let text = std::fs::read_to_string(&path).expect("read");
-        for needle in AGENT_DOORS {
-            if text.contains(needle) {
-                offenders.push(format!("{}: {needle}", path.display()));
-            }
-        }
-    }
-    // A walk that found nothing would pass vacuously.
-    assert!(
-        seen >= 5,
-        "only {seen} source files were read under {src:?}"
-    );
-    assert!(
-        offenders.is_empty(),
-        "an agent is configured outside net.rs, where the proxy rule lives: {offenders:?}"
-    );
-}
-
-/// Every spelling that yields a `ureq` agent with the environment proxy left
-/// on. `ureq::request` covers `ureq::request(` and `ureq::request_uri(`.
-const AGENT_DOORS: &[&str] = &[
-    "config_builder(",
-    "Config::builder(",
-    "Config::default(",
-    "new_with_defaults(",
-    "new_with_config(",
-    "Agent::default(",
-    "ureq::get(",
-    "ureq::post(",
-    "ureq::put(",
-    "ureq::delete(",
-    "ureq::head(",
-    "ureq::patch(",
-    "ureq::options(",
-    "ureq::trace(",
-    "ureq::request",
-];
-
-/// Every `.rs` file under `dir`, at any depth.
-fn rust_files(dir: &Path) -> Vec<std::path::PathBuf> {
-    let mut out = Vec::new();
-    for entry in std::fs::read_dir(dir).expect("read_dir") {
-        let path = entry.expect("entry").path();
-        if path.is_dir() {
-            out.extend(rust_files(&path));
-        } else if path.extension().is_some_and(|e| e == "rs") {
-            out.push(path);
-        }
-    }
-    out
-}
-
-/// The walk must reach a nested module — the case the first version missed.
-#[test]
-fn the_source_walk_reaches_a_nested_directory() {
-    let root = std::env::temp_dir().join(format!("tacet-walk-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(root.join("a/b")).unwrap();
-    std::fs::write(root.join("top.rs"), "").unwrap();
-    std::fs::write(root.join("a/b/deep.rs"), "").unwrap();
-    std::fs::write(root.join("a/notes.txt"), "").unwrap();
-    let mut found: Vec<_> = rust_files(&root)
-        .into_iter()
-        .map(|p| p.strip_prefix(&root).unwrap().to_path_buf())
-        .collect();
-    found.sort();
-    let _ = std::fs::remove_dir_all(&root);
-    assert_eq!(
-        found,
-        vec![
-            std::path::PathBuf::from("a/b/deep.rs"),
-            std::path::PathBuf::from("top.rs")
-        ]
     );
 }
