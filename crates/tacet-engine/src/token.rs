@@ -12,7 +12,7 @@
 //! silent, undiagnosable failure); over-estimating and dropping one extra turn
 //! only costs a little context.
 
-use crate::prompt::{Prompt, Turn};
+use crate::prompt::{Prompt, Template, Turn};
 
 /// The FLOOR of the context window, and the value used when the model does not
 /// say what it can take.
@@ -111,22 +111,37 @@ pub fn kv_cache_budget(device: Device) -> usize {
 /// token of context costs it. Either being `None` means the file did not say,
 /// and the answer is then the floor — a guessed window puts positions past the
 /// model's rope table and produces plausible-looking nonsense, which is worse
-/// than a small window.
+/// than a small window. A missing or zero COST leaves the memory side at the
+/// floor, but still under what the model declares.
+///
+/// THE MODEL'S OWN NUMBER IS A CEILING THE FLOOR MAY NOT LIFT (audit L21). The
+/// floor used to win over both: a model declaring 2048 was handed 4096, on the
+/// argument that every path here was measured at 4096. But a declared window is
+/// the length of the model's position table, and positions past it do not
+/// error — they produce exactly the plausible nonsense the paragraph above
+/// refuses to guess into. The floor now protects against the MEMORY budget
+/// coming out small, which is what it was for; it no longer overrides the model.
+///
+/// The caller hands in the window the ENGINE can run, not merely the one the
+/// file states: candle's llama module sizes its rope table at a fixed 4096
+/// whatever the file says (see `CandleEngine::context_length`).
 pub fn context_budget(
     declared: Option<usize>,
     kv_bytes_per_token: Option<usize>,
     device: Device,
 ) -> usize {
-    let (Some(declared), Some(per_token)) = (declared, kv_bytes_per_token) else {
+    // Zero is "the file said something impossible", which has the same answer
+    // as saying nothing — a zero window would refuse every prompt.
+    let Some(declared) = declared.filter(|d| *d > 0) else {
         return CONTEXT_BUDGET;
     };
-    if per_token == 0 {
-        return CONTEXT_BUDGET;
-    }
-    let affordable = kv_cache_budget(device) / per_token;
-    // The floor wins over both: a model declaring 2048 still gets 4096, because
-    // that is what every path in this crate was built and measured against.
-    declared.min(affordable).max(CONTEXT_BUDGET)
+    let affordable = match kv_bytes_per_token {
+        Some(per_token) if per_token > 0 => {
+            (kv_cache_budget(device) / per_token).max(CONTEXT_BUDGET)
+        }
+        _ => CONTEXT_BUDGET,
+    };
+    declared.min(affordable)
 }
 
 /// The share reserved for generation; the prompt must fit in what is left.
@@ -250,13 +265,38 @@ impl TokenCounter {
     /// UTF-8 BYTE length is used, not characters: Turkish letters (ç, ğ, ş, ı, ö,
     /// ü) are multi-byte and tokenizers split at exactly those points too. If we
     /// counted characters we would systematically UNDER-estimate Turkish text.
+    ///
+    /// A DIGIT IS A WHOLE TOKEN (audit L22). The Qwen pre-tokenizer splits on
+    /// `\p{N}` one character at a time (see `gguf_tokenizer::split_regex`), so
+    /// every digit is its own token — 1 per byte, where the 2/5 ratio counts 0.4.
+    /// Measured by the audit: 4000 digits estimated at 1600 against a real count
+    /// of at least 4000, i.e. a table of numbers or a hex dump came in at less
+    /// than half and truncation waved it through. Counting digits at one each
+    /// can only raise the estimate, so the safe direction holds for every text.
     pub fn estimate(text: &str) -> usize {
-        (text.len() * BYTE_NUMERATOR).div_ceil(BYTE_DENOMINATOR)
+        let digits = text.bytes().filter(u8::is_ascii_digit).count();
+        let rest = text.len() - digits;
+        digits + (rest * BYTE_NUMERATOR).div_ceil(BYTE_DENOMINATOR)
     }
 
-    /// The estimate for the whole prompt.
+    /// The estimate for the whole prompt, IN THE LARGEST WIRE FORMAT.
+    ///
+    /// WHY NOT `prompt.text()` (audit L22): that is the Plain template, and no
+    /// real engine is fed Plain. Candle tokenizes `text_with_template` in ChatML
+    /// or Gemma, and their fences (`<|im_start|>system\n…<|im_end|>\n` per turn)
+    /// are text Plain does not carry — on a long history the gap is a few tokens
+    /// per turn, every turn, on the side that blows the window.
+    ///
+    /// THE COUNTER DOES NOT KNOW THE ENGINE, so it measures every template and
+    /// keeps the largest. Whatever format the engine really speaks, the estimate
+    /// is at least the estimate of that format — the same "run high" bargain as
+    /// the byte ratio, paid once per template rather than guessed.
     pub fn prompt_estimate(&self, prompt: &Prompt) -> usize {
-        Self::estimate(&prompt.text())
+        every_template()
+            .into_iter()
+            .map(|template| Self::estimate(&prompt.text_with_template(template)))
+            .max()
+            .unwrap_or(0)
     }
 
     /// If the budget is exceeded, shrinks the prompt BY POLICY.
@@ -330,6 +370,18 @@ impl TokenCounter {
     }
 }
 
+/// Every wire format a prompt can be rendered in.
+///
+/// The `match` is there so a new `Template` variant does not compile until
+/// someone has looked at this list: a format left out here would be the one
+/// format the budget never measured.
+fn every_template() -> [Template; 3] {
+    let _exhaustive = |template: Template| match template {
+        Template::Plain | Template::ChatML | Template::Gemma => (),
+    };
+    [Template::Plain, Template::ChatML, Template::Gemma]
+}
+
 /// Returns the last `max_bytes` bytes of `text`, RESPECTING CHARACTER
 /// BOUNDARIES. A raw `&s[i..]` would land in the middle of a multi-byte letter
 /// and panic — in Turkish text that is not an exception but the rule.
@@ -390,12 +442,13 @@ mod budget_tests {
         );
     }
 
-    /// THE FLOOR HOLDS IN EVERY DIRECTION. Nothing may come out of this worse
-    /// off than the fixed 4096 it replaced.
+    /// THE FLOOR HOLDS AGAINST THE MEMORY BUDGET. Nothing that declares at
+    /// least 4096 may come out of this worse off than the fixed 4096 it
+    /// replaced, whatever the cache costs or whether the file says.
     #[test]
     fn nothing_ends_up_below_the_old_fixed_window() {
         assert_eq!(
-            context_budget(Some(2048), Some(1_000), Device::Cpu),
+            context_budget(Some(8192), Some(usize::MAX / 2), Device::Cpu),
             CONTEXT_BUDGET
         );
         assert_eq!(
@@ -421,6 +474,82 @@ mod budget_tests {
         assert_eq!(
             context_budget(Some(262_144), Some(0), Device::Cpu),
             CONTEXT_BUDGET
+        );
+        assert_eq!(
+            context_budget(Some(0), Some(1_000), Device::Cpu),
+            CONTEXT_BUDGET
+        );
+    }
+
+    /// AUDIT L22, the digits: the audit's own case, 4000 digits estimated at
+    /// 1600. Each one is a token in the Qwen split, so the estimate may not come
+    /// in under one per digit — and mixed text must still run at least as high
+    /// as the byte ratio alone, or the change bought digits by selling prose.
+    #[test]
+    fn a_digit_is_counted_as_a_whole_token() {
+        let digits = "7".repeat(4000);
+        assert!(
+            TokenCounter::estimate(&digits) >= 4000,
+            "4000 digits estimated at {} tokens",
+            TokenCounter::estimate(&digits)
+        );
+        let table = "| 2026-10-09 | 31.415 | 0xFF00AA |\n".repeat(50);
+        let byte_ratio = (table.len() * BYTE_NUMERATOR).div_ceil(BYTE_DENOMINATOR);
+        let digit_count = table.bytes().filter(u8::is_ascii_digit).count();
+        assert!(TokenCounter::estimate(&table) >= byte_ratio);
+        assert!(TokenCounter::estimate(&table) >= digit_count);
+        // Prose without digits is untouched.
+        let prose = "Merhaba dünya, bugün hava güzel.";
+        assert_eq!(
+            TokenCounter::estimate(prose),
+            (prose.len() * BYTE_NUMERATOR).div_ceil(BYTE_DENOMINATOR)
+        );
+    }
+
+    /// AUDIT L22, the template: the budget must cover the format the engine
+    /// is really fed. Plain is what `prompt.text()` renders and no real engine
+    /// speaks it; ChatML wraps every history turn in fences Plain does not
+    /// write. Whatever template an engine declares, the estimate is at least
+    /// that template's estimate.
+    #[test]
+    fn the_estimate_covers_every_wire_format() {
+        let mut history = Vec::new();
+        for i in 0..40 {
+            history.push(Turn::user(format!("question {i}")));
+            history.push(Turn::assistant(format!("answer {i}")));
+        }
+        let prompt = Prompt::new("You are Tacet.", "and now?").with_history(history);
+        let counter = TokenCounter::default();
+        let estimate = counter.prompt_estimate(&prompt);
+        for template in every_template() {
+            let rendered = TokenCounter::estimate(&prompt.text_with_template(template));
+            assert!(
+                estimate >= rendered,
+                "the budget says {estimate} but the {template:?} prompt is {rendered}"
+            );
+        }
+        // And the fences are not a rounding error: on this history the formats
+        // really differ, which is what makes measuring the wrong one matter.
+        let plain = TokenCounter::estimate(&prompt.text());
+        assert!(estimate > plain, "{estimate} vs plain {plain}");
+    }
+
+    /// AUDIT L21: the floor is not a licence to run past the model.
+    ///
+    /// The first assertion in `nothing_ends_up_below_the_old_fixed_window` used
+    /// to read the other way — `Some(2048)` came back as 4096 — and that
+    /// expectation WAS the bug: positions 2048..4096 are past that model's
+    /// position table, and nothing errors there. A model that declares less than
+    /// the floor gets what it declares, in every combination of the memory
+    /// inputs.
+    #[test]
+    fn a_model_declaring_less_than_the_floor_keeps_its_own_window() {
+        assert_eq!(context_budget(Some(2048), Some(1_000), Device::Cpu), 2048);
+        assert_eq!(context_budget(Some(2048), None, Device::Cpu), 2048);
+        assert_eq!(context_budget(Some(2048), Some(0), Device::Cpu), 2048);
+        assert_eq!(
+            context_budget(Some(2048), Some(usize::MAX), Device::Cuda),
+            2048
         );
     }
 }

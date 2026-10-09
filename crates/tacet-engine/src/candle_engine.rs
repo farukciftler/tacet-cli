@@ -111,6 +111,107 @@ fn call_over_budget(armed_at: Option<usize>, produced: usize, cap: usize) -> boo
 /// prose.
 const IN_CALL_LOOP_THRESHOLD: usize = 6;
 
+/// A tool call's own token budget, counted from where the call armed. See the
+/// note in `run_loop` for the measurement behind 2048.
+const TOOL_CALL_CAP: usize = 2048;
+
+/// How many back-to-back repeats it takes when the repetition sits INSIDE A
+/// STRING OR ARRAY VALUE of the call's arguments: a quarter of the call's
+/// budget, i.e. 42 repeats, 504 tokens.
+///
+/// WHY A SECOND, MUCH HIGHER BAR (audit L23). Six repeats of twelve tokens is
+/// seventy-two tokens, and a valid argument reaches that easily: `[0, 0, 0, …]`
+/// is about two tokens an element, so a 36-zero array — a zeroed buffer, an
+/// initial matrix row, a CSV of blanks — was abandoned as "stuck" and the turn
+/// lost a call the grammar had accepted.
+///
+/// WHY NOT NO BAR AT ALL inside values, which is what "only the structural
+/// region" would mean literally: the failure the in-call detector was written
+/// for WAS inside a value. gemma3-4b's `.search.search.search…` (7 Sep 2026,
+/// see `run_loop`) can only have been inside a string — outside one the
+/// grammar admits no `.` — so switching the detector off there would hand that
+/// runaway back to the 2048-token cap, two minutes of wall text. At 504 it is
+/// stopped in about thirty seconds at the 15-18 tok/s measured on this
+/// machine, and a value has to repeat one twelve-token block forty-two times
+/// over before it is called stuck.
+const IN_VALUE_LOOP_THRESHOLD: usize = TOOL_CALL_CAP / 4 / LOOP_SEQUENCE_LENGTH;
+
+/// Where in a call's JSON arguments each token was written.
+///
+/// THE ENGINE TRACKS THIS ITSELF rather than asking the grammar, because the
+/// grammar's session answers only "inside the arguments or not"
+/// (`is_structural`), and the question here is finer: is this repetition the
+/// shape of the call, or the content of one of its values. A lexer that knows
+/// strings, escapes and brackets is enough to answer that, and it reads the
+/// same surface text the mask was built from (`vocab`), so it sees exactly the
+/// characters the grammar saw.
+#[derive(Debug, Default)]
+struct CallWatch {
+    tokens: Vec<u32>,
+    /// Per token: was any part of it written inside a string or array value?
+    in_value: Vec<bool>,
+    in_string: bool,
+    escaped: bool,
+    array_depth: usize,
+}
+
+impl CallWatch {
+    fn inside_value(&self) -> bool {
+        self.in_string || self.array_depth > 0
+    }
+
+    /// Records one token of the arguments, `text` being its surface form.
+    fn push(&mut self, token: u32, text: &str) {
+        let mut touched = self.inside_value();
+        for c in text.chars() {
+            if self.in_string {
+                if self.escaped {
+                    self.escaped = false;
+                } else if c == '\\' {
+                    self.escaped = true;
+                } else if c == '"' {
+                    self.in_string = false;
+                }
+            } else {
+                match c {
+                    '"' => self.in_string = true,
+                    '[' => self.array_depth += 1,
+                    ']' => self.array_depth = self.array_depth.saturating_sub(1),
+                    _ => {}
+                }
+            }
+            touched |= self.inside_value();
+        }
+        self.tokens.push(token);
+        self.in_value.push(touched);
+    }
+
+    /// Is the call stuck? The structural bar applies only when every token of
+    /// the window it would look at was written OUTSIDE any value; one token
+    /// inside a value and the repetition is content until the higher bar.
+    fn is_stuck(&self) -> bool {
+        let window = LOOP_SEQUENCE_LENGTH * IN_CALL_LOOP_THRESHOLD;
+        let structural_only = self.tokens.len() >= window
+            && !self.in_value[self.in_value.len() - window..]
+                .iter()
+                .any(|v| *v);
+        if structural_only {
+            is_looping_with(&self.tokens, IN_CALL_LOOP_THRESHOLD)
+        } else {
+            is_looping_with(&self.tokens, IN_VALUE_LOOP_THRESHOLD)
+        }
+    }
+}
+
+/// The part of the token that armed a call which belongs to the arguments.
+///
+/// The arming token is the one that carried `(` — possibly with `{"` glued to
+/// it, which is the very case `CallSession::prefix_mask` exists for — so the
+/// tool name before it is not JSON and must not reach the lexer.
+fn arguments_part(text: &str) -> &str {
+    text.split_once('(').map_or(text, |(_, rest)| rest)
+}
+
 fn is_looping(produced: &[u32]) -> bool {
     is_looping_with(produced, LOOP_THRESHOLD)
 }
@@ -188,6 +289,40 @@ impl Architecture {
             Architecture::Gemma3 => "gemma3",
             Architecture::Llama => "llama",
         }
+    }
+
+    /// How many positions candle's module for this architecture can address,
+    /// when that is a constant of the MODULE rather than of the file.
+    ///
+    /// READ FROM candle-transformers 0.11, not assumed: `quantized_qwen2` and
+    /// `quantized_qwen3` size their rope tables from `<arch>.context_length`, so
+    /// the file's number is the engine's number (`None`). `quantized_llama`
+    /// builds its table at `MAX_SEQ_LEN = 4096` whatever the file says, and
+    /// `quantized_gemma3` at its own `MAX_SEQ_LEN = 131072`. Past the table every
+    /// forward pass fails — SmolLM2 declares 8192, so once a conversation
+    /// crossed position 4096 each turn ended in an inference error (audit L21).
+    ///
+    /// The constants are referenced, not copied, so a candle upgrade that
+    /// changes them changes this.
+    pub fn position_table(self) -> Option<usize> {
+        match self {
+            Architecture::Qwen2 | Architecture::Qwen3 => None,
+            Architecture::Gemma3 => Some(quantized_gemma3::MAX_SEQ_LEN),
+            Architecture::Llama => Some(quantized_llama::MAX_SEQ_LEN),
+        }
+    }
+}
+
+/// The window this engine can actually RUN: what the file declares, cut to
+/// what the architecture's module can address.
+///
+/// A file that declares nothing stays `None` — the caller's floor applies — even
+/// where the module's table is larger: the table bounds what candle can run, not
+/// what the model was trained on.
+fn runnable_context_length(architecture: Architecture, declared: Option<usize>) -> Option<usize> {
+    match architecture.position_table() {
+        Some(table) => declared.map(|d| d.min(table)),
+        None => declared,
     }
 }
 
@@ -379,8 +514,10 @@ impl CandleEngine {
             Self::validate_cuda_quant(&quant, &setting.model_path)?;
         }
         // READ BEFORE THE WEIGHTS, for the same reason: the metadata is in memory
-        // right now and `from_gguf` below consumes `content`.
-        let context_length = read_context_length(&content);
+        // right now and `from_gguf` below consumes `content`. Cut to the module's
+        // position table, because this is the number the shell's window is built
+        // from (see `runnable_context_length`).
+        let context_length = runnable_context_length(architecture, read_context_length(&content));
 
         // `from_gguf` HAS THE SAME SIGNATURE IN ALL THREE MODULES (ct, reader,
         // device) — verified from the source, not assumed.
@@ -617,7 +754,8 @@ SmolLM2 and TinyLlama work; a Llama-3 chat model needs its own template first.",
         self.architecture
     }
 
-    /// The context window the loaded GGUF declares, in tokens.
+    /// The context window the loaded GGUF declares, in tokens, cut to what the
+    /// architecture's candle module can address (`Architecture::position_table`).
     ///
     /// PUBLIC for the same reason as `stop_tokens` and `tokenizer_source`: a
     /// window silently falling back to the default is invisible from the output —
@@ -775,9 +913,11 @@ SmolLM2 and TinyLlama work; a Llama-3 chat model needs its own template first.",
         // of what the paragraph above promises. The cap is now applied from the
         // point the automaton actually arms (see `armed_at` in the loop): a turn
         // that never starts a call keeps the caller's budget, and a call that
-        // starts gets 2048 tokens to finish in.
-        const TOOL_CALL_CAP: usize = 2048;
+        // starts gets 2048 tokens to finish in (`TOOL_CALL_CAP`, at module
+        // level because the in-value loop bar is derived from it).
         let mut produced: Vec<u32> = Vec::with_capacity(setting.max_tokens);
+        // The call's arguments as the loop detector sees them — see `CallWatch`.
+        let mut call_watch: Option<CallWatch> = None;
         // Where the automaton first armed, if it has. The cap is measured from
         // there rather than from the first token, so a turn that answers in
         // prose is never clamped by a rule written for calls.
@@ -1166,8 +1306,20 @@ SmolLM2 and TinyLlama work; a Llama-3 chat model needs its own template first.",
             // repeats of the same twelve tokens is seventy-two tokens of exact
             // repetition — `write_code` really can emit three identical lines,
             // and six is past anything a formatter would produce.
+            //
+            // AND SIX IS ONLY THE BAR FOR THE CALL'S SHAPE. Inside a string or
+            // array value the bar is `IN_VALUE_LOOP_THRESHOLD` — a 36-zero
+            // array is six repeats too, and it is a valid argument (audit L23).
             if structural {
-                if is_looping_with(&produced, IN_CALL_LOOP_THRESHOLD) {
+                let text = self.vocab.get(token as usize).map_or("", String::as_str);
+                let watch = call_watch.get_or_insert_with(CallWatch::default);
+                let text = if watch.tokens.is_empty() {
+                    arguments_part(text)
+                } else {
+                    text
+                };
+                watch.push(token, text);
+                if watch.is_stuck() {
                     stop = StopReason::CallTooLong;
                     break;
                 }
@@ -1490,7 +1642,18 @@ fn find_stop_tokens(tokenizer: &Tokenizer) -> Vec<u32> {
 ///     idea in Llama's and Qwen's vocabularies.
 ///
 /// Between them: 13 masked on qwen3 and 6250 on gemma3, and `\n`, `</div>` and
-/// `[multimodal]` in neither.
+/// `[multimodal]` in neither. (Measured before the third shape below, which
+/// adds qwen3's six FIM/repo markers when its `tokenizer.json` is the source;
+/// not re-measured on real files — no weights on the machine that added it.)
+///
+///   * AND THE `<|…|>` FENCE SHAPE, by name (audit L24). The two sets above
+///     left a hole that depended on where the vocabulary came from: Qwen's
+///     `tokenizer.json` marks its six FIM/repo markers (`<|fim_prefix|>` …
+///     `<|file_sep|>`) `special: false`, while the GGUF marks them CONTROL. So
+///     the same model masked them when its tokenizer was rebuilt from the GGUF
+///     and let them through to the screen when a `tokenizer.json` was given —
+///     the `<unused6088>` failure again, on a different file. The rule itself
+///     is `gguf_tokenizer::is_marker_token`, where the default build tests it.
 ///
 /// STOP TOKENS ARE EXEMPT — ending the turn is the one marker the model is
 /// supposed to produce.
@@ -1499,15 +1662,13 @@ fn find_stop_tokens(tokenizer: &Tokenizer) -> Vec<u32> {
 /// generation would forge a turn in its own output. The prompt side of that is
 /// handled in `tacet-engine::prompt`; this is the other side.
 pub fn marker_tokens(tokenizer: &Tokenizer, stop_tokens: &[u32]) -> Vec<u32> {
-    let placeholder = |text: &str| {
-        text.contains("unused") || text.contains("reserved_special") || text.starts_with("<|extra")
-    };
     tokenizer
         .get_added_vocabulary()
         .get_added_tokens_decoder()
         .iter()
         .filter(|(id, token)| {
-            !stop_tokens.contains(id) && (token.special || placeholder(&token.content))
+            !stop_tokens.contains(id)
+                && crate::gguf_tokenizer::is_marker_token(&token.content, token.special)
         })
         .map(|(id, _)| *id)
         .collect()
@@ -1543,6 +1704,51 @@ mod cuda_quant_tests {
             assert!(err.contains("CUDA backend does not support GGUF quantization format"));
             assert!(err.contains(quant));
         }
+    }
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+
+    /// AUDIT L21: SmolLM2 declares 8192; candle's llama module can address
+    /// 4096. The engine reports the smaller, and the budget built from it stays
+    /// inside the table however cheap the cache is.
+    #[test]
+    fn a_llama_window_stops_at_candles_rope_table() {
+        assert_eq!(quantized_llama::MAX_SEQ_LEN, 4096);
+        let window = runnable_context_length(Architecture::Llama, Some(8192));
+        assert_eq!(window, Some(quantized_llama::MAX_SEQ_LEN));
+        // A cache so cheap the memory budget would afford ~1M tokens.
+        let budget = crate::token::context_budget(window, Some(2_000), Device::Cpu);
+        assert!(
+            budget <= quantized_llama::MAX_SEQ_LEN,
+            "a {budget}-token window on a module whose rope table is {}",
+            quantized_llama::MAX_SEQ_LEN
+        );
+        // A llama file that declares LESS keeps its own number.
+        assert_eq!(
+            runnable_context_length(Architecture::Llama, Some(2048)),
+            Some(2048)
+        );
+    }
+
+    /// The cut applies only where the module's table is fixed. Qwen's tables
+    /// are built from the file's own number, so a 262144 declaration passes
+    /// through untouched — clamping it would throw away the window the whole
+    /// `context_budget` change was for.
+    #[test]
+    fn the_cut_does_not_touch_modules_that_size_from_the_file() {
+        for arch in [Architecture::Qwen2, Architecture::Qwen3] {
+            assert_eq!(runnable_context_length(arch, Some(262_144)), Some(262_144));
+            assert_eq!(runnable_context_length(arch, None), None);
+        }
+        assert_eq!(
+            runnable_context_length(Architecture::Gemma3, Some(262_144)),
+            Some(quantized_gemma3::MAX_SEQ_LEN)
+        );
+        // Declaring nothing is not upgraded to the table's size.
+        assert_eq!(runnable_context_length(Architecture::Llama, None), None);
     }
 }
 
@@ -1651,8 +1857,9 @@ mod cuda_quant {
 #[cfg(test)]
 mod budget_and_backstop {
     use super::{
-        IN_CALL_LOOP_THRESHOLD, LOOP_SEQUENCE_LENGTH, LOOP_THRESHOLD, backstop_runs,
-        call_over_budget, is_looping, is_looping_with,
+        CallWatch, IN_CALL_LOOP_THRESHOLD, IN_VALUE_LOOP_THRESHOLD, LOOP_SEQUENCE_LENGTH,
+        LOOP_THRESHOLD, TOOL_CALL_CAP, arguments_part, backstop_runs, call_over_budget, is_looping,
+        is_looping_with,
     };
 
     /// THE BUG, AS AN ASSERTION. A constraint can be present and constraining
@@ -1729,14 +1936,128 @@ mod budget_and_backstop {
         );
     }
 
+    /// Feeds `pieces` to a fresh watch the way `run_loop` does — the first one
+    /// is the arming token, cut at `(` — and returns the index of the token at
+    /// which the call was declared stuck, if it was.
+    fn first_stuck(pieces: &[&str]) -> Option<usize> {
+        let mut ids: Vec<&str> = Vec::new();
+        let mut watch = CallWatch::default();
+        for (i, piece) in pieces.iter().enumerate() {
+            let id = match ids.iter().position(|p| p == piece) {
+                Some(id) => id,
+                None => {
+                    ids.push(piece);
+                    ids.len() - 1
+                }
+            } as u32;
+            let text = if i == 0 { arguments_part(piece) } else { piece };
+            watch.push(id, text);
+            if watch.is_stuck() {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// AUDIT L23: `[0, 0, 0, …]` IS AN ARGUMENT, NOT A LOOP.
+    ///
+    /// Two tokens an element, so thirty-six zeros are six repeats of a
+    /// twelve-token block — exactly the in-call bar — and the old detector
+    /// abandoned the call there. A hundred zeros is a perfectly ordinary
+    /// argument (a zeroed buffer, a row of a matrix) and must survive.
+    #[test]
+    fn a_long_array_of_zeros_is_not_a_stuck_call() {
+        let mut pieces = vec![
+            "write_file({\"",
+            "path",
+            "\":\"",
+            "z.json",
+            "\",\"",
+            "data",
+            "\":[",
+        ];
+        for _ in 0..100 {
+            pieces.extend(["0", ", "]);
+        }
+        pieces.extend(["0", "]}"]);
+        assert_eq!(
+            first_stuck(&pieces),
+            None,
+            "a valid call with a 100-zero array was abandoned"
+        );
+
+        // The same inside a STRING value: a script that prints the same line
+        // forty times is content. Four tokens a line, so twelve-token blocks
+        // line up with it and the old bar fired after eighteen lines.
+        let mut pieces = vec!["run_code({\"", "code", "\":\""];
+        for _ in 0..40 {
+            pieces.extend(["print(", "0", ")", "\\n"]);
+        }
+        pieces.push("\"})");
+        assert_eq!(first_stuck(&pieces), None);
+    }
+
+    /// The other half of L23, and the reason the bar inside a value is higher
+    /// rather than gone: gemma3-4b's `.search.search.search…` runaway was
+    /// inside the query string. It is still caught — later than in the
+    /// call's structure, long before the 2048-token cap.
+    #[test]
+    fn a_runaway_inside_a_string_is_still_caught_before_the_cap() {
+        let mut pieces = vec!["web_search({\"", "query", "\":\"", "vapur saatleri"];
+        for _ in 0..1500 {
+            pieces.extend([".", "search"]);
+        }
+        let at = first_stuck(&pieces).expect("the runaway string was never caught");
+        assert!(
+            at >= LOOP_SEQUENCE_LENGTH * IN_VALUE_LOOP_THRESHOLD,
+            "caught at token {at}: inside a value the bar is {} tokens",
+            LOOP_SEQUENCE_LENGTH * IN_VALUE_LOOP_THRESHOLD
+        );
+        assert!(at < TOOL_CALL_CAP / 2, "caught only at token {at}");
+    }
+
+    /// Outside every value the structural bar is unchanged: a call whose SHAPE
+    /// repeats — here whitespace after a member — is still abandoned within
+    /// seventy-two tokens.
+    #[test]
+    fn a_loop_in_the_calls_structure_keeps_the_low_bar() {
+        let mut pieces = vec!["calculate({\"", "expression", "\":", "1"];
+        pieces.extend(std::iter::repeat_n(" ", 200));
+        let at = first_stuck(&pieces).expect("a structural loop was never caught");
+        assert!(
+            at <= 4 + LOOP_SEQUENCE_LENGTH * IN_CALL_LOOP_THRESHOLD,
+            "caught only at token {at}"
+        );
+    }
+
+    /// The lexer is not fooled by an escaped quote: `\"` inside a string does
+    /// not close it, so the repetition after it is still inside the value.
+    #[test]
+    fn an_escaped_quote_does_not_end_the_string() {
+        let mut watch = CallWatch::default();
+        watch.push(0, "{\"code\":\"say \\\"");
+        assert!(watch.inside_value(), "an escaped quote closed the string");
+        watch.push(1, "hi\\\"\"");
+        assert!(!watch.inside_value(), "the real closing quote was missed");
+        assert_eq!(arguments_part("tool({\""), "{\"");
+    }
+
     /// THE BAR IS HIGHER INSIDE A CALL THAN IN PROSE, because a false positive
     /// there abandons a valid call rather than trimming a paragraph.
     /// `write_code` really can emit three identical lines.
     #[test]
     fn a_call_may_repeat_itself_more_than_prose_may() {
-        assert!(
+        // A COMPILE-TIME assertion: clippy's `assertions_on_constants` refused
+        // the runtime form under `--features candle -D warnings`, and the
+        // ordering of the bars is a fact about constants, so the compiler is
+        // the right place to hold it. The value bar must sit above both.
+        const _: () = assert!(
             IN_CALL_LOOP_THRESHOLD > LOOP_THRESHOLD,
             "a call must be allowed more repetition than prose, not less"
+        );
+        const _: () = assert!(
+            IN_VALUE_LOOP_THRESHOLD > IN_CALL_LOOP_THRESHOLD,
+            "a value must be allowed more repetition than the call's shape"
         );
         let three = stuck(LOOP_THRESHOLD);
         assert!(is_looping(&three), "prose is cut at three");

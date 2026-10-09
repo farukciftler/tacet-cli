@@ -79,6 +79,17 @@ const T_U64: u32 = 10;
 const T_I64: u32 = 11;
 const T_F64: u32 = 12;
 
+/// How deep arrays may nest inside a metadata value before the file is called
+/// corrupt.
+///
+/// The format allows nesting, but no key this reader looks for or steps over in
+/// practice uses it: tokens, merges, token types and the architecture block are
+/// all one level of strings or scalars. Eight is generous headroom for a
+/// converter we have not seen, and small enough that the recursion it permits is
+/// a few hundred bytes of stack rather than whatever the file asks for (see
+/// `skip_value_nested`).
+const MAX_ARRAY_NESTING: usize = 8;
+
 /// `token_type` values, from llama.cpp's `llama_token_attr`/`token_type` enum.
 /// The numbering is part of the FILE FORMAT, not a local convention.
 ///
@@ -280,12 +291,32 @@ impl<R: Read> MetaReader<R> {
     }
 
     fn skip_value(&mut self, kind: u32) -> EngineResult<()> {
+        self.skip_value_nested(kind, 0)
+    }
+
+    /// `depth` is how many arrays deep this value sits.
+    ///
+    /// THE RECURSION IS BOUNDED BECAUSE THE FILE CHOOSES ITS DEPTH. An
+    /// array-of-arrays costs twelve bytes per level (element type + count), so a
+    /// 1.2 MB file can ask for 100 000 levels, and each level was one native
+    /// stack frame. MEASURED (audit M10, 9 Oct 2026): `probe gguf 100000` in a
+    /// release build ended in `fatal runtime error: stack overflow` — an abort,
+    /// not an error, and no `catch_unwind` can stop it. Discovery runs this
+    /// reader on every package it finds, so one crafted file in a models folder
+    /// killed the shell at startup. A bounded depth turns that into the ordinary
+    /// "this file is corrupt" error every other malformed length already gets.
+    fn skip_value_nested(&mut self, kind: u32, depth: usize) -> EngineResult<()> {
         if let Some(width) = Self::scalar_width(kind) {
             return self.skip(width);
         }
         match kind {
             T_STRING => self.skip_string(),
             T_ARRAY => {
+                if depth >= MAX_ARRAY_NESTING {
+                    return Err(fail(format!(
+                        "gguf metadata is corrupt: arrays nested deeper than {MAX_ARRAY_NESTING}"
+                    )));
+                }
                 let element = self.u32()?;
                 let count = self.u64()?;
                 if let Some(width) = Self::scalar_width(element) {
@@ -298,7 +329,7 @@ impl<R: Read> MetaReader<R> {
                 // known from the stream.
                 let count = self.check_length(count, 8)?;
                 for _ in 0..count {
-                    self.skip_value(element)?;
+                    self.skip_value_nested(element, depth + 1)?;
                 }
                 Ok(())
             }
@@ -469,6 +500,41 @@ pub fn gguf_has_tokenizer(path: &Path) -> bool {
     read_metadata(path, false)
         .map(|r| r.is_usable())
         .unwrap_or(false)
+}
+
+/// Is this ADDED token a marker rather than text? The rule behind
+/// `candle_engine::marker_tokens`; the reasons for each half are written there.
+///
+/// IT LIVES HERE, NOT BESIDE ITS CALLER, because this module is the vocabulary
+/// code that compiles without candle — so the rule is tested in the default
+/// build every CI job runs, against the in-repo fixture, instead of only behind
+/// a feature no PR job builds and only on a machine with real tokenizers (audit
+/// T1: that combination meant the marker tests asserted nothing anywhere).
+///
+/// THREE SHAPES:
+///   * `special` — what the tokenizer itself calls a control token.
+///   * a placeholder by name — gemma3's `<unusedNNNN>`, Llama's
+///     `reserved_special_token`, Qwen's `<|extra_N|>`.
+///   * `<|…|>` by name (audit L24) — the fence shape. Qwen's `tokenizer.json`
+///     marks `<|fim_prefix|>`, `<|fim_middle|>`, `<|fim_suffix|>`,
+///     `<|fim_pad|>`, `<|repo_name|>` and `<|file_sep|>` `special: false`, so
+///     the flag alone left all six open on a File-sourced tokenizer while the
+///     same tokens rebuilt from the GGUF (marked CONTROL there) were masked:
+///     the mask depended on where the vocabulary was read from. No text a user
+///     asks for is spelled `<|word|>`; the stop tokens that are (`<|im_end|>`,
+///     `<|endoftext|>`) are exempted by the caller, not here.
+///
+/// `<think>`, `<tool_call>`, `</div>` and `\n` match none of the three, which
+/// is the point: they are added but they are text.
+pub fn is_marker_token(content: &str, special: bool) -> bool {
+    let placeholder = content.contains("unused")
+        || content.contains("reserved_special")
+        || content.starts_with("<|extra");
+    let fence = content.len() > 4
+        && content.starts_with("<|")
+        && content.ends_with("|>")
+        && !content.chars().any(char::is_whitespace);
+    special || placeholder || fence
 }
 
 /// `<arch>.<name>` with exactly one segment before the suffix — the same guard
@@ -999,6 +1065,145 @@ mod tests {
             gguf_context_length(Path::new("/definitely/not/here.gguf")),
             None
         );
+    }
+
+    /// Writes `key` as an array nested `depth` levels deep, ending in an empty
+    /// u8 array. Twelve bytes a level, which is why depth is cheap for an
+    /// attacker and was not cheap for the reader.
+    fn nested_array_kv(b: &mut Builder, key: &str, depth: usize) {
+        b.raw_string(key);
+        b.bytes.extend_from_slice(&T_ARRAY.to_le_bytes());
+        for _ in 1..depth {
+            b.bytes.extend_from_slice(&T_ARRAY.to_le_bytes());
+            b.bytes.extend_from_slice(&1u64.to_le_bytes());
+        }
+        b.bytes.extend_from_slice(&T_U8.to_le_bytes());
+        b.bytes.extend_from_slice(&0u64.to_le_bytes());
+        b.count += 1;
+    }
+
+    /// AUDIT M10: a crafted file must cost an error, not the process.
+    ///
+    /// 100 000 levels is the depth the audit used to abort a release build; a
+    /// debug test thread has a quarter of that stack, so without the bound this
+    /// test does not fail — the whole test binary dies with "stack overflow".
+    /// Both entry points discovery uses are driven, because both walk the same
+    /// recursion.
+    #[test]
+    fn a_hundred_thousand_nested_arrays_are_an_error_not_a_stack_overflow() {
+        let mut b = Builder::new();
+        b.string_kv("general.architecture", "qwen3");
+        nested_array_kv(&mut b, "evil.nested", 100_000);
+        b.u32_kv("qwen3.context_length", 262_144);
+        let bytes = b.finish(0);
+        assert!(
+            bytes.len() > 1_000_000,
+            "the crafted header is {} bytes",
+            bytes.len()
+        );
+        let path = write_temp("nested-deep", &bytes);
+
+        let error = read_metadata(&path, false).unwrap_err().to_string();
+        assert!(error.contains("nested deeper"), "{error}");
+        assert!(!gguf_has_tokenizer(&path));
+        assert_eq!(gguf_context_length(&path), None);
+        assert_eq!(gguf_kv_bytes_per_token(&path), None);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The bound is not a ban: a shallow nested array is stepped over and the
+    /// keys after it are still read. Without this the test above would pass on
+    /// a reader that refused every nested array outright.
+    #[test]
+    fn a_shallow_nested_array_is_still_stepped_over() {
+        let mut b = Builder::new();
+        nested_array_kv(&mut b, "general.shallow", MAX_ARRAY_NESTING);
+        b.u32_kv("qwen3.context_length", 40_960);
+        let path = write_temp("nested-shallow", &b.finish(0));
+        assert_eq!(gguf_context_length(&path), Some(40_960));
+        let _ = std::fs::remove_file(&path);
+
+        let mut b = Builder::new();
+        nested_array_kv(&mut b, "general.too_deep", MAX_ARRAY_NESTING + 1);
+        b.u32_kv("qwen3.context_length", 40_960);
+        let path = write_temp("nested-edge", &b.finish(0));
+        assert_eq!(gguf_context_length(&path), None);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The added vocabulary of `tests/fixtures/marker_tokenizer.json`, row by
+    /// row: content, the `special` flag the real tokenizer gives it, and whether
+    /// it is a marker. THIS TABLE IS THE FIXTURE'S SPECIFICATION — the JSON is
+    /// written from it and checked against it below, so the two cannot drift.
+    ///
+    /// The rows are shapes copied from the two tokenizers this project loads:
+    /// qwen3-4b's `tokenizer.json` (where the six FIM/repo markers are
+    /// `special: false` — see the note on `build_vocab` in `candle_engine`) and
+    /// gemma3-4b's (placeholders `special: false`, `\n` and `</div>` added as
+    /// text). The ids are not the real ones; nothing here depends on them.
+    const FIXTURE_ADDED: &[(&str, bool, bool)] = &[
+        ("<|endoftext|>", true, true),
+        ("<|im_start|>", true, true),
+        ("<|im_end|>", true, true),
+        ("<|object_ref_start|>", true, true),
+        ("<tool_call>", false, false),
+        ("</tool_call>", false, false),
+        ("<|fim_prefix|>", false, true),
+        ("<|fim_middle|>", false, true),
+        ("<|fim_suffix|>", false, true),
+        ("<|fim_pad|>", false, true),
+        ("<|repo_name|>", false, true),
+        ("<|file_sep|>", false, true),
+        ("<think>", false, false),
+        ("</think>", false, false),
+        ("<pad>", true, true),
+        ("<bos>", true, true),
+        ("<start_of_turn>", true, true),
+        ("<end_of_turn>", true, true),
+        ("<unused0>", false, true),
+        ("<unused6088>", false, true),
+        ("\n", false, false),
+        ("\n\n", false, false),
+        ("</div>", false, false),
+        ("[multimodal]", false, false),
+        ("<|extra_0|>", false, true),
+    ];
+
+    /// The fixture on disk is exactly the table above. Without this the
+    /// marker tests would be asserting against a file nobody can read the
+    /// intent of.
+    #[test]
+    fn the_marker_fixture_is_the_table_it_claims_to_be() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/marker_tokenizer.json"))
+                .expect("the fixture is json");
+        let added = fixture["added_tokens"].as_array().expect("added_tokens");
+        assert_eq!(added.len(), FIXTURE_ADDED.len());
+        for (row, (content, special, _)) in added.iter().zip(FIXTURE_ADDED) {
+            assert_eq!(row["content"].as_str(), Some(*content));
+            assert_eq!(row["special"].as_bool(), Some(*special), "{content:?}");
+        }
+    }
+
+    /// AUDIT L24 + T1, IN THE DEFAULT BUILD. The marker rule over every row of
+    /// the fixture: the FIM/repo fences are masked although their tokenizer
+    /// calls them ordinary, and `<think>`, `<tool_call>`, `\n`, `</div>` stay
+    /// text. This runs on every `cargo test`, weights or not — the real-file
+    /// version in `tests/a_marker_is_not_text.rs` asserted nothing on a machine
+    /// without `~/models`, which is every CI machine.
+    #[test]
+    fn markers_are_found_by_flag_and_by_name() {
+        for (content, special, marker) in FIXTURE_ADDED {
+            assert_eq!(
+                is_marker_token(content, *special),
+                *marker,
+                "{content:?} (special: {special})"
+            );
+        }
+        // The fence shape needs something between the bars, and no spaces: a
+        // literal `<||>` or a sentence that happens to start with `<|` is text.
+        assert!(!is_marker_token("<||>", false));
+        assert!(!is_marker_token("<| not a marker |>", false));
     }
 
     #[test]
