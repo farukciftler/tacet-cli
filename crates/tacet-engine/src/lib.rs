@@ -636,7 +636,10 @@ mod tests {
             full_cap >= 1024,
             "the minimum share was not preserved: {full_cap}"
         );
-        assert!(full_cap + counter.prompt_estimate(&full) <= 4096 + 1024);
+        // INSIDE THE WINDOW, NOT INSIDE "THE WINDOW PLUS A SHARE". This line
+        // used to allow `4096 + 1024`, which wrote the overrun audit L21 found
+        // into the test that was meant to catch it.
+        assert!(full_cap + counter.prompt_estimate(&full) <= 4096);
         // The full prompt's cap must be smaller than the short prompt's cap.
         assert!(full_cap < short_cap);
     }

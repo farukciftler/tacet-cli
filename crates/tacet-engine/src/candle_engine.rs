@@ -134,6 +134,18 @@ const TOOL_CALL_CAP: usize = 2048;
 /// stopped in about thirty seconds at the 15-18 tok/s measured on this
 /// machine, and a value has to repeat one twelve-token block forty-two times
 /// over before it is called stuck.
+///
+/// WHAT THIS STILL ABANDONS, so nobody reads "valid arrays survive" into it.
+/// 504 tokens of exact repetition is 252 elements of `0, ` — an array of 252
+/// identical scalars is written out, one of 253 is abandoned at its 252nd
+/// comma (the review's probe: 300 zeros, stuck at token 506). Wider elements
+/// reach the bar sooner: 168 of an element that costs three tokens with its
+/// comma. That is the trade taken:
+/// counting an array of scalars as content all the way to `TOOL_CALL_CAP` would
+/// make a runaway inside an array cost the full two minutes, and the one
+/// runaway measured inside a value would then be bounded only because it
+/// happened to be in a string. `the_value_bar_is_where_its_comment_says` holds
+/// the 252.
 const IN_VALUE_LOOP_THRESHOLD: usize = TOOL_CALL_CAP / 4 / LOOP_SEQUENCE_LENGTH;
 
 /// Where in a call's JSON arguments each token was written.
@@ -210,6 +222,25 @@ impl CallWatch {
 /// tool name before it is not JSON and must not reach the lexer.
 fn arguments_part(text: &str) -> &str {
     text.split_once('(').map_or(text, |(_, rest)| rest)
+}
+
+/// One structural token through the call's loop detector: is the call stuck?
+///
+/// THE WHOLE STEP, so `run_loop` and the tests run the same lines. The tests of
+/// audit L23 used to drive `CallWatch` through a copy of this wiring of their
+/// own, and the review proved what that cost: `run_loop` was put back to
+/// `is_looping_with(&produced, IN_CALL_LOOP_THRESHOLD)` — the 36-zero
+/// abandonment, exactly — and every test stayed green.
+fn watch_call_token(watch: &mut Option<CallWatch>, vocab: &[String], token: u32) -> bool {
+    let text = vocab.get(token as usize).map_or("", String::as_str);
+    let watch = watch.get_or_insert_with(CallWatch::default);
+    let text = if watch.tokens.is_empty() {
+        arguments_part(text)
+    } else {
+        text
+    };
+    watch.push(token, text);
+    watch.is_stuck()
 }
 
 fn is_looping(produced: &[u32]) -> bool {
@@ -1347,15 +1378,7 @@ SmolLM2 and TinyLlama work; a Llama-3 chat model needs its own template first.",
             // array value the bar is `IN_VALUE_LOOP_THRESHOLD` — a 36-zero
             // array is six repeats too, and it is a valid argument (audit L23).
             if structural {
-                let text = self.vocab.get(token as usize).map_or("", String::as_str);
-                let watch = call_watch.get_or_insert_with(CallWatch::default);
-                let text = if watch.tokens.is_empty() {
-                    arguments_part(text)
-                } else {
-                    text
-                };
-                watch.push(token, text);
-                if watch.is_stuck() {
+                if watch_call_token(&mut call_watch, &self.vocab, token) {
                     stop = StopReason::CallTooLong;
                     break;
                 }
@@ -1795,7 +1818,13 @@ mod window_tests {
     /// shapes candle's `quantized_llama::from_gguf` asks for — which is what lets
     /// the window be checked on the path the shell really takes, without the
     /// 2.5 GB file that path normally needs.
-    fn tiny_llama(name: &str, declared: Option<u32>) -> PathBuf {
+    ///
+    /// IT ALSO RUNS. All-zero weights give all-zero logits, so a constraint
+    /// that leaves one token open decides every step, and `run_loop` can be
+    /// driven token by token with no model in it. The embedding has 32 rows
+    /// because the fixture tokenizer has 30 ids and the ChatML prompt uses the
+    /// high ones (`\n` is 25); a row short and the prefill indexes past the table.
+    pub(super) fn tiny_llama(name: &str, declared: Option<u32>) -> PathBuf {
         let mut metadata = vec![
             ("general.architecture", Value::String("llama".into())),
             ("llama.attention.head_count", Value::U32(2)),
@@ -1813,7 +1842,7 @@ mod window_tests {
             QTensor::quantize(&t, GgmlDType::F32).unwrap()
         };
         let tensors = [
-            ("token_embd.weight", zeros(&[16, 8])),
+            ("token_embd.weight", zeros(&[32, 8])),
             ("output_norm.weight", zeros(&[8])),
             ("blk.0.attn_q.weight", zeros(&[8, 8])),
             ("blk.0.attn_k.weight", zeros(&[8, 8])),
@@ -1834,17 +1863,44 @@ mod window_tests {
         path
     }
 
-    fn load_tiny(path: &Path) -> CandleEngine {
-        let tokenizer = Path::new(env!("CARGO_MANIFEST_DIR"))
+    fn fixture_tokenizer() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
             .join("fixtures")
-            .join("marker_tokenizer.json");
+            .join("marker_tokenizer.json")
+    }
+
+    fn load_tiny(path: &Path) -> CandleEngine {
+        load_tiny_with(path, &fixture_tokenizer())
+    }
+
+    pub(super) fn load_tiny_with(path: &Path, tokenizer: &Path) -> CandleEngine {
         let mut setting = ModelSetting::new(path, tokenizer);
         setting.device = Device::Cpu;
         match CandleEngine::load(&setting) {
             Ok(engine) => engine,
             Err(e) => panic!("the tiny llama did not load: {e}"),
         }
+    }
+
+    /// The fixture tokenizer with two of its plain words swapped for `[` and
+    /// `]`, written next to the tiny model. A call's array needs its brackets
+    /// to be tokens the engine can be made to write, and the fixture itself is
+    /// left as the marker tests read it.
+    pub(super) fn bracket_tokenizer(name: &str) -> PathBuf {
+        let text = std::fs::read_to_string(fixture_tokenizer()).unwrap();
+        let mut json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let vocab = json["model"]["vocab"].as_object_mut().unwrap();
+        vocab.remove("the");
+        vocab.remove("Merhaba");
+        vocab.insert("[".into(), 1.into());
+        vocab.insert("]".into(), 2.into());
+        let path = std::env::temp_dir().join(format!(
+            "tacet-tokenizer-{}-{name}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, json.to_string()).unwrap();
+        path
     }
 
     /// AUDIT L21, THROUGH `load`: the helper tests above stay green if `load`
@@ -1920,6 +1976,111 @@ mod window_tests {
             gguf_runnable_context_length(Path::new("/definitely/not/here.gguf")),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod call_watch_through_generate {
+    use super::window_tests::{bracket_tokenizer, load_tiny_with, tiny_llama};
+    use super::*;
+    use crate::provider::StopReason;
+    use tacet_kernel::{ConstraintError, ConstraintSession};
+
+    /// A constraint that leaves exactly one token open per step — the next one
+    /// in its script — and calls the whole of it a call's arguments.
+    struct Scripted(Vec<u32>);
+
+    struct ScriptedSession {
+        script: Vec<u32>,
+        at: usize,
+    }
+
+    impl Constrainer for Scripted {
+        fn session(&self) -> Box<dyn ConstraintSession> {
+            Box::new(ScriptedSession {
+                script: self.0.clone(),
+                at: 0,
+            })
+        }
+    }
+
+    impl ConstraintSession for ScriptedSession {
+        fn mask(&self, logits: &mut [f32]) {
+            let open = self.script.get(self.at).map(|t| *t as usize);
+            for (id, logit) in logits.iter_mut().enumerate() {
+                if Some(id) != open {
+                    *logit = f32::NEG_INFINITY;
+                }
+            }
+        }
+
+        fn advance(&mut self, token: u32) -> Result<(), ConstraintError> {
+            if self.script.get(self.at) != Some(&token) {
+                return Err(ConstraintError::Violation(token));
+            }
+            self.at += 1;
+            Ok(())
+        }
+
+        fn is_done(&self) -> bool {
+            self.at == self.script.len()
+        }
+
+        fn is_structural(&self) -> bool {
+            true
+        }
+    }
+
+    /// AUDIT L23 THROUGH `run_loop`. The `CallWatch` tests below drive the
+    /// detector directly; the review showed they stay green with `run_loop`
+    /// put back to `is_looping_with(&produced, IN_CALL_LOOP_THRESHOLD)`, which
+    /// abandons this exact call at its thirty-sixth zero. Here the engine
+    /// writes `[0,0,…,0]` — a hundred zeros, two hundred tokens, every one of
+    /// them inside the call's arguments — and has to finish it.
+    #[test]
+    fn a_hundred_zero_array_is_written_to_the_end_by_the_engine() {
+        let model = tiny_llama("call-watch", Some(4096));
+        let tokenizer = bracket_tokenizer("call-watch");
+        let engine = load_tiny_with(&model, &tokenizer);
+        let id = |text: &str| {
+            engine
+                .vocab
+                .iter()
+                .position(|v| v == text)
+                .unwrap_or_else(|| panic!("{text:?} is not in the tiny vocabulary"))
+                as u32
+        };
+        let (open, zero, comma, close) = (id("["), id("0"), id(","), id("]"));
+        let mut script = vec![open];
+        for i in 0..100 {
+            if i > 0 {
+                script.push(comma);
+            }
+            script.push(zero);
+        }
+        script.push(close);
+
+        let prompt = Prompt::new("sys", "the");
+        let generation = crate::executor::wait(engine.generate(
+            &prompt,
+            Some(&Scripted(script.clone())),
+            SamplingSetting {
+                max_tokens: 4 * script.len(),
+                ..Default::default()
+            },
+        ))
+        .unwrap_or_else(|e| panic!("the tiny engine failed: {e}"));
+        let _ = std::fs::remove_file(&model);
+        let _ = std::fs::remove_file(&tokenizer);
+
+        assert_eq!(
+            generation.stop,
+            StopReason::ConstraintDone,
+            "a valid 100-zero array was abandoned after {} of {} tokens",
+            generation.token_count,
+            script.len()
+        );
+        assert_eq!(generation.token_count, script.len());
     }
 }
 
@@ -2030,7 +2191,7 @@ mod budget_and_backstop {
     use super::{
         CallWatch, IN_CALL_LOOP_THRESHOLD, IN_VALUE_LOOP_THRESHOLD, LOOP_SEQUENCE_LENGTH,
         LOOP_THRESHOLD, TOOL_CALL_CAP, arguments_part, backstop_runs, call_over_budget, is_looping,
-        is_looping_with,
+        is_looping_with, watch_call_token,
     };
 
     /// THE BUG, AS AN ASSERTION. A constraint can be present and constraining
@@ -2107,23 +2268,22 @@ mod budget_and_backstop {
         );
     }
 
-    /// Feeds `pieces` to a fresh watch the way `run_loop` does — the first one
-    /// is the arming token, cut at `(` — and returns the index of the token at
-    /// which the call was declared stuck, if it was.
+    /// Feeds `pieces` through `watch_call_token` — the step `run_loop` takes
+    /// for every structural token — over a vocabulary made of the pieces
+    /// themselves, and returns the index of the token at which the call was
+    /// declared stuck, if it was.
     fn first_stuck(pieces: &[&str]) -> Option<usize> {
-        let mut ids: Vec<&str> = Vec::new();
-        let mut watch = CallWatch::default();
+        let mut vocab: Vec<String> = Vec::new();
+        let mut watch = None;
         for (i, piece) in pieces.iter().enumerate() {
-            let id = match ids.iter().position(|p| p == piece) {
+            let id = match vocab.iter().position(|p| p == piece) {
                 Some(id) => id,
                 None => {
-                    ids.push(piece);
-                    ids.len() - 1
+                    vocab.push((*piece).to_string());
+                    vocab.len() - 1
                 }
             } as u32;
-            let text = if i == 0 { arguments_part(piece) } else { piece };
-            watch.push(id, text);
-            if watch.is_stuck() {
+            if watch_call_token(&mut watch, &vocab, id) {
                 return Some(i);
             }
         }
@@ -2166,6 +2326,35 @@ mod budget_and_backstop {
         }
         pieces.push("\"})");
         assert_eq!(first_stuck(&pieces), None);
+    }
+
+    /// THE LIMIT IN THE `IN_VALUE_LOOP_THRESHOLD` COMMENT, MEASURED. An array
+    /// of one-token scalars survives to 252 elements and is abandoned at 253:
+    /// the bar is 504 tokens of exact repetition and the brackets are not part
+    /// of it. If the bar moves, this and the comment move together.
+    #[test]
+    fn the_value_bar_is_where_its_comment_says() {
+        let array = |n: usize| {
+            let mut pieces = vec!["f({\"a\":["];
+            for i in 0..n {
+                if i > 0 {
+                    pieces.push(",");
+                }
+                pieces.push("0");
+            }
+            pieces.push("]})");
+            pieces
+        };
+        assert_eq!(
+            first_stuck(&array(252)),
+            None,
+            "252 identical scalars were abandoned"
+        );
+        assert!(
+            first_stuck(&array(253)).is_some(),
+            "253 identical scalars now survive — update the limit in the \
+             IN_VALUE_LOOP_THRESHOLD comment"
+        );
     }
 
     /// The other half of L23, and the reason the bar inside a value is higher

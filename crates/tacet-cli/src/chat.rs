@@ -951,7 +951,23 @@ pub fn chat(run: ChatRun) -> ExitCode {
             if let Some(m) = &memory_text {
                 prompt = prompt.with_memory(m);
             }
-            let report = counter.truncate(&mut prompt);
+            // `fit`, NOT `truncate` ALONE (audit L21, second pass). The shell
+            // truncated and never validated, so a prompt whose instructions and
+            // tool descriptions were over the cap on their own went to the model
+            // with the question cut to nothing and a generation cap past the
+            // window — on a 2048-token model, every turn. Nothing is sent now;
+            // the turn ends the way an engine error ends it, with the numbers.
+            let report = match counter.fit(&mut prompt) {
+                Ok(report) => report,
+                Err(e) => {
+                    let refusal = window_refusal(&e, counter.budget);
+                    eprintln!("\n{}", color.paint(YELLOW, &refusal));
+                    turn_error = Some(refusal);
+                    any_turn_failed = true;
+                    settled = true;
+                    break;
+                }
+            };
             turn_prompt += report.final_estimate;
             // The context-fullness measure is the size of the LAST prompt: that
             // is the room left in the window, not a cumulative total.
@@ -1654,6 +1670,26 @@ pub fn chat(run: ChatRun) -> ExitCode {
 /// binary that runs a model and one that cannot, and that difference has
 /// already cost a user an afternoon: `cargo install` does not remember
 /// `--features`, so the same version number can mean either program.
+/// What the user reads when a turn is refused for the window.
+///
+/// It names the two numbers and the way out, because the only fix is outside
+/// the conversation: the instructions and tool descriptions are never cut (a cut
+/// instruction makes the model forget who it is), so a shorter question or a
+/// `/clear` changes nothing, and saying only "budget exceeded" sends the user to
+/// try exactly those.
+fn window_refusal(error: &tacet_engine::EngineError, window: usize) -> String {
+    match error {
+        tacet_engine::EngineError::BudgetExceeded { measured, budget } => format!(
+            "not sent: this model's window is {window} tokens, and the instructions \
+             and tool descriptions alone come to ~{measured} of the {budget} a prompt \
+             may take before the room kept for the answer. Your question was not \
+             cut. A model with a larger context window is needed (or fewer MCP \
+             tools)."
+        ),
+        other => format!("not sent: {other}"),
+    }
+}
+
 pub fn version_line() -> String {
     format!(
         "tacet {} ({})",
@@ -2312,5 +2348,52 @@ mod sampling_tests {
             .line()
             .is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod window_refusal_tests {
+    use super::*;
+
+    /// AUDIT L21, THE CALL SITE. `TokenCounter::fit` is tested in the engine;
+    /// what is tested here is that the shell's turn loop is what calls it. The
+    /// loop is one 1500-line function with a terminal on both ends and no
+    /// seam to drive it through, so the guard reads the source: the bug was a
+    /// `truncate` with no `validate` after it, and that is a fact about this
+    /// file's text. Reverting the call to `counter.truncate(&mut prompt)` turns
+    /// this red.
+    #[test]
+    fn the_turn_loop_fits_the_prompt_instead_of_only_truncating_it() {
+        let source = include_str!("chat.rs");
+        let body = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the file has a body");
+        assert!(
+            body.contains("counter.fit(&mut prompt)"),
+            "the turn loop no longer calls `TokenCounter::fit`"
+        );
+        assert!(
+            !body.contains("counter.truncate(&mut prompt)"),
+            "the turn loop truncates without refusing what still does not fit — \
+             a fixed part over the cap would go out with the question deleted"
+        );
+    }
+
+    /// The refusal names the window and the measured size, and says the
+    /// question was left alone — the user's next move depends on knowing that
+    /// a shorter question will not help.
+    #[test]
+    fn the_refusal_names_the_window_and_the_fixed_part() {
+        let text = window_refusal(
+            &tacet_engine::EngineError::BudgetExceeded {
+                measured: 1312,
+                budget: 1024,
+            },
+            2048,
+        );
+        for needle in ["2048", "1312", "1024", "not cut", "larger context window"] {
+            assert!(text.contains(needle), "{needle:?} missing from: {text}");
+        }
     }
 }

@@ -216,6 +216,10 @@ pub struct TruncationReport {
     pub question_truncated: bool,
     /// The estimated token count after truncation.
     pub final_estimate: usize,
+    /// The part truncation may not touch — system block, tool descriptions,
+    /// note, memory — is over the prompt cap ON ITS OWN. The question was left
+    /// whole and the prompt does not fit; the turn cannot run (see `fit`).
+    pub fixed_part_too_large: bool,
 }
 
 impl TruncationReport {
@@ -249,17 +253,25 @@ impl TokenCounter {
     /// tool was NEVER called.
     ///
     /// The share is now only the MINIMUM room truncation reserves; the cap is
-    /// derived from the REAL length of the prompt. Since `truncate` fits the
-    /// prompt into `prompt_cap()`, the result is always `generation_share` or
-    /// more — i.e. this change NEVER SHRINKS the cap under any condition.
+    /// derived from the REAL length of the prompt. A prompt `fit` accepted is
+    /// inside `prompt_cap()`, so its cap is `generation_share` or more.
+    ///
+    /// THE CAP NEVER REACHES PAST THE WINDOW (audit L21, second pass). It used to
+    /// end in `.max(generation_share)`, which is a no-op for a fitted prompt and
+    /// a lie for any other: when the fixed part alone was over the prompt cap,
+    /// the answer was 1024 however little room was left. Measured through
+    /// `context_budget` + `truncate` + this: a 2048-token window with a
+    /// 1300-token system came to 2346 positions, and the shell's own ~2586-token
+    /// prompt to 3632; a 4096 window (SmolLM2 after the rope-table cut) with a
+    /// 3300-token system came to 4346 — past candle llama's 4096 table, where
+    /// every forward fails. A prompt that does not leave the minimum is refused
+    /// by `fit`; it is not handed a cap the window does not have.
     ///
     /// The estimate is deliberately biased HIGH (see `BYTE_NUMERATOR`), so the
     /// cap comes out slightly SMALLER than the room actually left; losing a few
     /// tokens is the right trade against overflowing the window.
     pub fn generation_cap(&self, prompt: &Prompt) -> usize {
-        self.budget
-            .saturating_sub(self.prompt_estimate(prompt))
-            .max(self.generation_share)
+        self.budget.saturating_sub(self.prompt_estimate(prompt))
     }
 
     /// Rough token estimate.
@@ -368,6 +380,19 @@ impl TokenCounter {
         // binary search is exact; ~20 estimates for a megabyte question.
         if self.prompt_estimate(prompt) > cap {
             let original = std::mem::take(&mut prompt.question);
+            // AN EMPTY QUESTION THAT STILL DOES NOT FIT means the fixed part is
+            // the problem, and cutting the question cannot solve it. This branch
+            // used to cut anyway, all the way to nothing — so on a 2048-token
+            // window every turn reached the model with the user's question
+            // deleted, over the window regardless (audit L21, second pass). The
+            // question is put back whole and the report says why; `fit` turns
+            // that into a refusal the user can read.
+            if self.prompt_estimate(prompt) > cap {
+                prompt.question = original;
+                report.fixed_part_too_large = true;
+                report.final_estimate = self.prompt_estimate(prompt);
+                return report;
+            }
             let (mut fits, mut too_long) = (0, original.len());
             while too_long - fits > 1 {
                 let middle = fits + (too_long - fits) / 2;
@@ -384,6 +409,22 @@ impl TokenCounter {
 
         report.final_estimate = self.prompt_estimate(prompt);
         report
+    }
+
+    /// `truncate`, then REFUSE what still does not fit — the call the shell
+    /// makes.
+    ///
+    /// ONE CALL, NOT TWO, because two is what the shell had and it made one of
+    /// them: it truncated and never validated, so a prompt whose fixed part was
+    /// over the cap went to the model with its question cut to nothing and a
+    /// generation cap reaching past the window (audit L21, second pass). After
+    /// `truncate` the only prompt left over the cap is one whose system block,
+    /// tools, note and memory are over it alone; no amount of history or
+    /// question removal helps it, and the error says how far over it is.
+    pub fn fit(&self, prompt: &mut Prompt) -> crate::error::EngineResult<TruncationReport> {
+        let report = self.truncate(prompt);
+        self.validate(prompt)?;
+        Ok(report)
     }
 
     /// If it still does not fit after truncation, error — the call site must not
@@ -643,5 +684,75 @@ mod budget_tests {
             context_budget(Some(2048), Some(usize::MAX), Device::Cuda),
             2048
         );
+    }
+
+    /// AUDIT L21, SECOND PASS: the window is the window for the WHOLE turn, the
+    /// prompt and what is generated after it.
+    ///
+    /// The three cases are the review's probe, through the same three calls the
+    /// shell makes: a 2048-token model (TinyLlama) under a 1300-token system and
+    /// under the shell's measured ~2586-token prompt, and a 4096-token one
+    /// (SmolLM2 after the rope-table cut) under 3300. In each the fixed part is
+    /// over the prompt cap on its own. Before: the question was cut to "" and
+    /// `generation_cap` still answered 1024, landing at 2346, 3632 and 4346
+    /// positions. After: the question is untouched, the cap stays inside the
+    /// window, and `fit` refuses the turn.
+    #[test]
+    fn a_fixed_part_over_the_cap_is_refused_not_run_past_the_window() {
+        const QUESTION: &str = "what is in this folder?";
+        for (declared, system_tokens) in [(2048, 1300), (2048, 2586), (4096, 3300)] {
+            let window = context_budget(Some(declared), Some(1_000), Device::Cpu);
+            assert_eq!(window, declared, "the window is not the model's");
+            let counter = TokenCounter::new(window, GENERATION_SHARE);
+            // "word " is five bytes, two tokens at the prose ratio.
+            let system = "word ".repeat(system_tokens / 2);
+            assert_eq!(TokenCounter::estimate(&system), system_tokens);
+            let mut prompt = Prompt::new(&system, QUESTION);
+            let report = counter.truncate(&mut prompt);
+            assert_eq!(
+                prompt.question, QUESTION,
+                "{declared}/{system_tokens}: the user's question was cut to {:?}",
+                prompt.question
+            );
+            assert!(report.fixed_part_too_large && !report.question_truncated);
+            assert_eq!(report.final_estimate, counter.prompt_estimate(&prompt));
+            // The cap may add nothing past the window. A prompt already over
+            // it (2586 in 2048) gets no generation at all, not a share on top.
+            let estimate = counter.prompt_estimate(&prompt);
+            let cap = counter.generation_cap(&prompt);
+            assert!(
+                cap <= window.saturating_sub(estimate),
+                "{declared}/{system_tokens}: a {estimate}-token prompt with a \
+                 {cap}-token generation cap is {} positions in a {window}-token window",
+                estimate + cap
+            );
+            match counter.fit(&mut prompt) {
+                Err(crate::error::EngineError::BudgetExceeded { measured, budget }) => {
+                    assert!(measured > budget && budget == counter.prompt_cap());
+                }
+                other => panic!("{declared}/{system_tokens}: the turn was not refused: {other:?}"),
+            }
+            assert_eq!(prompt.question, QUESTION, "fit deleted the question");
+        }
+    }
+
+    /// The other side of the refusal: a fixed part that FITS still runs, with
+    /// the question cut from the front as before and at least the minimum share
+    /// left for the answer. The refusal is for prompts the window cannot hold,
+    /// not for every prompt that needed cutting.
+    #[test]
+    fn a_fixed_part_that_fits_is_still_fitted_and_run() {
+        let counter = TokenCounter::new(2048, GENERATION_SHARE);
+        let system = "word ".repeat(400); // 800 of a 1024 cap
+        let question = format!("{} THE REAL REQUEST", "preamble ".repeat(400));
+        let mut prompt = Prompt::new(&system, question.as_str());
+        let report = counter
+            .fit(&mut prompt)
+            .expect("a fitting fixed part was refused");
+        assert!(report.question_truncated && !report.fixed_part_too_large);
+        assert!(prompt.question.ends_with("THE REAL REQUEST"));
+        let cap = counter.generation_cap(&prompt);
+        assert!(cap >= GENERATION_SHARE, "only {cap} left for the answer");
+        assert!(counter.prompt_estimate(&prompt) + cap <= 2048);
     }
 }
