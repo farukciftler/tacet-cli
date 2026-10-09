@@ -175,7 +175,22 @@ const NO_DIFF_PROGRAMS: [&str; 2] = ["--no-ext-diff", "--no-textconv"];
 /// different commit" (read in-process from the submodule's refs) and gives up
 /// only "something inside it is modified". Measured by
 /// `a_submodules_own_config_cannot_run_a_filter`.
+///
+/// `dirty` ALONE IS NOT ENOUGH for a submodule whose commit changed: see
+/// `SUBMODULE_AS_HASHES`, which `diff` carries next to this.
 const SUBMODULES_BY_COMMIT: &str = "--ignore-submodules=dirty";
+
+/// A submodule whose COMMIT moved is shown as two hashes, never as a patch.
+///
+/// `dirty` above covers only a submodule whose WORK TREE changed. When its
+/// commit changed, `diff.submodule=diff` in the repository's config makes
+/// `git diff` start a child `git diff` inside the submodule; that child reads
+/// the submodule's own config and does not inherit `--no-ext-diff` or
+/// `--no-textconv`, so the submodule's `diff.external` and textconv ran.
+/// The flag beats the config key. Measured by
+/// `a_repository_cannot_make_diff_run_inside_a_submodule`: without it the
+/// test saw `["sub-ext"]`.
+const SUBMODULE_AS_HASHES: &str = "--submodule=short";
 
 /// Environment variables the neutralizing `--config-env` entries read from.
 ///
@@ -605,6 +620,7 @@ fn diff(program: &str, dir: &Path) -> ToolResult<Report> {
             NO_DIFF_PROGRAMS[0],
             NO_DIFF_PROGRAMS[1],
             SUBMODULES_BY_COMMIT,
+            SUBMODULE_AS_HASHES,
             base,
             "--numstat",
             HERE[0],
@@ -652,6 +668,7 @@ fn diff(program: &str, dir: &Path) -> ToolResult<Report> {
             NO_DIFF_PROGRAMS[0],
             NO_DIFF_PROGRAMS[1],
             SUBMODULES_BY_COMMIT,
+            SUBMODULE_AS_HASHES,
             base,
             HERE[0],
             HERE[1],
@@ -1652,6 +1669,94 @@ mod tests {
             assert_nothing_ran(&markers, action);
         }
         std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&markers).ok();
+    }
+
+    /// THE BYPASS THE FIRST H6 FIX MISSED (found by review): with
+    /// `diff.submodule=diff` in the OUTER config, `git diff` shows a moved
+    /// submodule by starting a child `git diff` inside it. That child reads the
+    /// submodule's own config (`.git/modules/sub/config`) and does NOT inherit
+    /// `--no-ext-diff`/`--no-textconv`, so the submodule's `diff.external` and
+    /// `diff.<driver>.textconv` both ran. `--ignore-submodules=dirty` does not
+    /// help: the submodule's COMMIT really did change.
+    ///
+    /// `status.submoduleSummary` is the same shape for `status` (a child
+    /// `git submodule summary`), so it is set too and `status` is measured.
+    #[test]
+    fn a_repository_cannot_make_diff_run_inside_a_submodule() {
+        let root = temp_dir("h6-subdiff");
+        let source = temp_dir("h6-subdiff-source");
+        let markers = temp_dir("h6-subdiff-markers");
+        init_repo(&source);
+        write(&source, ".gitattributes", "*.txt diff=tx\n");
+        write(&source, "inner.txt", "inside\n");
+        commit(&source, "sub first");
+
+        init_repo(&root);
+        write(&root, "top.txt", "top\n");
+        commit(&root, "super first");
+        // A REAL submodule, so its config lives in `.git/modules/sub/config` —
+        // the place the review measured. `protocol.file.allow` only lets this
+        // FIXTURE clone from a local folder; the tool never clones.
+        git_fixture(
+            &root,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "-q",
+                &source.to_string_lossy(),
+                "sub",
+            ],
+        );
+        commit(&root, "add sub");
+
+        // Move the submodule's HEAD one commit: the change `dirty` still shows.
+        let sub = root.join("sub");
+        write(&sub, "inner.txt", "inside\nmoved\n");
+        commit(&sub, "sub second");
+
+        git_fixture(
+            &sub,
+            &[
+                "config",
+                "diff.external",
+                &format!("touch '{}'; true", markers.join("sub-ext").display()),
+            ],
+        );
+        git_fixture(
+            &sub,
+            &[
+                "config",
+                "diff.tx.textconv",
+                &touch_then_cat(&markers.join("sub-textconv")),
+            ],
+        );
+        git_fixture(&root, &["config", "diff.submodule", "diff"]);
+        git_fixture(&root, &["config", "status.submoduleSummary", "true"]);
+
+        let (outcome, _, _) = call(&root, "diff");
+        assert_nothing_ran(&markers, "diff (diff.submodule=diff)");
+        // The moved submodule is still REPORTED — by commit, not by its patch.
+        assert!(outcome.to_model.contains("sub"), "{}", outcome.to_model);
+
+        // `diff.external` shadows the textconv (measured by the review: the
+        // textconv marker appeared only once `diff.external` was unset), so
+        // the textconv is measured on its own.
+        git_fixture(&sub, &["config", "--unset", "diff.external"]);
+        for action in ["diff", "status", "log"] {
+            let (outcome, _, _) = call(&root, action);
+            assert!(
+                matches!(outcome.state, ToolState::Read),
+                "{action}: {:?} {}",
+                outcome.state,
+                outcome.to_model
+            );
+            assert_nothing_ran(&markers, action);
+        }
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&source).ok();
         std::fs::remove_dir_all(&markers).ok();
     }
 
