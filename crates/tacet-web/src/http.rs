@@ -260,6 +260,20 @@ impl HttpClient {
                 "{endpoint} is not in the allowed API host list"
             )));
         }
+        // THE TRANSPORT GETS A SAY. `endpoint_of` is this file's own reading of
+        // the address; `ureq` dials what `http::Uri` reads. The two disagreed
+        // once (`[v6]x:22`, see `host_of`), and a second disagreement nobody
+        // has found yet would be the same hole — so the endpoint the request
+        // will really go to must be the one that was just allowed.
+        match dialed_endpoint(url) {
+            Some(dialed) if dialed == endpoint => {}
+            dialed => {
+                return Err(WebError::InvalidAddress(format!(
+                    "the address reads as {endpoint} here but would be dialled as {}: {url}",
+                    dialed.as_deref().unwrap_or("nothing")
+                )));
+            }
+        }
         target_is_public(url)
     }
 
@@ -458,9 +472,29 @@ pub fn endpoint_of(url: &str) -> Option<String> {
     };
     let port: u16 = match port_text {
         None => 443,
-        Some(p) => p.parse().ok()?,
+        // DIGITS ONLY: `str::parse::<u16>` also takes a leading `+`, and a
+        // port the transport reads differently is a port the list never saw.
+        Some(p) if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) => p.parse().ok()?,
+        Some(_) => return None,
     };
     Some(match port {
+        443 => host,
+        p if host.contains(':') => format!("[{host}]:{p}"),
+        p => format!("{host}:{p}"),
+    })
+}
+
+/// The endpoint the TRANSPORT will connect to, in `endpoint_of`'s normal
+/// form: read by the same `http::Uri` parser `ureq` dials with. `None` when
+/// that parser refuses the text or finds no host.
+fn dialed_endpoint(url: &str) -> Option<String> {
+    let uri: ureq::http::Uri = url.parse().ok()?;
+    let host = uri.host()?.to_ascii_lowercase();
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .map_or(host.clone(), str::to_string);
+    Some(match uri.port_u16().unwrap_or(443) {
         443 => host,
         p if host.contains(':') => format!("[{host}]:{p}"),
         p => format!("{host}:{p}"),
@@ -497,8 +531,21 @@ pub fn host_of(url: &str) -> Option<String> {
         return None;
     }
     // An IPv6 literal is bracketed and the brackets are not part of the host.
+    //
+    // WHAT FOLLOWS `]` IS NOTHING OR `:<digits>` — anything else is not an
+    // address (audit L8, review of 10 Oct 2026). `https://[2606:2800:220:1::]x:22/`
+    // used to read here as "that host, no port" (443), while the transport's
+    // URI parser reads the same text as port 22: an allow-list entry for the
+    // v6 host let the request body go to any port on it.
     if let Some(bracketed) = authority.strip_prefix('[') {
-        let (host, _) = bracketed.split_once(']')?;
+        let (host, tail) = bracketed.split_once(']')?;
+        let tail_is_a_port = match tail.strip_prefix(':') {
+            Some(port) => !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()),
+            None => tail.is_empty(),
+        };
+        if !tail_is_a_port {
+            return None;
+        }
         return Some(host.to_ascii_lowercase());
     }
     let host = match authority.rsplit_once(':') {
@@ -653,6 +700,7 @@ mod tests {
             "https://user@93.184.216.34:6379/",
             // A port that is not a number is not "the default".
             "https://93.184.216.34:abc/",
+            "https://93.184.216.34:+22/",
         ] {
             let e = c.check(url).unwrap_err();
             assert!(
@@ -665,6 +713,20 @@ mod tests {
         for url in ["https://93.184.216.34/v1", "https://93.184.216.34:443/v1"] {
             assert!(c.check(url).is_ok(), "{url}: {:?}", c.check(url));
         }
+
+        // A v6 LITERAL with junk between `]` and the port (review of 10 Oct
+        // 2026): `http::Uri`, which ureq dials with, reads port 22 here.
+        let v6 = HttpClient::with_hosts(["[2606:2800:220:1::]"]);
+        for url in [
+            "https://[2606:2800:220:1::]x:22/",
+            "https://[2606:2800:220:1::]:22/",
+            "https://[2606:2800:220:1::]:/",
+            "https://[2606:2800:220:1::]x/",
+        ] {
+            assert!(v6.check(url).is_err(), "{url} got past the closed set");
+        }
+        assert!(v6.check("https://[2606:2800:220:1::]/v1").is_ok());
+        assert!(v6.check("https://[2606:2800:220:1::]:443/v1").is_ok());
 
         // An entry that NAMES a port allows that port — and not 443.
         let c = HttpClient::with_hosts(["93.184.216.34:8443"]);
@@ -682,6 +744,36 @@ mod tests {
         assert_eq!(endpoint_of("https://A.test/x").as_deref(), Some("a.test"));
         assert_eq!(endpoint_of("https://[::1]/x").as_deref(), Some("::1"));
         assert_eq!(endpoint_of("https://a.test:99999/x"), None);
+        // What follows `]` is nothing or `:<digits>`; `+22` is not digits.
+        assert_eq!(endpoint_of("https://[::1]x:22/"), None);
+        assert_eq!(host_of("https://[::1]x:22/"), None);
+        assert_eq!(endpoint_of("https://a.test:+22/"), None);
+        assert_eq!(
+            endpoint_of("https://[::1]:22/").as_deref(),
+            Some("[::1]:22")
+        );
+    }
+
+    /// The gate and the transport read every address the same way. The
+    /// hostile half is the list a reviewer tried by hand; `dialed_endpoint`
+    /// is what `ureq` will connect to.
+    #[test]
+    fn the_gate_reads_an_address_the_way_the_transport_dials_it() {
+        for url in [
+            "https://a.test/x",
+            "https://A.Test:8443/x?y#z",
+            "https://user@a.test:22/",
+            "https://[2606:2800:220:1::]/",
+            "https://[2606:2800:220:1::]:9000/v1",
+            "https://93.184.216.34:443/",
+        ] {
+            assert_eq!(endpoint_of(url), dialed_endpoint(url), "{url}");
+        }
+        assert_eq!(
+            dialed_endpoint("https://[2606:2800:220:1::]x:22/").as_deref(),
+            Some("[2606:2800:220:1::]:22"),
+            "the transport's reading changed; re-measure the L8 bypass"
+        );
     }
 
     #[test]

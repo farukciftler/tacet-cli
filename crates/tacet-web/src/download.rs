@@ -489,7 +489,7 @@ fn download_via(
         }
     };
     let remaining = body_length(&response);
-    let total = remaining.map(|r| start + r).or(plan.expected_bytes);
+    let total = declared_total(start, remaining, plan.expected_bytes);
 
     let mut file = if resumed {
         fs::OpenOptions::new().append(true).open(&temp)
@@ -514,7 +514,7 @@ fn download_via(
     // pointing at the wrong file — could fill the disk before `SizeMismatch`
     // ever got to speak. The 32 GiB wall stays for the one case with no
     // declared size.
-    let cap = plan.expected_bytes.map(|e| (e + 1).saturating_sub(start));
+    let cap = body_cap(plan.expected_bytes, start);
     let reader = response
         .into_body()
         .into_with_config()
@@ -749,6 +749,26 @@ fn body_budget(expected_bytes: Option<u64>) -> Duration {
     }
 }
 
+/// How many body bytes this run may read: one past what the declared size
+/// leaves after `start`, or no cap when nothing was declared.
+///
+/// SATURATING, because `expected_bytes` comes from `packages.json` and
+/// `u64::MAX` is a value it can carry (review of 10 Oct 2026): `e + 1`
+/// panicked in a debug build and wrapped to a cap of 0 in a release one, so the
+/// run read nothing and blamed the source with a `TooShort`.
+fn body_cap(expected_bytes: Option<u64>, start: u64) -> Option<u64> {
+    expected_bytes.map(|e| e.saturating_add(1).saturating_sub(start))
+}
+
+/// The object's whole size for the progress line: where the body starts plus
+/// its `Content-Length`, else the catalog's figure. Saturating for the same
+/// reason as `body_cap` — the `Content-Length` is the server's to choose.
+fn declared_total(start: u64, remaining: Option<u64>, expected_bytes: Option<u64>) -> Option<u64> {
+    remaining
+        .map(|r| start.saturating_add(r))
+        .or(expected_bytes)
+}
+
 /// What the resume decision is based on, made BEFORE anything goes online.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Basis {
@@ -813,14 +833,27 @@ fn resume_basis(plan: &DownloadPlan, leftover: u64, record: Option<&ResumeRecord
 ///
 /// `If-Range` alone trusts the server to compare; a server — or a cache in
 /// front of one — that ignores the header answers `206` for whatever object it
-/// now holds. When it names that object, a different name is the proof. A
-/// `206` with NO ETag is accepted: the server evaluated the header we sent and
-/// gave no reason to doubt it, and a source that never sends one could
-/// otherwise never be resumed.
+/// now holds. When it names that object, a different name is the proof.
+///
+/// A `206` WITH NO ETAG IS REFUSED TOO, and that reverses the first version of
+/// this function, which accepted it as "no reason to doubt". It was measured
+/// (review of 10 Oct 2026): a record of `"v0.2.0"`, a leftover of v0.2.0, and a
+/// server that ignored `If-Range` and sent a `206` of v0.3.0 with a matching
+/// `Content-Range` and no ETag — `download_via` installed
+/// `OLD-RElease-v0.3.0-BYTES`, the audit's splice. RFC 9110 §15.3.7 requires
+/// a `206` to carry the ETag a `200` would have carried, and the only reason a
+/// validator was sent is that the `200` did carry one. Nothing is lost: the
+/// leftover is dropped, so the next run downloads the whole object.
+///
+/// With nothing asked (`None`, a resume guarded by the expected SHA-256) there
+/// is nothing to compare and the digest does the work.
 fn same_object(asked: Option<&str>, served: Option<&str>) -> Result<(), String> {
     match (asked, served) {
         (Some(asked), Some(served)) if asked.trim() != served.trim() => Err(format!(
             "the source now serves another version of the file (ETag {served}, the half file was {asked})"
+        )),
+        (Some(asked), None) => Err(format!(
+            "the source continued the half file without naming its version (the half file was ETag {asked})"
         )),
         _ => Ok(()),
     }
@@ -1516,6 +1549,21 @@ mod tests {
         );
     }
 
+    /// A declared size at the edge of `u64` (review of 10 Oct 2026). Before
+    /// the fix `body_cap(Some(u64::MAX), 0)` panicked with "attempt to add
+    /// with overflow" in this (debug) build; a release build got `Some(0)`.
+    #[test]
+    fn a_declared_size_at_the_top_of_u64_does_not_overflow_the_cap() {
+        assert_eq!(body_cap(Some(u64::MAX), 0), Some(u64::MAX));
+        assert_eq!(body_cap(Some(u64::MAX), 6), Some(u64::MAX - 6));
+        assert_eq!(body_cap(Some(10), 0), Some(11));
+        assert_eq!(body_cap(Some(10), 4), Some(7));
+        assert_eq!(body_cap(None, 4), None);
+        assert_eq!(declared_total(6, Some(u64::MAX), None), Some(u64::MAX));
+        assert_eq!(declared_total(6, Some(4), Some(99)), Some(10));
+        assert_eq!(declared_total(6, None, Some(99)), Some(99));
+    }
+
     #[test]
     fn a_weak_etag_is_never_kept_as_a_resume_validator() {
         let plan = plan_for("https://m.test/a", Path::new("/x"), None, None);
@@ -1527,7 +1575,9 @@ mod tests {
         );
         assert!(same_object(Some("\"v1\""), Some("\"v2\"")).is_err());
         assert!(same_object(Some("\"v1\""), Some("\"v1\"")).is_ok());
-        assert!(same_object(Some("\"v1\""), None).is_ok());
+        // Asked, and the 206 names nothing: refused (review of 10 Oct 2026).
+        assert!(same_object(Some("\"v1\""), None).is_err());
+        assert!(same_object(None, None).is_ok());
         assert!(same_object(None, Some("\"v2\"")).is_ok());
     }
 
@@ -1852,6 +1902,85 @@ mod tests {
             assert!(!target.exists());
             assert!(!temp_path(&target).exists());
             assert!(!resume_record_path(&target).exists());
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        /// A server that ignores `If-Range` AND leaves the ETag off its `206`
+        /// (review of 10 Oct 2026). Nothing in the answer names the object,
+        /// so nothing may be spliced onto the leftover; before the fix this
+        /// shape installed `OLD-RElease-v0.3.0-BYTES`.
+        #[test]
+        fn a_206_that_names_no_etag_after_if_range_is_never_spliced() {
+            let server = serve(|head| {
+                Reply::Close(match range_start(head) {
+                    Some(from) => {
+                        let mut r = format!(
+                            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {from}-{}/{}\r\nConnection: close\r\n\r\n",
+                            V2.len() - from,
+                            V2.len() - 1,
+                            V2.len()
+                        )
+                        .into_bytes();
+                        r.extend_from_slice(&V2[from..]);
+                        r
+                    }
+                    None => full(V2, "\"v0.3.0\""),
+                })
+            });
+            let dir = scratch("resume-no-tag");
+            let target = dir.join("tacet.bin");
+            let plan = plan_for(
+                &format!("{}/tacet.bin", server.base),
+                &target,
+                Some(V2.len() as u64),
+                None,
+            );
+            fs::write(temp_path(&target), &V1[..6]).unwrap();
+            write_record(
+                &resume_record_path(&target),
+                &ResumeRecord::of(&plan, Some("\"v0.2.0\"")),
+            )
+            .unwrap();
+            let first = download_via(&plan, &yes(), &SilentProgress, &LOOPBACK);
+            assert!(
+                matches!(first, Err(DownloadError::RangeMismatch { .. })),
+                "a 206 with no ETag was trusted: {first:?}, target = {:?}",
+                fs::read(&target)
+                    .ok()
+                    .map(|b| String::from_utf8_lossy(&b).into_owned())
+            );
+            assert!(!target.exists());
+            assert!(!temp_path(&target).exists(), "the leftover was kept");
+            assert!(!resume_record_path(&target).exists());
+            let asked = server.heads().pop().unwrap();
+            assert_eq!(header_in(&asked, "if-range").as_deref(), Some("\"v0.2.0\""));
+
+            // The user is not stuck: the next run starts from zero.
+            let second = download_via(&plan, &yes(), &SilentProgress, &LOOPBACK).unwrap();
+            assert!(!second.resumed);
+            assert_eq!(fs::read(&target).unwrap(), V2);
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        /// `expected_bytes: u64::MAX` end to end — the agent's body deadline,
+        /// the cap and the progress total all see it. The body is read in
+        /// full and the size check, not an overflow, has the last word.
+        #[test]
+        fn a_declared_size_of_u64_max_is_read_and_judged_not_overflowed() {
+            let server = serve(|_| Reply::Close(full(V2, "\"v0.3.0\"")));
+            let dir = scratch("u64-max");
+            let target = dir.join("tacet.bin");
+            let plan = plan_for(
+                &format!("{}/tacet.bin", server.base),
+                &target,
+                Some(u64::MAX),
+                None,
+            );
+            let e = download_via(&plan, &yes(), &SilentProgress, &LOOPBACK).unwrap_err();
+            assert!(
+                matches!(e, DownloadError::SizeMismatch { found, .. } if found == V2.len() as u64),
+                "{e:?}"
+            );
             let _ = fs::remove_dir_all(&dir);
         }
 
