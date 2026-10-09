@@ -23,6 +23,12 @@
 //! but `memory.json` world-readable. No decision, no format and no setting is
 //! read there — only the mode a secret is allowed to sit at.
 //!
+//! The `defang` module is the second piece of work done here, for the same
+//! reason as `fs`: which strings count as a turn marker has to be held the same
+//! way by the engine (the prompt) and the tools (an imported transcript), and the
+//! kernel is the only crate both depend on. It reads nothing and decides nothing
+//! about a format; it inserts one space.
+//!
 //! NO NETWORK: nowhere in this crate, or below it, is there a network call.
 //!
 //! EVERY PUBLIC ITEM IS DOCUMENTED, and the lint below is what keeps it that
@@ -37,6 +43,7 @@ pub mod catalog;
 pub mod constraint;
 pub mod context;
 pub mod data_store;
+pub mod defang;
 pub mod env;
 pub mod error;
 pub mod fs;
@@ -51,6 +58,7 @@ pub use catalog::ToolCatalog;
 pub use constraint::{Constrainer, ConstraintError, ConstraintSession, FreeConstraint};
 pub use context::ToolContext;
 pub use data_store::{DataStore, InMemoryDataStore, Record, SourceRef};
+pub use defang::{defang, register_markers};
 pub use env::{config_dir, config_path, env_var};
 pub use error::{
     ERROR_MODEL_TEXT, INVALID_ARGUMENTS_MODEL_TEXT, ToolError, ToolResult, UNKNOWN_TOOL_MODEL_TEXT,

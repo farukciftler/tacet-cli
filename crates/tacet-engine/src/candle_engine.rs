@@ -419,6 +419,9 @@ impl CandleEngine {
 
         let vocab = build_vocab(&tokenizer);
         let forbidden_markers = marker_tokens(&tokenizer, &stop_tokens);
+        // The prompt side of the same vocabulary (audit H4-b): what the model
+        // may not write, foreign text may not write into its prompt either.
+        crate::prompt::register_vocab_markers(&tokenizer);
 
         // THE ONE ARCHITECTURE WHOSE TEMPLATE IS CHECKED RATHER THAN LOOKED UP.
         // `llama` names a family, not a wire format: SmolLM2 and TinyLlama were
