@@ -957,6 +957,8 @@ pub fn chat(run: ChatRun) -> ExitCode {
             // with the question cut to nothing and a generation cap past the
             // window — on a 2048-token model, every turn. Nothing is sent now;
             // the turn ends the way an engine error ends it, with the numbers.
+            // Refused only when even the minimum answer does not fit — see
+            // `MIN_ANSWER`; a 4096 window under the full shell prompt is sent.
             let report = match counter.fit(&mut prompt) {
                 Ok(report) => report,
                 Err(e) => {
@@ -1664,32 +1666,42 @@ pub fn chat(run: ChatRun) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// What the user reads when a turn is refused for the window.
+///
+/// It names the window, the measured prompt and the way out, because the only
+/// fix is outside the conversation: `fit` refuses only when the part that is
+/// never cut — the instructions, the tool descriptions, and the memory notes
+/// the question matched — leaves less than `MIN_ANSWER` for the answer ON ITS
+/// OWN (a cut instruction makes the model forget who it is). A shorter question
+/// or a `/clear` changes nothing, and saying only "budget exceeded" sends the
+/// user to try exactly those.
+///
+/// THE NUMBER IS THE WHOLE PROMPT, question included, and it is called that.
+/// The first version of this text called it "the instructions and tool
+/// descriptions alone" and left memory out of the list (review of audit L21):
+/// both were false, and a refusal is read word for word because it is the
+/// only explanation the user gets.
+fn window_refusal(error: &tacet_engine::EngineError, window: usize) -> String {
+    match error {
+        tacet_engine::EngineError::BudgetExceeded { measured, budget } => format!(
+            "not sent: this model's window is {window} tokens and this prompt, your \
+             question included, comes to ~{measured} — over the {budget} a prompt may \
+             take and still leave room for an answer. It is over without your \
+             question too: the instructions, tool descriptions and matching memory \
+             notes are never cut, so your question was not cut either, and a shorter \
+             one will not help. A model with a larger context window is needed (or \
+             fewer MCP tools)."
+        ),
+        other => format!("not sent: {other}"),
+    }
+}
+
 /// `tacet 0.1.9 (metal)` — the version AND what it can do.
 ///
 /// The feature belongs on this line because it is the difference between a
 /// binary that runs a model and one that cannot, and that difference has
 /// already cost a user an afternoon: `cargo install` does not remember
 /// `--features`, so the same version number can mean either program.
-/// What the user reads when a turn is refused for the window.
-///
-/// It names the two numbers and the way out, because the only fix is outside
-/// the conversation: the instructions and tool descriptions are never cut (a cut
-/// instruction makes the model forget who it is), so a shorter question or a
-/// `/clear` changes nothing, and saying only "budget exceeded" sends the user to
-/// try exactly those.
-fn window_refusal(error: &tacet_engine::EngineError, window: usize) -> String {
-    match error {
-        tacet_engine::EngineError::BudgetExceeded { measured, budget } => format!(
-            "not sent: this model's window is {window} tokens, and the instructions \
-             and tool descriptions alone come to ~{measured} of the {budget} a prompt \
-             may take before the room kept for the answer. Your question was not \
-             cut. A model with a larger context window is needed (or fewer MCP \
-             tools)."
-        ),
-        other => format!("not sent: {other}"),
-    }
-}
-
 pub fn version_line() -> String {
     format!(
         "tacet {} ({})",
@@ -2383,17 +2395,69 @@ mod window_refusal_tests {
     /// The refusal names the window and the measured size, and says the
     /// question was left alone — the user's next move depends on knowing that
     /// a shorter question will not help.
+    ///
+    /// AND IT SAYS WHAT THE NUMBER IS (review of L21): the measured size is
+    /// the whole prompt with the question in it, and memory is part of what
+    /// is never cut. The first text called the number "the instructions and
+    /// tool descriptions alone" and did not mention memory.
     #[test]
     fn the_refusal_names_the_window_and_the_fixed_part() {
         let text = window_refusal(
             &tacet_engine::EngineError::BudgetExceeded {
-                measured: 1312,
-                budget: 1024,
+                measured: 1912,
+                budget: 1792,
             },
             2048,
         );
-        for needle in ["2048", "1312", "1024", "not cut", "larger context window"] {
+        for needle in [
+            "2048",
+            "1912",
+            "1792",
+            "question included",
+            "memory",
+            "not cut",
+            "larger context window",
+        ] {
             assert!(text.contains(needle), "{needle:?} missing from: {text}");
         }
+        assert!(
+            !text.contains("alone"),
+            "the number includes the question: {text}"
+        );
+    }
+
+    /// EACH FUNCTION KEEPS ITS OWN DOC. `window_refusal` was once inserted
+    /// between `version_line`'s doc comment and `pub fn version_line`, and
+    /// rustdoc merged the two blocks onto `window_refusal` — the refusal was
+    /// documented as "the version AND what it can do" and `version_line` had
+    /// no documentation at all. Nothing compiles differently, so only a read
+    /// of the text can see it.
+    #[test]
+    fn version_line_and_window_refusal_each_keep_their_own_doc() {
+        let source = include_str!("chat.rs");
+        let doc_of = |item: &str| -> String {
+            let at = source
+                .find(item)
+                .unwrap_or_else(|| panic!("{item} is gone"));
+            let mut doc: Vec<&str> = source[..at]
+                .lines()
+                .rev()
+                .take_while(|line| line.trim_start().starts_with("///"))
+                .collect();
+            doc.reverse();
+            doc.join("\n")
+        };
+        let version = doc_of("\npub fn version_line()");
+        assert!(
+            version.starts_with("/// `tacet 0.1.9 (metal)`"),
+            "version_line lost its doc:\n{version}"
+        );
+        assert!(!version.contains("refused"), "{version}");
+        let refusal = doc_of("\nfn window_refusal(");
+        assert!(
+            refusal.starts_with("/// What the user reads when a turn is refused"),
+            "window_refusal's doc does not start where it should:\n{refusal}"
+        );
+        assert!(!refusal.contains("what it can do"), "{refusal}");
     }
 }

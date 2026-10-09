@@ -57,8 +57,8 @@ pub use session::{
 };
 pub use thinking::extract as extract_thinking;
 pub use token::{
-    CONTEXT_BUDGET, Device, GENERATION_SHARE, KV_CACHE_BUDGET_BYTES, TokenCounter,
-    TruncationReport, context_budget, kv_cache_budget,
+    CONTEXT_BUDGET, CONVERSATION_KEPT, Device, GENERATION_SHARE, KV_CACHE_BUDGET_BYTES, MIN_ANSWER,
+    TokenCounter, TruncationReport, context_budget, kv_cache_budget,
 };
 
 #[cfg(feature = "candle")]

@@ -24,7 +24,12 @@
 //! passed while asserting nothing, and "measured and held" looked exactly like
 //! "never ran". Now:
 //!
-//!   * the FIXTURE tests run everywhere the file compiles. They load
+//!   * the FIXTURE tests need no weights and run wherever the file is built
+//!     with `--features candle`: `cargo test -p tacet-engine --features candle
+//!     --test a_marker_is_not_text` locally, and the nightly job's "guards that
+//!     need no weights" step in CI. ci.yml does not build `candle` at all, so
+//!     a PR does not run them; the rule itself is also held in the default
+//!     build by `gguf_tokenizer::markers_are_found_by_flag_and_by_name`. They load
 //!     `tests/fixtures/marker_tokenizer.json` — a 4 KB tokenizer whose added
 //!     vocabulary copies the shapes of qwen3-4b's and gemma3-4b's (the table it
 //!     is written from is `FIXTURE_ADDED` in `gguf_tokenizer.rs`) — through the

@@ -154,22 +154,37 @@ const IN_VALUE_LOOP_THRESHOLD: usize = TOOL_CALL_CAP / 4 / LOOP_SEQUENCE_LENGTH;
 /// grammar's session answers only "inside the arguments or not"
 /// (`is_structural`), and the question here is finer: is this repetition the
 /// shape of the call, or the content of one of its values. A lexer that knows
-/// strings, escapes and brackets is enough to answer that, and it reads the
-/// same surface text the mask was built from (`vocab`), so it sees exactly the
-/// characters the grammar saw.
+/// strings, escapes, brackets and braces is enough to answer that, and it reads
+/// the same surface text the mask was built from (`vocab`), so it sees exactly
+/// the characters the grammar saw.
+///
+/// A KEY IS SHAPE, NOT CONTENT (review of audit L23). The first version set
+/// `in_string` for every string, keys included, so any repeated shape that
+/// contained a key — `{"x":{"x":{"x":…` — got the 504-token value bar: the
+/// review's probe was caught at token 505, against ~75 before. Telling a key
+/// from a value needs the container: a string opened inside an OBJECT where a
+/// key is expected (after `{` or `,`, before `:`) is a key. Arrays stay
+/// content whatever is in them — `[{"x":0},{"x":0},…]` is a list of records,
+/// and a list of records repeats by nature.
 #[derive(Debug, Default)]
 struct CallWatch {
     tokens: Vec<u32>,
     /// Per token: was any part of it written inside a string or array value?
     in_value: Vec<bool>,
     in_string: bool,
+    /// The open string is an object key, which is structure.
+    in_key: bool,
     escaped: bool,
+    /// The open containers, innermost last: `true` for an object.
+    containers: Vec<bool>,
     array_depth: usize,
+    /// Inside the innermost object, the next string would be a key.
+    expecting_key: bool,
 }
 
 impl CallWatch {
     fn inside_value(&self) -> bool {
-        self.in_string || self.array_depth > 0
+        (self.in_string && !self.in_key) || self.array_depth > 0
     }
 
     /// Records one token of the arguments, `text` being its surface form.
@@ -183,12 +198,32 @@ impl CallWatch {
                     self.escaped = true;
                 } else if c == '"' {
                     self.in_string = false;
+                    self.in_key = false;
                 }
             } else {
                 match c {
-                    '"' => self.in_string = true,
-                    '[' => self.array_depth += 1,
-                    ']' => self.array_depth = self.array_depth.saturating_sub(1),
+                    '"' => {
+                        self.in_string = true;
+                        self.in_key = self.expecting_key && self.containers.last() == Some(&true);
+                        self.expecting_key = false;
+                    }
+                    '{' => {
+                        self.containers.push(true);
+                        self.expecting_key = true;
+                    }
+                    '[' => {
+                        self.containers.push(false);
+                        self.array_depth += 1;
+                        self.expecting_key = false;
+                    }
+                    '}' | ']' => {
+                        if self.containers.pop() == Some(false) {
+                            self.array_depth = self.array_depth.saturating_sub(1);
+                        }
+                        self.expecting_key = false;
+                    }
+                    ',' => self.expecting_key = self.containers.last() == Some(&true),
+                    ':' => self.expecting_key = false,
                     _ => {}
                 }
             }
@@ -2378,7 +2413,8 @@ mod budget_and_backstop {
 
     /// Outside every value the structural bar is unchanged: a call whose SHAPE
     /// repeats — here whitespace after a member — is still abandoned within
-    /// seventy-two tokens.
+    /// seventy-two tokens. The shape here has no key in the repeat; the test
+    /// below is the one with keys.
     #[test]
     fn a_loop_in_the_calls_structure_keeps_the_low_bar() {
         let mut pieces = vec!["calculate({\"", "expression", "\":", "1"];
@@ -2387,6 +2423,56 @@ mod budget_and_backstop {
         assert!(
             at <= 4 + LOOP_SEQUENCE_LENGTH * IN_CALL_LOOP_THRESHOLD,
             "caught only at token {at}"
+        );
+    }
+
+    /// A KEY IS SHAPE (review of L23). `{"x":{"x":{"x":…` repeats nothing but
+    /// keys and braces, and the first lexer counted the keys as string values,
+    /// so it got the 504-token bar — the review's probe was caught at token
+    /// 505. Keys are structure; this is abandoned within the low bar.
+    #[test]
+    fn a_repeated_key_shape_keeps_the_low_bar() {
+        let mut pieces = vec!["f({\"", "x", "\":"];
+        for _ in 0..200 {
+            pieces.extend(["{\"", "x", "\":"]);
+        }
+        let at = first_stuck(&pieces).expect("a repeated key shape was never caught");
+        assert!(
+            at <= 4 + LOOP_SEQUENCE_LENGTH * IN_CALL_LOOP_THRESHOLD,
+            "caught only at token {at}: a key was counted as a value"
+        );
+        // The lexer's view, piece by piece: inside the key it is not in a
+        // value, after the colon a string IS a value.
+        let mut watch = CallWatch::default();
+        watch.push(0, "{\"ke");
+        assert!(
+            !watch.inside_value(),
+            "an object key was counted as a value"
+        );
+        watch.push(1, "y\":\"va");
+        assert!(watch.inside_value(), "the value after the colon was missed");
+        watch.push(2, "l\",\"k2");
+        assert!(!watch.inside_value(), "the key after a comma was missed");
+        watch.push(3, "\":[\"a\",\"b");
+        assert!(watch.inside_value(), "a string in an array is a value");
+        watch.push(4, "\"],\"k3\":{\"in");
+        assert!(!watch.inside_value(), "a nested object's key is a key");
+    }
+
+    /// An ARRAY of records stays content, keys and all: `[{"x":0},{"x":0},…]`
+    /// is a list of rows, and a list of rows repeats by nature. A hundred of
+    /// them — three hundred tokens, four times the structural bar — survive.
+    #[test]
+    fn an_array_of_records_is_still_content() {
+        let mut pieces = vec!["write_file({\"", "rows", "\":["];
+        for _ in 0..100 {
+            pieces.extend(["{\"x\":", "0", "},"]);
+        }
+        pieces.push("{}]})");
+        assert_eq!(
+            first_stuck(&pieces),
+            None,
+            "a list of records was abandoned as a loop"
         );
     }
 
