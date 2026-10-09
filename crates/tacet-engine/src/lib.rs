@@ -64,6 +64,25 @@ pub use token::{
 #[cfg(feature = "candle")]
 pub use candle_engine::{Architecture, CandleEngine, ModelSetting, TokenizerSource};
 
+/// The window a GGUF can be RUN at, without loading it — what a loaded
+/// engine's `context_length` will say (audit L21 review).
+///
+/// With candle this is the declared window cut to the architecture module's
+/// position table (`candle_engine::gguf_runnable_context_length`). Without
+/// candle there is no engine in the binary to cut it to, so the declared number
+/// is the only one there is, and it is returned as such — the build that would
+/// run the model is the one that knows the table.
+pub fn gguf_runnable_context_length(path: &std::path::Path) -> Option<usize> {
+    #[cfg(feature = "candle")]
+    {
+        candle_engine::gguf_runnable_context_length(path)
+    }
+    #[cfg(not(feature = "candle"))]
+    {
+        gguf_context_length(path)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

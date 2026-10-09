@@ -326,6 +326,42 @@ fn runnable_context_length(architecture: Architecture, declared: Option<usize>) 
     }
 }
 
+/// The runnable window of a GGUF whose metadata is already in memory — the ONE
+/// derivation `load` and `gguf_runnable_context_length` share.
+///
+/// WHY IT IS A FUNCTION OF THE WHOLE HEADER rather than two calls at the site:
+/// with `read_context_length` and the cut as separate steps, `load` could go
+/// back to the declared number and every test stayed green — the review
+/// measured exactly that, and a SmolLM2 window of 8192 would have returned
+/// silently. Here the architecture and the declaration come out of the same
+/// `Content`, so there is no way to get the window without the cut, and
+/// `load_reports_the_window_candle_can_run` drives `load` itself.
+fn runnable_window(content: &gguf_file::Content) -> EngineResult<Option<usize>> {
+    let architecture = read_architecture(content)?;
+    Ok(runnable_context_length(
+        architecture,
+        read_context_length(content),
+    ))
+}
+
+/// The window a GGUF file can be RUN at, read from the path without loading
+/// the weights: what `CandleEngine::context_length` will report once it is
+/// loaded.
+///
+/// FOR THE CALLERS THAT NEVER OPEN AN ENGINE — the feedback package's
+/// `context:` line, and the shell's fallback when an engine declares nothing.
+/// They used `gguf_context_length`, the DECLARED number, so a SmolLM2 bug
+/// report said 8192 for a model that runs at 4096 (audit L21 review).
+///
+/// `None` when the file cannot be read, is not an architecture this engine
+/// runs, or declares no window — the caller's floor applies, as for a
+/// declaration that is missing.
+pub fn gguf_runnable_context_length(path: &Path) -> Option<usize> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let content = gguf_file::Content::read(&mut file).ok()?;
+    runnable_window(&content).ok().flatten()
+}
+
 /// The loaded weights — the only place that branches on the architecture.
 ///
 /// The `ModelWeights` types of the three modules SHARE NO COMMON TRAIT (candle
@@ -516,8 +552,8 @@ impl CandleEngine {
         // READ BEFORE THE WEIGHTS, for the same reason: the metadata is in memory
         // right now and `from_gguf` below consumes `content`. Cut to the module's
         // position table, because this is the number the shell's window is built
-        // from (see `runnable_context_length`).
-        let context_length = runnable_context_length(architecture, read_context_length(&content));
+        // from (see `runnable_window`).
+        let context_length = runnable_window(&content)?;
 
         // `from_gguf` HAS THE SAME SIGNATURE IN ALL THREE MODULES (ct, reader,
         // device) — verified from the source, not assumed.
@@ -1749,6 +1785,141 @@ mod window_tests {
         );
         // Declaring nothing is not upgraded to the table's size.
         assert_eq!(runnable_context_length(Architecture::Llama, None), None);
+    }
+
+    use candle_core::quantized::{GgmlDType, QTensor};
+    use gguf_file::Value;
+
+    /// A llama GGUF small enough to LOAD: one block, width 8, zeros for weights.
+    /// `load` never runs a forward pass, so the numbers only have to have the
+    /// shapes candle's `quantized_llama::from_gguf` asks for — which is what lets
+    /// the window be checked on the path the shell really takes, without the
+    /// 2.5 GB file that path normally needs.
+    fn tiny_llama(name: &str, declared: Option<u32>) -> PathBuf {
+        let mut metadata = vec![
+            ("general.architecture", Value::String("llama".into())),
+            ("llama.attention.head_count", Value::U32(2)),
+            ("llama.attention.head_count_kv", Value::U32(2)),
+            ("llama.block_count", Value::U32(1)),
+            ("llama.embedding_length", Value::U32(8)),
+            ("llama.rope.dimension_count", Value::U32(4)),
+            ("llama.attention.layer_norm_rms_epsilon", Value::F32(1e-5)),
+        ];
+        if let Some(window) = declared {
+            metadata.push(("llama.context_length", Value::U32(window)));
+        }
+        let zeros = |shape: &[usize]| {
+            let t = Tensor::zeros(shape, candle_core::DType::F32, &CandleDevice::Cpu).unwrap();
+            QTensor::quantize(&t, GgmlDType::F32).unwrap()
+        };
+        let tensors = [
+            ("token_embd.weight", zeros(&[16, 8])),
+            ("output_norm.weight", zeros(&[8])),
+            ("blk.0.attn_q.weight", zeros(&[8, 8])),
+            ("blk.0.attn_k.weight", zeros(&[8, 8])),
+            ("blk.0.attn_v.weight", zeros(&[8, 8])),
+            ("blk.0.attn_output.weight", zeros(&[8, 8])),
+            ("blk.0.ffn_gate.weight", zeros(&[16, 8])),
+            ("blk.0.ffn_down.weight", zeros(&[8, 16])),
+            ("blk.0.ffn_up.weight", zeros(&[16, 8])),
+            ("blk.0.attn_norm.weight", zeros(&[8])),
+            ("blk.0.ffn_norm.weight", zeros(&[8])),
+        ];
+        let path =
+            std::env::temp_dir().join(format!("tacet-window-{}-{name}.gguf", std::process::id()));
+        let mut file = std::fs::File::create(&path).unwrap();
+        let metadata: Vec<(&str, &Value)> = metadata.iter().map(|(k, v)| (*k, v)).collect();
+        let tensors: Vec<(&str, &QTensor)> = tensors.iter().map(|(k, t)| (*k, t)).collect();
+        gguf_file::write(&mut file, &metadata, &tensors).unwrap();
+        path
+    }
+
+    fn load_tiny(path: &Path) -> CandleEngine {
+        let tokenizer = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("marker_tokenizer.json");
+        let mut setting = ModelSetting::new(path, tokenizer);
+        setting.device = Device::Cpu;
+        match CandleEngine::load(&setting) {
+            Ok(engine) => engine,
+            Err(e) => panic!("the tiny llama did not load: {e}"),
+        }
+    }
+
+    /// AUDIT L21, THROUGH `load`: the helper tests above stay green if `load`
+    /// goes back to the declared number — the review proved that by reverting
+    /// the call site and running the whole crate. This one loads a llama file
+    /// declaring 8192 and asks the engine, which is what `engine_window` asks.
+    #[test]
+    fn load_reports_the_window_candle_can_run() {
+        let path = tiny_llama("8192", Some(8192));
+        assert_eq!(
+            crate::gguf_context_length(&path),
+            Some(8192),
+            "the file must really declare more than the table"
+        );
+        let engine = load_tiny(&path);
+        assert_eq!(engine.architecture(), Architecture::Llama);
+        assert_eq!(
+            engine.context_length(),
+            Some(quantized_llama::MAX_SEQ_LEN),
+            "a llama engine reporting a window past candle's rope table"
+        );
+        assert_eq!(
+            EngineProvider::context_length(&engine),
+            Some(quantized_llama::MAX_SEQ_LEN)
+        );
+        // The path-based reader agrees with the loaded engine — the feedback
+        // package's `context:` line is built from it.
+        assert_eq!(gguf_runnable_context_length(&path), engine.context_length());
+        let _ = std::fs::remove_file(&path);
+
+        // A llama that declares less keeps its own number through load.
+        let path = tiny_llama("2048", Some(2048));
+        assert_eq!(load_tiny(&path).context_length(), Some(2048));
+        assert_eq!(gguf_runnable_context_length(&path), Some(2048));
+        let _ = std::fs::remove_file(&path);
+
+        // Declaring nothing stays nothing; the caller's floor applies.
+        let path = tiny_llama("none", None);
+        assert_eq!(load_tiny(&path).context_length(), None);
+        assert_eq!(gguf_runnable_context_length(&path), None);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The same derivation on a header with NO tensors (candle's `Content::read`
+    /// accepts one): a Qwen window passes through, and an unreadable path is
+    /// `None`, not a guess.
+    #[test]
+    fn the_runnable_window_is_read_from_the_header_alone() {
+        let header = |arch: &str, window: u32| {
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            let a = Value::String(arch.into());
+            let w = Value::U32(window);
+            let key = format!("{arch}.context_length");
+            gguf_file::write(
+                &mut bytes,
+                &[("general.architecture", &a), (key.as_str(), &w)],
+                &[],
+            )
+            .unwrap();
+            bytes.set_position(0);
+            gguf_file::Content::read(&mut bytes).unwrap()
+        };
+        assert_eq!(
+            runnable_window(&header("llama", 8192)).unwrap(),
+            Some(quantized_llama::MAX_SEQ_LEN)
+        );
+        assert_eq!(
+            runnable_window(&header("qwen3", 262_144)).unwrap(),
+            Some(262_144)
+        );
+        assert!(runnable_window(&header("phi3", 4096)).is_err());
+        assert_eq!(
+            gguf_runnable_context_length(Path::new("/definitely/not/here.gguf")),
+            None
+        );
     }
 }
 

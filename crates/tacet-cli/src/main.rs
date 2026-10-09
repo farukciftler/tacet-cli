@@ -550,12 +550,8 @@ fn feedback(turns: usize) -> ExitCode {
     // weights on this machine), and saying so is the honest answer.
     let model = config::get_str("model").unwrap_or_else(|| DEFAULT_MODEL.to_string());
     let window = match model_package::resolve_pair(&model) {
-        Some((gguf, _)) => tacet_engine::context_budget(
-            tacet_engine::gguf_context_length(std::path::Path::new(&gguf)),
-            tacet_engine::gguf_kv_bytes_per_token(std::path::Path::new(&gguf)),
-            tacet_engine::Device::default(),
-        )
-        .to_string(),
+        // RUNNABLE, NOT DECLARED — see `file_window`.
+        Some((gguf, _)) => engine_setup::file_window(&gguf).to_string(),
         None => "unknown (no local weights)".to_string(),
     };
     body.push_str(&format!("- model: {model} · context: {window}\n\n"));
@@ -1446,7 +1442,7 @@ fn sessions(json: bool, purge: bool) -> ExitCode {
 mod tests {
     use super::*;
     use crate::chat::status_line;
-    use crate::engine_setup::engine_window;
+    use crate::engine_setup::{engine_window, file_window};
     use crate::models::{
         TOFU_NOTE_CATALOG, TerminalDownloadApproval, download_root, progress_text,
     };
@@ -1687,6 +1683,58 @@ mod tests {
             engine_window(&fake, "/definitely/not/here.gguf"),
             CONTEXT_BUDGET
         );
+    }
+
+    /// A llama GGUF header declaring 8192 with a KV cost cheap enough that the
+    /// memory budget would allow far more — so whatever comes back is the
+    /// model side of the window, not the floor. Written by hand because the
+    /// CLI has no GGUF writer; metadata only, zero tensors.
+    fn llama_header_declaring_8192() -> std::path::PathBuf {
+        fn string(out: &mut Vec<u8>, text: &str) {
+            out.extend_from_slice(&(text.len() as u64).to_le_bytes());
+            out.extend_from_slice(text.as_bytes());
+        }
+        let numbers: [(&str, u32); 5] = [
+            ("llama.context_length", 8192),
+            ("llama.block_count", 1),
+            ("llama.attention.head_count_kv", 1),
+            ("llama.attention.key_length", 64),
+            ("llama.attention.value_length", 64),
+        ];
+        let mut bytes = b"GGUF".to_vec();
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+        bytes.extend_from_slice(&(numbers.len() as u64 + 1).to_le_bytes());
+        string(&mut bytes, "general.architecture");
+        bytes.extend_from_slice(&8u32.to_le_bytes());
+        string(&mut bytes, "llama");
+        for (key, value) in numbers {
+            string(&mut bytes, key);
+            bytes.extend_from_slice(&4u32.to_le_bytes());
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        let path =
+            std::env::temp_dir().join(format!("tacet-cli-window-{}.gguf", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    /// AUDIT L21 REVIEW: the shell's two file-side windows are the RUNNABLE
+    /// one. A SmolLM2-shaped file declares 8192; candle's llama module runs at
+    /// 4096. With candle in the binary both the feedback line (`file_window`)
+    /// and the fallback for an engine that declares nothing (`engine_window`)
+    /// must say 4096. Without candle there is no table to cut to, and the
+    /// declared number is what comes back.
+    #[test]
+    fn a_llama_file_reports_the_window_candle_runs_not_the_one_it_declares() {
+        let path = llama_header_declaring_8192();
+        let gguf = path.to_str().unwrap();
+        assert_eq!(tacet_engine::gguf_context_length(&path), Some(8192));
+        let expected = if cfg!(feature = "candle") { 4096 } else { 8192 };
+        assert_eq!(file_window(gguf), expected, "the feedback package's window");
+        let fake: Arc<dyn EngineProvider> = Arc::new(FakeEngine::script(Vec::<String>::new()));
+        assert_eq!(engine_window(&fake, gguf), expected, "the shell's fallback");
+        let _ = std::fs::remove_file(&path);
     }
 
     /// A SEAM TEST — memory, skills and MCP must point at THE SAME directory.

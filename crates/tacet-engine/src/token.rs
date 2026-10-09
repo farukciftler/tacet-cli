@@ -29,8 +29,10 @@ use crate::prompt::{Prompt, Template, Turn};
 /// watched the model forget what it had just done, and got an explanation of a
 /// tool error instead of a second attempt at the tool.
 ///
-/// It stays as the floor because a model that declares less, or declares
-/// nothing, must not end up worse off than before.
+/// It stays as the floor because a model that declares nothing, or whose KV
+/// cache the memory budget can barely afford, must not end up worse off than
+/// before. It is NOT lifted over a model that declares LESS (audit L21): that
+/// number is the model's position table, and see `context_budget`.
 pub const CONTEXT_BUDGET: usize = 4096;
 
 /// The device inference will run on.
@@ -271,12 +273,33 @@ impl TokenCounter {
     /// every digit is its own token — 1 per byte, where the 2/5 ratio counts 0.4.
     /// Measured by the audit: 4000 digits estimated at 1600 against a real count
     /// of at least 4000, i.e. a table of numbers or a hex dump came in at less
-    /// than half and truncation waved it through. Counting digits at one each
-    /// can only raise the estimate, so the safe direction holds for every text.
+    /// than half and truncation waved it through.
+    ///
+    /// `\p{N}` IS NOT ASCII. Pricing only `0-9` left the Arabic-Indic digits
+    /// (U+0660..U+0669, two bytes each) at 0.8 a digit — 1000 of them estimated
+    /// at 800 — so a number table in that script stayed on the unsafe side. Any
+    /// `char::is_numeric` (Nd, Nl, No: the same class as `\p{N}`) is a token.
+    ///
+    /// A NUMERIC CHARACTER COSTS THE LARGER OF ONE TOKEN AND ITS BYTES AT THE
+    /// RATIO, never the smaller: a three-byte full-width digit was 1.2 under the
+    /// byte ratio, and a byte-level BPE may well split a rare one further, so
+    /// "one each" would have LOWERED its estimate. Taking the maximum means this
+    /// change can only raise the estimate of any text — the safe direction holds.
+    ///
+    /// Counted in fifths of a token so the rounding happens once, at the end.
     pub fn estimate(text: &str) -> usize {
-        let digits = text.bytes().filter(u8::is_ascii_digit).count();
-        let rest = text.len() - digits;
-        digits + (rest * BYTE_NUMERATOR).div_ceil(BYTE_DENOMINATOR)
+        let fifths: usize = text
+            .chars()
+            .map(|c| {
+                let at_ratio = c.len_utf8() * BYTE_NUMERATOR;
+                if c.is_numeric() {
+                    at_ratio.max(BYTE_DENOMINATOR)
+                } else {
+                    at_ratio
+                }
+            })
+            .sum();
+        fifths.div_ceil(BYTE_DENOMINATOR)
     }
 
     /// The estimate for the whole prompt, IN THE LARGEST WIRE FORMAT.
@@ -332,17 +355,31 @@ impl TokenCounter {
         // 3) Last resort: truncate the question. THE END is preserved — the
         // user's actual request comes at the end of the sentence ("...now turn
         // this into a table"), the beginning sets up context.
+        //
+        // THE CUT IS MEASURED, NOT CONVERTED (audit L22). It used to turn the
+        // excess tokens into bytes at the prose ratio (2/5), which stopped being
+        // the price of every byte the day digits started costing one token each:
+        // a question of digits had 2.5x the bytes it needed cut. Measured on the
+        // default counter (cap 3072): 3500 digits kept 2345 bytes, 5000 kept 95,
+        // and 6000 kept NOTHING — the user's pasted table or hex dump was deleted
+        // outright when about 3000 digits would have fit. So the longest tail
+        // that fits is searched for against `prompt_estimate` itself, whatever
+        // the text is made of. The estimate only grows with the tail, so a
+        // binary search is exact; ~20 estimates for a megabyte question.
         if self.prompt_estimate(prompt) > cap {
-            let excess = self.prompt_estimate(prompt) - cap;
-            let bytes_to_drop = excess * BYTE_DENOMINATOR / BYTE_NUMERATOR;
-            let new = from_last_bytes(
-                &prompt.question,
-                prompt.question.len().saturating_sub(bytes_to_drop),
-            );
-            if new.len() < prompt.question.len() {
-                prompt.question = new;
-                report.question_truncated = true;
+            let original = std::mem::take(&mut prompt.question);
+            let (mut fits, mut too_long) = (0, original.len());
+            while too_long - fits > 1 {
+                let middle = fits + (too_long - fits) / 2;
+                prompt.question = from_last_bytes(&original, middle);
+                if self.prompt_estimate(prompt) <= cap {
+                    fits = middle;
+                } else {
+                    too_long = middle;
+                }
             }
+            prompt.question = from_last_bytes(&original, fits);
+            report.question_truncated = prompt.question.len() < original.len();
         }
 
         report.final_estimate = self.prompt_estimate(prompt);
@@ -504,6 +541,61 @@ mod budget_tests {
             TokenCounter::estimate(prose),
             (prose.len() * BYTE_NUMERATOR).div_ceil(BYTE_DENOMINATOR)
         );
+        // `\p{N}` is not ASCII: Arabic-Indic three (U+0663) is two bytes, so the
+        // ratio alone priced 1000 of them at 800.
+        let arabic = "\u{0663}".repeat(1000);
+        assert!(
+            TokenCounter::estimate(&arabic) >= 1000,
+            "1000 Arabic-Indic digits estimated at {} tokens",
+            TokenCounter::estimate(&arabic)
+        );
+        // A wider digit keeps the byte price when that is the larger one — the
+        // whole-token rule may raise an estimate, never lower it. Full-width
+        // three (U+FF13) and Devanagari three (U+0969) are three bytes each.
+        for wide in ["\u{FF13}", "\u{0969}"] {
+            let text = wide.repeat(1000);
+            let byte_ratio = (text.len() * BYTE_NUMERATOR).div_ceil(BYTE_DENOMINATOR);
+            assert!(
+                TokenCounter::estimate(&text) >= byte_ratio,
+                "1000 x {wide} estimated at {} under the byte ratio's {byte_ratio}",
+                TokenCounter::estimate(&text)
+            );
+        }
+    }
+
+    /// AUDIT L22, the cut: pricing digits right must not make the truncator
+    /// wipe them. A 6000-digit question on the default counter has to come out
+    /// as a tail that FILLS the cap — not an empty string, which is what the
+    /// byte-ratio cut produced (it dropped 2.5x the bytes the excess called for).
+    #[test]
+    fn a_digit_heavy_question_is_cut_to_what_fits_not_to_nothing() {
+        let counter = TokenCounter::default();
+        let cap = counter.prompt_cap();
+        for count in [3500, 6000, 20_000] {
+            let digits = "1234567890".repeat(count / 10);
+            let mut prompt = Prompt::new("sys", digits.as_str());
+            let report = counter.truncate(&mut prompt);
+            assert!(report.question_truncated, "{count} digits were not cut");
+            assert!(
+                report.final_estimate <= cap,
+                "{count} digits: {} over the cap of {cap}",
+                report.final_estimate
+            );
+            assert!(
+                report.final_estimate + 64 >= cap,
+                "{count} digits: cut to {} bytes, estimate {} against a cap of {cap}",
+                prompt.question.len(),
+                report.final_estimate
+            );
+            // THE END is what survives.
+            assert!(digits.ends_with(&prompt.question));
+            assert!(counter.validate(&prompt).is_ok());
+        }
+        // Multi-byte text is still cut on a character boundary.
+        let mut prompt = Prompt::new("sys", "ğ١".repeat(5000).as_str());
+        let report = counter.truncate(&mut prompt);
+        assert!(report.question_truncated && !prompt.question.is_empty());
+        assert!(report.final_estimate <= cap);
     }
 
     /// AUDIT L22, the template: the budget must cover the format the engine
