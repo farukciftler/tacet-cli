@@ -465,16 +465,29 @@ fn range_fits(
             return true;
         };
         let digits = buffer.split_once('.').map_or(0, |(_, f)| f.len());
-        // Past ~308 fraction digits `10^-d` underflows to 0 and the interval
-        // collapses to the point `v`; f64 cannot tell finer prefixes apart
-        // either, and the close-time check compares the same f64, so the two
-        // agree. The `v >= lo` / `v <= hi` disjunct keeps a prefix that is
-        // ALREADY in range alive even then. At the digit bound nothing more can
+        // THE REACH FOLLOWS `10^-d` DOWN INTO THE SUBNORMALS and only reaches
+        // 0 near d = 324, where f64 runs out. Two spellings that look right are
+        // each wrong in a measured way:
+        //   * `10f64.powi(-d)` is already 0 at d = 309 (`powi` underflows its
+        //     intermediate), which collapses the interval to the point `v` and
+        //     prunes `0.000…` before a subnormal can be written — it turns
+        //     `every_f64_a_range_can_hold_is_still_writable_in_plain_decimal`
+        //     red;
+        //   * clamping to `10^-308` (what this said until review) keeps the
+        //     reach at 1e-308 for every d from 309 to 399, so under a subnormal
+        //     `lo` such as 5e-324 a run of zeros that could no longer reach
+        //     `lo` stayed open until the digit bound shut it: `0.` and 399
+        //     zeros, mask empty, `is_done()` false — the model stranded
+        //     (`a_subnormal_bound_never_strands_a_run_of_zeros`).
+        // The `v >= lo` / `v <= hi` disjunct keeps a prefix that is ALREADY in
+        // range alive once the reach is 0. At the digit bound nothing more can
         // be written, so the reach is the point itself.
         let reach = if digits >= MAX_FRACTION_DIGITS {
             0.0
+        } else if digits > 308 {
+            1e-308 * 10f64.powi(-((digits - 308) as i32))
         } else {
-            10f64.powi(-(digits.min(308) as i32))
+            10f64.powi(-(digits as i32))
         };
         return if negative {
             v >= lo && (v <= hi || v - reach < hi)

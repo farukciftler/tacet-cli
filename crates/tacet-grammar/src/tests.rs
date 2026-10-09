@@ -831,6 +831,66 @@ fn every_f64_a_range_can_hold_is_still_writable_in_plain_decimal() {
     assert_eq!(longest, 324);
 }
 
+/// A run of zeros under a SUBNORMAL lower bound must be cut while a nonzero
+/// digit can still reach the bound, not left open until the fraction bound
+/// turns it into a dead end. Found by review: `[5e-324, 1]` with `0.` and 399
+/// zeros left the mask empty and `is_done()` false, because the reach
+/// `10^-d` was clamped at `1e-308` and so never fell below a subnormal `lo`.
+///
+/// The walk is the adversarial one: a `0` whenever the mask offers it, then the
+/// close, and only then the smallest digit. Every prefix it visits is one the
+/// mask offered, so every one of them must have a way out.
+#[test]
+fn a_subnormal_bound_never_strands_a_run_of_zeros() {
+    let ranges = [
+        (5e-324, 1.0),
+        (1e-310, 1.0),
+        (1.234_567_89e-310, 1.0),
+        (f64::MIN_POSITIVE, 1.0),
+        (-1.0, -5e-324),
+        (-1.0, -1e-310),
+        (-1.0, -1.234_567_89e-310),
+        (-1.0, -f64::MIN_POSITIVE),
+    ];
+    for (lo, hi) in ranges {
+        let schema = ArgSchema::object(vec![
+            Field::new("n", ArgSchema::number().range(Some(lo), Some(hi))).required(),
+        ]);
+        let g = grammar(&schema);
+        let mut d = g.state();
+        let mut text = String::from(if lo < 0.0 {
+            r#"{"n":-0."#
+        } else {
+            r#"{"n":0."#
+        });
+        d.advance(&text).expect("the start of the walk is legal");
+        for _ in 0..600 {
+            if d.is_done() {
+                break;
+            }
+            let allowed = d.allowed_prefixes();
+            assert!(
+                !allowed.is_empty(),
+                "[{lo:e}, {hi:e}]: the mask is empty after {} characters of {text:.40}…",
+                text.len()
+            );
+            let next = ['0', '}']
+                .into_iter()
+                .find(|&c| allowed.contains(c))
+                .or_else(|| allowed.chars().next())
+                .expect("a non-empty mask offers a character");
+            d.advance(&next.to_string()).expect("the mask offered it");
+            text.push(next);
+        }
+        assert!(d.is_done(), "[{lo:e}, {hi:e}]: the walk never closed");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("JSON");
+        assert!(
+            schema.validate(&value).is_ok(),
+            "[{lo:e}, {hi:e}]: the walk closed on a value validate refuses: {text}"
+        );
+    }
+}
+
 /// An array the schema leaves open still has a last item (audit L25: 100 001
 /// elements were still open before `ARRAY_CEILING`).
 #[test]
