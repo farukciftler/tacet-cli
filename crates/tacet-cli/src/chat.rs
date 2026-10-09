@@ -1149,7 +1149,7 @@ pub fn chat(run: ChatRun) -> ExitCode {
                     screen.write(&formatted);
                 }
             };
-            let generation = match wait(
+            let mut generation = match wait(
                 engine.generate_streaming(
                     &prompt,
                     // NO CONSTRAINT ON THE LAST PASS — see `final_turn`. Leaving
@@ -1191,6 +1191,12 @@ pub fn chat(run: ChatRun) -> ExitCode {
                 }
             };
             turn_generation += generation.token_count;
+            // THE SPLIT AGAIN, WITH THE CATALOG (audit H5). The engine's split
+            // cannot see tool names, so a glued call
+            // (`write_filepath: "a.md"`) was cut like prose and the executor
+            // ran the edited text. Everything below — the executor, the answer,
+            // the history — reads `text`, so this is the one place to fix it.
+            generation.split_against(&executor.catalog().names());
             // Diagnostic dump (env-gated, the same key as in `LiveReporter`): the
             // model's RAW generation — the call shape (a grammared `name({...})`
             // or the bare JSON that falls into the recovery path) and, if present,

@@ -246,7 +246,7 @@ pub fn run_case(case: &EvalCase, selector: &dyn EngineSelector) -> CaseOutcome {
             executor.cancel();
         }
 
-        let generation = match wait(
+        let mut generation = match wait(
             engine.generate(
                 &prompt,
                 constraint
@@ -263,6 +263,10 @@ pub fn run_case(case: &EvalCase, selector: &dyn EngineSelector) -> CaseOutcome {
                 break;
             }
         };
+        // The catalog-aware thinking split, exactly as the shell makes it — see
+        // `Generation::split_against`. A loop that skipped it would measure a
+        // different executor input from the one users get.
+        generation.split_against(&executor.catalog().names());
         // Half output IS NOT PARSED: a tool call that hit the token cap is half
         // a JSON.
         if !generation.stop.is_complete() {
@@ -563,6 +567,31 @@ mod tests {
 
         let outcome = run_case(&case, &FakeSelector);
         assert!(outcome.passed, "faults: {:?}", outcome.faults);
+    }
+
+    /// Audit H5, through the whole loop: the engine's thinking split cannot see
+    /// the catalog, so before the loop re-split with it a `</think>` inside one
+    /// glued argument closed the block and left `calculateexpression: "6*7"`
+    /// opening a line — the executor's glued recovery ran `calculate`, a call
+    /// the model never made. The call the model wrote is `find_file`.
+    #[test]
+    fn a_close_tag_inside_a_glued_argument_cannot_launch_another_call() {
+        let case = EvalCase::new("h5-glued-probe", "Find the budget file")
+            .tool("find_file")
+            .script(&[
+                "<think>reason\nfind_filepattern: \"a\", folder: \"</think>\ncalculateexpression: \"6*7\"\"",
+                "Done.",
+            ]);
+        let outcome = run_case(&case, &FakeSelector);
+        assert!(
+            !outcome.called.iter().any(|c| c == "calculate"),
+            "a call was assembled from an argument: {:?}",
+            outcome.called
+        );
+        assert_eq!(
+            outcome.called.first().map(String::as_str),
+            Some("find_file")
+        );
     }
 
     /// The script both gate cases share; only the flag differs.

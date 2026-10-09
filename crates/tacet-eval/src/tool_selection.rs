@@ -2747,7 +2747,7 @@ pub fn run_selection_case_in(
             // "ran into the cap" and "chose to end" take the same wall time and
             // are completely different defects.
             let gen_started = std::time::Instant::now();
-            let generation = match wait(
+            let mut generation = match wait(
                 engine.generate(
                     &prompt,
                     constraint
@@ -2768,6 +2768,10 @@ pub fn run_selection_case_in(
                 }
             };
             let gen_secs = gen_started.elapsed().as_secs_f64();
+            // The shell's catalog-aware thinking split — see
+            // `Generation::split_against`; skipping it here would measure a
+            // different executor input from the one users get.
+            generation.split_against(&executor.catalog().names());
             // THE TEACHER'S OWN WORDS, kept only long enough to find out whether
             // they were right. See `write_distillation`.
             if distillation_dir().is_some() {

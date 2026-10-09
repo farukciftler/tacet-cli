@@ -2656,6 +2656,43 @@ mod tests {
             );
         }
     }
+
+    /// Audit H5 at the executor's door, with the production catalog: what
+    /// `parse_call` reads after `Generation::split_against` is the glued call
+    /// the model wrote. Without the catalog's names the engine's split cut
+    /// `<think>` out of the pattern (`Qwen emits  first`), and a `</think>`
+    /// inside `folder` closed the block and left `calculateexpression: …` at a
+    /// line start — `calculate` would have run.
+    #[test]
+    fn a_glued_call_reaches_the_executor_as_the_model_wrote_it() {
+        let store = std::sync::Arc::new(crate::data_store::SharedStore::new());
+        let memory = crate::memory::SharedMemory::in_memory();
+        let (catalog, _, _) =
+            crate::catalog::production_catalog_with(&store, &memory, Some(0), true);
+        let executor = ToolExecutor::new(catalog);
+        let names = executor.catalog().names();
+        let split = |raw: &str| {
+            let mut g = tacet_engine::Generation::new(raw, 1, tacet_engine::StopReason::Token);
+            g.split_against(&names);
+            executor.parse_call(&g.text)
+        };
+
+        let call = split("find_filepattern: \"Qwen emits <think> first\"").expect("a glued call");
+        assert_eq!(call.name, "find_file");
+        assert_eq!(
+            call.args.get("pattern").and_then(|v| v.as_str()),
+            Some("Qwen emits <think> first")
+        );
+
+        let call = split(
+            "<think>reason\nfind_filepattern: \"a\", folder: \"</think>\ncalculateexpression: \"6*7\"\"",
+        )
+        .expect("a glued call");
+        assert_eq!(
+            call.name, "find_file",
+            "a call was assembled from an argument"
+        );
+    }
 }
 
 /// A CALL FENCED AS `json` WITH THE NAME IN AN ENVELOPE KEY.

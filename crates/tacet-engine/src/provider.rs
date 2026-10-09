@@ -82,6 +82,11 @@ pub struct Generation {
     /// The model's inner reasoning, if any. Not printed to screen; kept for
     /// diagnostics.
     pub thinking: Option<String>,
+    /// What the model produced, before the thinking split. Kept because the
+    /// split made here cannot see the catalog, and one call shape — the glued
+    /// `write_filepath: "a.md"` — is a call only by a catalog name; see
+    /// `split_against`.
+    pub raw: String,
     pub token_count: usize,
     pub stop: StopReason,
 }
@@ -98,13 +103,33 @@ impl Generation {
         // arguments is what runs. `extract` now leaves everything from the
         // first call start onward byte-for-byte alone; the tests below hold
         // that on the constructor itself, since it is the only door.
-        let (thinking, visible) = crate::thinking::extract(&text.into());
+        let raw = text.into();
+        let (thinking, visible) = crate::thinking::extract(&raw);
         Self {
             text: visible,
             thinking,
+            raw,
             token_count,
             stop,
         }
+    }
+
+    /// Re-splits the thinking with the catalog's tool names, so a glued call
+    /// is protected from the split the way `name(` is (audit H5).
+    ///
+    /// EVERY CALLER THAT HANDS `text` TO THE EXECUTOR CALLS THIS FIRST. The
+    /// constructor cannot: engines do not hold the catalog, and a constrained
+    /// engine is not the only producer — the last pass runs unconstrained and
+    /// the executor's glued recovery still reads it. Without the names the
+    /// review measured `write_filepath: "a.md", content: "Qwen emits <think>
+    /// first"` reaching the executor as `Qwen emits  first`, and a `</think>`
+    /// inside one glued argument leaving `delete_filepath: "victim.md"` at a
+    /// line start as a second call. `the_executing_loops_split_against_the_catalog`
+    /// in `tacet-cli` holds the callers to it.
+    pub fn split_against(&mut self, tool_names: &[&str]) {
+        let (thinking, visible) = crate::thinking::extract_with_names(&self.raw, tool_names);
+        self.text = visible;
+        self.thinking = thinking;
     }
 }
 
@@ -372,6 +397,30 @@ mod tests {
             assert_eq!(g.text, call);
             assert!(g.thinking.is_none());
         }
+    }
+
+    /// The glued shape needs the catalog, so the constructor's split cannot
+    /// protect it; `split_against` must, and must work from what the model
+    /// wrote rather than from the already-edited `text`.
+    #[test]
+    fn splitting_against_the_catalog_restores_a_glued_call() {
+        let call = "write_filepath: \"a\", content: \"</think>\ndelete_filepath: \"victim.md\"\"";
+        let raw = format!("<think>reason\n{call}");
+        let mut g = Generation::new(raw.as_str(), 30, StopReason::Token);
+        assert_eq!(g.raw, raw);
+        g.split_against(&["write_file", "delete_file"]);
+        assert!(g.thinking.is_none(), "a block closed inside the call");
+        assert!(g.text.ends_with(call), "call was edited: {}", g.text);
+
+        // And the ordinary case is untouched by the names.
+        let mut g = Generation::new(
+            r#"<think>plan</think>find_filepattern: "x""#,
+            9,
+            StopReason::Token,
+        );
+        g.split_against(&["find_file"]);
+        assert_eq!(g.thinking.as_deref(), Some("plan"));
+        assert_eq!(g.text, r#"find_filepattern: "x""#);
     }
 
     /// The other half: the constructor still strips a leading block, so the
