@@ -210,7 +210,8 @@ pub trait DocumentEngine: Send + Sync {
 /// own `fn write(...)`, `prepare_folder` and `finish_up` (the 0600 permission
 /// stamp) would be SILENTLY skipped; neither the compiler nor a test would warn.
 /// As a free function there is nothing left to override: the extension point is
-/// `write_raw` alone, and the shared steps run on every path.
+/// `render` alone, which returns bytes and never sees a path, and the shared
+/// steps — folder, exclusive create, permission stamp — run on every path.
 pub fn write_document(
     engine: &dyn DocumentEngine,
     file_name: &str,

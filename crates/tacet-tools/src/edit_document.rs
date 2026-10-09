@@ -459,18 +459,8 @@ impl EditDocumentTool {
             // strings and styles — a second writer for a format this crate
             // writes by hand. The original is never touched, so saying so is
             // enough for nothing to be lost: the user still has every sheet.
-            if let Some(o) = &previous {
-                let unread = o.unread_sheets();
-                if !unread.is_empty() {
-                    let names: Vec<String> = unread.iter().map(|n| format!("\"{n}\"")).collect();
-                    warning.push_str(&format!(
-                        "; warning: the original workbook has {} sheets and the edited copy \
-                         holds only this one — {} are not in it (they are still in the \
-                         unchanged original)",
-                        o.sheets.len(),
-                        names.join(", ")
-                    ));
-                }
+            if let Some(note) = previous.as_ref().and_then(|o| o.left_behind_note()) {
+                warning.push_str(&format!("; warning: {note}"));
             }
             new
         } else {
@@ -940,6 +930,46 @@ mod tests {
             &mut ctx,
         ));
         assert!(!plain.to_model.contains("sheets"), "{}", plain.to_model);
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// 7c) AUDIT L17, SECOND REVIEW: a workbook whose rels are missing is read
+    ///     through the `sheet1.xml` fallback, and nothing says which name that
+    ///     sheet has. The warning used to name EVERY sheet as "not in" the
+    ///     copy — the one just edited among them.
+    #[test]
+    fn an_edit_of_an_unlinked_sheet_does_not_call_it_left_behind() {
+        let root = temp_dir("unlinked");
+        let workbook = "<workbook><sheets>\
+             <sheet name=\"Budget\" sheetId=\"1\" r:id=\"rId1\"/>\
+             <sheet name=\"Notes\" sheetId=\"2\" r:id=\"rId2\"/>\
+             </sheets></workbook>";
+        let sheet = "<worksheet><sheetData>\
+             <row><c r=\"A1\" t=\"inlineStr\"><is><t>Item</t></is></c></row>\
+             <row><c r=\"A2\" t=\"inlineStr\"><is><t>rent</t></is></c></row>\
+             </sheetData></worksheet>";
+        let bytes = tacet_zip::pack(&[
+            tacet_zip::ZipEntry::new("xl/workbook.xml", workbook.as_bytes()),
+            tacet_zip::ZipEntry::new("xl/worksheets/sheet1.xml", sheet.as_bytes()),
+        ])
+        .unwrap();
+        fs::write(root.join("budget.xlsx"), &bytes).unwrap();
+
+        let mut ctx = context(&root, Arc::new(SharedStore::new()));
+        let outcome = hold(EditDocumentTool::new().run(
+            json!({"path": "budget.xlsx", "new_content": "| Item |\n| --- |\n| food |"}),
+            &mut ctx,
+        ));
+        assert_eq!(outcome.state, ToolState::Written, "{}", outcome.to_model);
+        let m = &outcome.to_model;
+        assert!(
+            m.contains("2 sheets"),
+            "the other sheet went unmentioned: {m}"
+        );
+        assert!(
+            !m.contains("\"Budget\"") && !m.contains("\"Notes\""),
+            "a sheet that may be the edited one is named as left behind: {m}"
+        );
         fs::remove_dir_all(&root).ok();
     }
 

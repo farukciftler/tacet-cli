@@ -365,9 +365,14 @@ fn to_text(byte: &[u8]) -> ToolResult<String> {
 /// the 64 MiB zip entry cap the process ran out of memory. Rows are now sparse
 /// (an empty cell costs nothing) and this budget caps what is left: the table
 /// renders as `(rows + 1) x width` cells, so that product is what is counted.
-/// 262,144 holds a 10,000-row export with columns A..Z; past it the remaining
+/// 1,048,576 holds a 40,000-row export with columns A..Z — the size the front
+/// page promises goes into the store whole — and a million empty `String`s is
+/// ~24 MiB, a third of the 64 MiB entry the bomb needed. Past it the remaining
 /// rows are counted and reported, never silently dropped.
-const CELL_BUDGET: usize = 262_144;
+///
+/// It was 262,144 for one review round: that read a 40,000 x 10 export only
+/// to about row 26,200, so the README's "40 000-row spreadsheet" was false.
+const CELL_BUDGET: usize = 1_048_576;
 
 /// The most cell TEXT one sheet may materialise, in bytes.
 ///
@@ -427,29 +432,81 @@ impl Workbook {
                 }
             })
             .collect();
-        let more = self.sheets.len().saturating_sub(SHEET_NAMES_SHOWN);
-        let tail = if more > 0 {
-            format!(" and {more} more")
+        let which = if self.shown.is_some() {
+            ""
         } else {
-            String::new()
+            " and the file does not link it to a name"
         };
         Some(format!(
-            "the workbook has {} sheets: {}{tail}; only one sheet is read",
+            "the workbook has {} sheets: {}{}; only one sheet is read{which}",
             self.sheets.len(),
-            names.join(", ")
+            names.join(", "),
+            more_tail(self.sheets.len())
         ))
     }
 
-    /// The names of the sheets that were NOT read, for a caller that has to say
-    /// what it is about to leave behind.
-    pub fn unread_sheets(&self) -> Vec<String> {
-        self.sheets
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| Some(*i) != self.shown)
-            .take(SHEET_NAMES_SHOWN)
-            .map(|(_, n)| n.chars().take(SHEET_NAME_CHARS).collect())
-            .collect()
+    /// The names of the sheets that were NOT read, every one of them, for a
+    /// caller that has to say what it is about to leave behind.
+    ///
+    /// `None` WHEN THE SHEET READ HAS NO NAME (audit L17, second review): with
+    /// `workbook.xml` present and its rels missing, the table comes from the
+    /// `sheet1.xml` fallback and `shown` is `None` — this used to return EVERY
+    /// name, the one actually read included, so `edit_document` warned that
+    /// the sheet it had just edited was "not in" the copy. Guessing that
+    /// `sheet1.xml` is the first listed sheet is exactly the guess the
+    /// workbook-order rule above exists to stop making.
+    pub fn unread_sheets(&self) -> Option<Vec<String>> {
+        let shown = self.shown?;
+        Some(
+            self.sheets
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != shown)
+                .map(|(_, n)| n.chars().take(SHEET_NAME_CHARS).collect())
+                .collect(),
+        )
+    }
+
+    /// What an edit that writes ONE sheet leaves behind, as the warning
+    /// `edit_document` appends; `None` for a one-sheet workbook.
+    ///
+    /// The names are capped like `other_sheets_note`'s and carry the same
+    /// "and N more" tail: a 30-sheet workbook used to name 20 of its 29
+    /// left-behind sheets and say nothing of the other nine.
+    pub fn left_behind_note(&self) -> Option<String> {
+        if self.sheets.len() < 2 {
+            return None;
+        }
+        let total = self.sheets.len();
+        Some(match self.unread_sheets() {
+            Some(unread) => {
+                let names: Vec<String> = unread
+                    .iter()
+                    .take(SHEET_NAMES_SHOWN)
+                    .map(|n| format!("\"{n}\""))
+                    .collect();
+                format!(
+                    "the original workbook has {total} sheets and the edited copy holds only \
+                     this one — {}{} are not in it (they are still in the unchanged original)",
+                    names.join(", "),
+                    more_tail(unread.len())
+                )
+            }
+            None => format!(
+                "the original workbook has {total} sheets and the edited copy holds only one \
+                 of them — the file does not link the sheet read to a name, so the other {} \
+                 cannot be named (they are still in the unchanged original)",
+                total - 1
+            ),
+        })
+    }
+}
+
+/// `" and N more"` when a list of `count` names is cut at SHEET_NAMES_SHOWN.
+fn more_tail(count: usize) -> String {
+    match count.saturating_sub(SHEET_NAMES_SHOWN) {
+        0 => String::new(),
+        more => format!(" and {more} more"),
     }
 }
 
@@ -690,6 +747,10 @@ struct Sheet {
     /// their last non-empty cell (the markdown writer pads them on output).
     rows: Vec<Vec<String>>,
     rows_not_read: usize,
+    /// The most cells one row held at once before it closed — what M6-b is
+    /// about; only the tests read it.
+    #[cfg(test)]
+    held_peak: usize,
 }
 
 /// What one sheet may cost; a parameter so the tests can reach the edge with
@@ -712,10 +773,18 @@ fn parse_sheet(xml: &str, shared: &[String]) -> Sheet {
 
 fn parse_sheet_within(xml: &str, shared: &[String], budget: Budget) -> Sheet {
     let mut sheet = Sheet::default();
-    // SPARSE: `(column, value)` for the non-empty cells only. An empty cell —
+    // SPARSE: `column -> value` for the non-empty cells only. An empty cell —
     // the self-closing `<c r="XFD1"/>` the audit's bomb was built from — moves
     // the next free column and allocates nothing.
-    let mut active: Vec<(usize, String)> = Vec::new();
+    //
+    // KEYED BY COLUMN, NOT A LIST (audit M6-b). Cells are budgeted only when
+    // their row closes, so a list kept every `<c>` of an open row: one row of
+    // 2.9M `<c r="A1"><v>1</v></c>` (63.8 MB, under the entry cap) peaked at
+    // 271.6 MB RSS against 131.7 MB for the same entry unzipped and not parsed
+    // (release build, 10 Oct 2026). The dense code before it overwrote
+    // `line[0]` in place; a map does the same — the last cell in a column
+    // wins — so an open row never holds more than MAX_COLUMNS cells.
+    let mut active: std::collections::BTreeMap<usize, String> = Default::default();
     let mut next = 0usize;
     let mut body = String::new();
     let mut collecting = false;
@@ -785,7 +854,11 @@ fn parse_sheet_within(xml: &str, shared: &[String], budget: Budget) -> Sheet {
                     if text_used > budget.text {
                         full = true;
                     } else {
-                        active.push((column, value));
+                        active.insert(column, value);
+                        #[cfg(test)]
+                        {
+                            sheet.held_peak = sheet.held_peak.max(active.len());
+                        }
                     }
                 }
                 body.clear();
@@ -795,7 +868,7 @@ fn parse_sheet_within(xml: &str, shared: &[String], budget: Budget) -> Sheet {
                     sheet.rows_not_read += 1;
                     continue;
                 }
-                let row_width = active.iter().map(|(c, _)| c + 1).max().unwrap_or(0);
+                let row_width = active.keys().next_back().map_or(0, |c| c + 1);
                 let wider = width.max(row_width);
                 // The table renders as (rows + 1) x width; an empty row still
                 // costs one, or a million `<row></row>` would be free.
@@ -807,7 +880,7 @@ fn parse_sheet_within(xml: &str, shared: &[String], budget: Budget) -> Sheet {
                 }
                 width = wider;
                 let mut dense = vec![String::new(); row_width];
-                for (c, v) in active.drain(..) {
+                for (c, v) in std::mem::take(&mut active) {
                     dense[c] = v;
                 }
                 sheet.rows.push(dense);
@@ -1179,7 +1252,10 @@ mod tests {
             vec!["Item"],
             "the workbook's first sheet is read"
         );
-        assert_eq!(book.unread_sheets(), vec!["Notes", "Archive"]);
+        assert_eq!(
+            book.unread_sheets(),
+            Some(vec!["Notes".to_string(), "Archive".to_string()])
+        );
 
         let dir = temp_dir("sheets");
         std::fs::write(dir.join("book.xlsx"), three_sheet_workbook()).unwrap();
@@ -1202,6 +1278,138 @@ mod tests {
         // A one-sheet workbook — what `create_document` writes — says nothing extra.
         let single = parse_workbook(&xlsx_uret(&["A"], &[vec!["1"]])).unwrap();
         assert!(single.other_sheets_note().is_none());
+    }
+
+    /// AUDIT L17, SECOND REVIEW: `workbook.xml` names two sheets and its rels
+    /// are missing, so the table comes from the `sheet1.xml` fallback and no
+    /// name is known for it. Every name used to come back as "unread" — the
+    /// edit warning then said the sheet just edited was "not in" the copy.
+    #[test]
+    fn a_sheet_the_workbook_does_not_link_is_not_called_left_behind() {
+        let workbook = "<workbook><sheets>\
+             <sheet name=\"Alpha\" sheetId=\"1\" r:id=\"rId1\"/>\
+             <sheet name=\"Beta\" sheetId=\"2\" r:id=\"rId2\"/>\
+             </sheets></workbook>";
+        let sheet = "<worksheet><sheetData><row><c r=\"A1\" t=\"inlineStr\"><is><t>Item</t></is></c></row>\
+             <row><c r=\"A2\" t=\"inlineStr\"><is><t>rent</t></is></c></row></sheetData></worksheet>";
+        let bytes = pack(&[
+            ZipEntry::new("xl/workbook.xml", workbook.as_bytes()),
+            ZipEntry::new("xl/worksheets/sheet1.xml", sheet.as_bytes()),
+        ])
+        .unwrap();
+        let book = parse_workbook(&bytes).unwrap();
+        assert_eq!(book.sheets, vec!["Alpha", "Beta"]);
+        assert_eq!(book.shown, None);
+        assert_eq!(book.table.headers, vec!["Item"], "the fallback still reads");
+
+        assert_eq!(book.unread_sheets(), None, "the sheet read is not unread");
+        let left = book.left_behind_note().unwrap();
+        assert!(
+            !left.contains("\"Alpha\"") && !left.contains("\"Beta\""),
+            "a sheet that may be the one edited is named as left behind: {left}"
+        );
+        assert!(
+            left.contains("2 sheets") && left.contains("other 1"),
+            "{left}"
+        );
+
+        let read = book.other_sheets_note().unwrap();
+        assert!(!read.contains("(this one)"), "{read}");
+        assert!(read.contains("does not link it to a name"), "{read}");
+    }
+
+    /// AUDIT L17, SECOND REVIEW: past twenty names the edit warning stopped
+    /// naming and said nothing — 9 of a 30-sheet workbook's 29 left-behind
+    /// sheets went unmentioned. It now counts them, as the read note does.
+    #[test]
+    fn the_sheets_past_the_twenty_named_are_counted() {
+        let mut names = String::new();
+        let mut rels = String::new();
+        for i in 1..=30 {
+            names.push_str(&format!(
+                "<sheet name=\"S{i}\" sheetId=\"{i}\" r:id=\"rId{i}\"/>"
+            ));
+            rels.push_str(&format!(
+                "<Relationship Id=\"rId{i}\" Type=\"x/worksheet\" Target=\"worksheets/sheet{i}.xml\"/>"
+            ));
+        }
+        let workbook = format!("<workbook><sheets>{names}</sheets></workbook>");
+        let rels = format!("<Relationships>{rels}</Relationships>");
+        let sheet =
+            "<worksheet><sheetData><row><c r=\"A1\"><v>1</v></c></row></sheetData></worksheet>";
+        let bytes = pack(&[
+            ZipEntry::new("xl/workbook.xml", workbook.into_bytes()),
+            ZipEntry::new("xl/_rels/workbook.xml.rels", rels.into_bytes()),
+            ZipEntry::new("xl/worksheets/sheet1.xml", sheet.as_bytes()),
+        ])
+        .unwrap();
+        let book = parse_workbook(&bytes).unwrap();
+        assert_eq!(book.shown, Some(0));
+        assert_eq!(book.unread_sheets().map(|u| u.len()), Some(29));
+
+        let left = book.left_behind_note().unwrap();
+        assert!(
+            left.contains("\"S2\"") && left.contains("\"S21\""),
+            "{left}"
+        );
+        assert!(!left.contains("\"S22\""), "more than twenty named: {left}");
+        assert!(
+            left.contains("\"S21\" and 9 more are not in it"),
+            "the nine past the cap are not counted: {left}"
+        );
+        assert!(book.other_sheets_note().unwrap().contains(" and 10 more"));
+    }
+
+    /// AUDIT M6, SECOND REVIEW: the README says a 40 000-row spreadsheet goes
+    /// into the store. At a 262,144-cell budget a 40,000 x 26 export stopped
+    /// after 10,081 data rows (measured with the budget reverted, 10 Oct 2026)
+    /// and only that part reached the store.
+    #[test]
+    fn a_forty_thousand_row_export_a_to_z_is_read_whole() {
+        let row: String = "<c><v>1</v></c>".repeat(26);
+        let mut xml = String::with_capacity(40_001 * (row.len() + 11) + 64);
+        xml.push_str("<worksheet><sheetData>");
+        for _ in 0..40_001 {
+            xml.push_str("<row>");
+            xml.push_str(&row);
+            xml.push_str("</row>");
+        }
+        xml.push_str("</sheetData></worksheet>");
+
+        let sheet = parse_sheet(&xml, &[]);
+        assert_eq!(
+            sheet.rows_not_read,
+            0,
+            "{} of 40,000 rows were read",
+            sheet.rows.len().saturating_sub(1)
+        );
+        assert_eq!(sheet.rows.len(), 40_001);
+        assert_eq!(sheet.rows[40_000].len(), 26);
+    }
+
+    /// AUDIT M6-b: an open row is not budgeted until `</row>`, so a list of
+    /// its cells grew with every `<c>` — one row repeating `r="A1"` was a
+    /// linear amplifier the dense code it replaced did not have. The last cell
+    /// in a column wins, as it did there, and a row holds at most one cell per
+    /// column.
+    #[test]
+    fn one_row_repeating_a_column_holds_one_cell_per_column() {
+        let mut xml = String::from("<sheetData><row>");
+        for i in 0..20_000 {
+            xml.push_str(&format!(
+                "<c r=\"A1\"><v>a{i}</v></c><c r=\"B1\"><v>b{i}</v></c>"
+            ));
+        }
+        xml.push_str("</row></sheetData>");
+
+        let sheet = parse_sheet(&xml, &[]);
+        assert!(
+            sheet.held_peak <= MAX_COLUMNS,
+            "one open row held {} cells, columns cap {MAX_COLUMNS}",
+            sheet.held_peak
+        );
+        assert_eq!(sheet.held_peak, 2);
+        assert_eq!(sheet.rows, vec![vec!["a19999", "b19999"]]);
     }
 
     #[test]
