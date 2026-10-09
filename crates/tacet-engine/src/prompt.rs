@@ -208,8 +208,8 @@ fn defanged(text: &str) -> String {
     tacet_kernel::defang(text)
 }
 
-/// Registers the markers a loaded tokenizer declares, so the defang covers a
-/// vocabulary nobody here has read.
+/// Declares a loaded tokenizer's vocabulary to the defang, so it covers a
+/// vocabulary nobody here has read — and stops guessing about one it has.
 ///
 /// THE SAME RULE AS THE SAMPLER'S MASK, minus its one exemption.
 /// `candle_engine::marker_tokens` — special tokens plus placeholders — is what
@@ -219,10 +219,28 @@ fn defanged(text: &str) -> String {
 /// is precisely the forgery. Ordinary added tokens (`\n`, `</div>`) are in
 /// neither set, and the kernel's registry refuses them a second time.
 ///
+/// It also tells the kernel which of its named tokens (`<pad>`, `<s>`,
+/// `<think>`, ...) this vocabulary holds, and from then on only those are
+/// broken: `tok.pad_token = "<pad>"` reaches a Qwen model as written. See
+/// `tacet_kernel::defang`, rule 2.
+///
 /// Returns how many markers the kernel accepted.
 #[cfg(feature = "candle")]
 pub fn register_vocab_markers(tokenizer: &tokenizers::Tokenizer) -> usize {
-    tacet_kernel::register_markers(vocab_markers(tokenizer))
+    tacet_kernel::register_vocabulary(vocabulary(tokenizer))
+}
+
+/// What `register_vocab_markers` declares, as a value a test can inspect
+/// without touching the process-wide registry.
+#[cfg(feature = "candle")]
+pub fn vocabulary(tokenizer: &tokenizers::Tokenizer) -> tacet_kernel::Vocabulary {
+    // `token_to_id`, not the added vocabulary: it answers "does this string
+    // come out as one token", which is the only thing that makes a named
+    // marker a marker, wherever in the vocabulary the tokenizer keeps it.
+    let held = tacet_kernel::defang::NAMED_MARKERS
+        .into_iter()
+        .filter(|m| tokenizer.token_to_id(m).is_some());
+    tacet_kernel::Vocabulary::new(vocab_markers(tokenizer), held)
 }
 
 /// The marker strings of a tokenizer: see `register_vocab_markers`.
@@ -963,6 +981,7 @@ mod vocab_tests {
                 added(5, "<vocab_test_unused7>", false),
                 added(6, "</div>", false),
                 added(7, "\n\n", false),
+                added(8, "<think>", false),
             ]
             .join(",")
         );
@@ -971,6 +990,10 @@ mod vocab_tests {
 
     /// THE STOP TOKEN IS NOT EXEMPT HERE, unlike in the sampler's mask, and the
     /// ordinary added tokens are left alone in both.
+    ///
+    /// On the `Vocabulary` value: `register_vocab_markers` would narrow the
+    /// named list for every test in this binary. The registration itself is
+    /// `tests/the_loader_declares_its_vocabulary.rs`, a binary of its own.
     #[test]
     fn the_vocabulary_supplies_its_markers_and_only_its_markers() {
         let tk = tokenizer();
@@ -984,12 +1007,28 @@ mod vocab_tests {
                 "<|vocab_test_end|>".to_string(),
             ]
         );
+        let v = vocabulary(&tk);
+        assert_eq!(v.marker_count(), 3);
         let novel = "x<vocab_test_turn>y<vocab_test_unused7></div>";
-        assert_eq!(defanged(novel), novel, "not registered yet");
-        assert_eq!(register_vocab_markers(&tk), 3);
+        assert_eq!(defanged(novel), novel, "nothing declared in this binary");
         assert_eq!(
-            defanged(novel),
+            v.defang(novel),
             "x< vocab_test_turn>y< vocab_test_unused7></div>"
+        );
+    }
+
+    /// Which named tokens the vocabulary holds is read from the tokenizer,
+    /// not assumed: this one holds `<think>` as an added, NOT special token
+    /// (Qwen3's shape) and no `<pad>` at all.
+    #[test]
+    fn the_vocabulary_says_which_named_tokens_it_holds() {
+        let v = vocabulary(&tokenizer());
+        assert_eq!(v.defang("<think>"), "< think>", "a held token passed raw");
+        let code = "tok.pad_token = \"<pad>\"; bos = \"<s>\"";
+        assert_eq!(
+            v.defang(code),
+            code,
+            "a token this vocabulary lacks was altered"
         );
     }
 }

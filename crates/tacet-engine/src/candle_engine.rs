@@ -418,10 +418,7 @@ impl CandleEngine {
         };
 
         let vocab = build_vocab(&tokenizer);
-        let forbidden_markers = marker_tokens(&tokenizer, &stop_tokens);
-        // The prompt side of the same vocabulary (audit H4-b): what the model
-        // may not write, foreign text may not write into its prompt either.
-        crate::prompt::register_vocab_markers(&tokenizer);
+        let forbidden_markers = guard_markers(&tokenizer, &stop_tokens);
 
         // THE ONE ARCHITECTURE WHOSE TEMPLATE IS CHECKED RATHER THAN LOOKED UP.
         // `llama` names a family, not a wire format: SmolLM2 and TinyLlama were
@@ -1514,6 +1511,22 @@ pub fn marker_tokens(tokenizer: &Tokenizer, stop_tokens: &[u32]) -> Vec<u32> {
         })
         .map(|(id, _)| *id)
         .collect()
+}
+
+/// Both sides of one vocabulary's markers: declares them to the prompt's
+/// defang, and returns the ones the sampler masks.
+///
+/// ONE FUNCTION SO THE LOADER CANNOT DO HALF. The declaration used to be its
+/// own line in `load`, called for its side effect, and deleting it left every
+/// test green — the tests called the library function, not the loader
+/// (adversarial review, 9 Oct 2026). `load` needs the mask this returns, so
+/// it cannot skip the call, and `tests/the_loader_declares_its_vocabulary.rs`
+/// holds that the call declares.
+pub fn guard_markers(tokenizer: &Tokenizer, stop_tokens: &[u32]) -> Vec<u32> {
+    // The prompt side (audit H4-b): what the model may not write, foreign text
+    // may not write into its prompt either.
+    crate::prompt::register_vocab_markers(tokenizer);
+    marker_tokens(tokenizer, stop_tokens)
 }
 
 pub fn build_vocab(tokenizer: &Tokenizer) -> Vec<String> {
