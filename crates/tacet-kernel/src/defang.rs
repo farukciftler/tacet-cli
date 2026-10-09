@@ -51,7 +51,10 @@
 //!    the model reads it, it does not look it up — and `</memory >` and
 //!    `</MEMORY>` both passed the exact-match version raw, after the real
 //!    `<memory>` (measured, same review). A model that has read HTML reads
-//!    either one as the close.
+//!    either one as the close. So it does `</memory/>`: HTML tokenises a
+//!    trailing solidus before the `>` as the same end tag, and that spelling
+//!    too passed raw until a later review measured it. `</ memory>` is left
+//!    alone — HTML reads it as a bogus comment, not a tag.
 //! 4. WHAT THE LOADED TOKENIZER SAYS, through `register_vocabulary`. A real
 //!    engine registers its own special and placeholder tokens when it loads, so
 //!    a vocabulary nobody here has read is still covered, and says which of the
@@ -337,7 +340,8 @@ fn unused_placeholder(b: &[u8]) -> Option<usize> {
 }
 
 /// `<fence>`, `</fence>`, or `<fence attr="...">` for one of `FENCE_NAMES`,
-/// in any ASCII case, with whitespace allowed after the name on either side.
+/// in any ASCII case, with whitespace or a `/>` allowed after the name on
+/// either side.
 ///
 /// The ATTRIBUTE FORM MATTERS: the prompt's own guidance fence is
 /// `<guidance name="calc">`, so a tool result writing `<guidance name="x">`
@@ -357,6 +361,11 @@ fn own_fence(b: &[u8]) -> Option<usize> {
             match b[end] {
                 b'>' => return Some(end + 1),
                 c if c.is_ascii_whitespace() => return Some(end),
+                // `</memory/>` is an END TAG to the WHATWG tokenizer (with
+                // only a trailing-solidus parse error), and `<tools/>` an
+                // opening one; both reached the prompt raw when only `>` and
+                // whitespace counted (measured in review, audit RG-02).
+                b'/' if b.get(end + 1) == Some(&b'>') => return Some(end),
                 _ => {}
             }
         }
@@ -473,12 +482,21 @@ mod tests {
             "</CWD>",
             "<System>",
             "</History  >",
+            "</memory/>",
+            "</Tools/>",
+            "<memory/>",
         ] {
             let d = defang(tag);
             assert!(d.starts_with("< "), "{tag:?} passed as {d:?}");
         }
         // Still not the fence: a longer word, in any case.
-        for ok in ["<Memory-Card>", "</MEMORYX>", "<TOOLSET>", "</cwdx >"] {
+        for ok in [
+            "<Memory-Card>",
+            "</MEMORYX>",
+            "<TOOLSET>",
+            "</cwdx >",
+            "</memory/x>",
+        ] {
             assert_eq!(defang(ok), ok);
         }
     }

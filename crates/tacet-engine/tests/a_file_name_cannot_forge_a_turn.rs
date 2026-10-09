@@ -203,9 +203,9 @@ fn our_own_system_text_passes_through_byte_identical() {
         "{}\n\n{FINAL_PASS_INSTRUCTION}\n\n{WEB_NUDGE}",
         system_text(Some(&census))
     );
-    assert_eq!(Prompt::new(shipped.clone(), "q").system, shipped);
+    assert_eq!(Prompt::new(shipped.clone(), "q").system(), shipped);
     assert_eq!(
-        Prompt::new(SYSTEM_INSTRUCTIONS, "q").system,
+        Prompt::new(SYSTEM_INSTRUCTIONS, "q").system(),
         SYSTEM_INSTRUCTIONS
     );
 }
