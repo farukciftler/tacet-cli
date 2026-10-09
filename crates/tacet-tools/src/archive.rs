@@ -19,9 +19,14 @@
 //!   1. the .zip itself goes through `sandbox_path::resolve_existing_file` and a
 //!      file-size cap, so a planted link cannot be read through;
 //!   2. `tacet_zip::list` reads the central directory WITHOUT decoding a byte,
-//!      and every declared-size gate is applied to that listing — a bomb is
-//!      refused before any CPU is spent on it;
-//!   3. only then is anything inflated, under a ceiling this file chooses;
+//!      and every declared-size gate is applied to that listing — a bomb that
+//!      DECLARES its size is refused before any CPU is spent on it;
+//!   3. only then is anything inflated, under a ceiling this file chooses.
+//!      A bomb that lies about its size — declares 0, decodes to 0, burns CPU
+//!      in between — is not visible to step 2 at all; what bounds it is the
+//!      reader: no two entries may share bytes, and `inflate` refuses a long
+//!      run of blocks that produce nothing (audit M8), so the work is linear in
+//!      the archive's length rather than multiplied by its entry count;
 //!   4. only then does a destination directory come into existence.
 //!
 //! Step 4 last is what makes "the destination was never created" an OBSERVABLE
@@ -373,11 +378,12 @@ impl ArchiveTool {
             .map_err(zip_error)?;
 
         // THE DECLARED SIZE MUST BE THE TRUE SIZE. For a DEFLATE entry the
-        // reader ignores `raw_size` entirely and a zero CRC is skipped — MEASURED
-        // in tacet-zip's `list_reports_the_directory_without_decoding_anything`,
-        // where an archive declaring 4 GiB opens without complaint and yields
-        // 8 MiB. So the declared numbers are checked against reality HERE, and
-        // an archive that lied is refused.
+        // reader ignores `raw_size` entirely — MEASURED in tacet-zip's
+        // `list_reports_the_directory_without_decoding_anything`, where an
+        // archive declaring 4 GiB opens without complaint and yields 8 MiB. So
+        // the declared numbers are checked against reality HERE, and an archive
+        // that lied is refused. (The CRC is the reader's job and it checks every
+        // entry, a recorded 0 included; it used to skip a 0, audit L11.)
         //
         // IT DOES NOT MAKE `list`'S OUTPUT TRUE — the sentence that used to
         // stand here claimed it did, and that claim was bigger than the code.
@@ -604,6 +610,35 @@ fn inspect(listing: &[tacet_zip::ZipListing]) -> ToolResult<Vec<Kept>> {
             declared: item.declared_size,
             compressed: item.compressed_size,
         });
+    }
+
+    // A NAME CANNOT BE BOTH A FILE AND A FOLDER. `a` as a file and `a/b` as
+    // anything are two different paths, so the duplicate gate above passes them
+    // — and `extract` then writes `a`, fails to create the folder `a`, and
+    // leaves a half-unpacked directory behind (audit L14). The rule this file
+    // keeps is "refuse the whole archive before anything exists", so the pair is
+    // caught here, in the one pass both actions share, in either order. Folded
+    // the same way as the duplicate gate and for the same reason: on a
+    // case-insensitive destination `A` and `a/b` collide too.
+    let files: std::collections::HashSet<String> = kept
+        .iter()
+        .filter(|k| !k.is_dir)
+        .map(|k| k.relative.to_string_lossy().to_lowercase())
+        .collect();
+    for k in &kept {
+        for ancestor in k.relative.ancestors().skip(1) {
+            if ancestor.as_os_str().is_empty() {
+                break;
+            }
+            if files.contains(&ancestor.to_string_lossy().to_lowercase()) {
+                return Err(ToolError::Other(format!(
+                    "'{}' is a file in the archive and also the folder of '{}'; one would \
+                     have to replace the other",
+                    short(&ancestor.to_string_lossy()),
+                    short(&k.name)
+                )));
+            }
+        }
     }
     Ok(kept)
 }
@@ -1228,10 +1263,15 @@ mod tests {
     }
 
     /// A HEADER THAT LIES ABOUT ITS SIZE. For a DEFLATE entry the zip reader
-    /// ignores `raw_size` entirely and skips a zero CRC — measured in tacet-zip's
-    /// own `list_reports_the_directory_without_decoding_anything`. So the
-    /// declared numbers are proven against reality here, and an archive whose
-    /// directory does not describe its contents is refused rather than unpacked.
+    /// ignores `raw_size` entirely — measured in tacet-zip's own
+    /// `list_reports_the_directory_without_decoding_anything`. So the declared
+    /// numbers are proven against reality here, and an archive whose directory
+    /// does not describe its contents is refused rather than unpacked.
+    ///
+    /// THE CRC IN THE FIXTURE IS CORRECT, and it used to be 0: the reader
+    /// skipped a zero CRC, so 0 was "the other half of the lie". That skip was
+    /// the bug (audit L11); with it gone a zero CRC would be refused by the
+    /// reader first and this test would stop measuring the size gate.
     #[test]
     fn a_header_that_lies_about_its_size_is_refused() {
         let _guard = isolated();
@@ -1245,7 +1285,7 @@ mod tests {
             name: "small.bin".into(),
             body: stream,
             method: 8,
-            crc: 0, // a zero CRC is skipped by the reader — the other half of the lie
+            crc: tacet_zip::crc32(&real),
             declared_size: 3,
             external_attributes: 0o100_644 << 16,
         };
@@ -1296,7 +1336,8 @@ mod tests {
             name: "small.bin".into(),
             body: deflate_stored(&real),
             method: 8,
-            crc: 0,
+            // Correct, so the SIZE is the only lie (see the test above).
+            crc: tacet_zip::crc32(&real),
             declared_size: 3,
             external_attributes: 0o100_644 << 16,
         };
@@ -1356,6 +1397,141 @@ mod tests {
         write_zip(&root, "corrupt.zip", &[bad]);
         assert!(tool.work(&extract_args("corrupt.zip"), &ctx).is_err());
         only_the_archive_is_there(&root, "corrupt.zip");
+    }
+
+    /// AUDIT L11, AT THE TOOL. A corrupt entry whose central directory records
+    /// a CRC of 0 used to be unpacked unverified — the reader skipped a zero —
+    /// while this tool's description promised a CRC refusal. The body here is
+    /// not what any CRC of 0 describes, and the archive is refused by name.
+    #[test]
+    fn a_zero_crc_does_not_wave_a_corrupt_entry_through() {
+        let _guard = isolated();
+        let root = temp_root("crc-zero");
+        let store = Arc::new(SharedStore::new());
+        let ctx = context(&root, &store);
+        let tool = ArchiveTool::new();
+        let mut zeroed = RawEntry::stored("a.txt", b"alpha");
+        zeroed.crc = 0;
+        write_zip(&root, "zeroed.zip", &[zeroed]);
+        let error = refusal(&tool, &ctx, extract_args("zeroed.zip")).short_error();
+        assert!(
+            error.contains("could not be verified"),
+            "refused for the wrong reason, or not at all: {error}"
+        );
+        only_the_archive_is_there(&root, "zeroed.zip");
+    }
+
+    /// AUDIT M8, AT THE TOOL: the bomb that declares nothing. Every block in
+    /// this entry is an empty fixed-Huffman block (10 bits: BFINAL, BTYPE=01,
+    /// the 7-bit end-of-block code), so it decodes to 0 bytes and matches its
+    /// declared size of 0 and its CRC of 0 — `inspect` has nothing to refuse
+    /// on, because by every declared number it is an empty file. Before the fix
+    /// it was unpacked as one, after the CPU had been spent (3.87 s per 4 MiB in
+    /// release). Now `inflate` refuses the run of empty blocks.
+    #[test]
+    fn a_flood_of_empty_deflate_blocks_is_refused_not_unpacked() {
+        let _guard = isolated();
+        let root = temp_root("flood");
+        let store = Arc::new(SharedStore::new());
+        let ctx = context(&root, &store);
+        let tool = ArchiveTool::new();
+        // 256 KiB is ~210,000 blocks — far past the run limit, and small enough
+        // that the unfixed decoder finishes inside a debug test run.
+        let blocks: usize = 256 * 1024 * 8 / 10;
+        let mut stream = vec![0u8; (blocks * 10).div_ceil(8)];
+        for b in 0..blocks {
+            let bit = b * 10;
+            // BTYPE=01 written LSB-first after BFINAL: the block's second bit.
+            stream[(bit + 1) / 8] |= 1 << ((bit + 1) % 8);
+            if b == blocks - 1 {
+                stream[bit / 8] |= 1 << (bit % 8); // BFINAL on the last one
+            }
+        }
+        let flood = RawEntry {
+            name: "empty.bin".into(),
+            body: stream,
+            method: 8,
+            crc: 0,
+            declared_size: 0,
+            external_attributes: 0o100_644 << 16,
+        };
+        write_zip(&root, "flood.zip", &[flood]);
+        let error = refusal(&tool, &ctx, extract_args("flood.zip")).short_error();
+        assert!(
+            error.contains("decode to nothing"),
+            "refused for the wrong reason, or not at all: {error}"
+        );
+        only_the_archive_is_there(&root, "flood.zip");
+    }
+
+    // --- a name is a file or a folder, never both ---
+
+    /// AUDIT L14. `a` as a file and `a/b` are two different names, so the
+    /// duplicate gate passed them; `extract` then wrote `a`, failed to make the
+    /// folder `a`, and left a half-unpacked directory — the one outcome this
+    /// tool's header says it never produces. Both orders, and case-folded,
+    /// because on a case-insensitive destination `A` and `a/b` collide too.
+    #[test]
+    fn a_name_that_is_both_a_file_and_a_folder_is_refused() {
+        let _guard = isolated();
+        let root = temp_root("file-dir");
+        let store = Arc::new(SharedStore::new());
+        let ctx = context(&root, &store);
+        let tool = ArchiveTool::new();
+        let cases: [(&str, [&str; 2]); 4] = [
+            ("file-first.zip", ["a", "a/b"]),
+            ("file-last.zip", ["a/b", "a"]),
+            ("deep.zip", ["x/a", "x/a/b/c.txt"]),
+            ("folded.zip", ["A", "a/b"]),
+        ];
+        for (file, names) in cases {
+            write_zip(
+                &root,
+                file,
+                &[
+                    RawEntry::stored(names[0], b"first"),
+                    RawEntry::stored(names[1], b"second"),
+                ],
+            );
+            let error = refusal(&tool, &ctx, extract_args(file)).short_error();
+            assert!(
+                error.contains("also the folder"),
+                "{file} was refused for the wrong reason, or not at all: {error}"
+            );
+            // AND `list` REFUSES IT TOO — the one-pass rule.
+            assert!(
+                tool.work(&json!({"path": file, "action": "list"}), &ctx)
+                    .is_err(),
+                "{file} was listed although it cannot be extracted"
+            );
+            let _ = fs::remove_file(root.join(file));
+            nothing_is_there(&root);
+        }
+
+        // A folder ENTRY above a file is the ordinary shape and still unpacks.
+        write_zip(
+            &root,
+            "fine.zip",
+            &[RawEntry::stored("a/", b""), RawEntry::stored("a/b", b"x")],
+        );
+        tool.work(&extract_args("fine.zip"), &ctx)
+            .expect("a folder entry with a file under it unpacks");
+        assert_eq!(fs::read(root.join("fine/a/b")).unwrap(), b"x");
+    }
+
+    /// The working directory holds nothing at all — used where each refused
+    /// archive is removed before the next, so "only the archive" would be
+    /// "nothing".
+    fn nothing_is_there(root: &Path) {
+        let left: Vec<String> = fs::read_dir(root)
+            .expect("readable")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            left.is_empty(),
+            "the refusal left something behind: {left:?}"
+        );
     }
 
     #[test]

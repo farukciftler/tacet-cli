@@ -48,10 +48,13 @@ pub fn open(zip: &[u8]) -> ZipResult<Vec<ZipEntry>> {
     let mut entries = Vec::with_capacity(record_count.min(1024));
     let mut total_decoded = 0usize;
     let mut offset = central_offset;
+    let mut occupied = Occupied::default();
 
     for _ in 0..record_count {
         let record = read_central_record(zip, offset)?;
-        let data = decode_entry_data(zip, &record, ENTRY_CAP)?;
+        let local = local_entry(zip, &record)?;
+        occupied.claim(&local)?;
+        let data = decode_entry_data(zip, &record, &local, ENTRY_CAP)?;
 
         total_decoded += data.len();
         if total_decoded > ARCHIVE_CAP {
@@ -123,11 +126,14 @@ impl ZipListing {
 /// single byte of entry data.
 ///
 /// This is the gate a caller needs before it inflates anything: it costs the
-/// length of the directory, not the length of the archive.
+/// directory plus one 30-byte local header per entry, not the length of the
+/// archive. The local headers are read so that `list` refuses exactly what
+/// `open_selected` would (see `Occupied`) — a listing of an archive that can
+/// never be extracted is a listing the caller cannot act on.
 pub fn list(zip: &[u8]) -> ZipResult<Vec<ZipListing>> {
     Ok(walk_central(zip)?
         .into_iter()
-        .map(|r| ZipListing {
+        .map(|(r, _)| ZipListing {
             name: r.name,
             method: r.method,
             compressed_size: r.compressed_size,
@@ -157,11 +163,11 @@ pub fn open_selected(
 ) -> ZipResult<Vec<ZipEntry>> {
     let mut entries = Vec::new();
     let mut total_decoded = 0usize;
-    for record in walk_central(zip)? {
+    for (record, local) in walk_central(zip)? {
         if !names.contains(&record.name) {
             continue;
         }
-        let data = decode_entry_data(zip, &record, entry_cap)?;
+        let data = decode_entry_data(zip, &record, &local, entry_cap)?;
         total_decoded = total_decoded
             .checked_add(data.len())
             .ok_or(ZipError::LimitExceeded("the decoded total size overflowed"))?;
@@ -183,7 +189,7 @@ pub fn open_selected(
 /// archive it reports the FIRST failure in file order. Rewriting it to pre-walk
 /// would change which error a broken archive comes back with, and the malformed
 /// -input tests in this crate are exactly a record of those answers.
-fn walk_central(zip: &[u8]) -> ZipResult<Vec<CentralDirectory>> {
+fn walk_central(zip: &[u8]) -> ZipResult<Vec<(CentralDirectory, LocalEntry)>> {
     let eocd = find_eocd(zip)?;
     let record_count = read16(zip, eocd + 10)? as usize;
     let central_offset = read32(zip, eocd + 16)? as usize;
@@ -194,10 +200,13 @@ fn walk_central(zip: &[u8]) -> ZipResult<Vec<CentralDirectory>> {
     }
     let mut records = Vec::with_capacity(record_count.min(1024));
     let mut offset = central_offset;
+    let mut occupied = Occupied::default();
     for _ in 0..record_count {
         let record = read_central_record(zip, offset)?;
+        let local = local_entry(zip, &record)?;
+        occupied.claim(&local)?;
         offset = record.next_offset;
-        records.push(record);
+        records.push((record, local));
     }
     Ok(records)
 }
@@ -236,6 +245,11 @@ struct CentralDirectory {
     compressed_size: usize,
     raw_size: usize,
     crc: u32,
+    /// Where the name sits in the archive, so it can be compared BYTE FOR BYTE
+    /// with the local header's — `name` is a lossy decode and two different
+    /// CP437 spellings may decode to the same replacement characters.
+    name_start: usize,
+    name_length: usize,
     /// The `external file attributes` field. On a zip written by a unix tool the
     /// HIGH 16 bits carry the st_mode, which is the only place an archive says
     /// "this entry is a SYMLINK" — and a caller that materialises entries on
@@ -283,33 +297,109 @@ fn read_central_record(zip: &[u8], offset: usize) -> ZipResult<CentralDirectory>
         compressed_size,
         raw_size,
         crc,
+        name_start: offset + 46,
+        name_length,
         external_attributes,
         local_offset,
         next_offset,
     })
 }
 
-fn decode_entry_data(
-    zip: &[u8],
-    record: &CentralDirectory,
-    entry_cap: usize,
-) -> ZipResult<Vec<u8>> {
-    // The data start is read from the local header: the name/extra lengths in the
-    // central directory may DIFFER from the ones in the local header (a
-    // legitimate situation).
+/// Where one entry really lives: its local header through the end of its data.
+struct LocalEntry {
+    start: usize,
+    data_start: usize,
+    /// One past the last byte of the compressed data.
+    end: usize,
+}
+
+/// Reads the local header a central record points at and proves it is THAT
+/// entry's header.
+///
+/// THE NAME CHECK IS WHAT TIES THE TWO DIRECTORIES TOGETHER. Without it a
+/// central record is a free pointer: it can be given any name, any declared
+/// size, and aimed at any other entry's bytes, so the name a caller vets is not
+/// the name of the data it gets. The bytes are compared, not the lossy decode.
+fn local_entry(zip: &[u8], record: &CentralDirectory) -> ZipResult<LocalEntry> {
+    // The data start is read from the local header: the EXTRA length in the
+    // central directory may DIFFER from the one in the local header (a
+    // legitimate situation — e.g. a timestamp field written only locally).
     let local = record.local_offset;
     if read32(zip, local)? != LOCAL_SIG {
         return Err(ZipError::Malformed("wrong local file header signature"));
     }
     let local_name_length = read16(zip, local + 26)? as usize;
     let local_extra_length = read16(zip, local + 28)? as usize;
+    let local_name = slice(zip, local + 30, local_name_length)?;
+    let central_name = slice(zip, record.name_start, record.name_length)?;
+    if local_name != central_name {
+        return Err(ZipError::Malformed(
+            "the local header names a different entry than the central directory",
+        ));
+    }
     let data_start = local
         .checked_add(30)
         .and_then(|v| v.checked_add(local_name_length))
         .and_then(|v| v.checked_add(local_extra_length))
         .ok_or(ZipError::Malformed("the local data offset overflowed"))?;
+    // Bounds-checked here rather than at decode time, so a record whose data
+    // runs off the end is refused by `list` as well.
+    slice(zip, data_start, record.compressed_size)?;
+    Ok(LocalEntry {
+        start: local,
+        data_start,
+        end: data_start + record.compressed_size,
+    })
+}
 
-    let raw = slice(zip, data_start, record.compressed_size)?;
+/// The byte spans the entries seen so far occupy, keyed by start.
+///
+/// WHY EVERY ENTRY MUST OWN ITS BYTES: nothing in the format stops two central
+/// records from pointing at the SAME local header, or one entry's local header
+/// from sitting inside another's data (the overlapping-entry bomb). Each record
+/// is then decoded separately, so the CPU an archive costs is multiplied by its
+/// record count rather than bounded by its size — the audit of 9 Oct 2026 (M8)
+/// put the multiplier at 512 through the `archive` tool's entry limit and
+/// 65,535 (the u16 record count) through `open`. With disjoint spans the total
+/// decoded input is at most the archive's length, and `inflate`'s cost is
+/// linear in its input.
+///
+/// A `BTreeMap`, not a sorted pass at the end: `open` interleaves reading and
+/// decoding (see `walk_central`), so the refusal has to come before the second
+/// decode of the same bytes, not after all of them. Only the two neighbours of
+/// a new span can overlap it, so each check is a logarithmic lookup.
+#[derive(Default)]
+struct Occupied(BTreeMap<usize, usize>);
+
+impl Occupied {
+    fn claim(&mut self, entry: &LocalEntry) -> ZipResult<()> {
+        let overlaps_before = self
+            .0
+            .range(..=entry.start)
+            .next_back()
+            .is_some_and(|(_, &end)| end > entry.start);
+        let overlaps_after = self
+            .0
+            .range(entry.start..)
+            .next()
+            .is_some_and(|(&start, _)| start < entry.end);
+        if overlaps_before || overlaps_after {
+            return Err(ZipError::Malformed(
+                "two entries share the same bytes in the archive",
+            ));
+        }
+        self.0.insert(entry.start, entry.end);
+        Ok(())
+    }
+}
+
+fn decode_entry_data(
+    zip: &[u8],
+    record: &CentralDirectory,
+    local: &LocalEntry,
+    entry_cap: usize,
+) -> ZipResult<Vec<u8>> {
+    let raw = slice(zip, local.data_start, record.compressed_size)?;
 
     let decoded = match record.method {
         0 => {
@@ -335,10 +425,14 @@ fn decode_entry_data(
         method => return Err(ZipError::UnsupportedMethod(method)),
     };
 
-    // If the CRC is zero (some streaming writers leave it to the data
-    // descriptor) it is skipped; otherwise this is the only real shield against
-    // silent data corruption.
-    if record.crc != 0 && crc32(&decoded) != record.crc {
+    // ALWAYS CHECKED, a recorded CRC of zero included. It used to be skipped
+    // when zero, on the theory that streaming writers leave it to the data
+    // descriptor — but that is the LOCAL header; the central directory, which is
+    // what `record` is read from, carries the real CRC in every conforming
+    // archive. Skipping it let any entry with a zeroed field decode unverified
+    // (audit L11). The CRC of an empty body is 0, so an empty entry with a zero
+    // field still passes, which is the only case where zero is the right answer.
+    if crc32(&decoded) != record.crc {
         return Err(ZipError::CrcMismatch {
             name: record.name.clone(),
         });
