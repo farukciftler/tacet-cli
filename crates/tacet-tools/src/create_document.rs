@@ -258,9 +258,10 @@ fn write_new_file(mut next_name: impl FnMut() -> PathBuf, bytes: &[u8]) -> ToolR
 /// `bytes`, and stamps 0600 THROUGH THE HANDLE.
 ///
 /// `create_new` is `O_CREAT|O_EXCL`, which POSIX requires to fail with
-/// `EEXIST` on an existing symlink, dangling or not; `O_NOFOLLOW` is the
-/// second belt, the same pair `run_code::create_script` uses (see the
-/// measurement on Windows recorded there: `create_new` alone holds). The
+/// `EEXIST` on an existing symlink, dangling or not — that is the belt that
+/// holds on every platform. `O_NOFOLLOW` is a second belt where its value is
+/// known (see `o_nofollow_for`), the same pair `run_code::create_script` uses
+/// (see the measurement on Windows recorded there: `create_new` alone holds). The
 /// permission used to be set with `fs::set_permissions(path)`, which resolves
 /// the NAME again and follows a link that replaced the file — through the
 /// handle there is no name left to swap. `mode(0o600)` closes the window in
@@ -272,21 +273,8 @@ fn create_exclusive(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        // No libc crate here (zero-dependency identity), so the value is
-        // spelled per platform, as in `run_code`. `0` means no extra flag;
-        // `create_new` still refuses an existing path.
-        #[cfg(any(target_os = "macos", target_os = "ios"))]
-        const O_NOFOLLOW: i32 = 0x0100;
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        const O_NOFOLLOW: i32 = 0x20000;
-        #[cfg(not(any(
-            target_os = "macos",
-            target_os = "ios",
-            target_os = "linux",
-            target_os = "android"
-        )))]
-        const O_NOFOLLOW: i32 = 0;
-        options.custom_flags(O_NOFOLLOW).mode(0o600);
+        let nofollow = o_nofollow_for(std::env::consts::OS, std::env::consts::ARCH);
+        options.custom_flags(nofollow).mode(0o600);
     }
     let mut file = options.open(target)?;
     let written = file.write_all(bytes).and_then(|()| finish_up(&file));
@@ -298,6 +286,28 @@ fn create_exclusive(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
         let _ = fs::remove_file(target);
     }
     written
+}
+
+/// The `O_NOFOLLOW` bit for an (os, arch) pair, `0` where it is not known.
+///
+/// No libc crate here (zero-dependency identity), so the value is spelled out —
+/// and on Linux it is spelled PER ARCHITECTURE, not per OS. The copy this
+/// replaced said `0x20000` for every Linux, which is right on x86_64 and wrong
+/// on aarch64, a published target: there `O_NOFOLLOW` is `0x8000` and `0x20000`
+/// is `O_LARGEFILE`, so the second belt was silently absent (audit L15 review).
+/// The values below are the ones the libc crate 0.2.190 declares per target
+/// (`linux/gnu/b64/{x86_64,aarch64,riscv64,s390x,loongarch64,powerpc64}`,
+/// `linux/gnu/b32/{x86,arm,powerpc}`, `android/b64/*`). An architecture not
+/// listed gets `0` — no extra flag — because a guessed bit can be some other
+/// flag; `create_new` still refuses an existing path there.
+#[cfg(any(unix, test))]
+fn o_nofollow_for(os: &str, arch: &str) -> i32 {
+    match (os, arch) {
+        ("macos" | "ios", _) => 0x0100,
+        ("linux" | "android", "x86" | "x86_64" | "riscv64" | "s390x" | "loongarch64") => 0x20000,
+        ("linux" | "android", "arm" | "aarch64" | "powerpc" | "powerpc64") => 0x8000,
+        _ => 0,
+    }
 }
 
 fn prepare_folder(folder: &Path) -> ToolResult<()> {
@@ -1902,6 +1912,23 @@ mod tests {
             xml.contains("<c r=\"B3\" t=\"inlineStr\"><is><t xml:space=\"preserve\">Total</t>"),
             "{xml}"
         );
+    }
+
+    /// AUDIT L15 REVIEW: the `O_NOFOLLOW` bit was `0x20000` on every Linux. On
+    /// aarch64 that bit is `O_LARGEFILE`, so the second belt was missing on a
+    /// published target. Expected values are the libc crate's, per target.
+    #[test]
+    fn the_nofollow_bit_is_the_one_each_architecture_defines() {
+        assert_eq!(o_nofollow_for("linux", "aarch64"), 0x8000);
+        assert_eq!(o_nofollow_for("android", "aarch64"), 0x8000);
+        assert_eq!(o_nofollow_for("linux", "arm"), 0x8000);
+        assert_eq!(o_nofollow_for("linux", "x86_64"), 0x20000);
+        assert_eq!(o_nofollow_for("linux", "riscv64"), 0x20000);
+        assert_eq!(o_nofollow_for("macos", "aarch64"), 0x0100);
+        assert_eq!(o_nofollow_for("macos", "x86_64"), 0x0100);
+        // An architecture nobody spelled out gets no extra flag, not a guess.
+        assert_eq!(o_nofollow_for("linux", "mips64"), 0);
+        assert_eq!(o_nofollow_for("freebsd", "x86_64"), 0);
     }
 
     /// AUDIT M21, RE-DERIVED: the front page's demo ("put that in a spreadsheet
