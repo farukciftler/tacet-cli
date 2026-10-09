@@ -142,6 +142,80 @@ pub fn resolve_existing_dir(ctx: &ToolContext, path: impl AsRef<Path>) -> ToolRe
     Ok(real)
 }
 
+// ---------------------------------------------------------------------------
+// The per-call sandbox directory (audit M5)
+// ---------------------------------------------------------------------------
+
+/// The name every per-call sandbox starts with. A dot, so a crash that leaves
+/// one behind does not put a stranger in the user's `ls`; a long unusual word,
+/// so no user directory is ever mistaken for one.
+pub const SANDBOX_PREFIX: &str = ".tacet-sandbox-";
+
+/// Refuses a path in which ANY component is a symbolic link.
+///
+/// `O_NOFOLLOW` and `create_new` only look at the LAST component. The sandbox
+/// root used to be `<cwd>/code`, created with `create_dir_all`, so a `code`
+/// that was a link — planted by an earlier script, or simply the user's own —
+/// was followed and the script landed in the link's target (MEASURED in the
+/// audit's emulation: `code -> fakehome` put the script in `fakehome`). The
+/// check is done per component with `symlink_metadata`, which never follows,
+/// so an intermediate link is seen as a link.
+///
+/// The path must be ABSOLUTE: a relative one would be judged against the
+/// process's working directory, which is not the directory anybody meant.
+pub fn refuse_symlinked_components(path: &Path) -> ToolResult<()> {
+    if !path.is_absolute() {
+        return Err(ToolError::SandboxViolation(path.to_path_buf()));
+    }
+    let mut walked = PathBuf::new();
+    for component in path.components() {
+        walked.push(component);
+        let meta = walked.symlink_metadata().map_err(ToolError::Io)?;
+        if meta.file_type().is_symlink() {
+            return Err(ToolError::SandboxViolation(walked));
+        }
+    }
+    Ok(())
+}
+
+/// Creates a FRESH, private directory `parent/<SANDBOX_PREFIX><tag>` for one
+/// call of model code, and proves no component of it is a link.
+///
+/// FRESH, NOT REUSED: `create`, never `create_dir_all`. `mkdir` on a name that
+/// already exists — a planted link included, dangling or not — fails with
+/// `EEXIST` instead of walking into it. A directory nobody has seen before is
+/// also the only way the tool description's "it starts in a new, empty folder"
+/// can be true; the old `<cwd>/code` held whatever the user kept in their own
+/// `code/` directory, readable and writable by the model's script.
+///
+/// `0700` on unix: the directory briefly holds model output, and on a shared
+/// machine nobody else needs to see it.
+///
+/// THE CHECK RUNS TWICE: once on `parent` before anything is created (so a
+/// linked parent never receives a directory at all), and once on the result,
+/// so a swap between the two calls is caught before a script is written.
+pub fn fresh_private_dir(parent: &Path, tag: &str) -> ToolResult<PathBuf> {
+    refuse_symlinked_components(parent)?;
+    if tag.is_empty() || tag.contains(['/', '\\']) || tag == "." || tag == ".." {
+        return Err(ToolError::InvalidArgument(format!(
+            "unusable sandbox tag {tag:?}"
+        )));
+    }
+    let dir = parent.join(format!("{SANDBOX_PREFIX}{tag}"));
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(&dir).map_err(ToolError::Io)?;
+    if let Err(e) = refuse_symlinked_components(&dir) {
+        std::fs::remove_dir(&dir).ok();
+        return Err(e);
+    }
+    Ok(dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -459,5 +533,83 @@ mod tests {
             resolve_existing_file(&ctx, second.join("ghost.txt")),
             Err(ToolError::FileNotFound(_))
         ));
+    }
+
+    // --- The per-call sandbox directory (M5) ------------------------------
+
+    /// A fresh directory is created, private, and different on every call.
+    #[cfg(unix)]
+    #[test]
+    fn a_fresh_private_dir_is_new_private_and_prefixed() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = temp_root("fresh");
+        let a = fresh_private_dir(&root, "one").expect("created");
+        let b = fresh_private_dir(&root, "two").expect("created");
+        assert_ne!(a, b);
+        assert!(a.starts_with(&root));
+        assert!(
+            a.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(SANDBOX_PREFIX)),
+            "{}",
+            a.display()
+        );
+        let mode = std::fs::metadata(&a).expect("meta").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "the sandbox is readable by others: {mode:o}");
+        // NOT REUSED: the same name a second time is refused, it is not walked into.
+        assert!(fresh_private_dir(&root, "one").is_err());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// THE ATTACK M5 DESCRIBES: the name the sandbox would take is already a
+    /// link (dangling or live) into a directory outside — nothing may land there.
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_link_at_the_sandbox_name_is_not_followed() {
+        let root = temp_root("planted-sbx");
+        let outside = temp_root("planted-sbx-target");
+        std::os::unix::fs::symlink(&outside, root.join(format!("{SANDBOX_PREFIX}fixed")))
+            .expect("plant");
+        assert!(fresh_private_dir(&root, "fixed").is_err());
+        assert_eq!(
+            std::fs::read_dir(&outside).expect("list").count(),
+            0,
+            "something was created through the link"
+        );
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&outside).ok();
+    }
+
+    /// AN INTERMEDIATE LINK IS REFUSED TOO — the part `O_NOFOLLOW` cannot see.
+    /// `parent` here is `root/code`, and `code` is a link to a directory
+    /// outside: the old `<cwd>/code` + `create_dir_all` wrote straight into it.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_component_anywhere_in_the_parent_is_refused() {
+        let root = temp_root("linked-parent");
+        let outside = temp_root("linked-parent-target");
+        std::os::unix::fs::symlink(&outside, root.join("code")).expect("plant");
+        let parent = root.join("code");
+
+        let refused = fresh_private_dir(&parent, "x");
+        assert!(
+            matches!(refused, Err(ToolError::SandboxViolation(_))),
+            "{refused:?}"
+        );
+        assert_eq!(
+            std::fs::read_dir(&outside).expect("list").count(),
+            0,
+            "a sandbox was created in the link's target"
+        );
+        assert!(matches!(
+            refuse_symlinked_components(&parent.join("deeper")),
+            Err(ToolError::SandboxViolation(_))
+        ));
+        // A relative path is not judged at all.
+        assert!(refuse_symlinked_components(Path::new("relative/dir")).is_err());
+        // A clean, resolved path passes.
+        assert!(refuse_symlinked_components(&root).is_ok());
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&outside).ok();
     }
 }

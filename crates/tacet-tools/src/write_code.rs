@@ -24,9 +24,17 @@
 //! gate the model comes through there are at most two real runs in a turn, and
 //! the third is rejected without ever seeing the engine (code-spec §5.4).
 //!
-//! THE VERIFICATION FOLDER IS HIDDEN (`sandbox/code/`): the by-products of the
-//! execution step (files the script opens, `__pycache__`) must not leak into
-//! the user's directory. The ONLY thing delivered is the verified source file.
+//! THE VERIFICATION FOLDER IS HIDDEN AND FRESH (`.tacet-sandbox-<nonce>/`,
+//! made for the call and deleted after it): the by-products of the execution
+//! step (files the script opens, `__pycache__`) must not leak into the user's
+//! directory. The ONLY thing delivered is the verified source file.
+//!
+//! NOR IS EVERY NAME DELIVERED. Some file names are executed by other programs
+//! without the user ever running them — `conftest.py` by pytest, `*.config.js`
+//! by eslint/jest/vite, `setup.py` by pip — OUTSIDE the sandbox and with the
+//! user's privileges. Verification proves the script runs; it does not make it
+//! safe to leave where a tool will run it unasked (audit M3). See
+//! `auto_executed_name`.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -177,6 +185,66 @@ fn safe_stem(file_name: &str) -> String {
     }
 }
 
+/// Stems that another program EXECUTES on its own when it finds them in a
+/// directory, compared case-insensitively (APFS and NTFS are case-insensitive
+/// by default, so `ConfTest.py` IS `conftest.py` to pytest there).
+///
+/// The audit's list (M3) plus the neighbours that follow the same rule:
+/// pytest's `conftest`; `setup` (pip/setuptools); `sitecustomize` /
+/// `usercustomize` (imported by every python start that has the directory on
+/// its path); `__init__` / `__main__` (they turn the folder into something
+/// python imports or runs); the task runners nox, fabric, doit, paver, gulp,
+/// grunt and jake; gatsby's four lifecycle files. `makefile`, `envrc`,
+/// `package` and `pyproject` cannot be produced with a `.py`/`.js` extension in
+/// a way that make, direnv, npm or pip would read, and are refused anyway: the
+/// name alone is what a user's eye trusts in a listing.
+const AUTO_EXECUTED_STEMS: &[(&str, &str)] = &[
+    ("conftest", "pytest"),
+    ("setup", "pip and setuptools"),
+    ("sitecustomize", "every python start"),
+    ("usercustomize", "every python start"),
+    ("__init__", "python's import system"),
+    ("__main__", "python's import system"),
+    ("noxfile", "nox"),
+    ("fabfile", "fabric"),
+    ("dodo", "doit"),
+    ("pavement", "paver"),
+    ("gulpfile", "gulp"),
+    ("gruntfile", "grunt"),
+    ("jakefile", "jake"),
+    ("gatsby-config", "gatsby"),
+    ("gatsby-node", "gatsby"),
+    ("gatsby-browser", "gatsby"),
+    ("gatsby-ssr", "gatsby"),
+    ("makefile", "make"),
+    ("gnumakefile", "make"),
+    ("envrc", "direnv"),
+    ("package", "npm"),
+    ("pyproject", "pip"),
+];
+
+/// Why `stem` must not be delivered, or `None` if it may.
+///
+/// A DOT LEFT IN THE STEM IS REFUSED OUTRIGHT, not checked against a list. The
+/// family it closes is open-ended — `eslint.config`, `jest.config`,
+/// `vite.config`, `karma.conf`, `jest.setup`, `*.test`, `*.spec`, and the next
+/// tool's tomorrow — and every member of it is a dotted stem. `safe_stem` has
+/// already removed the one dot a legitimate name carries (the extension the
+/// model added itself), so what is left is a second one.
+fn auto_executed_name(stem: &str) -> Option<String> {
+    if stem.contains('.') {
+        return Some(format!(
+            "'{stem}' contains a dot: names such as x.config.js, x.conf.js or x.test.js are \
+             loaded automatically by build and test tools"
+        ));
+    }
+    let lower = stem.to_lowercase();
+    AUTO_EXECUTED_STEMS
+        .iter()
+        .find(|(name, _)| *name == lower)
+        .map(|(_, runner)| format!("'{stem}' is a file name that {runner} runs automatically"))
+}
+
 /// Produces a NON-COLLIDING target path in the working directory: `name.py`, `name-2.py`, ...
 ///
 /// Overwriting an existing file would be wrong in both directions: the user's
@@ -224,13 +292,19 @@ impl Tool for WriteCodeTool {
         // a script waiting on `input()` fails verification.
         // The "ONE LINE per element" sentence comes FROM MEASUREMENT and should
         // be read together with the schema (see `schema`): a single escaped string was breaking the model.
+        // The sandbox sentence says what the shield GUARANTEES on both
+        // platforms — no network, writes confined — and no more: "NO access to
+        // files outside the working folder" was false under bwrap, where the
+        // rest of the system outside home is readable (audit L20), and implied
+        // the script could see the working folder, which since M5 it cannot.
+        // No "but": see the routing note on run_code's descriptions.
         "Writes a code file for the user, VERIFIES it and saves it into the working folder. \
          Call this when the user wants a script or program AS A FILE they can keep and run \
          later ('write me a python script that...', 'save the script to a file'). Pass \
          the code as `lines`: an array where each element is ONE line of code - the tool \
          joins them, so never write \\n yourself. Indentation is just leading spaces inside \
          the line. The code is first syntax-checked, then RUN in an isolated sandbox with NO \
-         network and NO access to files outside the working folder; the file is saved ONLY if \
+         network that can write nowhere except its own temporary folder; the file is saved ONLY if \
          it runs without errors. Write a COMPLETE, SELF-CONTAINED script: never read user \
          input (stdin is closed), use example values instead, and end with a small demo print \
          so the run PROVES the code works. If you only need to READ a result and no file was \
@@ -309,6 +383,25 @@ impl Tool for WriteCodeTool {
         boxed(async move {
             if let Err(h) = self.schema().validate(&args) {
                 return ToolOutcome::failed(&h);
+            }
+
+            // A NAME THAT ANOTHER TOOL WOULD RUN UNASKED IS REFUSED BEFORE ANYTHING
+            // ELSE (audit M3): the verified file would otherwise sit in the
+            // user's directory waiting for pytest, eslint or pip to execute it
+            // outside the sandbox. It is checked BEFORE the attempt counter: the
+            // engine is never reached, so the refusal must not cost the model one
+            // of its two real runs — it only has to pick another name.
+            if let Some(name) = args.get("file_name").and_then(|v| v.as_str())
+                && let Some(why) = auto_executed_name(&safe_stem(name))
+            {
+                return ToolOutcome::new(
+                    "Unsafe file name",
+                    ToolState::Failed("auto-executed file name".into()),
+                    format!(
+                        "error: {why}, outside the sandbox. Call write_code again with a plain \
+                         descriptive file_name such as 'prime_numbers'."
+                    ),
+                );
             }
 
             // The counter is incremented BEFORE THE DENIAL DECISION — exactly as in run_code.
@@ -392,11 +485,16 @@ impl WriteCodeTool {
             Err(h) => return ToolOutcome::failed(&h),
         };
 
-        // Verification happens in a HIDDEN folder: by-products must not leak into the user's directory.
-        let verification = sandbox.join("code");
-        if let Err(h) = std::fs::create_dir_all(&verification) {
-            return ToolOutcome::failed(&ToolError::Io(h));
-        }
+        // Verification happens in a FRESH, HIDDEN folder made for this call and
+        // deleted after it: by-products must not leak into the user's
+        // directory. It used to be `<cwd>/code` — the user's own `code/`
+        // directory if they had one, followed if it was a link (audit M5; the
+        // full account is at `run_code::run`).
+        let verification =
+            match crate::sandbox_path::fresh_private_dir(&sandbox, &crate::run_code::nonce()) {
+                Ok(v) => v,
+                Err(h) => return ToolOutcome::failed(&h),
+            };
         // THE NAME IS UNPREDICTABLE AND THE WRITE NEVER FOLLOWS A LINK.
         // `verify-{pid}-{code.len()}` was fully determined: the pid is fixed for
         // the session and the length is the model's to choose, so a first call
@@ -409,19 +507,19 @@ impl WriteCodeTool {
             crate::run_code::nonce(),
             interpreter.extension
         ));
-        if let Err(h) = crate::run_code::create_script(&script, code.as_bytes()) {
-            return ToolOutcome::failed(&ToolError::Io(h));
-        }
-        let outcome = self.validate_and_deliver(
-            code,
-            file_name,
-            interpreter,
-            &sandbox,
-            &script,
-            last_attempt,
-        );
-        // The verification script is deleted ON EVERY PATH (the same rationale as run_code).
-        std::fs::remove_file(&script).ok();
+        let outcome = match crate::run_code::create_script(&script, code.as_bytes()) {
+            Ok(()) => self.validate_and_deliver(
+                code,
+                file_name,
+                interpreter,
+                &sandbox,
+                &script,
+                last_attempt,
+            ),
+            Err(h) => ToolOutcome::failed(&ToolError::Io(h)),
+        };
+        // The verification folder is deleted ON EVERY PATH (the same rationale as run_code).
+        std::fs::remove_dir_all(&verification).ok();
         outcome
     }
 
@@ -739,6 +837,173 @@ mod tests {
         assert_eq!(join_lines(&[]), "");
         // If an element CONTAINS a real line break it is left alone.
         assert_eq!(join_lines(&[json!("a\nb"), json!("c")]), "a\nb\nc");
+    }
+
+    /// 1c) THE AUTO-EXECUTED NAMES (audit M3): each one is refused, in any
+    ///     case, with or without the extension the model may add, and an
+    ///     ordinary name — including one that merely CONTAINS a listed word —
+    ///     still passes.
+    #[test]
+    fn names_another_tool_would_run_are_refused() {
+        for name in [
+            "conftest",
+            "conftest.py",
+            "ConfTest",
+            "setup.py",
+            "sitecustomize",
+            "__init__",
+            "__main__.py",
+            "noxfile",
+            "gulpfile.js",
+            "Gruntfile",
+            "gatsby-config",
+            "Makefile",
+            ".envrc",
+            "package",
+            "pyproject",
+            "eslint.config",
+            "eslint.config.js",
+            "jest.config.mjs",
+            "vite.config",
+            "karma.conf",
+            "jest.setup",
+            "utils.test",
+        ] {
+            assert!(
+                auto_executed_name(&safe_stem(name)).is_some(),
+                "{name:?} would be delivered"
+            );
+        }
+        for name in [
+            "prime_numbers",
+            "prime.py",
+            "my_setup_notes",
+            "configure_grid",
+            "test_ideas",
+            "package_size",
+        ] {
+            assert_eq!(
+                auto_executed_name(&safe_stem(name)),
+                None,
+                "{name:?} is an ordinary name"
+            );
+        }
+    }
+
+    /// The shield-free stand-in: `/bin/echo` "verifies" every script by
+    /// printing the command line it was given, so these tests reach the
+    /// delivery path — and can read where the verification ran — on any unix,
+    /// with no sandbox installed.
+    #[cfg(unix)]
+    fn echo_tool() -> WriteCodeTool {
+        WriteCodeTool::new(
+            NetworkShield::SandboxExec {
+                tool: PathBuf::from("/bin/echo"),
+            },
+            vec![Interpreter {
+                key: "python",
+                path: PathBuf::from("/usr/bin/true"),
+                extension: "py",
+            }],
+            Arc::new(CodeState::new()),
+        )
+    }
+
+    /// 1d) THE REFUSAL HAPPENS BEFORE ANYTHING RUNS AND COSTS NO ATTEMPT (M3).
+    ///     No file of that name appears, nothing is executed, and the model
+    ///     still has both of its runs for the corrected name.
+    #[cfg(unix)]
+    #[test]
+    fn an_auto_executed_name_is_refused_before_anything_runs() {
+        let tool = echo_tool();
+        let root = temp_dir("auto-exec");
+        let mut ctx = context(&root);
+        for name in ["conftest", "eslint.config", "setup"] {
+            let outcome =
+                hold(tool.run(json!({"file_name": name, "lines": ["print(1)"]}), &mut ctx));
+            assert!(
+                matches!(outcome.state, ToolState::Failed(_)),
+                "{name}: {}",
+                outcome.to_model
+            );
+            assert!(
+                outcome.to_model.contains("runs automatically")
+                    || outcome.to_model.contains("loaded automatically"),
+                "{}",
+                outcome.to_model
+            );
+        }
+        let left: Vec<_> = std::fs::read_dir(&root)
+            .expect("list")
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert!(left.is_empty(), "something was written: {left:?}");
+        assert_eq!(
+            tool.state.next_attempt(),
+            1,
+            "a refused name consumed one of the two real runs"
+        );
+        assert!(
+            !ctx.session_tainted(),
+            "nothing ran, nothing may be tainted"
+        );
+
+        // The corrected name goes through.
+        tool.state.new_turn();
+        let ok = hold(tool.run(
+            json!({"file_name": "prime_numbers", "lines": ["print(1)"]}),
+            &mut ctx,
+        ));
+        assert_eq!(ok.state, ToolState::Written, "{}", ok.to_model);
+        assert!(root.join("prime_numbers.py").is_file());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 1e) VERIFICATION RUNS IN A FRESH FOLDER, NOT IN THE USER'S `code/` (M5).
+    ///
+    /// It used to be `<cwd>/code`: a user's real `code/` directory was the
+    /// verification sandbox, and a `code` that was a link sent the script into
+    /// the link's target. Here `code` IS such a link, to a directory outside.
+    #[cfg(unix)]
+    #[test]
+    fn verification_runs_in_a_fresh_folder_not_in_code() {
+        let tool = echo_tool();
+        let root = temp_dir("fresh-verify");
+        let outside = temp_dir("fresh-verify-target");
+        std::os::unix::fs::symlink(&outside, root.join("code")).expect("link");
+        let mut ctx = context(&root);
+
+        let outcome = hold(tool.run(
+            json!({"file_name": "total", "lines": ["print(55)"]}),
+            &mut ctx,
+        ));
+        assert_eq!(outcome.state, ToolState::Written, "{}", outcome.to_model);
+        let echoed = outcome.raw_output.clone().unwrap_or_default();
+        let sandbox = echoed
+            .split_whitespace()
+            .find_map(|w| w.strip_prefix("SBOX="))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| panic!("no SBOX= in {echoed}"));
+        assert_ne!(sandbox, root.join("code"), "verification ran in code/");
+        assert_eq!(sandbox.parent(), Some(root.as_path()));
+        assert!(
+            sandbox
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(crate::sandbox_path::SANDBOX_PREFIX)),
+            "{}",
+            sandbox.display()
+        );
+        assert!(!sandbox.exists(), "the verification folder was left behind");
+        assert_eq!(
+            std::fs::read_dir(&outside).expect("list").count(),
+            0,
+            "something was written through the code/ link"
+        );
+        assert!(root.join("total.py").is_file(), "the delivery is missing");
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&outside).ok();
     }
 
     /// 2) The language guess from the extension.
