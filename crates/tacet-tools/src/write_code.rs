@@ -194,7 +194,10 @@ fn safe_stem(file_name: &str) -> String {
 /// `usercustomize` (imported by every python start that has the directory on
 /// its path); `__init__` / `__main__` (they turn the folder into something
 /// python imports or runs); the task runners nox, fabric, invoke (`tasks`),
-/// doit, paver, gulp, grunt and jake; gatsby's four lifecycle files. Test files
+/// doit, paver, gulp, grunt and jake; tox 4's `toxfile` (imported from the
+/// tox root as an inline plugin on a bare `tox`) and danger-js's `dangerfile`
+/// (run by default) — both found missing by the review of 10 Oct 2026, the
+/// first in noxfile's own family; gatsby's four lifecycle files. Test files
 /// are a family, not a list — see `test_runner_collects`. `makefile`, `envrc`,
 /// `package` and `pyproject` cannot be produced with a `.py`/`.js` extension in
 /// a way that make, direnv, npm or pip would read, and are refused anyway: the
@@ -207,6 +210,8 @@ const AUTO_EXECUTED_STEMS: &[(&str, &str)] = &[
     ("__init__", "python's import system"),
     ("__main__", "python's import system"),
     ("noxfile", "nox"),
+    ("toxfile", "tox"),
+    ("dangerfile", "danger"),
     ("fabfile", "fabric"),
     ("tasks", "invoke"),
     ("dodo", "doit"),
@@ -1008,6 +1013,12 @@ mod tests {
             "__init__",
             "__main__.py",
             "noxfile",
+            "toxfile",
+            "toxfile.py",
+            "ToxFile",
+            "dangerfile",
+            "dangerfile.js",
+            "Dangerfile",
             "gulpfile.js",
             "Gruntfile",
             "gatsby-config",
@@ -1077,6 +1088,8 @@ mod tests {
             "attestation",
             "task_list",
             "my_tests_notes",
+            "tox_results",
+            "danger_zone",
             // A Turkish name keeps its letters and is still delivered.
             "asal_say\u{0131}lar",
             "\u{00E7}arp\u{0131}m_tablosu",

@@ -219,12 +219,7 @@ impl NetworkShield {
                 // missing path makes bwrap `mkdir` inside the read-only root,
                 // which fails and takes the whole shield down.
                 let home = Some(home).filter(|h| h.is_dir());
-                let shadows = plan_shadows(
-                    socket_dirs(std::env::var_os("XDG_RUNTIME_DIR").as_deref()),
-                    scan_sockets(&socket_scan_roots(), home),
-                    std::env::var_os("SSH_AUTH_SOCK").map(PathBuf::from),
-                    home,
-                );
+                let shadows = shadows_for(sandbox, home, &ShadowHost::from_env());
                 k.args(bwrap_args(sandbox, home, &shadows));
                 // `--` IS REQUIRED: everything after it is the child's command
                 // line, not bwrap's. Without it a script flag such as `--check`
@@ -275,10 +270,20 @@ const BWRAP_PATHS: &[&str] = &["/usr/bin/bwrap", "/bin/bwrap", "/usr/local/bin/b
 ///   * `Shadow::Dir`    -> `--tmpfs {dir}`: the runtime directories that exist
 ///     to hold sockets (`/run`, `/var/run`, `$XDG_RUNTIME_DIR`, `/tmp/.X11-unix`);
 ///   * `Shadow::Socket` -> `--ro-bind /dev/null {socket}`: a single socket
-///     living in a directory that also holds ordinary files (`/tmp`), where a
-///     tmpfs over the whole directory would hide more than the socket. A bind
-///     of a device file over a socket file is legal (both are non-directories)
-///     and `connect` on the result fails.
+///     living in a directory that also holds ordinary files (`/tmp`, the
+///     working folder, `/var/lib/incus`), where a tmpfs over the whole
+///     directory would hide more than the socket. A bind of a device file over
+///     a socket file is legal (both are non-directories) and `connect` on the
+///     result fails.
+///
+/// WHAT IS STILL OPEN, STATED AS A LIMIT: only KNOWN places are covered — the
+/// runtime directories, the daemon sockets in `DAEMON_SOCKETS`, and a
+/// two-level scan of `/tmp`, `$TMPDIR` and the working folder (see
+/// `socket_scan_roots`). A socket anywhere else on the read-only root — a
+/// daemon this list does not name, a service socket under `/srv` beside a
+/// working folder in `$HOME` — stays reachable. Closing that for good means
+/// not binding `/` at all, which the interpreters' libraries make a
+/// measurement this machine cannot run (there is no Linux here).
 ///
 /// They go AFTER the home tmpfs and BEFORE the sandbox bind, for the same
 /// reason the home tmpfs does.
@@ -354,12 +359,91 @@ fn socket_dirs(xdg_runtime: Option<&std::ffi::OsStr>) -> Vec<PathBuf> {
     dirs
 }
 
-/// The shared temp directories scanned for loose sockets: `/tmp` and, when it
-/// is somewhere else, `$TMPDIR`.
-fn socket_scan_roots() -> Vec<PathBuf> {
+/// Daemon sockets that live OUTSIDE the runtime directories, so neither a
+/// `Shadow::Dir` nor the `/tmp` scan reaches them (audit H7, review of 10 Oct
+/// 2026). Each is root on the host to whoever may `connect`: the LXD and Incus
+/// APIs can exec in a container that HAS the network, or start a privileged
+/// one that mounts the host's `/`. Ubuntu Server ships LXD as a snap and puts
+/// the first user in the `lxd` group, and bwrap here keeps the user's groups
+/// (there is no `--unshare-user`), so the group permission does not stop the
+/// script. `--ro-bind / /` is what exposed them, and `connect` is not a write.
+///
+/// Paths from LXD's and Incus's own documentation, not measured: there is no
+/// Linux machine where this was written. The `-user` / `.user` sockets are the
+/// restricted per-user endpoints; restricted is still a container API.
+/// They are shadowed one by one, never by a tmpfs over the directory:
+/// `/var/lib/incus` also holds the containers' storage, and a missing entry is
+/// dropped by `plan_shadows`, so listing a daemon this host lacks costs a stat.
+const DAEMON_SOCKETS: &[&str] = &[
+    "/var/snap/lxd/common/lxd/unix.socket",
+    "/var/snap/lxd/common/lxd-user/unix.socket",
+    "/var/lib/lxd/unix.socket",
+    "/var/lib/incus/unix.socket",
+    "/var/lib/incus/unix.socket.user",
+];
+
+/// What the shield plan reads from the host, gathered in one place so the plan
+/// itself (`shadows_for`) is a pure function a test can feed fixtures: the
+/// environment is process-wide and a test that changed it would race the
+/// others.
+#[derive(Debug, Clone, Default)]
+struct ShadowHost {
+    xdg_runtime: Option<OsString>,
+    tmpdir: Option<OsString>,
+    ssh_auth_sock: Option<OsString>,
+    daemon_sockets: Vec<PathBuf>,
+}
+
+impl ShadowHost {
+    fn from_env() -> ShadowHost {
+        ShadowHost {
+            xdg_runtime: std::env::var_os("XDG_RUNTIME_DIR"),
+            tmpdir: std::env::var_os("TMPDIR"),
+            ssh_auth_sock: std::env::var_os("SSH_AUTH_SOCK"),
+            daemon_sockets: DAEMON_SOCKETS.iter().map(PathBuf::from).collect(),
+        }
+    }
+}
+
+/// Everything the Linux shield covers for one run in `sandbox` (see
+/// `bwrap_args`): the runtime directories, the known daemon sockets, the ssh
+/// agent, and the loose sockets found by scanning the temp directories and the
+/// folder the sandbox was made in.
+fn shadows_for(sandbox: &Path, home: Option<&Path>, host: &ShadowHost) -> Vec<Shadow> {
+    let roots = socket_scan_roots(host.tmpdir.as_deref(), sandbox.parent(), home);
+    let mut sockets = host.daemon_sockets.clone();
+    sockets.extend(scan_sockets(&roots, home));
+    plan_shadows(
+        socket_dirs(host.xdg_runtime.as_deref()),
+        sockets,
+        host.ssh_auth_sock.as_ref().map(PathBuf::from),
+        home,
+    )
+}
+
+/// The directories scanned for loose sockets: `/tmp`, `$TMPDIR` when it is
+/// somewhere else, and `workdir` — the folder the sandbox is made in — when it
+/// is NOT under the home directory.
+///
+/// THE WORKING FOLDER WAS MISSING (audit H7, review of 10 Oct 2026). A sandbox
+/// made in `/srv/app` sits next to whatever that folder holds, and
+/// `--ro-bind / /` shows all of it, a `gunicorn.sock` or a `.s.PGSQL.5432`
+/// included. Under the home directory there is nothing to scan: the home tmpfs
+/// already hides the folder, and the sandbox bind brings back only the sandbox.
+fn socket_scan_roots(
+    tmpdir: Option<&std::ffi::OsStr>,
+    workdir: Option<&Path>,
+    home: Option<&Path>,
+) -> Vec<PathBuf> {
     let mut roots = vec![PathBuf::from("/tmp")];
-    if let Some(tmp) = std::env::var_os("TMPDIR").filter(|t| !t.is_empty()) {
+    if let Some(tmp) = tmpdir.filter(|t| !t.is_empty()) {
         roots.push(PathBuf::from(tmp));
+    }
+    if let Some(work) = workdir.filter(|w| w.is_absolute() && *w != Path::new("/")) {
+        let real = work.canonicalize().unwrap_or_else(|_| work.to_path_buf());
+        if !home.is_some_and(|h| real.starts_with(h)) {
+            roots.push(real);
+        }
     }
     roots
 }
@@ -1587,9 +1671,9 @@ const PROBE_SOCKET_CAP: usize = 12;
 
 /// Unix sockets that exist on this host and that a script must not reach.
 ///
-/// The well-known ones first — the session and system bus, docker, the ssh
-/// agent, an X11 display, macOS's mDNSResponder — then whatever loose sockets
-/// `/tmp` holds. Only paths that ARE sockets right now are kept (`metadata` +
+/// The well-known ones first — the session and system bus, docker, LXD and
+/// Incus (`DAEMON_SOCKETS`), the ssh agent, an X11 display, macOS's
+/// mDNSResponder — then whatever loose sockets `/tmp` holds. Only paths that ARE sockets right now are kept (`metadata` +
 /// `is_socket`: a stat, no connection is made from this process). A host with
 /// none of them measures nothing here, and that is stated rather than hidden:
 /// there is then nothing for the gate to protect.
@@ -1597,24 +1681,12 @@ fn probe_sockets() -> Vec<PathBuf> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::FileTypeExt;
-        let mut candidates: Vec<PathBuf> = [
-            "/run/dbus/system_bus_socket",
-            "/var/run/dbus/system_bus_socket",
-            "/run/docker.sock",
-            "/var/run/docker.sock",
-            "/var/run/mDNSResponder",
-            "/tmp/.X11-unix/X0",
-        ]
-        .iter()
-        .map(PathBuf::from)
-        .collect();
-        if let Some(xdg) = std::env::var_os("XDG_RUNTIME_DIR").filter(|x| !x.is_empty()) {
-            candidates.push(Path::new(&xdg).join("bus"));
-        }
-        if let Some(agent) = std::env::var_os("SSH_AUTH_SOCK").filter(|x| !x.is_empty()) {
-            candidates.push(PathBuf::from(agent));
-        }
-        candidates.extend(scan_sockets(&socket_scan_roots(), None));
+        let host = ShadowHost::from_env();
+        let mut candidates = probe_socket_candidates(&host);
+        candidates.extend(scan_sockets(
+            &socket_scan_roots(host.tmpdir.as_deref(), None, None),
+            None,
+        ));
         let mut found: Vec<PathBuf> = Vec::new();
         for candidate in candidates {
             let is_socket = std::fs::metadata(&candidate)
@@ -1633,6 +1705,35 @@ fn probe_sockets() -> Vec<PathBuf> {
     {
         Vec::new()
     }
+}
+
+/// The well-known sockets `probe_sockets` stats, before the `/tmp` scan.
+#[cfg(unix)]
+///
+/// The daemon sockets are the SAME list the shield covers, read from the same
+/// constant: a socket the shield shadows but the measurement never tries is a
+/// shadow nobody has seen work, and one the measurement tries but the shield
+/// does not cover fails `verify_shield` — which is the point.
+fn probe_socket_candidates(host: &ShadowHost) -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = [
+        "/run/dbus/system_bus_socket",
+        "/var/run/dbus/system_bus_socket",
+        "/run/docker.sock",
+        "/var/run/docker.sock",
+        "/var/run/mDNSResponder",
+        "/tmp/.X11-unix/X0",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .collect();
+    candidates.extend(host.daemon_sockets.iter().cloned());
+    if let Some(xdg) = host.xdg_runtime.as_ref().filter(|x| !x.is_empty()) {
+        candidates.push(Path::new(xdg).join("bus"));
+    }
+    if let Some(agent) = host.ssh_auth_sock.as_ref().filter(|x| !x.is_empty()) {
+        candidates.push(PathBuf::from(agent));
+    }
+    candidates
 }
 
 /// A string as a literal that is valid in BOTH probe languages. JSON's string
@@ -1902,12 +2003,15 @@ const DESCRIPTION_SANDBOX_EXEC: &str = concat!(
 /// `bwrap_args`); everything else outside the home directory — /tmp, /srv, a
 /// working folder that is not under home — is still readable. Saying "your
 /// files" there would be the exact overclaim L20 was about, so the text says
-/// what is covered and what is not. (Not "read-only": see the routing note
-/// above.)
+/// what is covered and what is not. The same goes for sockets: only the known
+/// ones are shadowed (see `bwrap_args`, "WHAT IS STILL OPEN"), so the text
+/// says "known" rather than promising that no local service can be reached.
+/// (Not "read-only": see the routing note above.)
 const DESCRIPTION_BWRAP: &str = concat!(
     "Runs a short script in an isolated sandbox with NO network and NO access to your home \
      folder: it starts in a new, empty folder, can write nowhere else, and can still read other \
-     system files. Never open a saved file, not even one just saved with write_code. ",
+     system files; only known sockets are hidden. Never open a saved file, not even one \
+     just saved with write_code. ",
     run_code_usage!()
 );
 
@@ -2855,6 +2959,7 @@ mod tests {
             Shadow::Dir("/run".into()),
             Shadow::Dir("/tmp/.X11-unix".into()),
             Shadow::Socket("/tmp/tmux-1000/default".into()),
+            Shadow::Socket("/var/lib/incus/unix.socket".into()),
         ];
         let args: Vec<String> = bwrap_args(sandbox, Some(Path::new("/home/user")), &shadows)
             .into_iter()
@@ -2872,9 +2977,13 @@ mod tests {
             .windows(3)
             .position(|w| w == ["--ro-bind", "/dev/null", "/tmp/tmux-1000/default"])
             .unwrap_or_else(|| panic!("the tmux socket is not shadowed: {args:?}"));
+        let incus = args
+            .windows(3)
+            .position(|w| w == ["--ro-bind", "/dev/null", "/var/lib/incus/unix.socket"])
+            .unwrap_or_else(|| panic!("the Incus socket is not shadowed: {args:?}"));
         let bind = at(["--bind", &sandbox.to_string_lossy()]);
         assert!(
-            home < run && run < bind && x11 < bind && tmux < bind,
+            home < run && run < bind && x11 < bind && tmux < bind && incus < bind,
             "{args:?}"
         );
     }
@@ -2944,6 +3053,102 @@ mod tests {
             );
         }
         assert_eq!(socket_dirs(Some(std::ffi::OsStr::new(""))).len(), 3);
+    }
+
+    /// 4d-iv-b) THE SOCKETS OUTSIDE /run AND /tmp ARE IN THE PLAN (audit H7,
+    ///          review of 10 Oct 2026). LXD's and Incus's API sockets live under
+    ///          `/var/snap` and `/var/lib`, and a working folder outside the
+    ///          home directory (`/srv/app`) shows its own sockets through
+    ///          `--ro-bind / /`; none of them was in the plan. The fixture puts
+    ///          a stand-in daemon socket and two working-folder sockets deeper
+    ///          than the `/tmp` scan reaches, so only the new sources can find
+    ///          them.
+    ///
+    ///          The sockets are REAL socket files because `scan_sockets` keeps
+    ///          only `is_socket` entries: `bind` creates the file and dropping
+    ///          the listener at once leaves it behind. Nothing listens and no
+    ///          connection is made. `/tmp` rather than `temp_dir()` because a
+    ///          socket path has a 104-byte ceiling on macOS and `$TMPDIR` there
+    ///          eats half of it.
+    #[cfg(unix)]
+    #[test]
+    fn the_socket_plan_covers_daemon_sockets_and_the_working_folder() {
+        let root = PathBuf::from("/tmp").join(format!("tcs-{}", nonce()));
+        std::fs::create_dir_all(&root).expect("fixture");
+        let root = root.canonicalize().expect("resolved");
+        let work = root.join("srv").join("app");
+        let sandbox = work.join("run-1");
+        let daemon = root.join("var").join("lib").join("incus");
+        let home = root.join("home");
+        for dir in [&sandbox, &work.join("pg"), &daemon, &home.join("w")] {
+            std::fs::create_dir_all(dir).expect("fixture");
+        }
+        let socket = |path: &Path| {
+            drop(std::os::unix::net::UnixListener::bind(path).expect("a socket file"));
+        };
+        let gunicorn = work.join("g.sock");
+        let postgres = work.join("pg").join(".s.PGSQL.5432");
+        let incus = daemon.join("unix.socket");
+        for path in [&gunicorn, &postgres, &incus] {
+            socket(path);
+        }
+
+        let host = ShadowHost {
+            daemon_sockets: vec![incus.clone(), root.join("absent").join("unix.socket")],
+            ..ShadowHost::default()
+        };
+        let plan = shadows_for(&sandbox, Some(&home), &host);
+        for expected in [&gunicorn, &postgres, &incus] {
+            assert!(
+                plan.contains(&Shadow::Socket(expected.clone())),
+                "{} IS REACHABLE UNDER bwrap — it is not in the plan: {plan:?}",
+                expected.display()
+            );
+        }
+        assert!(
+            !plan
+                .iter()
+                .any(|s| matches!(s, Shadow::Socket(p) if p.starts_with(root.join("absent")))),
+            "a daemon socket this host does not have was planned: {plan:?}"
+        );
+
+        // A working folder under the home directory is not scanned: the home
+        // tmpfs hides it already, and scanning it would only cost a walk.
+        let roots = socket_scan_roots(None, Some(&home.join("w")), Some(&home));
+        assert!(!roots.contains(&home.join("w")), "{roots:?}");
+        let roots = socket_scan_roots(None, Some(&work), Some(&home));
+        assert!(roots.contains(&work), "{roots:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 4d-iv-c) THE KNOWN DAEMON SOCKETS ARE BOTH SHADOWED AND MEASURED. The
+    ///          plan reads them from `ShadowHost::from_env` and the measurement
+    ///          from `probe_socket_candidates`; one without the other is either
+    ///          a shadow nobody has seen work or a gap `verify_shield` cannot
+    ///          see — the reviewer's second point.
+    #[cfg(unix)]
+    #[test]
+    fn the_known_daemon_sockets_are_shadowed_and_probed() {
+        let host = ShadowHost::from_env();
+        let probed = probe_socket_candidates(&host);
+        for expected in [
+            "/var/snap/lxd/common/lxd/unix.socket",
+            "/var/lib/lxd/unix.socket",
+            "/var/lib/incus/unix.socket",
+        ] {
+            let expected = PathBuf::from(expected);
+            assert!(
+                host.daemon_sockets.contains(&expected),
+                "{} is not shadowed: {:?}",
+                expected.display(),
+                host.daemon_sockets
+            );
+            assert!(
+                probed.contains(&expected),
+                "{} is not measured by verify_shield: {probed:?}",
+                expected.display()
+            );
+        }
     }
 
     /// 4d-v) THE HOME RULE NAMES THE RESOLVED DIRECTORY (audit M2).
