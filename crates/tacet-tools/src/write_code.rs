@@ -193,8 +193,9 @@ fn safe_stem(file_name: &str) -> String {
 /// pytest's `conftest`; `setup` (pip/setuptools); `sitecustomize` /
 /// `usercustomize` (imported by every python start that has the directory on
 /// its path); `__init__` / `__main__` (they turn the folder into something
-/// python imports or runs); the task runners nox, fabric, doit, paver, gulp,
-/// grunt and jake; gatsby's four lifecycle files. `makefile`, `envrc`,
+/// python imports or runs); the task runners nox, fabric, invoke (`tasks`),
+/// doit, paver, gulp, grunt and jake; gatsby's four lifecycle files. Test files
+/// are a family, not a list — see `test_runner_collects`. `makefile`, `envrc`,
 /// `package` and `pyproject` cannot be produced with a `.py`/`.js` extension in
 /// a way that make, direnv, npm or pip would read, and are refused anyway: the
 /// name alone is what a user's eye trusts in a listing.
@@ -207,6 +208,7 @@ const AUTO_EXECUTED_STEMS: &[(&str, &str)] = &[
     ("__main__", "python's import system"),
     ("noxfile", "nox"),
     ("fabfile", "fabric"),
+    ("tasks", "invoke"),
     ("dodo", "doit"),
     ("pavement", "paver"),
     ("gulpfile", "gulp"),
@@ -239,10 +241,51 @@ fn auto_executed_name(stem: &str) -> Option<String> {
         ));
     }
     let lower = stem.to_lowercase();
+    if let Some(runner) = test_runner_collects(&lower) {
+        return Some(format!(
+            "'{stem}' is a test file name: {runner} imports and runs every file named like it"
+        ));
+    }
     AUTO_EXECUTED_STEMS
         .iter()
         .find(|(name, _)| *name == lower)
         .map(|(_, runner)| format!("'{stem}' is a file name that {runner} runs automatically"))
+}
+
+/// The test runner that would collect — and so EXECUTE — a file with this
+/// (lower-case, dot-free) stem when the user types its bare command in the
+/// folder, or `None`.
+///
+/// A RECORDED DECISION, NOT AN ACCIDENT: test files are refused. The first
+/// version of the M3 fix closed `conftest.py` and let `test_ideas.py` through
+/// — and had a test asserting `test_ideas` was an ordinary name — although a
+/// bare `pytest` imports every `test_*.py` and `*_test.py` in the folder, which
+/// runs their top level outside the sandbox with the user's privileges: the
+/// same path as `conftest.py`, by the very tool the audit named. The patterns
+/// are each runner's DEFAULT collection glob, as documented:
+///   * pytest `python_files`: `test_*.py`, `*_test.py`;
+///   * `python -m unittest` discovery: `test*.py` — any stem STARTING with
+///     `test`, which is why `testimonials` is refused too; that is the
+///     runner's rule, not ours, and the model is told which runner and can
+///     pick another name without losing an attempt;
+///   * `node --test`: `test.js`, `test-*.js`, `*-test.js`, `*_test.js`
+///     (and `*.test.js`, which the dotted-stem rule already refuses);
+///   * jest `testMatch`: `?(*.)+(spec|test).js` — a bare `spec` or `test`.
+///
+/// What is NOT refused, and why: a name that merely contains the word
+/// (`latest`, `contest`, `attestation`) matches none of these globs.
+fn test_runner_collects(lower: &str) -> Option<&'static str> {
+    if lower.starts_with("test_") || lower.ends_with("_test") {
+        Some("pytest")
+    } else if lower.starts_with("test") {
+        Some("python -m unittest")
+    } else if lower.ends_with("-test") {
+        Some("node --test")
+    } else if lower == "spec" {
+        Some("jest")
+    } else {
+        None
+    }
 }
 
 /// Produces a NON-COLLIDING target path in the working directory: `name.py`, `name-2.py`, ...
@@ -740,7 +783,7 @@ mod tests {
     /// panic carrying `diagnose()`. The gate is defined once, in
     /// `run_code::sandbox_must_run`, because the tests it silences are skipped
     /// by the same absent shield and must be re-enabled by the same switch:
-    /// 8 here and 15 in run_code.rs on Linux. Those two figures are DERIVED from
+    /// 8 here and 16 in run_code.rs on Linux. Those two figures are DERIVED from
     /// the source and checked against this sentence by
     /// `the_skip_count_the_documents_quote_is_the_count_in_the_source`; written
     /// out by hand they were "eight and sixteen", and sixteen was wrong. The syntax-check path
@@ -868,6 +911,20 @@ mod tests {
             "karma.conf",
             "jest.setup",
             "utils.test",
+            // Invoke's task file, in the fabfile/noxfile family.
+            "tasks",
+            "Tasks.py",
+            // Test files: pytest's two globs, unittest's `test*`, node --test's
+            // and jest's bare names (see `test_runner_collects`).
+            "test_ideas",
+            "Test_Ideas.py",
+            "parser_test",
+            "PARSER_TEST.py",
+            "testimonials",
+            "test",
+            "test-utils",
+            "utils-test.js",
+            "spec",
         ] {
             assert!(
                 auto_executed_name(&safe_stem(name)).is_some(),
@@ -879,8 +936,13 @@ mod tests {
             "prime.py",
             "my_setup_notes",
             "configure_grid",
-            "test_ideas",
             "package_size",
+            // They contain the word, and match no runner's glob.
+            "latest",
+            "contest",
+            "attestation",
+            "task_list",
+            "my_tests_notes",
         ] {
             assert_eq!(
                 auto_executed_name(&safe_stem(name)),
@@ -918,7 +980,7 @@ mod tests {
         let tool = echo_tool();
         let root = temp_dir("auto-exec");
         let mut ctx = context(&root);
-        for name in ["conftest", "eslint.config", "setup"] {
+        for name in ["conftest", "eslint.config", "setup", "test_ideas", "tasks"] {
             let outcome =
                 hold(tool.run(json!({"file_name": name, "lines": ["print(1)"]}), &mut ctx));
             assert!(
@@ -928,7 +990,8 @@ mod tests {
             );
             assert!(
                 outcome.to_model.contains("runs automatically")
-                    || outcome.to_model.contains("loaded automatically"),
+                    || outcome.to_model.contains("loaded automatically")
+                    || outcome.to_model.contains("imports and runs"),
                 "{}",
                 outcome.to_model
             );

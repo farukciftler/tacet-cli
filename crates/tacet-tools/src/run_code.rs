@@ -516,8 +516,29 @@ fn plan_shadows(
 /// Every entry is software, not user data: the OS (`/System`, `/usr`, `/bin`,
 /// `/sbin`, `/private/etc`, `/dev`), the timezone and dyld databases, and the
 /// three places this file looks for interpreters (`/usr/local` is under
-/// `/usr`, `/opt/homebrew`, and python.org's `/Library/Frameworks`).
-/// `/Library/Developer/CommandLineTools` is the Xcode shim's own lookup.
+/// `/usr`, Homebrew's software directories, and python.org's
+/// `/Library/Frameworks`). `/Library/Developer/CommandLineTools` is the Xcode
+/// shim's own lookup.
+///
+/// HOMEBREW IS LISTED BY ITS SOFTWARE DIRECTORIES, NOT AS `/opt/homebrew`. The
+/// whole prefix was on this list once, and it holds user data too: `var/` is
+/// where `brew services` keep their state and `etc/` their configuration.
+/// MEASURED by the audit's review (9 Oct 2026): from inside the sandbox a script
+/// listed and read `/opt/homebrew/var/postgresql@17` — 894 files, 22.9 MB of a
+/// live database, `pg_hba.conf` included — and a properties file under `etc/`
+/// that can hold a token. The Intel prefix, `/usr/local`, sits under `/usr` and
+/// cannot be narrowed the same way, so its `var/` and `etc/` are DENIED after
+/// the allow instead (SBPL: the later rule wins).
+///
+/// ONE FILE UNDER `etc/` IS LET BACK IN, AND IT IS NOT OPTIONAL: Homebrew node
+/// reads OpenSSL's `openssl.cnf` at start, and when the open fails with EPERM
+/// (rather than ENOENT) it dies — MEASURED, macOS 26.5.2, node 26.5.0: "OpenSSL
+/// configuration error: BIO_new_file: Operation not permitted" under the
+/// narrowed list, and every `run_code` call would have failed. With only that
+/// file re-allowed, node and homebrew python 3.12 both start, python imports
+/// json, sqlite3, ssl and zoneinfo and `py_compile` passes, `node --check`
+/// passes, and `/opt/homebrew/var`, `/opt/homebrew/etc` and `openssl@3/cert.pem`
+/// all give EPERM. The regex names the config file and nothing beside it.
 /// `(literal "/")` lets a `readdir` of the root succeed, which some runtimes do
 /// on start; it lists names, not contents. The home-directory deny is KEPT
 /// even though the allowlist no longer covers `/Users`: it is the rule that
@@ -592,9 +613,19 @@ fn profile() -> &'static str {
        (subpath \"/private/var/db/timezone\") \
        (subpath \"/private/var/db/dyld\") \
        (subpath \"/dev\") \
-       (subpath \"/opt/homebrew\") \
+       (subpath \"/opt/homebrew/Cellar\") \
+       (subpath \"/opt/homebrew/opt\") \
+       (subpath \"/opt/homebrew/bin\") \
+       (subpath \"/opt/homebrew/lib\") \
+       (subpath \"/opt/homebrew/Frameworks\") \
+       (subpath \"/opt/homebrew/share\") \
        (subpath \"/Library/Frameworks\") \
        (subpath \"/Library/Developer/CommandLineTools\"))\
+     (deny file-read* \
+       (subpath \"/usr/local/var\") \
+       (subpath \"/usr/local/etc\"))\
+     (allow file-read* \
+       (regex #\"^/(opt/homebrew|usr/local)/etc/openssl@[0-9.]+/openssl\\.cnf$\"))\
      (deny file-read* (subpath (param \"HOMEDIR\")))\
      (allow file-read-metadata)\
      (allow file-read* (subpath (param \"SBOX\")))\
@@ -2360,19 +2391,72 @@ mod tests {
             "/private/var/db/timezone",
             "/private/var/db/dyld",
             "/dev",
-            "/opt/homebrew",
+            "/opt/homebrew/Cellar",
+            "/opt/homebrew/opt",
+            "/opt/homebrew/bin",
+            "/opt/homebrew/lib",
+            "/opt/homebrew/Frameworks",
+            "/opt/homebrew/share",
             "/Library/Frameworks",
             "/Library/Developer/CommandLineTools",
         ];
+        // The data directories of the Intel Homebrew prefix, which `/usr`
+        // covers and which are therefore denied by name (see `profile`).
+        const DENIED_DATA_ROOTS: &[&str] = &["/usr/local/var", "/usr/local/etc"];
         let literal_subpaths: Vec<&str> = p
             .split("(subpath \"")
             .skip(1)
             .filter_map(|rest| rest.split('"').next())
             .collect();
+        let fixed: Vec<&str> = SYSTEM_READ_ROOTS
+            .iter()
+            .chain(DENIED_DATA_ROOTS)
+            .copied()
+            .collect();
         assert_eq!(
-            literal_subpaths, SYSTEM_READ_ROOTS,
+            literal_subpaths, fixed,
             "a literal path that is not a fixed system root is in a subpath rule: {p}"
         );
+        // NO ALLOWED ROOT MAY CONTAIN A DIRECTORY THAT HOLDS USER DATA unless
+        // that directory is denied after it. This is the claim the old
+        // `(subpath "/opt/homebrew")` broke — the review read a live postgres
+        // database out of `/opt/homebrew/var` — and it is checked here, on the
+        // TEXT, so it goes red on every machine and not only on one that
+        // happens to have Homebrew services installed.
+        let deny_data = p
+            .find("(deny file-read* (subpath \"/usr/local/var\")")
+            .expect("the Intel Homebrew data deny");
+        let allow_system = p.find("(allow file-read* ").expect("the system allow");
+        assert!(
+            allow_system < deny_data,
+            "the data deny comes before the allow it narrows, so the allow wins: {p}"
+        );
+        for data in [
+            "/opt/homebrew/var",
+            "/opt/homebrew/etc",
+            "/usr/local/var",
+            "/usr/local/etc",
+        ] {
+            let opened_by: Vec<&&str> = SYSTEM_READ_ROOTS
+                .iter()
+                .filter(|root| Path::new(data).starts_with(root))
+                .collect();
+            assert!(
+                opened_by.is_empty() || DENIED_DATA_ROOTS.contains(&data),
+                "{data} holds Homebrew services' data and is readable through {opened_by:?}"
+            );
+        }
+        // THE ONE FILE LET BACK IN under `etc/` is OpenSSL's config, and it
+        // must come AFTER the deny or the deny takes it away again and node
+        // stops starting (see `profile`).
+        let openssl = p
+            .find("(allow file-read* (regex #\"^/(opt/homebrew|usr/local)/etc/openssl@[0-9.]+/openssl\\.cnf$\"))")
+            .expect("the openssl.cnf exception");
+        assert!(
+            deny_data < openssl,
+            "openssl.cnf is re-allowed before the deny: {p}"
+        );
+        assert_eq!(p.matches("(regex ").count(), 1, "another regex rule: {p}");
         // READING IS AN ALLOWLIST (L20): no unfiltered `(allow file-read*)`.
         assert!(
             !p.contains("(allow file-read*)"),
@@ -2520,7 +2604,7 @@ mod tests {
     ///
     /// `sandbox_must_run()` is what turns every `tool_or_skip()` in this crate
     /// from a skip into a failure, and it is switched on by three lines of YAML.
-    /// Delete them — or rename the variable on one side only — and 23 tests go
+    /// Delete them — or rename the variable on one side only — and 24 tests go
     /// back to passing without measuring anything, exactly as they did before
     /// this work, with nothing anywhere going red. That figure is not asserted
     /// from memory: `the_skip_count_the_documents_quote_is_the_count_in_the_source`
@@ -3818,9 +3902,9 @@ mod tests {
 
     /// A process OUTSIDE the sandbox that the test owns: killed and reaped on
     /// every path, an assert panicking included.
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     struct Outsider(std::process::Child);
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     impl Drop for Outsider {
         fn drop(&mut self) {
             self.0.kill().ok();
@@ -3834,7 +3918,7 @@ mod tests {
     /// the network monopoly (`crates/tacet-cli/tests/network_monopoly.rs`), and
     /// a socket opened by its own code — even a local one, even in a test —
     /// is the thing that file exists to keep out.
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     fn unix_listener(interpreter: &Interpreter, path: &Path) -> Outsider {
         use std::io::BufRead;
         let code = match interpreter.key {
@@ -3888,23 +3972,32 @@ mod tests {
     /// network probe is NOT in the unshielded run: it would open a real
     /// connection.
     ///
+    /// EVERY INTERPRETER, NOT ONLY THE FIRST. This test used to probe
+    /// `interpreters()[0]` — node, on every machine that has it — so the
+    /// PYTHON probe never ran anywhere: the review flipped its socket check to
+    /// "never open" and this stayed green. On a machine whose only interpreter
+    /// is python, that unproven probe is the whole of `verify_shield`. The
+    /// loop also takes Homebrew's python when it is installed but not linked
+    /// (`probe_interpreters`), because the python discovery finds on a Mac is
+    /// usually the Xcode shim, which cannot start under the shield at all.
+    ///
     /// macOS ONLY, and why: under bwrap the temp directory is visible, so the
     /// fake home and the listener's socket would be reachable for a reason that
     /// has nothing to do with the gates being measured. The Linux half of H7
-    /// is `verify_shield` itself, which probes the runner's real sockets under
+    /// is `a_loose_socket_in_tmp_is_shadowed_under_bwrap`, and `verify_shield`
+    /// itself, which probes the runner's real sockets under
     /// `TACET_SANDBOX_MUST_RUN`.
     #[cfg(target_os = "macos")]
     #[test]
     fn the_probes_see_an_open_gate_and_the_shield_closes_it() {
         let Some(tool) = tool_or_skip() else { return };
-        let interpreter = tool.interpreters()[0].clone();
         let root = temp_dir("probes");
         let fake_home = root.join("fake-home");
         std::fs::create_dir_all(&fake_home).expect("fixture");
         std::fs::write(fake_home.join("TOP-SECRET-DUMMY"), "x").expect("fixture");
         // Short: a unix socket path is limited to 104 bytes on macOS.
         let socket = std::env::temp_dir().join(format!("tacet-us-{}", nonce()));
-        let _listener = unix_listener(&interpreter, &socket);
+        let _listener = unix_listener(&tool.interpreters()[0], &socket);
         let sleeper = Outsider(
             Command::new("/bin/sleep")
                 .arg("60")
@@ -3917,53 +4010,199 @@ mod tests {
             sockets: vec![socket.clone()],
             outside_pid: sleeper.0.id(),
         };
+        let gates = [
+            ("HOME_BLOCKED", "HOME_OPEN"),
+            ("SIG_BLOCKED", "SIG_OPEN"),
+            ("UNIX_BLOCKED", "UNIX_OPEN"),
+        ];
+        let mut keys_shielded = Vec::new();
+        let mut keys_open = Vec::new();
+        for interpreter in probe_interpreters(&tool) {
+            let (open, shielded) = probe_both_ways(&tool, &interpreter, &targets, &root);
+            for (_, opened) in gates {
+                assert!(
+                    open.contains(opened),
+                    "{}: without the shield the probe did not see {opened} — it cannot \
+                     detect an open gate: {open}",
+                    interpreter.path.display()
+                );
+            }
+            keys_open.push(interpreter.key);
+            let Some(shielded) = shielded else { continue };
+            for (blocked, opened) in gates {
+                assert!(
+                    shielded.contains(blocked) && !shielded.contains(opened),
+                    "{}: under the shield the gate is open ({blocked} expected): {shielded}",
+                    interpreter.path.display()
+                );
+            }
+            keys_shielded.push(interpreter.key);
+        }
+        // `verify_shield` measured with `interpreters()[0]` for discovery to
+        // succeed at all, so that one at least must have been seen shielded.
+        assert!(
+            keys_shielded.contains(&tool.interpreters()[0].key),
+            "the interpreter discovery verified with was never run under the shield"
+        );
+        eprintln!("probed open: {keys_open:?}, probed shielded: {keys_shielded:?}");
+        std::fs::remove_file(&socket).ok();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The interpreters the probe tests run: every one discovery found, then
+    /// Homebrew's python if it is installed but not linked into `bin` (where
+    /// discovery does not look). Paths that do not exist are left out.
+    #[cfg(unix)]
+    fn probe_interpreters(tool: &RunCodeTool) -> Vec<Interpreter> {
+        let mut all: Vec<Interpreter> = tool.interpreters().to_vec();
+        for prefix in ["/opt/homebrew/opt", "/usr/local/opt"] {
+            let Ok(entries) = std::fs::read_dir(prefix) else {
+                continue;
+            };
+            let mut found: Vec<PathBuf> = entries
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().starts_with("python@3"))
+                .map(|e| e.path().join("libexec/bin/python3"))
+                .filter(|p| p.is_file())
+                .collect();
+            found.sort();
+            if let Some(path) = found.pop()
+                && !all.iter().any(|y| y.path == path)
+            {
+                all.push(Interpreter {
+                    key: "python",
+                    path,
+                    extension: "py",
+                });
+            }
+        }
+        all
+    }
+
+    /// Runs `local_probes` for one interpreter WITHOUT the shield and then
+    /// UNDER it, over the same targets, and returns both outputs.
+    ///
+    /// The shielded output is `None` only when the interpreter cannot start
+    /// under the shield AT ALL — a control script that prints one line fails
+    /// too. That is the Xcode shim (`/usr/bin/python3` needs fork, see
+    /// `profile`): a process that never starts reads nothing, and its probe has
+    /// already been shown to see open gates in the unshielded run. A probe that
+    /// fails while the control runs is a panic, not a skip.
+    #[cfg(unix)]
+    fn probe_both_ways(
+        tool: &RunCodeTool,
+        interpreter: &Interpreter,
+        targets: &ProbeTargets,
+        root: &Path,
+    ) -> (String, Option<String>) {
         let exit = if interpreter.key == "python" {
             ""
         } else {
             "process.exit(0)"
         };
-        let script = root.join(format!("probe.{}", interpreter.extension));
-        std::fs::write(&script, local_probes(interpreter.key, &targets, exit)).expect("script");
-
+        let body = local_probes(interpreter.key, targets, exit);
+        let script = root.join(format!("probe-{}.{}", nonce(), interpreter.extension));
+        std::fs::write(&script, &body).expect("script");
         let open = Command::new(&interpreter.path)
             .arg(&script)
             .output()
             .expect("the unshielded probe runs");
         let open = String::from_utf8_lossy(&open.stdout).into_owned();
-        for marker in ["HOME_OPEN", "SIG_OPEN", "UNIX_OPEN"] {
-            assert!(
-                open.contains(marker),
-                "without the shield the probe did not see {marker} — it cannot detect an open gate: {open}"
-            );
-        }
 
         let sandbox = temp_dir("probes-sbx");
         let inside = sandbox.join(format!("probe.{}", interpreter.extension));
-        std::fs::copy(&script, &inside).expect("copy");
-        let shielded = run_program(
-            &tool.shield,
-            &sandbox,
-            &interpreter.path,
-            &[inside.into_os_string()],
-            Duration::from_secs(15),
-        )
-        .expect("the shielded probe runs");
-        let CodeOutcome::Succeeded { output, .. } = shielded else {
-            panic!("{shielded:?}")
+        std::fs::write(&inside, &body).expect("copy");
+        let run = |path: &Path| {
+            run_program(
+                &tool.shield,
+                &sandbox,
+                &interpreter.path,
+                &[path.as_os_str().to_os_string()],
+                Duration::from_secs(15),
+            )
         };
-        for (blocked, opened) in [
-            ("HOME_BLOCKED", "HOME_OPEN"),
-            ("SIG_BLOCKED", "SIG_OPEN"),
-            ("UNIX_BLOCKED", "UNIX_OPEN"),
-        ] {
+        let shielded = match run(&inside).expect("the shield starts") {
+            CodeOutcome::Succeeded { output, .. } => Some(output),
+            other => {
+                let control = sandbox.join(format!("control.{}", interpreter.extension));
+                let line = if interpreter.key == "python" {
+                    "print('CONTROL')"
+                } else {
+                    "console.log('CONTROL')"
+                };
+                std::fs::write(&control, line).expect("control");
+                let started = matches!(
+                    run(&control),
+                    Ok(CodeOutcome::Succeeded { ref output, .. }) if output.contains("CONTROL")
+                );
+                assert!(
+                    !started,
+                    "{} starts under the shield but its probe failed: {other:?}",
+                    interpreter.path.display()
+                );
+                eprintln!(
+                    "{} does not start under the shield at all; its shielded half was not measured",
+                    interpreter.path.display()
+                );
+                None
+            }
+        };
+        std::fs::remove_dir_all(&sandbox).ok();
+        (open, shielded)
+    }
+
+    /// 9d-ii-linux) A LOOSE SOCKET IN /tmp IS SHADOWED UNDER bwrap (audit H7).
+    ///
+    /// The `Shadow::Socket` branch — `--ro-bind /dev/null <socket>` — had
+    /// never run against a real bwrap: on a CI runner whose `/tmp` holds no
+    /// socket, nothing exercised it, and if bwrap rejected that bind `run_code`
+    /// would leave the catalog for every Linux user with a tmux or ssh-agent
+    /// socket in `/tmp` — fail-closed, but unseen. So the test puts one there
+    /// itself, at depth 1 where `scan_sockets` must find it, checks that the
+    /// unshielded probe REACHES it (so a blocked result means something), and
+    /// that under bwrap it does not. Every discovered interpreter is probed.
+    /// Under `TACET_SANDBOX_MUST_RUN` — the ubuntu CI leg — a missing bwrap is
+    /// a failure, not a skip.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_loose_socket_in_tmp_is_shadowed_under_bwrap() {
+        let Some(tool) = tool_or_skip() else { return };
+        let root = temp_dir("probes-linux");
+        let socket = PathBuf::from("/tmp").join(format!("tacet-us-{}", nonce()));
+        let _listener = unix_listener(&tool.interpreters()[0], &socket);
+        let targets = ProbeTargets {
+            home: Vec::new(),
+            home_sentinel: None,
+            sockets: vec![socket.clone()],
+            outside_pid: 0,
+        };
+        let mut measured = 0;
+        for interpreter in probe_interpreters(&tool) {
+            let (open, shielded) = probe_both_ways(&tool, &interpreter, &targets, &root);
             assert!(
-                output.contains(blocked) && !output.contains(opened),
-                "under the shield the gate is open ({blocked} expected): {output}"
+                open.contains("UNIX_OPEN"),
+                "{}: without the shield the probe did not reach {} — it cannot detect an \
+                 open socket: {open}",
+                interpreter.path.display(),
+                socket.display()
             );
+            let shielded = shielded.unwrap_or_else(|| {
+                panic!(
+                    "{} did not start under bwrap with a socket in /tmp — the \
+                     `--ro-bind /dev/null` shadow is what bwrap refused",
+                    interpreter.path.display()
+                )
+            });
+            assert!(
+                shielded.contains("UNIX_BLOCKED") && !shielded.contains("UNIX_OPEN"),
+                "{}: THE SOCKET IN /tmp IS REACHABLE UNDER bwrap: {shielded}",
+                interpreter.path.display()
+            );
+            measured += 1;
         }
+        assert!(measured > 0, "no interpreter was probed");
         std::fs::remove_file(&socket).ok();
         std::fs::remove_dir_all(&root).ok();
-        std::fs::remove_dir_all(&sandbox).ok();
     }
 
     /// 9d-iii) A SIGNAL CANNOT REACH A PROCESS OUTSIDE THE SANDBOX (audit M1).
@@ -4019,6 +4258,14 @@ mod tests {
     /// which, since M5, is outside the sandbox too. `/usr/bin` is the control:
     /// the allowlist still opens the system, so a probe that fails on
     /// everything is caught here instead of passing.
+    ///
+    /// HOMEBREW'S DATA DIRECTORIES ARE PROBED TOO, wherever they exist: the
+    /// review that followed the allowlist read a live postgres database out of
+    /// `/opt/homebrew/var` through `(subpath "/opt/homebrew")`, and the four
+    /// probes above never looked there. Each existing `var/`/`etc/` is listed,
+    /// and one file found inside it (by the HOST, before the script runs) is
+    /// opened; only whether that worked is printed, never a byte of it. A
+    /// machine without them measures nothing here, and says so.
     #[cfg(target_os = "macos")]
     #[test]
     fn files_outside_the_sandbox_are_not_readable() {
@@ -4040,6 +4287,11 @@ mod tests {
         }
         let _gone = Gone(canary.clone());
         let cwd_canary = root.join("cwd-canary.txt");
+        let data = homebrew_data_targets();
+        if data.is_empty() {
+            eprintln!("no Homebrew var/ or etc/ on this machine, that half was not measured");
+        }
+        let data_literal = serde_json::to_string(&data).expect("json");
 
         let code = match tool.interpreters()[0].key {
             "python" => format!(
@@ -4054,7 +4306,18 @@ mod tests {
                  \x20       os.listdir(p)\n\
                  \x20       print(tag + '_LISTED')\n\
                  \x20   except Exception:\n\
-                 \x20       print(tag + '_HIDDEN')\n"
+                 \x20       print(tag + '_HIDDEN')\n\
+                 for d, f in {data_literal}:\n\
+                 \x20   try:\n\
+                 \x20       os.listdir(d)\n\
+                 \x20       print('DATA_LISTED ' + d)\n\
+                 \x20   except Exception:\n\
+                 \x20       print('DATA_HIDDEN ' + d)\n\
+                 \x20   try:\n\
+                 \x20       open(f, 'rb').read(1)\n\
+                 \x20       print('DATA_READ ' + f)\n\
+                 \x20   except Exception:\n\
+                 \x20       print('DATA_HIDDEN ' + f)\n"
             ),
             _ => format!(
                 "const fs=require('fs');\
@@ -4063,7 +4326,12 @@ mod tests {
                  catch(e){{console.log(t+'_HIDDEN')}}}}\
                  for(const [t,p] of [['SHARED','/Users/Shared'],['PTMP','/private/tmp'],['USRBIN','/usr/bin']]){{\
                  try{{fs.readdirSync(p);console.log(t+'_LISTED')}}\
-                 catch(e){{console.log(t+'_HIDDEN')}}}}"
+                 catch(e){{console.log(t+'_HIDDEN')}}}}\
+                 for(const [d,f] of {data_literal}){{\
+                 try{{fs.readdirSync(d);console.log('DATA_LISTED '+d)}}\
+                 catch(e){{console.log('DATA_HIDDEN '+d)}}\
+                 try{{fs.readFileSync(f).subarray(0,1);console.log('DATA_READ '+f)}}\
+                 catch(e){{console.log('DATA_HIDDEN '+f)}}}}"
             ),
         };
         let outcome = hold(tool.run(json!({"code": code, "timeout_s": 20}), &mut ctx));
@@ -4079,7 +4347,66 @@ mod tests {
             output.contains("USRBIN_LISTED"),
             "the control failed — the probe fails on everything, so it measured nothing: {output}"
         );
+        assert!(
+            !output.contains("DATA_LISTED") && !output.contains("DATA_READ"),
+            "HOMEBREW'S DATA IS READABLE FROM INSIDE THE SANDBOX: {output}"
+        );
+        for (dir, file) in &data {
+            for path in [dir, file] {
+                assert!(
+                    output.contains(&format!("DATA_HIDDEN {path}")),
+                    "the probe of {path} did not run: {output}"
+                );
+            }
+        }
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The Homebrew data directories that exist here, each with one regular
+    /// file found inside it — `[dir, file]` pairs, for
+    /// `files_outside_the_sandbox_are_not_readable`. A directory with no file
+    /// in reach is left out rather than half-probed. The walk is metadata only
+    /// (`symlink_metadata`, nothing followed, nothing opened) and stops at the
+    /// first file; `openssl.cnf` is skipped because the profile lets that one
+    /// file back in on purpose.
+    #[cfg(target_os = "macos")]
+    fn homebrew_data_targets() -> Vec<(String, String)> {
+        let mut targets = Vec::new();
+        for dir in [
+            "/opt/homebrew/var",
+            "/opt/homebrew/etc",
+            "/usr/local/var",
+            "/usr/local/etc",
+        ] {
+            let mut queue = vec![(PathBuf::from(dir), 0usize)];
+            let mut file = None;
+            while let Some((at, depth)) = queue.pop() {
+                let Ok(entries) = std::fs::read_dir(&at) else {
+                    continue;
+                };
+                let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+                entries.sort();
+                for entry in entries {
+                    let Ok(meta) = entry.symlink_metadata() else {
+                        continue;
+                    };
+                    if meta.is_file() && entry.file_name() != Some("openssl.cnf".as_ref()) {
+                        file = Some(entry);
+                        break;
+                    }
+                    if meta.is_dir() && depth < 3 {
+                        queue.push((entry, depth + 1));
+                    }
+                }
+                if file.is_some() {
+                    break;
+                }
+            }
+            if let Some(file) = file.and_then(|f| f.to_str().map(str::to_string)) {
+                targets.push((dir.to_string(), file));
+            }
+        }
+        targets
     }
 
     /// 9d-v) A SANDBOX UNDER THE HOME DIRECTORY STILL RUNS.
