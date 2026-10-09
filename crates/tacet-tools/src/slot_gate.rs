@@ -175,6 +175,30 @@ fn predict_with(blob: &[u8], message: &str) -> Option<&'static str> {
 
     let folded = fold(message);
     let text = folded.as_bytes();
+
+    // NO WORD IS NO EVIDENCE. The fold drops everything outside ASCII and the
+    // Turkish letters but KEEPS ASCII punctuation, so "привет, как дела?"
+    // folds to " , ? " and the model votes on punctuation n-grams alone. It
+    // was never shown a message like that and its answer is noise: measured
+    // 10 Oct 2026, that one gave acc=[-3,6,-1] and `search_filter`, a bare "?"
+    // gave [-5,5,1] and `search_filter`, and "." gave [-3,-2,5] and
+    // `message_intent` — each a +12 for the Extract profile on small talk.
+    // An earlier fix abstained only when every sum was exactly 0, which caught
+    // "спасибо" (no n-gram at all) and none of these. A message with no ASCII
+    // letter or digit left after the fold has said nothing the model can read,
+    // so it abstains and the trigger list decides alone.
+    //
+    // This check, with the tie-break below, is the one place the Rust departs
+    // from `esp32/check.py` and the C, so both were measured over every message
+    // in `benchmarks/` (10 Oct 2026): the 150 in `tasks/` (the 131 above among
+    // them) predict exactly as before, so 107/131 stands; of the 1105 in the
+    // other suites, the gate fired on 72 before and 40 after — the 32 it no
+    // longer fires on are 31 of `core-ru.json` ("Привет! Как дела?", "Который
+    // сейчас час?") and one of `core-zh.json`, none of them an extraction.
+    if !text.iter().any(u8::is_ascii_alphanumeric) {
+        return None;
+    }
+
     let mut acc = [0i32; CLASSES.len()];
     for n in 3..=5usize {
         if text.len() < n {
@@ -192,24 +216,23 @@ fn predict_with(blob: &[u8], message: &str) -> Option<&'static str> {
         }
     }
 
-    // NO EVIDENCE IS NOT A VOTE. The fold drops everything outside ASCII and
-    // the Turkish letters, so "спасибо", "谢谢", "שלום" and the empty string all
-    // fold to " " and hash no n-gram at all. Every accumulator is then 0, and
-    // `max_by_key` returns the LAST of equal maxima — the last class is
-    // `message_intent`, so before this check all four (audit M19, measured
-    // 9 Oct 2026) put `message_intent`, `search_filter`, `web_search` and
-    // `web_fetch` in the router's top four while "thanks" reached neither tool.
-    // The model has said nothing about such a message, so it abstains and the
-    // trigger list decides alone.
-    if acc.iter().all(|&v| v == 0) {
-        return None;
+    // A TIE GOES TO "none", THE FIRST CLASS. This used `max_by_key`, which
+    // returns the LAST of equal maxima, so a model that could not decide
+    // between "none" and a tool fired the tool: "iw" ([6,-12,6]) and "oc"
+    // ([9,-18,9]) gave `message_intent`, and before the check above every
+    // message with no n-gram at all ([0,0,0]) did too — "спасибо", "谢谢" and
+    // the empty string put `message_intent`, `search_filter`, `web_search` and
+    // `web_fetch` in the router's top four (audit M19, measured 9 Oct 2026).
+    // Keeping the FIRST maximum is also what the numbers in this file were
+    // measured with: `esp32/check.py` takes Python's `max`, `esp32/slots.c` a
+    // strict `>` from class 0, and both keep the first. The Rust was the one
+    // implementation that disagreed.
+    let mut best = 0;
+    for (i, &v) in acc.iter().enumerate().skip(1) {
+        if v > acc[best] {
+            best = i;
+        }
     }
-
-    let best = acc
-        .iter()
-        .enumerate()
-        .max_by_key(|(_, v)| **v)
-        .map(|(i, _)| i)?;
     match CLASSES[best] {
         "none" => None,
         name => Some(name),
@@ -330,13 +353,40 @@ mod tests {
         }
     }
 
-    /// NON-LATIN SMALL TALK AND THE EMPTY STRING carry no n-gram the model can
+    /// NON-LATIN SMALL TALK AND THE EMPTY STRING carry no word the model can
     /// see, so the gate abstains rather than letting a tie-break pick a tool.
-    /// Before the fix every one of these returned `Some("message_intent")`.
+    /// Before the first fix the first six returned `Some("message_intent")`.
+    /// The rest kept their ASCII punctuation through the fold and were voted
+    /// on by punctuation n-grams alone, which an all-zero check did not catch:
+    /// "привет, как дела?" and "?" gave `search_filter`, "." and the line from
+    /// `benchmarks/core/core-ru.json` gave `message_intent`.
     #[test]
     fn a_message_with_no_ngrams_reaches_neither_tool() {
-        for quiet in ["спасибо", "谢谢", "こんにちは", "שלום", "", "   "] {
+        for quiet in [
+            "спасибо",
+            "谢谢",
+            "こんにちは",
+            "שלום",
+            "",
+            "   ",
+            "привет, как дела?",
+            "Привет! Как дела?",
+            "谢谢？!",
+            "?",
+            ".",
+        ] {
             assert_eq!(predict(quiet), None, "fired on {quiet:?}");
+        }
+    }
+
+    /// A MODEL THAT CANNOT DECIDE BETWEEN "none" AND A TOOL DOES NOT FIRE IT.
+    /// Both strings tie "none" with `message_intent` exactly — [6,-12,6] and
+    /// [9,-18,9] — and `max_by_key`, which keeps the last of equal maxima,
+    /// returned `Some("message_intent")` for both.
+    #[test]
+    fn a_tie_with_none_reaches_neither_tool() {
+        for tied in ["iw", "oc"] {
+            assert_eq!(predict(tied), None, "a tie fired on {tied:?}");
         }
     }
 }
