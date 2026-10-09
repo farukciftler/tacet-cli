@@ -185,17 +185,31 @@ fn predict_with(blob: &[u8], message: &str) -> Option<&'static str> {
     // `message_intent` — each a +12 for the Extract profile on small talk.
     // An earlier fix abstained only when every sum was exactly 0, which caught
     // "спасибо" (no n-gram at all) and none of these. A message with no ASCII
-    // letter or digit left after the fold has said nothing the model can read,
-    // so it abstains and the trigger list decides alone.
+    // letter left after the fold has said nothing the model can read, so it
+    // abstains and the trigger list decides alone.
+    //
+    // A LETTER, NOT A LETTER OR DIGIT. The fold keeps digits too, so with
+    // `is_ascii_alphanumeric` here a non-Latin message with a number in it
+    // folded to digits and spaces and was voted on by those alone: "спасибо 2"
+    // gave `search_filter`, "привет 5$" `message_intent`, 270 of "спасибо 0" to
+    // "спасибо 999" fired, and two `core-zh.json` calculate requests ("…原价
+    // 6980，…打八五折…" and "那把 1280 和 460 这两项加起来是多少？") gave
+    // `search_filter` — a +12 for Extract on a sum the model cannot read.
     //
     // This check, with the tie-break below, is the one place the Rust departs
     // from `esp32/check.py` and the C, so both were measured over every message
     // in `benchmarks/` (10 Oct 2026): the 150 in `tasks/` (the 131 above among
-    // them) predict exactly as before, so 107/131 stands; of the 1105 in the
-    // other suites, the gate fired on 72 before and 40 after — the 32 it no
-    // longer fires on are 31 of `core-ru.json` ("Привет! Как дела?", "Который
-    // сейчас час?") and one of `core-zh.json`, none of them an extraction.
-    if !text.iter().any(u8::is_ascii_alphanumeric) {
+    // them) predict exactly as before, so 107/131 stands. Of the 1105 in the
+    // other suites the gate fired on 104 at 4f1c1a8; 32 of those hashed no
+    // n-gram at all and are the tie-break's. Of the other 72 it now fires on
+    // 38 — the 34 it no longer fires on are 31 of `core-ru.json` ("Привет! Как
+    // дела?", "Который сейчас час?") and 3 of `core-zh.json` (one punctuation
+    // only, the two calculate requests above), none of them an extraction.
+    //
+    // NOT SETTLED HERE: one short Latin token after non-Latin text is still
+    // read — "Как дела? ok" gives `search_filter`. How much ASCII is enough
+    // evidence is a separate question from whether there is any.
+    if !text.iter().any(u8::is_ascii_alphabetic) {
         return None;
     }
 
@@ -359,7 +373,10 @@ mod tests {
     /// The rest kept their ASCII punctuation through the fold and were voted
     /// on by punctuation n-grams alone, which an all-zero check did not catch:
     /// "привет, как дела?" and "?" gave `search_filter`, "." and the line from
-    /// `benchmarks/core/core-ru.json` gave `message_intent`.
+    /// `benchmarks/core/core-ru.json` gave `message_intent`. The last two kept
+    /// their digits through the fold and passed a letter-or-digit check:
+    /// "спасибо 2" and the `core-zh.json` calculate request each gave
+    /// `search_filter`.
     #[test]
     fn a_message_with_no_ngrams_reaches_neither_tool() {
         for quiet in [
@@ -374,6 +391,8 @@ mod tests {
             "谢谢？!",
             "?",
             ".",
+            "спасибо 2",
+            "那把 1280 和 460 这两项加起来是多少？",
         ] {
             assert_eq!(predict(quiet), None, "fired on {quiet:?}");
         }
