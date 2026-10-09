@@ -422,12 +422,25 @@ impl ArchiveTool {
         let folder = ctx.resolve_path(".")?;
         let destination = free_directory(&folder, name);
         fs::create_dir(&destination)?;
+        // `lstat` OF WHAT `create_dir` MADE, taken before anything else touches
+        // the name: this is the identity the rollback below is tied to.
+        let made = fs::symlink_metadata(&destination)?;
         // BELT AND BRACES, exactly as `write_document` does after its own naming
         // loop: the directory was just created and rotated past anything that
         // existed, but the write gate must not depend on the naming rule staying
         // correct forever. Re-proving it canonically is what stops a link that
         // won a race from being written through.
-        let destination = crate::sandbox_path::resolve_existing_dir(ctx, &destination)?;
+        let canonical = crate::sandbox_path::resolve_existing_dir(ctx, &destination)?;
+        // INSIDE THE SANDBOX IS NOT THE SAME AS OURS. `canonicalize` follows a
+        // link, so a local process that swapped the fresh directory for a link
+        // to, say, the user's `src/` between `create_dir` and the line above
+        // gets a path that passes the sandbox gate — and the rollback below
+        // would then `remove_dir_all` the user's `src/` (adversarial review of
+        // 2dcf460; reasoned, not raced — the window has no hook to hold open).
+        // `Created::claim` refuses unless the canonical path is the name this
+        // run chose, in the folder it chose it in, and is the very directory
+        // `create_dir` made.
+        let destination = Created::claim(&destination, &made, canonical)?;
 
         // FROM HERE ON A FAILURE REMOVES THE DESTINATION, so a refused archive
         // leaves nothing behind however far the write got (audit L14, second
@@ -451,22 +464,35 @@ impl ArchiveTool {
         // it carry NFD names to this day, and the rule would refuse those
         // ordinary archives to close a hostile one.
         //
-        // WHY THE DELETE IS SAFE TO RUN HERE. `destination` is a directory this
-        // run created a moment ago under a name nothing else had, re-proven
-        // canonically above, so the only things inside it are what this loop
-        // wrote. And `fs::remove_dir_all` does not follow symbolic links — not
-        // the top one, not one inside (the CVE-2022-21658 fix, Rust 1.58.1) — so a
-        // link that won a race into the directory is unlinked, not traversed.
+        // WHY THE DELETE IS SAFE TO RUN HERE — and exactly how far that goes.
+        // The canonical re-proof above shows only that the path is INSIDE THE
+        // SANDBOX; on its own it does not show the path is the directory this
+        // run created (an earlier version of this note claimed it did). What
+        // ties the delete to our directory is `Created`: the path is the chosen
+        // name in the chosen folder, it was a real directory (not a link) when
+        // `lstat`ed straight after `create_dir`, on Unix its (device, inode)
+        // matched, and `all_or_nothing` checks all of that AGAIN immediately
+        // before deleting and leaves the folder in place on any mismatch.
+        // Between that last check and the delete, a swap of the top component
+        // for a link is still harmless: `fs::remove_dir_all` does not follow
+        // symbolic links — not the top one, not one inside (the CVE-2022-21658
+        // fix, Rust 1.58.1) — so the link is unlinked, not traversed.
         // `the_rollback_does_not_follow_a_link_out_of_the_destination` holds
         // that to a measurement rather than to the standard library's word.
+        // WHAT IT DOES NOT COVER: a process that RENAMES a real directory onto
+        // the fresh (empty) name before the first `lstat` hands us that
+        // directory's identity — but a process that can rename the user's
+        // folders can already delete them, so nothing is given away here.
+        // Off Unix there is no stable (device, inode) in std, so the guard
+        // there is the name and the not-a-link checks only.
         //
         // `list` STILL reports two entries for such a pair where `extract`
         // refuses: the one place the "one pass, so list and extract agree" rule
         // does not hold, written down rather than implied.
         let (written, bytes_written) =
-            all_or_nothing(&destination, || unpack(&destination, kept, &decoded))?;
+            all_or_nothing(&destination, || unpack(&destination.path, kept, &decoded))?;
 
-        let shown = path_for_model(&destination, &ctx.working_dir);
+        let shown = path_for_model(&destination.path, &ctx.working_dir);
         Ok(ToolOutcome::written(
             format!("{name} · {written} files unpacked"),
             // COUNTS AND A PATH, NEVER CONTENT. What was inside the files is not
@@ -475,7 +501,68 @@ impl ArchiveTool {
             format!("extracted {written} files ({bytes_written} bytes) into {shown}"),
         )
         .raw_output(format!("{shown}: {written} files, {bytes_written} bytes"))
-        .file_path(destination))
+        .file_path(destination.path))
+    }
+}
+
+/// The directory `extract` made, pinned to what `create_dir` actually created
+/// so the rollback can never be pointed at anything else. See the rollback
+/// note in `extract`.
+#[derive(Debug)]
+struct Created {
+    /// Canonical, and equal to `canonical(folder) / chosen name`.
+    path: PathBuf,
+    identity: Identity,
+}
+
+#[cfg(unix)]
+type Identity = (u64, u64);
+#[cfg(not(unix))]
+type Identity = ();
+
+#[cfg(unix)]
+fn identity(meta: &fs::Metadata) -> Identity {
+    use std::os::unix::fs::MetadataExt;
+    (meta.dev(), meta.ino())
+}
+#[cfg(not(unix))]
+fn identity(_: &fs::Metadata) -> Identity {}
+
+impl Created {
+    /// `lexical` is the path handed to `create_dir`, `made` its `lstat` taken
+    /// straight afterwards, `canonical` what the sandbox gate resolved it to.
+    /// Any disagreement is a `SandboxViolation` and NOTHING is deleted: the
+    /// directory we made may have been moved, and guessing where is how a
+    /// rollback deletes the wrong thing.
+    fn claim(lexical: &Path, made: &fs::Metadata, canonical: PathBuf) -> ToolResult<Created> {
+        let refuse = || ToolError::SandboxViolation(lexical.to_path_buf());
+        if !made.file_type().is_dir() {
+            return Err(refuse());
+        }
+        let (Some(parent), Some(name)) = (lexical.parent(), lexical.file_name()) else {
+            return Err(refuse());
+        };
+        let expected = parent.canonicalize().map_err(|_| refuse())?.join(name);
+        if canonical != expected {
+            return Err(refuse());
+        }
+        let created = Created {
+            path: canonical,
+            identity: identity(made),
+        };
+        if !created.still_ours() {
+            return Err(refuse());
+        }
+        Ok(created)
+    }
+
+    /// `lstat`, never `stat`: a link standing where our directory stood is
+    /// exactly the case this answers no to.
+    fn still_ours(&self) -> bool {
+        match fs::symlink_metadata(&self.path) {
+            Ok(now) => now.file_type().is_dir() && identity(&now) == self.identity,
+            Err(_) => false,
+        }
     }
 }
 
@@ -486,16 +573,30 @@ impl ArchiveTool {
 /// If the removal itself fails the original cause is not hidden behind it, but
 /// the user is told a folder was left, because "refused" with a directory still
 /// on disk is the false sentence this function exists to stop.
-fn all_or_nothing<T>(destination: &Path, write: impl FnOnce() -> ToolResult<T>) -> ToolResult<T> {
+///
+/// The delete runs only if `destination` is STILL the directory `create_dir`
+/// made (`Created::still_ours`, checked again here because the write took
+/// time); otherwise the folder is left and the user is told so.
+fn all_or_nothing<T>(
+    destination: &Created,
+    write: impl FnOnce() -> ToolResult<T>,
+) -> ToolResult<T> {
+    let left = |cause: ToolError, why: &str| {
+        ToolError::Other(format!(
+            "{} — and the partly unpacked folder '{}' {why}",
+            cause.short_error().trim_end_matches('.'),
+            short(&destination.path.to_string_lossy())
+        ))
+    };
     match write() {
         Ok(value) => Ok(value),
-        Err(cause) => match fs::remove_dir_all(destination) {
+        Err(cause) if !destination.still_ours() => Err(left(
+            cause,
+            "was not removed: it is no longer the folder this run created",
+        )),
+        Err(cause) => match fs::remove_dir_all(&destination.path) {
             Ok(()) => Err(cause),
-            Err(_) => Err(ToolError::Other(format!(
-                "{} — and the partly unpacked folder '{}' could not be removed",
-                cause.short_error().trim_end_matches('.'),
-                short(&destination.to_string_lossy())
-            ))),
+            Err(_) => Err(left(cause, "could not be removed")),
         },
     }
 }
@@ -1979,9 +2080,9 @@ mod tests {
         fs::create_dir(&victim).expect("victim dir");
         fs::write(victim.join("keep.txt"), b"mine").expect("victim file");
         let destination = root.join("unpacked");
-        fs::create_dir(&destination).expect("destination");
+        let created = make(&destination);
 
-        let result: ToolResult<()> = all_or_nothing(&destination, || {
+        let result: ToolResult<()> = all_or_nothing(&created, || {
             fs::write(destination.join("a.txt"), b"x")?;
             std::os::unix::fs::symlink(&victim, destination.join("link"))?;
             Err(ToolError::Other("the write failed".into()))
@@ -2009,14 +2110,111 @@ mod tests {
     fn a_write_that_succeeds_is_not_rolled_back() {
         let root = temp_root("rollback-ok");
         let destination = root.join("unpacked");
-        fs::create_dir(&destination).expect("destination");
-        let counted = all_or_nothing(&destination, || {
+        let created = make(&destination);
+        let counted = all_or_nothing(&created, || {
             fs::write(destination.join("a.txt"), b"x")?;
             Ok(1)
         })
         .expect("success");
         assert_eq!(counted, 1);
         assert_eq!(fs::read(destination.join("a.txt")).unwrap(), b"x");
+    }
+
+    /// What `extract` does between `create_dir` and the write, minus the
+    /// sandbox gate (whose own tests live in `sandbox_path`).
+    fn make(lexical: &Path) -> Created {
+        fs::create_dir(lexical).expect("destination");
+        let made = fs::symlink_metadata(lexical).expect("lstat");
+        let canonical = lexical.canonicalize().expect("canonical");
+        Created::claim(lexical, &made, canonical).expect("our own directory is ours")
+    }
+
+    /// THE RACE THE SANDBOX GATE CANNOT SEE (adversarial review of 2dcf460).
+    /// The fresh directory is swapped for a link to a folder that is ALSO
+    /// inside the sandbox — the user's `src/`. `canonicalize` follows the
+    /// link, the path it returns passes every sandbox check, and an unguarded
+    /// rollback would `remove_dir_all` the user's real folder. The race window
+    /// has no hook, so the swap is done here by hand at the exact point it
+    /// would land: after `create_dir`, before the canonical re-proof.
+    #[cfg(unix)]
+    #[test]
+    fn a_destination_swapped_for_a_link_before_the_re_proof_is_not_claimed() {
+        let root = temp_root("claim-swap");
+        let victim = root.join("src");
+        fs::create_dir(&victim).expect("victim dir");
+        fs::write(victim.join("main.rs"), b"fn main() {}").expect("victim file");
+        let destination = root.join("unpacked");
+        fs::create_dir(&destination).expect("create_dir");
+        let made = fs::symlink_metadata(&destination).expect("lstat");
+        // the swap
+        fs::remove_dir(&destination).expect("race: rmdir");
+        std::os::unix::fs::symlink(&victim, &destination).expect("race: link");
+        let canonical = destination.canonicalize().expect("follows the link");
+        assert_eq!(canonical, victim, "the premise: the gate resolves to src/");
+
+        let claimed = Created::claim(&destination, &made, canonical);
+        assert!(
+            matches!(claimed, Err(ToolError::SandboxViolation(_))),
+            "a swapped destination was claimed: {claimed:?}"
+        );
+        assert_eq!(fs::read(victim.join("main.rs")).unwrap(), b"fn main() {}");
+    }
+
+    /// And the same swap AFTER the claim, during the write: the rollback must
+    /// see that the path no longer names the directory it made, delete
+    /// nothing, and say the folder was left. The `Created` is built by hand
+    /// with the victim's path and the made directory's identity — the state an
+    /// unguarded `extract` reached when `canonicalize` followed the swap.
+    #[cfg(unix)]
+    #[test]
+    fn the_rollback_does_not_delete_a_folder_this_run_did_not_create() {
+        let root = temp_root("rollback-swap");
+        let victim = root.join("src");
+        fs::create_dir(&victim).expect("victim dir");
+        fs::write(victim.join("main.rs"), b"fn main() {}").expect("victim file");
+        let destination = root.join("unpacked");
+        fs::create_dir(&destination).expect("create_dir");
+        let made = fs::symlink_metadata(&destination).expect("lstat");
+        let pointed_elsewhere = Created {
+            path: victim.clone(),
+            identity: identity(&made),
+        };
+
+        let result: ToolResult<()> = all_or_nothing(&pointed_elsewhere, || {
+            // an entry that already exists there trips a refusal on purpose
+            Err(ToolError::Other(
+                "the same file as an entry already unpacked".into(),
+            ))
+        });
+
+        assert_eq!(
+            fs::read(victim.join("main.rs")).expect("the user's folder survived"),
+            b"fn main() {}"
+        );
+        let said = result.expect_err("still a refusal").short_error();
+        assert!(
+            said.contains("no longer the folder this run created"),
+            "the user was not told the folder was left: {said}"
+        );
+    }
+
+    /// The re-check in `all_or_nothing`: a link standing where the claimed
+    /// directory stood is not ours, even though `stat` through it would find a
+    /// directory. Two checks each answer no on their own — the `lstat` sees a
+    /// link, and on Unix the identity differs — so breaking either one alone
+    /// leaves this green; the red proof broke both.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_standing_where_the_destination_stood_is_not_ours() {
+        let root = temp_root("still-ours");
+        let victim = root.join("src");
+        fs::create_dir(&victim).expect("victim dir");
+        let destination = root.join("unpacked");
+        let created = make(&destination);
+        assert!(created.still_ours());
+        fs::remove_dir(&destination).expect("rmdir");
+        std::os::unix::fs::symlink(&victim, &destination).expect("link");
+        assert!(!created.still_ours(), "a link was taken for our directory");
     }
 
     // --- the contract ---
