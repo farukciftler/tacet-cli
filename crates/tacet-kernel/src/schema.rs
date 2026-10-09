@@ -154,10 +154,26 @@ impl ArgSchema {
     /// A closed set. PREFER THIS OVER `text()` wherever the tool's body accepts
     /// a fixed list: the values are compiled into the grammar literally, so an
     /// invalid one cannot be generated instead of being refused a turn later.
+    ///
+    /// # Panics
+    ///
+    /// On an EMPTY set. A closed set with nothing in it is a value position no
+    /// call can fill, and the grammar learns that only after it has opened the
+    /// key: MEASURED (audit M15), `enum: []` left the automaton with a live key
+    /// and a value with no first character — "the constraint forbade every
+    /// token" in the middle of a call. Every caller in this workspace builds the
+    /// set from a list it has already checked is non-empty (the MCP bridge
+    /// refuses `enum: []` as `MixedEnum`, `shell` and `db_write` refuse an empty
+    /// allow-list, `clipboard` is not offered without a helper), so reaching
+    /// this is an authoring bug, and it is stopped where the schema is written
+    /// rather than where a model trips over it.
     pub fn choice<S: Into<String>>(choices: impl IntoIterator<Item = S>) -> Self {
-        Self::from_kind(SchemaKind::Choice {
-            choices: choices.into_iter().map(Into::into).collect(),
-        })
+        let choices: Vec<String> = choices.into_iter().map(Into::into).collect();
+        assert!(
+            !choices.is_empty(),
+            "ArgSchema::choice: an empty closed set has no value a call could carry"
+        );
+        Self::from_kind(SchemaKind::Choice { choices })
     }
 
     /// A number that may have a fractional part. Bound it with
@@ -431,12 +447,8 @@ impl ArgSchema {
                 min,
                 max,
             } => {
-                let n = value
-                    .as_f64()
-                    .ok_or_else(|| InvalidArgument(format!("{path}: expected a number")))?;
-                if *is_integer && !value.is_i64() && !value.is_u64() {
-                    return Err(InvalidArgument(format!("{path}: expected an integer")));
-                }
+                let n = number_value(value, *is_integer)
+                    .map_err(|why| InvalidArgument(format!("{path}: {why}")))?;
                 if min.is_some_and(|v| n < v) || max.is_some_and(|v| n > v) {
                     return Err(InvalidArgument(format!("{path}: out of range")));
                 }
@@ -447,5 +459,125 @@ impl ArgSchema {
                 .map(|_| ())
                 .ok_or_else(|| InvalidArgument(format!("{path}: expected true/false"))),
         }
+    }
+
+    /// The number `validate` would compare against a `Number` schema's range
+    /// for this JSON number TEXT — or `None` where `validate` would refuse the
+    /// text outright for this kind.
+    ///
+    /// WHY THE GRAMMAR ASKS THIS INSTEAD OF PARSING THE NUMBER ITSELF. The two
+    /// used to keep separate rules and the grammar's comment said they "agree
+    /// exactly". MEASURED (audit M16), they did not: over 200 000 random walks
+    /// the grammar closed on `-0` in an integer field 15 287 times, and
+    /// `serde_json` reads `-0` as the FLOAT `-0.0`, so `validate` answered
+    /// "expected an integer". `18446744073709551616` (u64::MAX + 1),
+    /// `-9223372036854775809` (i64::MIN - 1) and `1.7976931348623158e308` were
+    /// likewise closed on by the grammar and refused here — the last because
+    /// `serde_json`'s float parse rounds differently from Rust's at the very top
+    /// of the range, so "ask Rust whether it is finite" was a neighbour of the
+    /// rule, not the rule. Parsing with the SAME parser and classifying with the
+    /// SAME function `validate` uses is what makes "the grammar cannot produce
+    /// a number the validator refuses" true by construction rather than by
+    /// comment.
+    ///
+    /// Text that is not a single JSON number — a prefix like `-` or `1e`, or
+    /// anything with a second value after it — is `None`.
+    pub fn json_number_value(text: &str, is_integer: bool) -> Option<f64> {
+        let value: serde_json::Value = serde_json::from_str(text).ok()?;
+        if !value.is_number() {
+            return None;
+        }
+        number_value(&value, is_integer).ok()
+    }
+}
+
+/// The one classification of a JSON number against a `Number` schema's kind,
+/// shared by `validate` (on a parsed call) and `json_number_value` (on the
+/// grammar's text). The `Err` is the reason `validate` prints.
+///
+/// AN INTEGER IS WHAT `serde_json` STORES AS ONE — i64 or u64 — not "an f64
+/// with no fraction". That is the narrower reading, and the grammar follows it:
+/// `-0`, `18446744073709551616` and `1.0` all have an integral value and none of
+/// them reaches a tool as an integer.
+fn number_value(value: &serde_json::Value, is_integer: bool) -> Result<f64, &'static str> {
+    let n = value.as_f64().ok_or("expected a number")?;
+    if is_integer && !value.is_i64() && !value.is_u64() {
+        return Err("expected an integer");
+    }
+    Ok(n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// `validate` and `json_number_value` must give the same verdict on the same
+    /// number, because the grammar's whole claim rests on the second standing in
+    /// for the first. Each spelling here was a MEASURED disagreement (audit M16)
+    /// or sits on one of the edges that produced them.
+    #[test]
+    fn the_text_predicate_and_the_validator_agree_on_every_edge() {
+        let integer = ArgSchema::object(vec![Field::new("n", ArgSchema::integer()).required()]);
+        let number = ArgSchema::object(vec![Field::new("n", ArgSchema::number()).required()]);
+        for (text, as_integer, as_number) in [
+            ("0", true, true),
+            ("-0", false, true),
+            ("-1", true, true),
+            ("18446744073709551615", true, true),
+            ("18446744073709551616", false, true),
+            ("-9223372036854775808", true, true),
+            ("-9223372036854775809", false, true),
+            ("1.0", false, true),
+            ("1e3", false, true),
+            ("1.7976931348623157e308", false, true),
+            ("1.7976931348623158e308", false, false),
+            ("1e309", false, false),
+            ("1e-400", false, true),
+            ("-", false, false),
+            ("1e", false, false),
+            ("1 2", false, false),
+            ("\"1\"", false, false),
+        ] {
+            assert_eq!(
+                ArgSchema::json_number_value(text, true).is_some(),
+                as_integer,
+                "integer verdict on {text}"
+            );
+            assert_eq!(
+                ArgSchema::json_number_value(text, false).is_some(),
+                as_number,
+                "number verdict on {text}"
+            );
+            // Wherever the text is JSON at all, `validate` on the parsed call is
+            // the independent witness for both verdicts.
+            let call = format!(r#"{{"n":{text}}}"#);
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&call) {
+                assert_eq!(
+                    integer.validate(&value).is_ok(),
+                    as_integer,
+                    "validate: {call}"
+                );
+                assert_eq!(
+                    number.validate(&value).is_ok(),
+                    as_number,
+                    "validate: {call}"
+                );
+            }
+        }
+        // The value handed back is the one the range is compared against.
+        assert_eq!(ArgSchema::json_number_value("-12", true), Some(-12.0));
+        assert_eq!(ArgSchema::json_number_value("2.5", false), Some(2.5));
+        assert!(
+            integer.validate(&json!({"n": -0.0})).is_err(),
+            "a float zero is not an integer to the tool layer"
+        );
+    }
+
+    /// An empty closed set is refused where the schema is written (audit M15).
+    #[test]
+    #[should_panic(expected = "an empty closed set")]
+    fn an_empty_closed_set_is_refused_where_it_is_written() {
+        let _ = ArgSchema::choice(Vec::<String>::new());
     }
 }

@@ -16,6 +16,7 @@ use crate::compile::{Grammar, Node};
 use crate::error::GrammarError;
 use crate::permit::{AllowedSet, SPACES};
 use std::sync::Arc;
+use tacet_kernel::ArgSchema;
 
 /// Bool values; embedded in the grammar literally.
 const LITERALS: [&str; 2] = ["true", "false"];
@@ -175,6 +176,152 @@ const NUMBER_CANDIDATES: [char; 15] = [
     '-', '+', '.', 'e', 'E', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
 ];
 
+/// The most digits a number's FRACTION may have.
+///
+/// WHY A NUMBER NEEDS A BOUND AT ALL — the same defect as `FREE_TEXT_CEILING`,
+/// in the one place that constant did not reach. JSON puts no limit on a
+/// fraction, and nothing here did either: MEASURED (audit L25), `0.` followed
+/// by 200 000 digits was still an open path, as was `1e-` followed by 200 000
+/// zeros. Every prefix of those is a valid number, so the call never HAS to
+/// end; the README's "the grammar bounds the length of a field the schema
+/// leaves open" was true of strings only.
+///
+/// FOUR HUNDRED, AND NOT SEVENTEEN, because the bound must never make a value
+/// unreachable. A BOUNDED number refuses the exponent (`range_fits`), so plain
+/// decimal is the only spelling it has, and the smallest positive f64 written
+/// that way, `5e-324`, needs 323 zeros and its digit. MEASURED over a spread of
+/// subnormals and the normal edge (tests.rs, `every_f64_a_range_can_hold_is_
+/// still_writable_in_plain_decimal`): no f64's shortest plain spelling is
+/// longer than those 324 places. 400 clears that, so every f64 a range can hold
+/// stays writable, and it is still a hard stop three orders of magnitude short
+/// of the measured runaway.
+pub(crate) const MAX_FRACTION_DIGITS: usize = 400;
+
+/// The most digits an EXPONENT may have, leading zeros included.
+///
+/// Every finite f64 has an exponent within ±324, so three digits reach all of
+/// them; the fourth admits the zero-padded spelling some printers emit
+/// (`1e+0308`). JSON allows any number of leading zeros, which is why the bound
+/// is on digits and not on the exponent's value: `1e-000…0001` was as
+/// unending as a long fraction (audit L25). The exponent is only open for an
+/// UNBOUNDED number, so nothing a range needs can be cut off by this.
+///
+/// THE INTEGER PART HAS NO CONSTANT OF ITS OWN because representability already
+/// bounds it, and the bound is the tool layer's: 20 digits for an integer
+/// (u64::MAX), 19 after a minus (i64::MIN), and 309 for a number (the last
+/// finite f64). JSON forbids a leading zero there, so no padding can stretch it.
+pub(crate) const MAX_EXPONENT_DIGITS: usize = 4;
+
+/// The number the tool layer will read from `text` — `ArgSchema::json_number_value`
+/// — answered without running `serde_json` where the answer is provably the same.
+///
+/// WHY A FAST PATH: this runs once per candidate character at every number
+/// position of the mask walk. MEASURED (M-series, release, a synthetic 32k
+/// vocabulary heavy in digit and `eN` tokens, at `{"n":12`): calling
+/// `serde_json` every time took a mask step from 2.1ms to 3.2ms; this path
+/// brings most of that back (see `range_fits` for the figure that is left).
+///
+/// WHY IT IS EXACT, not close. Both sides round CORRECTLY whenever the decimal
+/// is short (`rounds_alike`), and Rust's `f64::from_str` is correctly rounded by
+/// specification — so both return THE f64 nearest the decimal, sign included
+/// (`-0.0` from `-0`). An integer of at most 18 digits fits i64, which is what
+/// `validate` asks of it, and its f64 is likewise the correctly rounded one on
+/// both sides. Everything else — a long mantissa, a far exponent, `-0` in an
+/// integer field, the u64/i64/f64 edges — is handed to `serde_json` itself, so
+/// the edges stay the consumer's. `the_fast_path_and_the_validator_agree` in
+/// tests.rs walks both over every shape on either side of these lines.
+///
+/// `bounded == false` (no range to compare against) needs only the YES/NO, and
+/// there a far exponent is answered from Rust's parse too: `serde_json` only
+/// ever refuses a number for overflow, never for underflow, and its double
+/// rounding is an ulp or two — it cannot carry anything below 1e308 past
+/// f64::MAX. The value handed back may then be an ulp off the consumer's,
+/// which nothing on that path reads — and an unbounded number is the only
+/// kind that keeps the exponent, so this is where every `e99`-shaped token in
+/// a vocabulary lands.
+///
+/// `text` IS ALWAYS A COMPLETE JSON NUMBER here — the automaton only asks about
+/// a finished prefix or its shortest completion — so the length and the absence
+/// of an exponent are all the fast path has to look at. (Rust's parse accepts
+/// spellings JSON does not, `1.` and `01`; none of them can reach this.)
+pub(crate) fn validator_value(text: &str, is_integer: bool, bounded: bool) -> Option<f64> {
+    if is_integer {
+        // At most 18 digits after an optional `-`: inside i64 either way.
+        if text.len() <= 18 && text != "-0" {
+            return text.parse::<f64>().ok();
+        }
+        return ArgSchema::json_number_value(text, true);
+    }
+    if rounds_alike(text) {
+        return text.parse::<f64>().ok();
+    }
+    let rust = text.parse::<f64>().ok()?;
+    // A cheap REFUSAL before the exact answer: where Rust's correctly rounded
+    // parse is already infinite the decimal is past f64::MAX by at least half an
+    // ulp, and nothing `serde_json` reaches from there is a number this layer
+    // should offer — at worst it is one ulp of the very edge, refused, and a
+    // refusal is the safe direction (a shorter spelling is always still open).
+    if rust.is_infinite() {
+        return None;
+    }
+    if !bounded && rust.abs() < 1e308 {
+        return Some(rust);
+    }
+    ArgSchema::json_number_value(text, false)
+}
+
+/// Is `text` short enough that `serde_json` and Rust's `f64::from_str` provably
+/// return the same f64 — at most 15 mantissa digits, and a net power of ten
+/// within ±22?
+///
+/// `serde_json` computes `significand * 10^k` (or `/ 10^-k`) with the
+/// significand an exact integer below 2^53 and `10^k` exact up to 10^22: ONE
+/// correctly rounded operation, so the nearest f64 to the decimal — which is
+/// what Rust returns by specification. Outside those lines `serde_json` rounds
+/// twice and the two can differ by an ulp; that is where the M16 edge
+/// `1.7976931348623158e308` lives, so those spellings go to `serde_json`.
+///
+/// THE EXPONENT IS COVERED, NOT ONLY THE PLAIN DECIMAL, because a vocabulary
+/// carries exponent tokens (`e5`, `e10`) and every one of them would otherwise
+/// cost a `serde_json` parse. One pass over the bytes, because it runs per
+/// candidate on the mask's hot path.
+fn rounds_alike(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let start = usize::from(bytes.first() == Some(&b'-'));
+    let (mut digits, mut frac, mut in_frac) = (0usize, 0i32, false);
+    for (i, &b) in bytes.iter().enumerate().skip(start) {
+        match b {
+            b'0'..=b'9' => {
+                digits += 1;
+                frac += i32::from(in_frac);
+            }
+            b'.' => in_frac = true,
+            b'e' | b'E' => {
+                // At most `MAX_EXPONENT_DIGITS` digits reach here, so the
+                // parse cannot overflow.
+                let Ok(e) = text[i + 1..].parse::<i32>() else {
+                    return false;
+                };
+                return digits <= 15 && (e - frac).abs() <= 22;
+            }
+            _ => return false,
+        }
+    }
+    digits <= 15 && frac <= 22
+}
+
+/// Do the fraction and the exponent of this number prefix fit their bounds?
+fn digits_fit(buffer: &str) -> bool {
+    let body = buffer.trim_start_matches('-');
+    let (mantissa, exponent) = match body.find(['e', 'E']) {
+        Some(i) => (&body[..i], Some(&body[i + 1..])),
+        None => (body, None),
+    };
+    let fraction = mantissa.split_once('.').map_or(0, |(_, f)| f.len());
+    let exponent = exponent.map_or(0, |e| e.trim_start_matches(['+', '-']).len());
+    fraction <= MAX_FRACTION_DIGITS && exponent <= MAX_EXPONENT_DIGITS
+}
+
 /// Can THIS PREFIX still be completed into a number the layer downstream can
 /// actually hold — inside the schema's range, and representable at all.
 ///
@@ -204,32 +351,75 @@ fn range_fits(
     min: Option<f64>,
     max: Option<f64>,
 ) -> bool {
-    // OVERFLOW IS CHECKED EVEN WITH NO RANGE AT ALL, and it has to be first.
-    // JSON puts no bound on the magnitude of a number, but every consumer here
-    // does: `serde_json` answers "number out of range" for anything that
-    // overflows f64, and Rust's own `f64` parse returns INFINITY rather than an
-    // error, so the close-time check saw nothing wrong. MEASURED, that gap let
-    // an unbounded `Number` produce `{"c":1e31212121212121212}` — accepted with
-    // `is_done() == true`, and `serde_json::from_str` refused the very same
-    // text. The two agree exactly on where the edge is (`1e308` and a
-    // 309-digit integer pass, `1e309` and a 310-digit integer do not), so
-    // asking Rust's parse for finiteness is not an approximation of the rule,
-    // it IS the rule.
-    //
-    // Pruning it as a PREFIX is sound because both the exponent and the integer
-    // part only ever grow: once a prefix is infinite no continuation brings it
-    // back, so the digit that tips it over is refused before it is written and
-    // the model is never stranded on it. A negative exponent shrinks towards
-    // zero and stays finite, which is why underflow needs no rule.
-    //
-    // COST, since this now runs even for an unbounded number and the masking
-    // path is hot: one short `f64` parse, MEASURED at 4ns on this machine, at
-    // most once per entry of NUMBER_CANDIDATES — roughly 60ns per allowed-set
-    // computation, against 63µs for a single 32k-vocabulary mask step at a
-    // number position. It does not show up at that scale.
-    if buffer.parse::<f64>().is_ok_and(|v| !v.is_finite()) {
+    // THE DIGIT BOUNDS COME FIRST: they are what makes an unbounded number a
+    // path that has to end (see `MAX_FRACTION_DIGITS`).
+    // (Anything of six characters or fewer fits by construction — a fifth
+    // exponent digit needs at least `1e` plus five — so the scan is skipped on
+    // the hot path where nearly every number is short.)
+    if buffer.len() > 6 && !digits_fit(buffer) {
         return false;
     }
+    // REPRESENTABILITY IS CHECKED EVEN WITH NO RANGE AT ALL, and it is asked of
+    // the tool layer's own parser rather than reasoned about here.
+    //
+    // This used to ask Rust's `f64` parse for finiteness, with a comment saying
+    // that and `serde_json` "agree exactly on where the edge is". MEASURED
+    // (audit M16), they do not, and finiteness was never the whole rule either:
+    //   * `-0` in an INTEGER field — `serde_json` reads it as the float -0.0 and
+    //     `validate` answers "expected an integer"; the audit's 200 000-walk
+    //     fuzz closed on it 15 287 times, the one disagreement left;
+    //   * `18446744073709551616` and `-9223372036854775809` — finite, and past
+    //     u64/i64, so `serde_json` stores a float and the integer check fails;
+    //   * `1.7976931348623158e308` — Rust rounds it down to f64::MAX,
+    //     `serde_json`'s faster parse rounds it up to infinity and refuses it.
+    // `ArgSchema::json_number_value` runs `serde_json` and the classification
+    // `validate` itself uses, so the edge is the consumer's edge by
+    // construction. (The first overflow found this way, `1e31212121212121212`,
+    // is now also cut by the exponent's digit bound.)
+    //
+    // Asked of the SHORTEST COMPLETION when the prefix owes a digit (`20.`,
+    // `1e`, `1e-` complete with a `0`): every other completion of those is
+    // larger in magnitude (a positive exponent) or nearer zero (a negative
+    // one), so if the shortest is out of reach, everything is. Pruning it as a
+    // PREFIX is sound for the same reason the overflow rule always was: the
+    // integer part and a positive exponent only grow, so once a prefix is out
+    // of reach no continuation brings it back, the digit that tips it is
+    // refused before it is written, and the model is never stranded on it.
+    //
+    // COST, MEASURED (M-series, release, a synthetic 32k vocabulary heavy in
+    // digit and `eN` tokens — the worst case for this path; `validator_value`
+    // answers most of it without `serde_json`): a mask step at an unbounded
+    // `{"n":12` went from 2.1ms to 2.5ms, at an integer from 0.61ms to 0.67ms,
+    // at a bounded number from 0.75ms to 0.78ms. Against the ~55ms a token
+    // costs at the 18.2 tok/s measured under `MAX_SPACE_RUN`, that is the price
+    // of the grammar no longer offering numbers the tool layer refuses.
+    let bounded = min.is_some() || max.is_some();
+    let value = match stage {
+        // Nothing but a sign yet: every kind can still write a digit.
+        NumberStage::Start | NumberStage::AfterMinus => None,
+        NumberStage::Dot | NumberStage::Exp | NumberStage::ExpSign => {
+            // The shortest completion (`X.0`, `Xe0`, `Xe+0`) has the value of
+            // `X` itself. Where `X` is short both parses are exact
+            // (`validator_value`), so `X` is asked directly and the hot path
+            // allocates nothing; a long `X` gets the completion spelled out,
+            // because there the two spellings take different routes through
+            // `serde_json` and only the spelled-out one is the consumer's.
+            let mantissa = buffer.trim_end_matches(['.', 'e', 'E', '+', '-']);
+            let value = if mantissa.len() <= 15 {
+                validator_value(mantissa, is_integer, bounded)
+            } else {
+                validator_value(&format!("{buffer}0"), is_integer, bounded)
+            };
+            match value {
+                Some(v) => Some(v),
+                None => return false,
+            }
+        }
+        _ => match validator_value(buffer, is_integer, bounded) {
+            Some(v) => Some(v),
+            None => return false,
+        },
+    };
     if min.is_none() && max.is_none() {
         return true;
     }
@@ -269,8 +459,9 @@ fn range_fits(
     // and `20.5` then had no completion and no way to close. The mirror case
     // `-20.5` in [-20,-10] failed the same way.
     if matches!(stage, NumberStage::Dot | NumberStage::FracDigit) {
-        // `"20."` parses as 20.0 in Rust, so `Dot` needs no special case.
-        let Ok(v) = buffer.parse::<f64>() else {
+        // The value the CLOSE-TIME check will compare — the tool layer's parse
+        // of the prefix (`20.` read as `20.0`), not a second parse of our own.
+        let Some(v) = value else {
             return true;
         };
         let digits = buffer.split_once('.').map_or(0, |(_, f)| f.len());
@@ -278,8 +469,13 @@ fn range_fits(
         // collapses to the point `v`; f64 cannot tell finer prefixes apart
         // either, and the close-time check compares the same f64, so the two
         // agree. The `v >= lo` / `v <= hi` disjunct keeps a prefix that is
-        // ALREADY in range alive even then.
-        let reach = 10f64.powi(-(digits.min(308) as i32));
+        // ALREADY in range alive even then. At the digit bound nothing more can
+        // be written, so the reach is the point itself.
+        let reach = if digits >= MAX_FRACTION_DIGITS {
+            0.0
+        } else {
+            10f64.powi(-(digits.min(308) as i32))
+        };
         return if negative {
             v >= lo && (v <= hi || v - reach < hi)
         } else {
@@ -289,7 +485,12 @@ fn range_fits(
     let body = buffer.trim_start_matches('-');
     let int_part: String = body.chars().take_while(char::is_ascii_digit).collect();
     if int_part.is_empty() {
-        return true; // no digit yet (only '-' was written)
+        // Only `-` was written. For a NUMBER that leaves `-0` and below, and the
+        // minus sign only opened because `lo < 0`. For an INTEGER it leaves only
+        // -1 and below, because `-0` is refused above — so `-` may open only if
+        // the range holds a negative integer. Without this, refusing `-0`
+        // would have stranded the model in [-0.5, 0]: `-` open, nothing after it.
+        return !is_integer || hi.min(-1.0).floor() >= lo;
     }
     let Ok(v) = int_part.parse::<f64>() else {
         return true;
@@ -406,6 +607,31 @@ enum Step {
 /// more says so with `.max_length()`, which is respected as before; this is only
 /// what "no bound" means.
 pub(crate) const FREE_TEXT_CEILING: usize = 8192;
+
+/// The most items an array may hold when the schema declares no `max`.
+///
+/// THE SAME HOLE AS `FREE_TEXT_CEILING`, ONE SHAPE OVER. `ArgSchema::array()`
+/// produces `max: None`, `,` then stayed open after every item, and a list was
+/// a path with no obligation to end — MEASURED (audit L25), an array of
+/// 100 001 elements was still open, and the README's claim that the grammar
+/// "bounds the length of a field the schema leaves open" was true of strings
+/// only.
+///
+/// 1024 IS NOT A GUESS AT WHAT A LIST NEEDS. The largest bound any tool in the
+/// catalog declares is 200 (`write_code`'s lines); 1024 is five times that, and
+/// at two tokens an item (`1,`) a full array is already past the engine's
+/// 2048-token cap — so with the engine in front this never fires on a
+/// legitimate call, and without it (the crate is usable on its own) it is what
+/// makes the list end. A schema that needs more says so with `.length()`; a
+/// declared `min` above the ceiling raises it, so a schema is never left with
+/// no array it can close.
+pub(crate) const ARRAY_CEILING: usize = 1024;
+
+/// The most items THIS array may hold: the declared `max`, or the ceiling —
+/// never below the declared `min`, or the array could not close at all.
+fn array_limit(min: Option<usize>, max: Option<usize>) -> usize {
+    max.unwrap_or(ARRAY_CEILING.max(min.unwrap_or(0)))
+}
 
 /// How much room must be left in a free-text body before a character counts as
 /// NEUTRAL.
@@ -824,22 +1050,21 @@ impl GrammarState {
                         }
                     }
                     ObjectStage::InKey => {
-                        if c == '"' {
-                            // Pick the exactly matching candidate; otherwise the
-                            // key was left half-written.
-                            match candidates
-                                .iter()
-                                .copied()
-                                .find(|i| fields[*i].name_chars.len() == *progress)
-                            {
-                                Some(i) => {
-                                    seen[i] = true;
-                                    *active = i;
-                                    *stage = ObjectStage::AfterKey;
-                                    Step::Consumed
-                                }
-                                None => return Err(err()),
-                            }
+                        // A `"` CLOSES the key only where a candidate is
+                        // complete; anywhere else it can only be the second half
+                        // of a `\"` in a key's spelling (`json_body`), and falls
+                        // through to the narrowing below. The two never compete:
+                        // a complete spelling cannot end in the lone `\` that a
+                        // following `"` would continue.
+                        let complete = candidates
+                            .iter()
+                            .copied()
+                            .find(|i| fields[*i].name_chars.len() == *progress);
+                        if let (true, Some(i)) = (c == '"', complete) {
+                            seen[i] = true;
+                            *active = i;
+                            *stage = ObjectStage::AfterKey;
+                            Step::Consumed
                         } else {
                             let remaining: Vec<usize> = candidates
                                 .iter()
@@ -900,13 +1125,17 @@ impl GrammarState {
                     unreachable!("an array frame cannot be opened on a non-array node")
                 };
                 let low = min.unwrap_or(0);
+                // `ARRAY_CEILING` stands in for a missing `max` HERE AND IN
+                // `frame_allowed` through the same function, so the mask cannot
+                // offer the `,` the automaton refuses.
+                let high = array_limit(*min, *max);
                 match *stage {
                     ArrayStage::Start => {
                         if space {
                             Step::Consumed
                         } else if c == ']' && low == 0 {
                             Step::ConsumedAndDone
-                        } else if max.is_some_and(|u| u == 0) {
+                        } else if high == 0 {
                             return Err(err());
                         } else {
                             to_push = Some(Frame::Value { node: *item });
@@ -918,7 +1147,7 @@ impl GrammarState {
                     ArrayStage::AfterItem => {
                         if space {
                             Step::Consumed
-                        } else if c == ',' && max.is_none_or(|u| *count < u) {
+                        } else if c == ',' && *count < high {
                             *stage = ArrayStage::BeforeItem;
                             Step::Consumed
                         } else if c == ']' && *count >= low {
@@ -1057,12 +1286,13 @@ impl GrammarState {
                 let Node::Choice { choices } = &grammar.nodes[*node] else {
                     unreachable!("a choice frame cannot be opened on a non-choice node")
                 };
-                if c == '"' {
-                    if candidates.iter().any(|i| choices[*i].len() == *progress) {
-                        Step::ConsumedAndDone
-                    } else {
-                        return Err(err());
-                    }
+                // As for a key: `"` closes only where a value is complete, and
+                // is otherwise the tail of an escaped `\"` (compile.rs
+                // `json_body`). Before values were compiled to their JSON
+                // spelling this branch refused every `"` that did not close,
+                // which is why the choice `a"b` stranded the model.
+                if c == '"' && candidates.iter().any(|i| choices[*i].len() == *progress) {
+                    Step::ConsumedAndDone
                 } else {
                     let remaining: Vec<usize> = candidates
                         .iter()
@@ -1108,9 +1338,11 @@ impl GrammarState {
                         Step::Consumed
                     }
                     None if stage.can_finish() => {
-                        let value: f64 = buffer
-                            .parse()
-                            .map_err(|_| GrammarError::OutOfRange(buffer.clone()))?;
+                        // The value the tool layer will see, from its own parse
+                        // — see `range_fits` on why not ours.
+                        let value =
+                            validator_value(buffer, *is_integer, min.is_some() || max.is_some())
+                                .ok_or_else(|| GrammarError::OutOfRange(buffer.clone()))?;
                         if min.is_some_and(|v| value < v) || max.is_some_and(|v| value > v) {
                             return Err(GrammarError::OutOfRange(buffer.clone()));
                         }
@@ -1233,6 +1465,7 @@ impl GrammarState {
                     return false;
                 };
                 let low = min.unwrap_or(0);
+                let high = array_limit(*min, *max);
                 let (effective, total) = if child_done && *stage == ArrayStage::InItem {
                     (ArrayStage::AfterItem, count + 1)
                 } else {
@@ -1244,14 +1477,14 @@ impl GrammarState {
                         if low == 0 {
                             set.add(']');
                         }
-                        if max.is_none_or(|u| u > 0) {
+                        if high > 0 {
                             self.value_start(*item, set);
                         }
                     }
                     ArrayStage::BeforeItem => self.value_start(*item, set),
                     ArrayStage::InItem => {}
                     ArrayStage::AfterItem => {
-                        if max.is_none_or(|u| total < u) {
+                        if total < high {
                             set.add(',');
                         }
                         if total >= low {
@@ -1353,9 +1586,8 @@ impl GrammarState {
                 // say too. But first make sure the value really is inside the
                 // range — if not, this is not an ending point.
                 stage.can_finish()
-                    && buffer
-                        .parse::<f64>()
-                        .is_ok_and(|v| min.is_none_or(|x| v >= x) && max.is_none_or(|x| v <= x))
+                    && validator_value(buffer, *is_integer, min.is_some() || max.is_some())
+                        .is_some_and(|v| min.is_none_or(|x| v >= x) && max.is_none_or(|x| v <= x))
             }
 
             Frame::Literal {
