@@ -385,7 +385,14 @@ fn execute(program: &str, argv: &[OsString], dir: &Path, timeout: Duration) -> R
         // process group. A descendant that called `setsid()` itself has left
         // it (see the note on the session above) — a daemon that detaches on
         // purpose is not killed, which is also why `git gc --auto`'s
-        // self-daemonising cleanup is not cut short.
+        // self-daemonising cleanup is not cut short. `setsid` is not the only
+        // door: ANY change of process group leaves it the same way —
+        // `setpgid()`, or job control, which gives every background job its
+        // own group. MEASURED on macOS: under `sh -c 'set -m; sleep 37 &'` the
+        // shell's group was 33479 and the `sleep`'s was 33483, its own pid, so
+        // `sh -c 'set -m; worker & exit 0'` leaves a `worker` this sweep does
+        // not reach. Closing that needs a container that owns every
+        // descendant (a cgroup or a pid namespace), not a signal to a group.
         //
         // ORDER: after the exit, so the command's own output is already in the
         // pipe, and before the bounded join, so a survivor holding the pipe

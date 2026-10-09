@@ -233,23 +233,118 @@ const AUTO_EXECUTED_STEMS: &[(&str, &str)] = &[
 /// tool's tomorrow — and every member of it is a dotted stem. `safe_stem` has
 /// already removed the one dot a legitimate name carries (the extension the
 /// model added itself), so what is left is a second one.
-fn auto_executed_name(stem: &str) -> Option<String> {
+///
+/// `extension` is the one the tool will deliver under (`interpreter.extension`):
+/// a standard-library name is only refused for `py`, see `PYTHON_STDLIB`.
+fn auto_executed_name(stem: &str, extension: &str) -> Option<String> {
     if stem.contains('.') {
         return Some(format!(
             "'{stem}' contains a dot: names such as x.config.js, x.conf.js or x.test.js are \
              loaded automatically by build and test tools"
         ));
     }
-    let lower = stem.to_lowercase();
+    let lower = fold_case(stem);
     if let Some(runner) = test_runner_collects(&lower) {
         return Some(format!(
             "'{stem}' is a test file name: {runner} imports and runs every file named like it"
         ));
     }
-    AUTO_EXECUTED_STEMS
-        .iter()
-        .find(|(name, _)| *name == lower)
-        .map(|(_, runner)| format!("'{stem}' is a file name that {runner} runs automatically"))
+    if let Some((_, runner)) = AUTO_EXECUTED_STEMS.iter().find(|(name, _)| *name == lower) {
+        return Some(format!(
+            "'{stem}' is a file name that {runner} runs automatically"
+        ));
+    }
+    if extension == "py"
+        && PYTHON_STDLIB
+            .split_ascii_whitespace()
+            .any(|module| fold_case(module) == lower)
+    {
+        return Some(format!(
+            "'{stem}' is the name of a python standard-library module: every python script \
+             in the folder that runs `import {stem}` imports and runs this file instead"
+        ));
+    }
+    None
+}
+
+/// The top-level names of python's standard library, which a `<name>.py` in
+/// the working folder SHADOWS: python puts the script's own directory first
+/// on `sys.path`, so the user's next `python3 their_script.py` there that says
+/// `import json` runs the delivered `json.py` — outside the sandbox, with the
+/// user's privileges. The same class as `sitecustomize`, and wider: nothing
+/// has to be installed, only imported. MEASURED with python 3.12 on macOS: a
+/// folder holding `json.py` (printing a marker) and `other.py` (`import json`)
+/// printed the marker when `other.py` ran. `JSON.py` and `\u{17F}tring.py` did
+/// NOT shadow (importlib matches the directory listing case-sensitively unless
+/// `PYTHONCASEOK` is set), and neither did `sys.py` (a built-in module is found
+/// before the path is searched) — the folded comparison over-refuses those,
+/// which costs the model one rename and covers a `PYTHONCASEOK` user.
+///
+/// A SNAPSHOT, NOT A DEPENDENCY: `sys.stdlib_module_names` of python 3.12,
+/// plus the five modules 3.12 removed (`distutils`, `imp`, `asynchat`,
+/// `asyncore`, `smtpd` — an older python on the user's PATH still imports
+/// them) and the two top-level packages 3.14 added (`annotationlib`,
+/// `compression`). A module a later python adds is a gap until it is added
+/// here. `.js` names are not checked: node resolves a bare `require('json')`
+/// to `node_modules` or a built-in, never to `./json.js`.
+const PYTHON_STDLIB: &str = "\
+    __future__ _abc _aix_support _ast _asyncio _bisect _blake2 _bz2 _codecs _codecs_cn \
+    _codecs_hk _codecs_iso2022 _codecs_jp _codecs_kr _codecs_tw _collections \
+    _collections_abc _compat_pickle _compression _contextvars _crypt _csv _ctypes _curses \
+    _curses_panel _datetime _dbm _decimal _elementtree _frozen_importlib \
+    _frozen_importlib_external _functools _gdbm _hashlib _heapq _imp _io _json _locale \
+    _lsprof _lzma _markupbase _md5 _msi _multibytecodec _multiprocessing _opcode _operator \
+    _osx_support _overlapped _pickle _posixshmem _posixsubprocess _py_abc _pydatetime \
+    _pydecimal _pyio _pylong _queue _random _scproxy _sha1 _sha2 _sha3 _signal \
+    _sitebuiltins _socket _sqlite3 _sre _ssl _stat _statistics _string _strptime _struct \
+    _symtable _thread _threading_local _tkinter _tokenize _tracemalloc _typing _uuid \
+    _warnings _weakref _weakrefset _winapi _wmi _zoneinfo abc aifc annotationlib \
+    antigravity argparse array ast asynchat asyncio asyncore atexit audioop base64 bdb \
+    binascii bisect builtins bz2 cProfile calendar cgi cgitb chunk cmath cmd code codecs \
+    codeop collections colorsys compileall compression concurrent configparser contextlib \
+    contextvars copy copyreg crypt csv ctypes curses dataclasses datetime dbm decimal \
+    difflib dis distutils doctest email encodings ensurepip enum errno faulthandler fcntl \
+    filecmp fileinput fnmatch fractions ftplib functools gc genericpath getopt getpass \
+    gettext glob graphlib grp gzip hashlib heapq hmac html http idlelib imaplib imghdr imp \
+    importlib inspect io ipaddress itertools json keyword lib2to3 linecache locale logging \
+    lzma mailbox mailcap marshal math mimetypes mmap modulefinder msilib msvcrt \
+    multiprocessing netrc nis nntplib nt ntpath nturl2path numbers opcode operator optparse \
+    os ossaudiodev pathlib pdb pickle pickletools pipes pkgutil platform plistlib poplib \
+    posix posixpath pprint profile pstats pty pwd py_compile pyclbr pydoc pydoc_data \
+    pyexpat queue quopri random re readline reprlib resource rlcompleter runpy sched \
+    secrets select selectors shelve shlex shutil signal site smtpd smtplib sndhdr socket \
+    socketserver spwd sqlite3 sre_compile sre_constants sre_parse ssl stat statistics \
+    string stringprep struct subprocess sunau symtable sys sysconfig syslog tabnanny \
+    tarfile telnetlib tempfile termios textwrap this threading time timeit tkinter token \
+    tokenize tomllib trace traceback tracemalloc tty turtle turtledemo types typing \
+    unicodedata unittest urllib uu uuid venv warnings wave weakref webbrowser winreg \
+    winsound wsgiref xdrlib xml xmlrpc zipapp zipfile zipimport zlib zoneinfo";
+
+/// The name a case-insensitive file system would LOOK UP for `stem`.
+///
+/// `to_lowercase()` WAS NOT ENOUGH, MEASURED on this Mac's APFS: a file created
+/// as `confte\u{17F}t.py` (long s), `confte\u{FB06}.py` (st ligature),
+/// `\u{17F}etup.py`, `ma\u{212A}efile.py` (Kelvin sign), `pa\u{DF}e.py` and
+/// `con\u{FB01}g.py` each made `isfile("<ascii name>.py")` true, and the
+/// review measured `python3 setup.py` executing a folder's `\u{17F}etup.py`
+/// and pytest's `spec_from_file_location("conftest", "conftest.py")` executing
+/// `confte\u{17F}t.py`. APFS compares with Unicode full case folding, and the
+/// lower-case of `\u{17F}` is `\u{17F}` itself, so the list above never matched.
+///
+/// LOWER, UPPER, LOWER reproduces full case folding for every alphanumeric
+/// code point that folds into ASCII (checked over the whole range against
+/// Python's `str.casefold`: ß, ẞ, ſ, the Kelvin sign and the seven Latin
+/// ligatures) without a Unicode-table dependency. It folds ONE letter more than
+/// APFS does — the Turkish dotless ı becomes `i`, which APFS keeps distinct
+/// (`ınit.py` did not answer for `init.py`) — and that only ever over-refuses a
+/// name one letter away from a refused one.
+///
+/// WHY THE STEM KEEPS ITS NON-ASCII LETTERS rather than `safe_stem` turning
+/// them into `_`: the delivered file is named for the user, and `asal_sayılar`
+/// arriving as `asal_say_lar` would be the tool damaging a Turkish user's
+/// ordinary name to close a hole that this comparison closes on its own.
+fn fold_case(stem: &str) -> String {
+    stem.to_lowercase().to_uppercase().to_lowercase()
 }
 
 /// The test runner that would collect — and so EXECUTE — a file with this
@@ -434,8 +529,21 @@ impl Tool for WriteCodeTool {
             // outside the sandbox. It is checked BEFORE the attempt counter: the
             // engine is never reached, so the refusal must not cost the model one
             // of its two real runs — it only has to pick another name.
+            //
+            // The extension is resolved the way `execute` will resolve it — the
+            // source, then the name, then `language` — because whether a
+            // standard-library name shadows anything depends on it being `.py`.
             if let Some(name) = args.get("file_name").and_then(|v| v.as_str())
-                && let Some(why) = auto_executed_name(&safe_stem(name))
+                && let Some(why) = {
+                    let code = args
+                        .get("lines")
+                        .and_then(|v| v.as_array())
+                        .map(|s| join_lines(s))
+                        .unwrap_or_default();
+                    let language = args.get("language").and_then(|v| v.as_str());
+                    let extension = self.resolve_interpreter(name, language, &code).extension;
+                    auto_executed_name(&safe_stem(name), extension)
+                }
             {
                 return ToolOutcome::new(
                     "Unsafe file name",
@@ -858,6 +966,9 @@ mod tests {
         assert_eq!(safe_stem("prime numbers"), "prime_numbers");
         assert_eq!(safe_stem(""), "script");
         assert_eq!(safe_stem("...."), "script");
+        // Non-ASCII letters stay: the user's own name is not mangled (the
+        // auto-executed check folds case instead, see `fold_case`).
+        assert_eq!(safe_stem("asal_say\u{0131}lar"), "asal_say\u{0131}lar");
     }
 
     /// 1b) JOINING: the lines join with `\n`, indentation is preserved, a
@@ -911,6 +1022,15 @@ mod tests {
             "karma.conf",
             "jest.setup",
             "utils.test",
+            // Letters APFS case-folds INTO ASCII (see `fold_case`): each of
+            // these answers a lookup for the plain name on this Mac.
+            "confte\u{017F}t",
+            "confte\u{FB06}",
+            "confte\u{017F}t.py",
+            "\u{017F}etup",
+            "\u{017F}etup.py",
+            "ma\u{212A}efile",
+            "te\u{FB06}_ideas",
             // Invoke's task file, in the fabfile/noxfile family.
             "tasks",
             "Tasks.py",
@@ -925,9 +1045,23 @@ mod tests {
             "test-utils",
             "utils-test.js",
             "spec",
+            // Standard-library names: the folder's next `import json` runs
+            // the delivered file instead (see `PYTHON_STDLIB`).
+            "json",
+            "json.py",
+            "random",
+            "typing",
+            "csv",
+            "logging",
+            "string",
+            "datetime",
+            "turtle",
+            "cProfile",
+            "distutils",
+            "annotationlib",
         ] {
             assert!(
-                auto_executed_name(&safe_stem(name)).is_some(),
+                auto_executed_name(&safe_stem(name), "py").is_some(),
                 "{name:?} would be delivered"
             );
         }
@@ -943,11 +1077,27 @@ mod tests {
             "attestation",
             "task_list",
             "my_tests_notes",
+            // A Turkish name keeps its letters and is still delivered.
+            "asal_say\u{0131}lar",
+            "\u{00E7}arp\u{0131}m_tablosu",
+            // A standard-library name with something around it imports nothing.
+            "json_report",
+            "my_random",
+            "typing_speed",
         ] {
             assert_eq!(
-                auto_executed_name(&safe_stem(name)),
+                auto_executed_name(&safe_stem(name), "py"),
                 None,
                 "{name:?} is an ordinary name"
+            );
+        }
+        // A standard-library name shadows nothing as a `.js` file: node never
+        // resolves a bare `require('json')` to `./json.js`.
+        for name in ["json", "random", "string"] {
+            assert_eq!(
+                auto_executed_name(&safe_stem(name), "js"),
+                None,
+                "{name:?}.js shadows no python module"
             );
         }
     }
@@ -980,7 +1130,14 @@ mod tests {
         let tool = echo_tool();
         let root = temp_dir("auto-exec");
         let mut ctx = context(&root);
-        for name in ["conftest", "eslint.config", "setup", "test_ideas", "tasks"] {
+        for name in [
+            "conftest",
+            "eslint.config",
+            "setup",
+            "test_ideas",
+            "tasks",
+            "json",
+        ] {
             let outcome =
                 hold(tool.run(json!({"file_name": name, "lines": ["print(1)"]}), &mut ctx));
             assert!(
@@ -1020,6 +1177,35 @@ mod tests {
         ));
         assert_eq!(ok.state, ToolState::Written, "{}", ok.to_model);
         assert!(root.join("prime_numbers.py").is_file());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 1d') THE STANDARD-LIBRARY REFUSAL FOLLOWS THE DELIVERED EXTENSION. The
+    ///      check runs before `execute` picks the interpreter, so the call site
+    ///      resolves it itself; were it to assume `.py`, a JavaScript `json.js`
+    ///      — which shadows nothing — would be refused for a python reason.
+    #[cfg(unix)]
+    #[test]
+    fn a_stdlib_name_is_refused_only_for_python() {
+        let tool = WriteCodeTool::new(
+            NetworkShield::SandboxExec {
+                tool: PathBuf::from("/bin/echo"),
+            },
+            vec![Interpreter {
+                key: "js",
+                path: PathBuf::from("/usr/bin/true"),
+                extension: "js",
+            }],
+            Arc::new(CodeState::new()),
+        );
+        let root = temp_dir("stdlib-js");
+        let mut ctx = context(&root);
+        let outcome = hold(tool.run(
+            json!({"file_name": "json", "lines": ["console.log(1)"]}),
+            &mut ctx,
+        ));
+        assert_eq!(outcome.state, ToolState::Written, "{}", outcome.to_model);
+        assert!(root.join("json.js").is_file(), "json.js was not delivered");
         std::fs::remove_dir_all(&root).ok();
     }
 
