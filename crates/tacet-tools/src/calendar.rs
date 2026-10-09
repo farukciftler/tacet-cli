@@ -20,9 +20,15 @@
 //! WHAT THE TESTS COVER AND WHAT THEY DO NOT (the addon/docker rule): the
 //! script TEXT — escaping, the numeric date injection — is tested; actually
 //! running `osascript` is not, because a unit test that opens the user's real
-//! calendar would be both a privacy surprise and a false green on CI.
+//! calendar would be both a privacy surprise and a false green on CI. The ONE
+//! exception is the date arithmetic of `date_build`: it is run through
+//! `osascript` where one exists, because it tells no application anything and
+//! because a text assertion could not have caught the month rollover (M17) —
+//! the script read correctly and AppleScript still put the date in May.
 
-use crate::time::{DateTime, TimeResolver, local_offset_minutes};
+use crate::time::{
+    DateTime, Resolution, TimeResolver, local_offset_minutes, local_offset_minutes_at,
+};
 use tacet_kernel::{
     ArgSchema, Field, ToolContext, ToolError, ToolFuture, ToolOutcome, ToolState, TraceUpdate,
     boxed,
@@ -31,11 +37,36 @@ use tacet_kernel::{
 pub struct CalendarTool {
     /// Test seam: the epoch "now" resolves against. `None` = the real clock.
     fixed_epoch: Option<i64>,
+    /// Test seam: a fixed UTC offset in minutes. `None` = ask the system, per
+    /// instant (see `zone`).
+    fixed_offset: Option<i64>,
 }
 
 impl CalendarTool {
     pub fn new() -> Self {
-        Self { fixed_epoch: None }
+        Self {
+            fixed_epoch: None,
+            fixed_offset: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn at(epoch: i64, offset_minutes: i64) -> Self {
+        Self {
+            fixed_epoch: Some(epoch),
+            fixed_offset: Some(offset_minutes),
+        }
+    }
+
+    /// The user's UTC offset at the instant `utc`. Both the wall clock "now"
+    /// and an explicit "…+03:00" go through here, so the two can no longer
+    /// disagree about which zone the user is in.
+    fn zone(&self, utc: i64) -> i64 {
+        self.fixed_offset.unwrap_or_else(|| {
+            local_offset_minutes_at(utc)
+                .or_else(local_offset_minutes)
+                .unwrap_or(0)
+        })
     }
 
     fn now(&self) -> DateTime {
@@ -46,8 +77,95 @@ impl CalendarTool {
                 .unwrap_or(0)
         });
         // The user's wall clock, the same convention as TimeTool.
-        DateTime::from_epoch(epoch + local_offset_minutes().unwrap_or(0) * 60)
+        DateTime::from_epoch(epoch + self.zone(epoch) * 60)
     }
+
+    /// The user's words resolved to THEIR wall clock.
+    ///
+    /// AUDIT M18: this used to be `TimeResolver::resolve(raw, self.now())` —
+    /// a LOCAL "now" handed to the form that converts explicit offsets to UTC.
+    /// A +03:00 user asking for "2026-07-20T18:00+03:00" got a reminder at
+    /// 15:00, three hours early, and the tool reported success.
+    fn resolve(&self, raw: &str) -> Option<Resolution> {
+        TimeResolver::resolve_in_zone(raw, self.now(), &|utc| self.zone(utc))
+    }
+
+    /// Everything `run` decides before it talks to `osascript`: the script and
+    /// what it will report. Split out so the date that reaches the script can
+    /// be tested without opening the user's calendar (see the module doc).
+    fn plan(&self, args: &serde_json::Value) -> Result<Plan, ToolOutcome> {
+        let kind = args.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        let text_arg = |k: &str| {
+            args.get(k)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        };
+        match kind {
+            "events" => {
+                let raw_day = {
+                    let d = text_arg("day");
+                    if d.is_empty() { "today".to_string() } else { d }
+                };
+                // CLAMPED, NOT REFUSED. The schema already bounds this, so a
+                // value outside the range cannot arrive from a constrained
+                // model; the clamp is for the unconstrained callers (a test,
+                // a bridge) and costs one instruction.
+                let span = args
+                    .get("days")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(1)
+                    .clamp(1, MAX_SPAN_DAYS);
+                match self.resolve(&raw_day) {
+                    None => Err(ToolOutcome::failed(&ToolError::InvalidArgument(format!(
+                        "the day '{raw_day}' was not understood — pass it exactly as the user said it"
+                    )))),
+                    Some(r) => Ok(Plan::Events {
+                        script: events_script(&r.an, span),
+                        day: r.an,
+                        span,
+                    }),
+                }
+            }
+            "remind" => {
+                let title = text_arg("title");
+                let when = text_arg("when");
+                if title.is_empty() || when.is_empty() {
+                    return Err(ToolOutcome::failed(&ToolError::MissingField(
+                        "title and when".into(),
+                    )));
+                }
+                match self.resolve(&when) {
+                    None => Err(ToolOutcome::failed(&ToolError::InvalidArgument(format!(
+                        "the moment '{when}' was not understood — pass it exactly as the user said it"
+                    )))),
+                    Some(r) => Ok(Plan::Remind {
+                        script: reminder_script(&title, &r.an),
+                        title,
+                        at: r.an,
+                    }),
+                }
+            }
+            other => Err(ToolOutcome::failed(&ToolError::InvalidArgument(format!(
+                "kind '{other}' is not one of: events, remind"
+            )))),
+        }
+    }
+}
+
+/// What one call will do, decided before any process is spawned.
+enum Plan {
+    Events {
+        script: String,
+        day: DateTime,
+        span: i64,
+    },
+    Remind {
+        script: String,
+        title: String,
+        at: DateTime,
+    },
 }
 
 impl Default for CalendarTool {
@@ -64,9 +182,20 @@ fn escape(text: &str) -> String {
 }
 
 /// `set …` lines that build an AppleScript date NUMERICALLY (see module doc).
+///
+/// `set day … to 1` COMES FIRST, and the order is the fix for audit M17. The
+/// fields are set one at a time on `current date`, and every intermediate value
+/// is a real date that AppleScript normalises: on 31 January, setting the
+/// month to April gives "31 April", which rolls over to 1 May, and the day
+/// then lands in May. Measured with `osascript`: base 2026-01-31, target
+/// 2026-04-15 10:00 → 2026-05-15T10:00:00. Day 1 exists in every month of
+/// every year, so with it set first no intermediate date can overflow — this
+/// covers 29-31 February targets and a 29 February "now" moved to a common
+/// year too.
 fn date_build(var: &str, d: &DateTime) -> String {
     format!(
         "set {var} to current date\n\
+         set day of {var} to 1\n\
          set year of {var} to {}\n\
          set month of {var} to {}\n\
          set day of {var} to {}\n\
@@ -305,95 +434,49 @@ impl tacet_kernel::Tool for CalendarTool {
             if let Err(e) = self.schema().validate(&args) {
                 return ToolOutcome::failed(&e);
             }
-            let kind = args.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-            let text_arg = |k: &str| {
-                args.get(k)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .trim()
-                    .to_string()
-            };
-
             let trace = ctx.start_chip("calendar", "Looking at the calendar…");
-            let outcome = match kind {
-                "events" => {
-                    let raw_day = {
-                        let d = text_arg("day");
-                        if d.is_empty() { "today".to_string() } else { d }
-                    };
-                    // CLAMPED, NOT REFUSED. The schema already bounds this, so a
-                    // value outside the range cannot arrive from a constrained
-                    // model; the clamp is for the unconstrained callers (a test,
-                    // a bridge) and costs one instruction.
-                    let span = args
-                        .get("days")
-                        .and_then(serde_json::Value::as_i64)
-                        .unwrap_or(1)
-                        .clamp(1, MAX_SPAN_DAYS);
-                    match TimeResolver::resolve(&raw_day, self.now()) {
-                        None => ToolOutcome::failed(&ToolError::InvalidArgument(format!(
-                            "the day '{raw_day}' was not understood — pass it exactly as the user said it"
-                        ))),
-                        Some(r) => match run_osascript(&events_script(&r.an, span)) {
-                            Err(e) => ToolOutcome::failed(&ToolError::Io(std::io::Error::other(e))),
-                            // THE SPAN IS IN THE SENTENCE, because "no events on
-                            // 2026-09-07" after a question about the week is a
-                            // true statement that answers a different question.
-                            Ok(text) if text.trim().is_empty() => ToolOutcome::new(
-                                "calendar read · empty",
-                                ToolState::Read,
-                                if span > 1 {
-                                    format!(
-                                        "no events in the {span} days from {:04}-{:02}-{:02}",
-                                        r.an.year, r.an.month, r.an.day
-                                    )
-                                } else {
-                                    format!(
-                                        "no events on {:04}-{:02}-{:02}",
-                                        r.an.year, r.an.month, r.an.day
-                                    )
-                                },
-                            ),
-                            Ok(text) => {
-                                let count = text.lines().count();
-                                ToolOutcome::new(
-                                    format!("calendar read · {count} events"),
-                                    ToolState::Read,
-                                    text,
-                                )
-                            }
+            let outcome = match self.plan(&args) {
+                Err(refused) => refused,
+                Ok(Plan::Events { script, day, span }) => match run_osascript(&script) {
+                    Err(e) => ToolOutcome::failed(&ToolError::Io(std::io::Error::other(e))),
+                    // THE SPAN IS IN THE SENTENCE, because "no events on
+                    // 2026-09-07" after a question about the week is a true
+                    // statement that answers a different question.
+                    Ok(text) if text.trim().is_empty() => ToolOutcome::new(
+                        "calendar read · empty",
+                        ToolState::Read,
+                        if span > 1 {
+                            format!(
+                                "no events in the {span} days from {:04}-{:02}-{:02}",
+                                day.year, day.month, day.day
+                            )
+                        } else {
+                            format!(
+                                "no events on {:04}-{:02}-{:02}",
+                                day.year, day.month, day.day
+                            )
                         },
+                    ),
+                    Ok(text) => {
+                        let count = text.lines().count();
+                        ToolOutcome::new(
+                            format!("calendar read · {count} events"),
+                            ToolState::Read,
+                            text,
+                        )
                     }
-                }
-                "remind" => {
-                    let title = text_arg("title");
-                    let when = text_arg("when");
-                    if title.is_empty() || when.is_empty() {
-                        ToolOutcome::failed(&ToolError::MissingField("title and when".into()))
-                    } else {
-                        match TimeResolver::resolve(&when, self.now()) {
-                            None => ToolOutcome::failed(&ToolError::InvalidArgument(format!(
-                                "the moment '{when}' was not understood — pass it exactly as the user said it"
-                            ))),
-                            Some(r) => match run_osascript(&reminder_script(&title, &r.an)) {
-                                Err(e) => {
-                                    ToolOutcome::failed(&ToolError::Io(std::io::Error::other(e)))
-                                }
-                                Ok(_) => ToolOutcome::new(
-                                    format!("reminder set · {:02}:{:02}", r.an.clock, r.an.minute),
-                                    ToolState::Written,
-                                    format!(
-                                        "reminder set: '{title}' at {:04}-{:02}-{:02} {:02}:{:02}",
-                                        r.an.year, r.an.month, r.an.day, r.an.clock, r.an.minute
-                                    ),
-                                ),
-                            },
-                        }
-                    }
-                }
-                other => ToolOutcome::failed(&ToolError::InvalidArgument(format!(
-                    "kind '{other}' is not one of: events, remind"
-                ))),
+                },
+                Ok(Plan::Remind { script, title, at }) => match run_osascript(&script) {
+                    Err(e) => ToolOutcome::failed(&ToolError::Io(std::io::Error::other(e))),
+                    Ok(_) => ToolOutcome::new(
+                        format!("reminder set · {:02}:{:02}", at.clock, at.minute),
+                        ToolState::Written,
+                        format!(
+                            "reminder set: '{title}' at {:04}-{:02}-{:02} {:02}:{:02}",
+                            at.year, at.month, at.day, at.clock, at.minute
+                        ),
+                    ),
+                },
             };
 
             ctx.update_chip(
@@ -477,6 +560,154 @@ mod tests {
         );
         assert!(events_script(&day(), 0).contains("d1 + 1 * days"));
         assert!(events_script(&day(), -5).contains("d1 + 1 * days"));
+    }
+
+    /// AUDIT M17, the text half: the day is parked on the 1st before the year
+    /// and the month move, and only then set to its real value.
+    #[test]
+    fn the_day_is_parked_on_the_first_before_the_year_and_month_move() {
+        let s = date_build("d1", &DateTime::new(2026, 4, 15, 10, 0, 0).unwrap());
+        let at = |line: &str| {
+            s.find(line)
+                .unwrap_or_else(|| panic!("{line:?} missing from:\n{s}"))
+        };
+        let park = at("set day of d1 to 1\n");
+        let year = at("set year of d1 to 2026\n");
+        let month = at("set month of d1 to 4\n");
+        let day = at("set day of d1 to 15\n");
+        assert!(
+            park < year && year < month && month < day,
+            "a month-end `current date` rolls the month over unless the day is 1 first:\n{s}"
+        );
+    }
+
+    /// AUDIT M17, MEASURED. The text assertion above cannot see the defect —
+    /// the old script also read correctly — so where `osascript` exists the
+    /// arithmetic is run. Pure date math: no application is addressed, nothing
+    /// is read or written. `current date` is replaced by a fixed month-end
+    /// "now" so the result does not depend on today's date.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_month_end_now_does_not_roll_the_target_into_the_next_month() {
+        let osascript = std::path::Path::new("/usr/bin/osascript");
+        if !osascript.exists() {
+            return;
+        }
+        // (base "now", target, what AppleScript must end on). Each base is a
+        // day the target month does not have.
+        let cases = [
+            ((2026, 1, 31), (2026, 4, 15), "2026-4-15 10:5"),
+            ((2026, 3, 31), (2026, 2, 28), "2026-2-28 10:5"),
+            ((2026, 1, 31), (2028, 2, 29), "2028-2-29 10:5"),
+            ((2028, 2, 29), (2027, 6, 30), "2027-6-30 10:5"),
+        ];
+        for ((by, bm, bd), (ty, tm, td), expected) in cases {
+            let target = DateTime::new(ty, tm, td, 10, 5, 0).unwrap();
+            // The base is set with the day parked too, so it is the base
+            // that is fixed here and only the production lines are on trial.
+            let base = format!(
+                "set d1 to current date\nset day of d1 to 1\nset year of d1 to {by}\n\
+                 set month of d1 to {bm}\nset day of d1 to {bd}\n"
+            );
+            let script = date_build("d1", &target).replacen("set d1 to current date\n", &base, 1)
+                + "return ((year of d1) as text) & \"-\" & ((month of d1 as integer) as text) \
+                   & \"-\" & ((day of d1) as text) & \" \" & ((hours of d1) as text) & \":\" \
+                   & ((minutes of d1) as text)\n";
+            let out = std::process::Command::new(osascript)
+                .arg("-e")
+                .arg(&script)
+                .output()
+                .expect("osascript runs");
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout).trim(),
+                expected,
+                "base {by}-{bm}-{bd}, target {ty}-{tm}-{td}"
+            );
+        }
+    }
+
+    /// 2026-07-20 12:00:00 UTC.
+    const NOW: i64 = 1_784_548_800;
+
+    fn script_of(tool: &CalendarTool, args: serde_json::Value) -> String {
+        match tool.plan(&args) {
+            Ok(Plan::Events { script, .. } | Plan::Remind { script, .. }) => script,
+            Err(o) => panic!("refused {args}: {}", o.chip_text),
+        }
+    }
+
+    /// AUDIT M18: an explicit offset is resolved to the user's LOCAL wall
+    /// clock. Measured before the fix: a +03:00 user's "18:00+03:00" came out
+    /// as 15:00. Asserted on the script that would reach `osascript`, so the
+    /// whole path from the argument to the date is covered.
+    #[test]
+    fn an_explicit_offset_becomes_the_users_wall_clock() {
+        let tool = CalendarTool::at(NOW, 180);
+        let remind = |when: &str| {
+            script_of(
+                &tool,
+                serde_json::json!({"kind": "remind", "title": "call", "when": when}),
+            )
+        };
+        let same_zone = remind("2026-07-20T18:00+03:00");
+        assert!(same_zone.contains("set hours of d1 to 18\n"), "{same_zone}");
+        let utc = remind("2026-07-20T15:00Z");
+        assert!(utc.contains("set hours of d1 to 18\n"), "{utc}");
+        // Across midnight the DAY moves as well: 23:30 at -02:00 is 04:30 the
+        // next morning at +03:00.
+        let events = script_of(
+            &tool,
+            serde_json::json!({"kind": "events", "day": "2026-07-20T23:30-02:00"}),
+        );
+        assert!(events.contains("set day of d1 to 21\n"), "{events}");
+        // Text with no offset is already the user's wall clock.
+        let plain = remind("2026-07-20 18:00");
+        assert!(plain.contains("set hours of d1 to 18\n"), "{plain}");
+    }
+
+    /// With no test seam the offset is the machine's REAL one. On a UTC
+    /// machine this cannot tell the old code from the new; on this one
+    /// (+03:00) it could, and did.
+    #[test]
+    fn with_no_seam_the_real_local_offset_is_used() {
+        if std::env::var_os("TACET_TZ_OFFSET").is_some() {
+            return;
+        }
+        let epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let tool = CalendarTool {
+            fixed_epoch: Some(epoch),
+            fixed_offset: None,
+        };
+        let utc = DateTime::from_epoch(epoch);
+        let raw = format!("{}T{:02}:{:02}Z", utc.iso_date(), utc.clock, utc.minute);
+        let offset = local_offset_minutes().unwrap_or(0);
+        let expected = DateTime::from_epoch(epoch - i64::from(utc.second) + offset * 60);
+        assert_eq!(tool.resolve(&raw).expect("resolves").an, expected, "{raw}");
+    }
+
+    /// AUDIT M9 through this tool: `day` and `when` are free text and reached
+    /// the resolver's byte slice. A refusal, not a panic.
+    #[test]
+    fn a_multibyte_day_or_moment_is_refused_not_a_panic() {
+        let tool = CalendarTool::at(NOW, 180);
+        for raw in ["tonight-🎉", "2026-07-20T10:00+1é1"] {
+            assert!(
+                tool.plan(&serde_json::json!({"kind": "remind", "title": "x", "when": raw}))
+                    .is_err()
+            );
+            assert!(
+                tool.plan(&serde_json::json!({"kind": "events", "day": raw}))
+                    .is_err()
+            );
+        }
     }
 
     #[test]

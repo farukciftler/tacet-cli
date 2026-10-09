@@ -211,7 +211,7 @@ pub fn calculate(expression: &str) -> ToolResult<f64> {
         depth: 0,
     };
 
-    let value = p.sum()?;
+    let (value, _) = p.sum()?;
     p.skip_space();
     if p.position < p.input.len() {
         // THE SAME TWO MISTAKES AS IN `atom`, and `10!` arrives HERE rather than
@@ -259,25 +259,44 @@ impl Parser<'_> {
     }
 
     /// sum := product (('+' | '-') product)*
-    fn sum(&mut self) -> ToolResult<f64> {
-        let (mut left, _) = self.product()?;
+    ///
+    /// THE PERCENT RULE, one rule (audit L12). `n%` is n/100 everywhere, with
+    /// ONE exception: `A ± B%`, where B% is a percentage and A is NOT, means
+    /// A ± A·B/100 — "250 + 18%" is 295, the calculator reading every user
+    /// expects. What counts as "a percentage":
+    ///
+    /// * a term ending in `%` ("18%", "-18%", "(18)%");
+    /// * PARENTHESES DO NOT HIDE IT: "(18%)" is the same term as "18%", and a
+    ///   bracketed sum of percentages is one too ("(20% + 10%)" is 30%);
+    /// * a sum is a percentage only if EVERY term in it is: "50% + 50%" is
+    ///   100%, not 50% plus half of itself;
+    /// * a product is not: "10% * 2" is the plain number 0.2.
+    ///
+    /// The old rule had three readings for one idea, all measured: "100 + 5%"
+    /// = 105 but "100 + (5%)" = 100.05 — the bracket was a hidden escape hatch
+    /// that changed the answer by a factor the user cannot see — and
+    /// "50% + 50%" = 0.75, a percentage taken of a percentage. The absolute form
+    /// is now written as what it is: "250 + 0.18".
+    fn sum(&mut self) -> ToolResult<(f64, bool)> {
+        let (mut left, mut all_percent) = self.product()?;
         loop {
             let operator = match self.peek() {
                 Some(c @ ('+' | '-')) => c,
-                _ => return Ok(left),
+                _ => return Ok((left, all_percent)),
             };
             self.position += 1;
             let (right, is_percent) = self.product()?;
-            // CALCULATOR INTUITION: "250 + 18%" means 250 + 250*0.18 to the user,
-            // not 250.18. That is why the percent flag is carried up from the
-            // right-hand term. Whoever wants the absolute form writes it with
-            // parentheses: "250 + (18%)" -> 250.18.
-            let applied = if is_percent { left * right } else { right };
+            let applied = if is_percent && !all_percent {
+                left * right
+            } else {
+                right
+            };
             left = finite(if operator == '+' {
                 left + applied
             } else {
                 left - applied
             })?;
+            all_percent = all_percent && is_percent;
         }
     }
 
@@ -323,17 +342,17 @@ impl Parser<'_> {
             _ => {}
         }
 
-        let base = self.atom()?;
+        let (base, base_is_percent) = self.atom()?;
         // The exponent binds to the RIGHT (2^3^2 = 2^9) and, by descending into
-        // `unary`, also allows negative exponents such as "2^-3".
-        let mut value = if self.swallow('^') {
+        // `unary`, also allows negative exponents such as "2^-3". A power is a
+        // plain number, like a product: "(5%)^2" is 0.0025, not a percentage.
+        let (mut value, mut is_percent) = if self.swallow('^') {
             let (exponent, _) = self.unary()?;
-            power(base, exponent)?
+            (power(base, exponent)?, false)
         } else {
-            base
+            (base, base_is_percent)
         };
 
-        let mut is_percent = false;
         while self.peek() == Some('%') {
             self.position += 1;
             value /= 100.0;
@@ -343,7 +362,9 @@ impl Parser<'_> {
     }
 
     /// atom := number | '(' sum ')'
-    fn atom(&mut self) -> ToolResult<f64> {
+    ///
+    /// Returns the percent flag of a bracketed sum: see the rule on `sum`.
+    fn atom(&mut self) -> ToolResult<(f64, bool)> {
         match self.peek() {
             Some('(') => {
                 self.position += 1;
@@ -353,14 +374,14 @@ impl Parser<'_> {
                         "expression nested too deeply".into(),
                     ));
                 }
-                let value = self.sum()?;
+                let inner = self.sum()?;
                 if !self.swallow(')') {
                     return Err(ToolError::InvalidArgument("unclosed parenthesis".into()));
                 }
                 self.depth -= 1;
-                Ok(value)
+                Ok(inner)
             }
-            Some(c) if c.is_ascii_digit() || c == '.' || c == ',' => self.number(),
+            Some(c) if c.is_ascii_digit() || c == '.' || c == ',' => Ok((self.number()?, false)),
             // TWO DIFFERENT MISTAKES, AND THE MODEL NEEDS TO BE TOLD WHICH.
             //
             // A LETTER or `!` means it reached for something this parser does
@@ -380,27 +401,119 @@ impl Parser<'_> {
         }
     }
 
+    /// The whole numeric token — digits and every `.` `,` `_` touching them —
+    /// is taken first and read by `read_number`, so a separator is judged by
+    /// the token it sits in, not by the character before it.
     fn number(&mut self) -> ToolResult<f64> {
-        let mut text = String::new();
-        let mut saw_decimal = false;
+        let mut raw = String::new();
         while let Some(c) = self.input.get(self.position).copied() {
-            if c.is_ascii_digit() {
-                text.push(c);
-            } else if (c == '.' || c == ',') && !saw_decimal {
-                // In Turkish notation the decimal separator is a comma; accepting
-                // both makes this independent of which format the model produces.
-                saw_decimal = true;
-                text.push('.');
-            } else if c == '_' {
-                // Digit grouping; does not affect the value.
-            } else {
+            if !(c.is_ascii_digit() || matches!(c, '.' | ',' | '_')) {
                 break;
             }
+            raw.push(c);
             self.position += 1;
         }
-        text.parse::<f64>()
-            .map_err(|_| ToolError::InvalidArgument(format!("could not read number: '{text}'")))
+        read_number(&raw)
     }
+}
+
+/// THE SEPARATOR RULE, one place, every case (audit L12).
+///
+/// `.` and `,` each mean "decimal point" in one half of the world and
+/// "thousands" in the other, and the expression comes from the model copying
+/// the user's words. The old rule read the first separator as a decimal point,
+/// always: "1,000 * 3" was 3, an English user's thousand silently read as
+/// one. The token now decides, in this order:
+///
+/// 1. `_` is grouping, always (`1_000`).
+/// 2. BOTH `.` and `,`: the LAST one is the decimal point, the other groups
+///    ("1,234.56" and "1.234,56" are both 1234.56).
+/// 3. One kind, REPEATED: it can only be grouping ("1,000,000", "1.000.000").
+/// 4. A single `,` followed by EXACTLY three digits, after a 1-3 digit head
+///    that does not start with 0: grouping ("1,000" = 1000, "12,500" = 12500).
+///    Every other single `,` is a decimal comma ("1,5" = 1.5, "3,14",
+///    "0,125").
+/// 5. A single `.` is a decimal point, always ("1.000" = 1, "2.500" = 2.5).
+///
+/// Grouping must be well formed — a 1-3 digit head, then groups of exactly
+/// three — or the number is refused rather than guessed ("1,00,0", "1.2.3").
+///
+/// WHERE THIS IS STILL WRONG, said plainly: a Turkish "1,500" meaning 1.5
+/// with a trailing zero reads as 1500 (rule 4), and a Turkish "1.000" meaning
+/// a thousand reads as 1 (rule 5). Rule 5 is not symmetric with rule 4 on
+/// purpose: `.` is the decimal point of the notation the model itself writes
+/// expressions in, so a lone dot is far more often a decimal than a grouping;
+/// a comma is the separator the model only carries over from the user, and a
+/// decimal comma with exactly three decimals is the rarer reading of the two.
+fn read_number(raw: &str) -> ToolResult<f64> {
+    let refuse = || ToolError::InvalidArgument(format!("could not read number: '{raw}'"));
+    let token: String = raw.chars().filter(|c| *c != '_').collect();
+    let dots = token.matches('.').count();
+    let commas = token.matches(',').count();
+
+    let (integer, fraction): (String, Option<&str>) = match (dots, commas) {
+        (0, 0) => (token.clone(), None),
+        (d, c) if d > 0 && c > 0 => {
+            // Rule 2: the last separator is the decimal point and may occur once.
+            let at = token.rfind(['.', ',']).ok_or_else(refuse)?;
+            let decimal = token[at..].chars().next().ok_or_else(refuse)?;
+            let count = if decimal == '.' { d } else { c };
+            if count != 1 {
+                return Err(refuse());
+            }
+            let grouping = if decimal == '.' { ',' } else { '.' };
+            (
+                ungroup(&token[..at], grouping).ok_or_else(refuse)?,
+                Some(&token[at + 1..]),
+            )
+        }
+        (d, c) if d > 1 || c > 1 => {
+            // Rule 3: repeated, so grouping.
+            let grouping = if d > 1 { '.' } else { ',' };
+            (ungroup(&token, grouping).ok_or_else(refuse)?, None)
+        }
+        (0, _) => {
+            // One comma: rule 4.
+            let (head, tail) = token.split_once(',').ok_or_else(refuse)?;
+            if (1..=3).contains(&head.len()) && !head.starts_with('0') && tail.len() == 3 {
+                return format!("{head}{tail}").parse::<f64>().map_err(|_| refuse());
+            }
+            (head.to_string(), Some(tail))
+        }
+        _ => {
+            // One dot: rule 5.
+            let (head, tail) = token.split_once('.').ok_or_else(refuse)?;
+            (head.to_string(), Some(tail))
+        }
+    };
+    let text = match fraction {
+        Some(f) => format!("{integer}.{f}"),
+        None => integer,
+    };
+    // `f64::parse` would take "inf" or "1e5"; only digits and the one dot this
+    // function placed may reach it.
+    if text.is_empty() || text == "." || !text.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+        return Err(refuse());
+    }
+    text.parse::<f64>().map_err(|_| refuse())
+}
+
+/// "1,234,567" with `,` → "1234567"; `None` unless the head is 1-3 digits and
+/// every later group exactly 3.
+fn ungroup(s: &str, grouping: char) -> Option<String> {
+    let mut groups = s.split(grouping);
+    let head = groups.next()?;
+    if !(1..=3).contains(&head.len()) {
+        return None;
+    }
+    let mut out = head.to_string();
+    for g in groups {
+        if g.len() != 3 {
+            return None;
+        }
+        out.push_str(g);
+    }
+    Some(out)
 }
 
 /// Exponentiation. `powf` silently produces `inf`/`NaN` (0^-1, (-8)^0.5); since
@@ -533,10 +646,70 @@ mod tests {
         assert!(approx(calculate("50%").unwrap(), 0.5));
         assert!(approx(calculate("250 + 18%").unwrap(), 295.0));
         assert!(approx(calculate("200 - 10%").unwrap(), 180.0));
-        // Parentheses close the percent binding: the escape hatch.
-        assert!(approx(calculate("250 + (18%)").unwrap(), 250.18));
         // In a product the percent flag must drop.
         assert!(approx(calculate("100 + 10% * 2").unwrap(), 100.2));
+        assert!(approx(calculate("1000 * (1 + 18%)").unwrap(), 1180.0));
+    }
+
+    /// AUDIT L12, the percent half. CHANGED EXPECTATION: this test used to
+    /// assert "250 + (18%)" = 250.18 as a deliberate escape hatch. The audit
+    /// measured it as the inconsistency — "100 + 5%" = 105 but "100 + (5%)" =
+    /// 100.05, a bracket that changes the answer twentyfold with nothing on
+    /// screen to say why — so the old expectation was the bug.
+    #[test]
+    fn one_percent_rule_brackets_and_sums_included() {
+        // Brackets do not hide a percentage.
+        assert!(approx(calculate("100 + (5%)").unwrap(), 105.0));
+        assert!(approx(calculate("250 + (18%)").unwrap(), 295.0));
+        // A percentage plus a percentage is a percentage, not a percent OF one.
+        assert!(approx(calculate("50% + 50%").unwrap(), 1.0));
+        assert!(approx(calculate("100 + (20% + 10%)").unwrap(), 130.0));
+        // Chained discounts stay chained: the left side is no longer a percentage.
+        assert!(approx(calculate("100 - 50% - 50%").unwrap(), 25.0));
+        // A plain number added to a percentage is plain.
+        assert!(approx(calculate("10% + 5").unwrap(), 5.1));
+        // A power is plain, like a product.
+        assert!(approx(calculate("1 + (10%)^2").unwrap(), 1.01));
+    }
+
+    /// AUDIT L12, the separator half. Measured before the fix: "1,000 * 3"
+    /// was 3 — an English user's thousand read as a decimal comma.
+    #[test]
+    fn a_thousands_separator_is_not_a_decimal_point() {
+        for (expression, expected) in [
+            ("1,000 * 3", 3000.0),
+            ("12,500 + 1", 12_501.0),
+            ("1,000,000 / 4", 250_000.0),
+            ("1.000.000 / 4", 250_000.0),
+            ("1,234.5 * 2", 2469.0),
+            ("1.234,5 * 2", 2469.0),
+            ("1_000 + 1", 1001.0),
+        ] {
+            let got = calculate(expression).unwrap_or_else(|e| panic!("{expression}: {e}"));
+            assert!(
+                approx(got, expected),
+                "{expression} = {got}, not {expected}"
+            );
+        }
+        // The Turkish decimal comma is still a decimal comma.
+        for (expression, expected) in [
+            ("1,5 * 2", 3.0),
+            ("2,25 * 2", 4.5),
+            ("0,125 * 8", 1.0),
+            ("1,5 + 1,25", 2.75),
+            ("2.500 * 2", 5.0),
+            (",5 + 1", 1.5),
+        ] {
+            let got = calculate(expression).unwrap_or_else(|e| panic!("{expression}: {e}"));
+            assert!(
+                approx(got, expected),
+                "{expression} = {got}, not {expected}"
+            );
+        }
+        // Grouping that is not three-digit groups is refused, not guessed.
+        for malformed in ["1,00,0", "1.2.3", "1,2.3", "1.234.5,6,7", "1,000.5.5"] {
+            assert!(calculate(malformed).is_err(), "{malformed} must be refused");
+        }
     }
 
     #[test]
