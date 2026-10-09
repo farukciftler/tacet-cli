@@ -276,11 +276,18 @@ pub fn dir_context(dir: &str) -> Option<String> {
     Some(block)
 }
 
-/// A name as the census shows it: control characters escaped, markers defanged.
+/// A name as the census shows it: control characters and line separators
+/// escaped, markers defanged.
+///
+/// U+2028 AND U+2029 ARE ESCAPED BY NAME. They are Unicode's own line and
+/// paragraph separators and NOT control characters to `char::is_control`, so
+/// the first version of this let them through (review of audit H3, 9 Oct
+/// 2026) — a name could still begin a line of its own for any reader that
+/// honours them. U+0085, the third, is a control character and needs no entry.
 fn shown(name: &str) -> String {
     let mut visible = String::with_capacity(name.len());
     for c in name.chars() {
-        if c.is_control() {
+        if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
             visible.extend(c.escape_default());
         } else {
             visible.push(c);
