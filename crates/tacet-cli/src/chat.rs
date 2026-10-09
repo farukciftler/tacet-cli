@@ -1196,7 +1196,10 @@ pub fn chat(run: ChatRun) -> ExitCode {
             // (`write_filepath: "a.md"`) was cut like prose and the executor
             // ran the edited text. Everything below — the executor, the answer,
             // the history — reads `text`, so this is the one place to fix it.
-            generation.split_against(&executor.catalog().names());
+            // The executor's parser rides along to set `executable`: a block
+            // the split kept on a guess holds the calls the model declined in
+            // it, and `executable` is how the call below learns not to run one.
+            generation.split_against(&executor.catalog().names(), |t| executor.parse_call(t));
             // Diagnostic dump (env-gated, the same key as in `LiveReporter`): the
             // model's RAW generation — the call shape (a grammared `name({...})`
             // or the bare JSON that falls into the recovery path) and, if present,
@@ -1365,7 +1368,11 @@ pub fn chat(run: ChatRun) -> ExitCode {
             // the shell disagreeing with the prompt it just sent, and it costs
             // the user the answer.
             let last_pass = turn + 1 == tacet_eval::MAX_TURNS;
-            let executed = if last_pass {
+            // NOR WHEN THE TWO READINGS OF THE THINKING DISAGREE (audit H5): the
+            // call in `text` may be one the model wrote inside its reasoning
+            // and turned down. What it shows is then the turn's answer — the
+            // kept block included, so the user can see why nothing ran.
+            let executed = if last_pass || !generation.executable {
                 None
             } else {
                 wait(executor.execute_raw(&generation.text, ticket, &mut ctx))

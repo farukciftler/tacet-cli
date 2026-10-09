@@ -2771,7 +2771,7 @@ pub fn run_selection_case_in(
             // The shell's catalog-aware thinking split — see
             // `Generation::split_against`; skipping it here would measure a
             // different executor input from the one users get.
-            generation.split_against(&executor.catalog().names());
+            generation.split_against(&executor.catalog().names(), |t| executor.parse_call(t));
             // THE TEACHER'S OWN WORDS, kept only long enough to find out whether
             // they were right. See `write_distillation`.
             if distillation_dir().is_some() {
@@ -2866,10 +2866,16 @@ pub fn run_selection_case_in(
                 }
                 break;
             }
-            let Some(outcome) = wait(executor.execute_raw(&generation.text, ticket, &mut ctx))
-            else {
+            // A call the thinking split could only guess about is not run — see
+            // `Generation::executable`; the shell gates on it the same way.
+            let executed = if generation.executable {
+                wait(executor.execute_raw(&generation.text, ticket, &mut ctx))
+            } else {
+                None
+            };
+            let Some(outcome) = executed else {
                 // THE ONLY OTHER EXIT THAT PRODUCED AN ANSWER: the generation was
-                // not a call, so it is what the user is told.
+                // not a call it may run, so it is what the user is told.
                 answer = generation.text.clone();
                 ended = Ending::Answered;
                 break;

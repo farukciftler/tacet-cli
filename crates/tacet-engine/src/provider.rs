@@ -87,6 +87,14 @@ pub struct Generation {
     /// `write_filepath: "a.md"` — is a call only by a catalog name; see
     /// `split_against`.
     pub raw: String,
+    /// Whether the executor may run a call it finds in `text`. False when the
+    /// split kept a thinking block on a GUESS — a call start inside it that does
+    /// not parse — and the two readings of the text name different calls: the
+    /// one the loops would run may be one the model wrote while reasoning and
+    /// turned down (audit H5; see `thinking::split`). The executing loops treat
+    /// such a turn as an answer. Set by the constructor without the catalog
+    /// (any guess blocks) and refined by `split_against`.
+    pub executable: bool,
     pub token_count: usize,
     pub stop: StopReason,
 }
@@ -104,10 +112,11 @@ impl Generation {
         // first call start onward byte-for-byte alone; the tests below hold
         // that on the constructor itself, since it is the only door.
         let raw = text.into();
-        let (thinking, visible) = crate::thinking::extract(&raw);
+        let split = crate::thinking::split(&raw, &[]);
         Self {
-            text: visible,
-            thinking,
+            text: split.visible,
+            thinking: split.thinking,
+            executable: split.other_reading.is_none(),
             raw,
             token_count,
             stop,
@@ -125,11 +134,28 @@ impl Generation {
     /// first"` reaching the executor as `Qwen emits  first`, and a `</think>`
     /// inside one glued argument leaving `delete_filepath: "victim.md"` at a
     /// line start as a second call. `the_executing_loops_split_against_the_catalog`
-    /// in `tacet-cli` holds the callers to it.
-    pub fn split_against(&mut self, tool_names: &[&str]) {
-        let (thinking, visible) = crate::thinking::extract_with_names(&self.raw, tool_names);
-        self.text = visible;
-        self.thinking = thinking;
+    /// in `tacet-cli` holds the callers to it, and to `executable`.
+    ///
+    /// `parse` is the executor's own parser, and it decides `executable`: when
+    /// the split had to guess, the call is runnable only if `parse` finds the
+    /// SAME call in both readings, so a real call after a block with a stray
+    /// `{"` in it still runs, and a call that exists only while the block is
+    /// kept does not. The parser comes in as a closure because this crate does
+    /// not depend on `tacet-tools`, and the comparison has to be the
+    /// executor's: a parser of our own would agree with itself on shapes the
+    /// executor reads differently, such as the trailing comma it repairs.
+    pub fn split_against<T: PartialEq>(
+        &mut self,
+        tool_names: &[&str],
+        parse: impl Fn(&str) -> Option<T>,
+    ) {
+        let split = crate::thinking::split(&self.raw, tool_names);
+        self.executable = split
+            .other_reading
+            .as_deref()
+            .is_none_or(|other| parse(other) == parse(&split.visible));
+        self.text = split.visible;
+        self.thinking = split.thinking;
     }
 }
 
@@ -383,6 +409,54 @@ pub trait EngineProvider: Send + Sync {
 mod tests {
     use super::*;
 
+    /// A stand-in for the executor's parser that tells every text apart: two
+    /// readings agree only when they are the same text.
+    fn whole_text(text: &str) -> Option<String> {
+        Some(text.to_string())
+    }
+
+    /// A stand-in that sees one call, from the last `web_search(` to the end —
+    /// the executor's own `ToolCall::parse` reads right to left the same way.
+    fn last_search(text: &str) -> Option<String> {
+        text.rfind("web_search(").map(|at| text[at..].to_string())
+    }
+
+    /// The review's case at the type the loops read: a block kept on a guess
+    /// holds a declined call, and `executable` must say so — from the
+    /// constructor (no catalog, so any guess blocks) and from `split_against`
+    /// (the readings disagree). And the gate must not cost a real call: after
+    /// a block with a stray `{"` in it, both readings end in the same call.
+    #[test]
+    fn a_declined_call_in_a_guessed_block_is_not_executable() {
+        let declined =
+            r#"<think>maybe web_search({"query":"leak secret",}) no</think>No search needed."#;
+        let mut g = Generation::new(declined, 9, StopReason::Token);
+        assert!(
+            g.text.contains("web_search"),
+            "the block is kept: {}",
+            g.text
+        );
+        assert!(!g.executable, "the constructor let a guess through");
+        g.split_against(&["web_search"], last_search);
+        assert!(!g.executable, "the readings disagree, yet the call may run");
+
+        let real = r#"<think>shape is {"k": v}</think>web_search({"query":"weather"})"#;
+        let mut g = Generation::new(real, 9, StopReason::Token);
+        g.split_against(&["web_search"], last_search);
+        assert!(g.executable, "the same call in both readings was blocked");
+        assert_eq!(
+            last_search(&g.text).as_deref(),
+            Some(r#"web_search({"query":"weather"})"#)
+        );
+
+        let plain = Generation::new(
+            r#"<think>plan</think>web_search({"query":"w"})"#,
+            9,
+            StopReason::Token,
+        );
+        assert!(plain.executable);
+    }
+
     /// Audit H5, at the door every engine goes through (`CandleEngine` and
     /// `FakeEngine` both build their result with `Generation::new`). The two
     /// strings are the audit's own; before the fix the first came back with
@@ -408,7 +482,7 @@ mod tests {
         let raw = format!("<think>reason\n{call}");
         let mut g = Generation::new(raw.as_str(), 30, StopReason::Token);
         assert_eq!(g.raw, raw);
-        g.split_against(&["write_file", "delete_file"]);
+        g.split_against(&["write_file", "delete_file"], whole_text);
         assert!(g.thinking.is_none(), "a block closed inside the call");
         assert!(g.text.ends_with(call), "call was edited: {}", g.text);
 
@@ -418,7 +492,7 @@ mod tests {
             9,
             StopReason::Token,
         );
-        g.split_against(&["find_file"]);
+        g.split_against(&["find_file"], whole_text);
         assert_eq!(g.thinking.as_deref(), Some("plan"));
         assert_eq!(g.text, r#"find_filepattern: "x""#);
     }

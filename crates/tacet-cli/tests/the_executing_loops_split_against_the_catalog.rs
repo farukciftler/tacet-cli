@@ -13,6 +13,13 @@
 //! eval runner's own test (`a_close_tag_inside_a_glued_argument_cannot_launch_another_call`)
 //! covers the behaviour; this covers the wiring, in every copy of the loop —
 //! including one somebody adds later.
+//!
+//! AND EACH GATES THE CALL ON `generation.executable`. A block the split keeps
+//! on a guess is executor input, calls the model declined in it included; a
+//! review ran `web_search` from `<think>I could write <tool_call>web_search
+//! query="leak secret" but I will not.</think>` through the production
+//! catalog. The split reports the guess, but a loop that does not read the
+//! report runs the call anyway.
 
 use std::path::{Path, PathBuf};
 
@@ -40,15 +47,19 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 // Split in two so this file's own constant is not one of the sites it finds.
 const EXECUTES: &str = concat!("execute_raw(", "&generation.text");
-const SPLITS: &str = "generation.split_against(&executor.catalog().names())";
+const SPLITS: &str =
+    "generation.split_against(&executor.catalog().names(), |t| executor.parse_call(t))";
+const GATES: &str = "!generation.executable";
+const GATES_POSITIVE: &str = "if generation.executable";
 
 /// Each `execute_raw(&generation.text …)` with, for each, whether a CODE line
-/// between the `generation` binding above it and the call re-splits it.
+/// between the `generation` binding above it and the call re-splits it, and
+/// whether one gates the call on `executable`.
 ///
 /// COMMENT LINES DO NOT COUNT. The loops explain the split in prose right
 /// next to it, and a guard satisfied by that prose would stay green with the
 /// call deleted — the failure `the_smoke_check_names_real_flags` records.
-fn sites() -> Vec<(String, bool)> {
+fn sites() -> Vec<(String, bool, bool)> {
     let mut files = Vec::new();
     rust_files(&repo_root().join("crates"), &mut files);
     let mut out = Vec::new();
@@ -66,11 +77,15 @@ fn sites() -> Vec<(String, bool)> {
                         || lines[j].contains("let generation =")
                 })
                 .unwrap_or(0);
-            let split = lines[binding..i]
-                .iter()
-                .any(|l| !l.trim_start().starts_with("//") && l.contains(SPLITS));
+            let code = || {
+                lines[binding..i]
+                    .iter()
+                    .filter(|l| !l.trim_start().starts_with("//"))
+            };
+            let split = code().any(|l| l.contains(SPLITS));
+            let gated = code().any(|l| l.contains(GATES) || l.contains(GATES_POSITIVE));
             let rel = file.strip_prefix(repo_root()).unwrap_or(&file);
-            out.push((format!("{}:{}", rel.display(), i + 1), split));
+            out.push((format!("{}:{}", rel.display(), i + 1), split, gated));
         }
     }
     out
@@ -87,19 +102,39 @@ fn every_executing_loop_resplits_with_the_catalog() {
         "crates/tacet-eval/src/tool_selection.rs",
     ] {
         assert!(
-            found.iter().any(|(at, _)| at.starts_with(expected)),
+            found.iter().any(|(at, _, _)| at.starts_with(expected)),
             "no `{EXECUTES}` found in {expected}: {found:?}"
         );
     }
     let missing: Vec<&String> = found
         .iter()
-        .filter(|(_, split)| !split)
-        .map(|(at, _)| at)
+        .filter(|(_, split, _)| !split)
+        .map(|(at, _, _)| at)
         .collect();
     assert!(
         missing.is_empty(),
         "these hand the executor a generation the catalog never re-split, so a \
          glued call in it is cut like prose (audit H5) — call `{SPLITS}` after \
          the generation is bound: {missing:#?}"
+    );
+}
+
+#[test]
+fn every_executing_loop_gates_the_call_on_the_split() {
+    let found = sites();
+    assert!(
+        found.len() >= 3,
+        "the scan found fewer loops than it was written for: {found:?}"
+    );
+    let ungated: Vec<&String> = found
+        .iter()
+        .filter(|(_, _, gated)| !gated)
+        .map(|(at, _, _)| at)
+        .collect();
+    assert!(
+        ungated.is_empty(),
+        "these run a call the thinking split could only guess about — a call the \
+         model may have declined inside its reasoning (audit H5); skip the \
+         executor when `generation.executable` is false: {ungated:#?}"
     );
 }

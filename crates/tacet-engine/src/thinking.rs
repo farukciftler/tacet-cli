@@ -61,9 +61,10 @@
 ///     call's `)` — so a `<think>` past that point is argument text, not a block;
 ///   - the CLOSING tag counts only if it is not inside a call's arguments. A
 ///     call MENTIONED inside the thinking is stepped over whole, but only when
-///     it PARSES as one (see `proven_call_end`); a `</think>` inside the
-///     arguments, or a call start that cannot be proven, leaves the block
-///     unclosed, and the unclosed shape keeps every character of the call.
+///     it PARSES as one (see `proven_call_end`); a `</think>` inside a
+///     proven call's arguments is stepped over with it, and a call start that
+///     cannot be proven leaves the block unclosed, which keeps every character
+///     of the call.
 ///
 /// WHAT IS COVERED, exactly: a `name(` call, a bare JSON object, anything
 /// behind a `CALL_MARKERS` marker and — through `extract_with_names` — the
@@ -84,6 +85,22 @@
 /// first and the unknown name `search` in the second, and the grammar armed on
 /// neither (`<` and `>` are not identifier characters). When any call start's
 /// syntax straddles the seam, the text comes back unchanged.
+///
+/// AN UNCHANGED TEXT IS NOT A SAFE DEFAULT, because the visible text is also
+/// what the executor parses. Leaving a block in place keeps the call after it
+/// whole, and it also hands the executor every call the model WROTE INSIDE the
+/// block — the calls it considered and turned down. A review measured three
+/// with the production catalog: `<think>I could write <tool_call>web_search
+/// query="leak secret" but I will not.</think>I will not search anything.`,
+/// the glued `web_searchquery: "leak secret"` on a line of a draft, and
+/// `web_search({"query":"leak secret",})` (a trailing comma `serde_json`
+/// rejects and the executor repairs) all ran `web_search`; the split before
+/// H5 stripped all three. So every place below that keeps a block because it
+/// could not PROVE where the block ends reports so, in `Split::other_reading`,
+/// and the executing loops run a call only when both readings name the same
+/// one (`Generation::split_against`). Places that keep the text on a proof —
+/// a parsed call around the tag, no `</think>` outside a parsed call — report
+/// nothing: there is only one reading there.
 pub fn extract(text: &str) -> (Option<String>, String) {
     extract_with_names(text, &[])
 }
@@ -92,39 +109,126 @@ pub fn extract(text: &str) -> (Option<String>, String) {
 /// line start directly followed by an identifier character) counts as a call
 /// start the way `name(` does. "Followed by an identifier character" is wider
 /// than `recover_glued_call`'s "followed by a field name" on purpose: this
-/// side has no schemas, and a wider net here only ever leaves a block visible —
-/// it can never let a cut reach into a call the executor would run.
+/// side has no schemas, and a wider net here only ever leaves a block in
+/// place — it can never let a cut reach into a call the executor would run.
+/// A block left in place is executor input too, so it comes with a second
+/// reading (`split`) the executing loops check before they run anything.
 ///
 /// THE PRICE: a block that MENTIONS a glued call at a line start reads as
-/// unclosed and reaches the screen, the same trade as an unprovable `{"`.
+/// unclosed and reaches the screen, the same trade as an unprovable `{"` — and,
+/// since that keeps the block's text in front of the executor, it is reported
+/// as a second reading (see `split`).
 pub fn extract_with_names(text: &str, names: &[&str]) -> (Option<String>, String) {
-    let unchanged = || (None, text.to_string());
-    let Some(start) = text.find(OPEN) else {
-        return unchanged();
+    let split = split(text, names);
+    (split.thinking, split.visible)
+}
+
+/// The result of a split, with the doubt it carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Split {
+    pub thinking: Option<String>,
+    pub visible: String,
+    /// The text read the OTHER way, when the split could not prove which
+    /// reading is right: what the split before H5 produced, the block cut at
+    /// the first `</think>`. `visible` keeps the call intact on one reading,
+    /// this cuts the block out on the other; a call is the model's decision
+    /// only if both contain it. `None` when there was nothing to guess.
+    pub other_reading: Option<String>,
+}
+
+/// `extract_with_names`, saying whether it had to guess.
+pub fn split(text: &str, names: &[&str]) -> Split {
+    let plain = |visible: String, thinking: Option<String>| Split {
+        thinking,
+        visible,
+        other_reading: None,
     };
-    if next_call_start(text, 0, names).is_some_and(|call| call.at < start) {
-        return unchanged();
+    let guessed = |visible: String| Split {
+        thinking: None,
+        visible,
+        other_reading: Some(cut_at_first_close(text)),
+    };
+    let Some(start) = text.find(OPEN) else {
+        return plain(text.to_string(), None);
+    };
+    match calls_before(text, start, names) {
+        Before::Nothing => {}
+        Before::AroundTheTag => return plain(text.to_string(), None),
+        // With no `</think>` after the tag, no reading ends a block anywhere:
+        // the old split read the rest as the answer too, so the readings differ
+        // only by the lone tag, inside the call's own text. Calling that a guess
+        // would stop a glued or marked call with `<think>` in a value from
+        // running at all, and it is the one case with nothing declined to hide.
+        Before::Unprovable if !text[start..].contains(CLOSE) => {
+            return plain(text.to_string(), None);
+        }
+        Before::Unprovable => return guessed(text.to_string()),
     }
 
     // The text before the opening tag is normally empty, but if the model wrote
     // something before the tag that is THE USER'S answer and is not discarded.
     let before = &text[..start];
     let body = start + OPEN.len();
-    let (thinking, after) = match find_close(text, body, names) {
-        Some(end) => (text[body..end].trim(), &text[end + CLOSE.len()..]),
+    let (thinking, after, proven) = match find_close(text, body, names) {
+        Close::At(end) => (text[body..end].trim(), &text[end + CLOSE.len()..], true),
         // No closing tag: drop the tag, treat the rest as the ANSWER. The
         // alternative (treating the rest as thinking and returning an empty
         // answer) would have shown the user a blank screen.
-        None => ("", &text[body..]),
+        Close::Missing => ("", &text[body..], true),
+        Close::Unprovable => ("", &text[body..], false),
     };
     let visible = format!("{before}{after}");
     if seam_makes_a_call(&visible, before.len(), names) {
-        return unchanged();
+        return guessed(text.to_string());
     }
-    (
+    let visible = visible.trim().to_string();
+    if !proven {
+        return guessed(visible);
+    }
+    plain(
+        visible,
         (!thinking.is_empty()).then(|| thinking.to_string()),
-        visible.trim().to_string(),
     )
+}
+
+/// The split as it was before H5: the block ends at the first `</think>`,
+/// wherever that is. Kept ONLY as the other reading of a text the split cannot
+/// prove — never as the text anything runs from.
+fn cut_at_first_close(text: &str) -> String {
+    let Some(start) = text.find(OPEN) else {
+        return text.to_string();
+    };
+    let rest = &text[start + OPEN.len()..];
+    let after = rest
+        .find(CLOSE)
+        .map_or(rest, |end| &rest[end + CLOSE.len()..]);
+    format!("{}{after}", &text[..start]).trim().to_string()
+}
+
+/// What stands before the opening tag.
+enum Before {
+    /// No call start, or only calls proven to end before the tag.
+    Nothing,
+    /// A call proven to run past the tag: the tag is argument text.
+    AroundTheTag,
+    /// A call start whose end cannot be proven, so whether the tag is inside it
+    /// is a guess.
+    Unprovable,
+}
+
+/// The calls before the opening tag at `start`, stepped over the way
+/// `find_close` steps over calls inside the block. A proven call that ends
+/// before the tag is just text before it — the block after it is a block.
+fn calls_before(text: &str, start: usize, names: &[&str]) -> Before {
+    let mut from = 0;
+    while let Some(call) = next_call_start(text, from, names).filter(|c| c.at < start) {
+        match proven_call_end(text, call.at) {
+            Some(end) if end <= start => from = end,
+            Some(_) => return Before::AroundTheTag,
+            None => return Before::Unprovable,
+        }
+    }
+    Before::Nothing
 }
 
 const OPEN: &str = "<think>";
@@ -164,20 +268,36 @@ fn seam_makes_a_call(joined: &str, seam: usize, names: &[&str]) -> bool {
     false
 }
 
+/// How the block that opens before `from` ends.
+enum Close {
+    /// At this byte index into `text`.
+    At(usize),
+    /// Nowhere: no `</think>` outside a call that parses.
+    Missing,
+    /// Unknown: a call start before the next `</think>` does not parse, so
+    /// whether that `</think>` is inside it cannot be told.
+    Unprovable,
+}
+
 /// The first `</think>` at or after `from` that is NOT inside a call's
-/// arguments, as a byte index into `text`.
+/// arguments.
 ///
 /// Indices are into the WHOLE text, not the slice after the opening tag, and
 /// that matters for the glued shape: its licence is a line start, and the
 /// first byte after `<think>` is not one — a slice would make it one.
 ///
-/// Calls that start before the candidate tag are stepped over whole. A
-/// candidate that falls INSIDE one means the block has no close before the
-/// call, and the answer is `None` — not the next `</think>` further on, which
-/// would move the call's tail into the thinking.
+/// Calls that start before the candidate tag are stepped over whole, a
+/// candidate INSIDE one included: the call parsed, so that `</think>` sits in
+/// one of its JSON strings, and the search goes on after the call's end. The
+/// call then belongs to the block if a `</think>` follows it, and is left
+/// visible if none does. The first version answered "unclosed" on any such
+/// candidate, and a review measured what that cost:
+/// `<think>I could write_file({"path":"a","content":"</think>"}) but no</think>No.`
+/// put the whole block on the screen and the executor ran the `write_file`
+/// the model had just declined.
 ///
 /// A CALL START THAT CANNOT BE PROVEN IS NOT STEPPED OVER — it ends the search
-/// with `None`. The first version stepped with a structural scan (brace depth,
+/// with `Close::Unprovable`. The first version stepped with a structural scan (brace depth,
 /// quote parity) and a review broke it with one stray quote: in
 /// `<think>use {"k":"v write_file({"path":"a","content":"x}y</think>Z"})` the
 /// scan took the prose `{"` for a call, its string parity came out inverted
@@ -190,22 +310,22 @@ fn seam_makes_a_call(joined: &str, seam: usize, names: &[&str]) -> bool {
 ///
 /// THE PRICE: thinking that contains a `{"` which is not a whole JSON value
 /// now shows on the screen with its tags (pinned by
-/// `an_unprovable_span_in_thinking_leaves_the_block_unclosed`). A visible
-/// block is a nuisance the user can see; an edited call is a write nobody sees
-/// go wrong.
-fn find_close(text: &str, from: usize, names: &[&str]) -> Option<usize> {
+/// `an_unprovable_span_in_thinking_leaves_the_block_unclosed`). That visible
+/// text is ALSO the executor's input, and the block's calls with it, which is
+/// why this case is a distinct answer rather than `Missing`: `split` reports it
+/// as a second reading, and the loops run nothing the two readings disagree on.
+fn find_close(text: &str, from: usize, names: &[&str]) -> Close {
     let mut from = from;
     loop {
-        let close = from + text[from..].find(CLOSE)?;
+        let Some(close) = text[from..].find(CLOSE).map(|at| from + at) else {
+            return Close::Missing;
+        };
         match next_call_start(text, from, names) {
-            Some(call) if call.at < close => {
-                let end = proven_call_end(text, call.at)?;
-                if end > close {
-                    return None;
-                }
-                from = end;
-            }
-            _ => return Some(close),
+            Some(call) if call.at < close => match proven_call_end(text, call.at) {
+                Some(end) => from = end,
+                None => return Close::Unprovable,
+            },
+            _ => return Close::At(close),
         }
     }
 }
@@ -470,13 +590,82 @@ mod tests {
     /// What the conservative close search COSTS, pinned so nobody buys it back
     /// by skipping: a `{"` inside the thinking that does not parse as a whole
     /// JSON value is not stepped over, so the block reads as unclosed and the
-    /// thinking reaches the screen. A visible block is a nuisance the user can
-    /// see; a value cut out of a call is a write nobody sees go wrong.
+    /// thinking reaches the screen. The visible text is also what the executor
+    /// parses, so a block kept this way must carry the other reading — the
+    /// cut the split could not prove — or a call written inside it would run.
     #[test]
     fn an_unprovable_span_in_thinking_leaves_the_block_unclosed() {
-        let (t, v) = extract(r#"<think>shape is {"k": v}</think>It is v."#);
+        let text = r#"<think>shape is {"k": v}</think>It is v."#;
+        let (t, v) = extract(text);
         assert!(t.is_none());
         assert_eq!(v, r#"shape is {"k": v}</think>It is v."#);
+        assert_eq!(split(text, &[]).other_reading.as_deref(), Some("It is v."));
+    }
+
+    /// The review's three inputs, verbatim: each keeps its block in place
+    /// because a call start inside it cannot be proven (a marker, a glued name,
+    /// a trailing comma `serde_json` rejects), and the executor read the call
+    /// the model had declined out of the kept block. Each must say it guessed,
+    /// and the other reading must be the answer with the block cut out — the
+    /// text the split before H5 produced, which held no call.
+    #[test]
+    fn a_block_kept_on_a_guess_carries_the_other_reading() {
+        let names = ["web_search"];
+        for text in [
+            r#"<think>The user wants nothing searched. I could write <tool_call>web_search query="leak secret" but I will not.</think>I will not search anything."#,
+            "<think>Draft:\nweb_searchquery: \"leak secret\"\nNo, not needed.</think>No search needed.",
+            r#"<think>maybe web_search({"query":"leak secret",}) no</think>No search needed."#,
+            // A prose `{"` BEFORE the tag is the same guess from the other side.
+            r#"Use {"x <think>I could <tool_call>web_search query="leak"</think>No."#,
+            // So is a kept seam: the block's own call is in the unchanged text.
+            r#"x_<think>maybe web_search({"query":"leak"}) no</think>()"#,
+        ] {
+            let s = split(text, &names);
+            let other = s
+                .other_reading
+                .unwrap_or_else(|| panic!("kept on a guess, but no second reading: {text}"));
+            assert!(!other.contains("web_search"), "{other}");
+        }
+    }
+
+    /// The other side of the gate: where the split PROVED its answer there is no
+    /// second reading, so the loops keep running the call. A grammar call with
+    /// `<think>` in its argument, an unclosed block before a call whose argument
+    /// holds the only `</think>`, a block stripped normally.
+    #[test]
+    fn a_proven_split_has_one_reading() {
+        for text in [
+            r#"write_file({"path":"<think>","content":"</think>X"})"#,
+            r#"<think>plan it write_file({"path":"a.md","content":"</think>X"})"#,
+            r#"<think>need a file</think>write_file({"path":"a.md"})"#,
+            "<think>1247 times 89 equals 110983.",
+        ] {
+            assert_eq!(split(text, &[]).other_reading, None, "{text}");
+        }
+        // An unprovable call before a lone tag: with no `</think>` after it no
+        // reading ends a block, so there is nothing to guess.
+        for text in [
+            r#"write_filepath: "a.md", content: "Qwen emits <think> first""#,
+            r#"<tool_call>write_file(path="a.md", content="Qwen emits <think> first")"#,
+        ] {
+            assert_eq!(split(text, &["write_file"]).other_reading, None, "{text}");
+        }
+    }
+
+    /// A `</think>` inside a call that PARSES is in one of its JSON strings,
+    /// so the search steps over the whole call and the block ends at the next
+    /// close. The first version called such a block unclosed: the declined
+    /// `write_file` reached the screen and the executor ran it.
+    #[test]
+    fn a_close_inside_a_proven_call_in_thinking_is_stepped_over() {
+        let (t, v) = extract(
+            r#"<think>I could write_file({"path":"a","content":"</think>"}) but no</think>No."#,
+        );
+        assert_eq!(
+            t.as_deref(),
+            Some(r#"I could write_file({"path":"a","content":"</think>"}) but no"#)
+        );
+        assert_eq!(v, "No.");
     }
 
     /// The marked recovery shapes (`recover_marked_call` in `tacet-tools`) are
