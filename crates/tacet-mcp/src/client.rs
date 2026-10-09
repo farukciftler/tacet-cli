@@ -902,32 +902,72 @@ pub fn flatten_content(result: &Value) -> (String, bool) {
 /// WHY HERE: the rule must live in the network layer itself. If it lives in the
 /// settings screen (or in the head of the user hand-writing the config file), a
 /// second call path skips it and the token goes out in plain text.
+///
+/// USERINFO IS REFUSED, NOT STRIPPED (audit M11). This function used to take
+/// the host as "everything before the last `:`", so in
+/// `http://localhost:8080@evil.example/mcp` it saw `localhost` and said
+/// "local, plain http is fine" — while `ureq`, which reads the authority the
+/// way RFC 3986 does, dialled `evil.example:80` and sent it the bearer token in
+/// plain text. Measured: a listener standing in for `evil.example` received
+/// `Authorization: Bearer …`. Stripping the userinfo and checking what is left
+/// would close that, but it would still leave two parsers whose agreement is
+/// the whole security argument; refusing the shape removes the disagreement.
+/// Nothing is lost: an MCP credential belongs in `key`/`key_env`/`auth`, where
+/// it is never printed — a password in the URL is shown wherever the URL is.
+/// `\` is refused for the same reason: some URL parsers read it as `/`, some
+/// reject it, and a character whose meaning depends on the reader cannot be
+/// allowed in the part a credential decision rests on.
 pub fn validate_url(url: &str) -> MCPResult<()> {
-    let error = || MCPError::InvalidAddress(url.to_string());
-    if let Some(rest) = url.strip_prefix("https://") {
-        return if rest.is_empty() {
-            Err(error())
-        } else {
-            Ok(())
-        };
-    }
-    let Some(rest) = url.strip_prefix("http://") else {
-        return Err(error());
+    let (rest, plain) = if let Some(rest) = url.strip_prefix("https://") {
+        (rest, false)
+    } else if let Some(rest) = url.strip_prefix("http://") {
+        (rest, true)
+    } else {
+        return Err(MCPError::InvalidAddress(url.to_string()));
     };
-    let host = rest
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default()
-        .rsplit_once(':')
-        .map(|(h, _)| h)
-        .unwrap_or_else(|| rest.split(['/', '?', '#']).next().unwrap_or_default())
-        .trim_matches(['[', ']'])
-        .to_ascii_lowercase();
-
-    if is_local(&host) {
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.contains(['@', '\\']) {
+        return Err(MCPError::InvalidAddress(redact_userinfo(url, authority)));
+    }
+    let error = || MCPError::InvalidAddress(url.to_string());
+    let host = host_of(authority).ok_or_else(error)?;
+    if !plain || is_local(&host) {
         Ok(())
     } else {
         Err(error())
+    }
+}
+
+/// The host of an authority (`host`, `host:port`, `[v6]`, `[v6]:port`),
+/// lowercased. `None` when it is empty or malformed — an address we cannot
+/// take apart with certainty is not one we send anything to.
+///
+/// The old code used `rsplit_once(':')`, which also turned `http://[::1]/mcp`
+/// into the host `[:` and refused the IPv6 loopback it claimed to allow.
+pub(crate) fn host_of(authority: &str) -> Option<String> {
+    let (host, after) = match authority.strip_prefix('[') {
+        Some(inner) => inner.split_once(']')?,
+        None => match authority.find(':') {
+            Some(colon) => authority.split_at(colon),
+            None => (authority, ""),
+        },
+    };
+    let port_ok = after.is_empty()
+        || after
+            .strip_prefix(':')
+            .is_some_and(|p| p.bytes().all(|b| b.is_ascii_digit()));
+    if host.is_empty() || !port_ok {
+        return None;
+    }
+    Some(host.to_ascii_lowercase())
+}
+
+/// The URL for the error message with the userinfo blanked: a refused address
+/// is printed back to the user, and the part being refused may be a password.
+fn redact_userinfo(url: &str, authority: &str) -> String {
+    match authority.rsplit_once('@') {
+        Some((userinfo, _)) => url.replacen(userinfo, "***", 1),
+        None => url.to_string(),
     }
 }
 
@@ -1001,6 +1041,72 @@ mod tests {
         // client OBJECT comes into existence, so there is no path left to
         // accidentally send a request to that address.
         assert!(MCPClient::new("http://example.com/mcp", None).is_err());
+    }
+
+    /// Audit M11, the exact URL from the report: it looked like `localhost`
+    /// to this function and was `evil.example` to the socket, and the bearer
+    /// token went to the second one in plain text.
+    #[test]
+    fn userinfo_cannot_make_a_remote_host_look_local() {
+        for u in [
+            "http://localhost:8080@evil.example/mcp",
+            "http://127.0.0.1@evil.example/mcp",
+            "http://10.0.0.5:80@8.8.8.8/mcp",
+            "http://localhost\\@evil.example/mcp",
+            // Refused even when the host behind it IS local or the scheme IS
+            // https: a credential in the URL is printed wherever the URL is.
+            "http://user:pass@localhost/mcp",
+            "https://user:pass@example.com/mcp",
+        ] {
+            assert!(
+                validate_url(u).is_err(),
+                "{u} should not have been accepted"
+            );
+        }
+        assert!(
+            MCPClient::new(
+                "http://localhost:8080@evil.example/mcp",
+                Some("BEARER-SECRET".into())
+            )
+            .is_err(),
+            "no client object, so no request with the token can exist"
+        );
+        // An `@` AFTER the authority is just a path or query character.
+        assert!(validate_url("https://example.com/a@b").is_ok());
+        assert!(validate_url("http://localhost:8080/mcp?who=a@b").is_ok());
+    }
+
+    #[test]
+    fn a_refused_password_is_not_printed_back() {
+        let Err(MCPError::InvalidAddress(shown)) =
+            validate_url("https://alice:hunter2@example.com/mcp")
+        else {
+            panic!("userinfo must be refused");
+        };
+        assert!(!shown.contains("hunter2"), "{shown}");
+        assert!(shown.contains("example.com/mcp"), "{shown}");
+    }
+
+    #[test]
+    fn hosts_are_taken_apart_exactly() {
+        // The IPv6 loopback was on the allow-list and still refused, because
+        // `rsplit_once(':')` split inside the brackets.
+        assert!(validate_url("http://[::1]/mcp").is_ok());
+        assert!(validate_url("http://[::1]:8080/mcp").is_ok());
+        assert!(validate_url("http://[2001:db8::1]/mcp").is_err());
+        // Malformed authorities are not guessed at.
+        for u in [
+            "https://",
+            "https://:443/mcp",
+            "http://localhost:80:90/mcp",
+            "http://localhost:http/mcp",
+            "http://[::1/mcp",
+        ] {
+            assert!(
+                validate_url(u).is_err(),
+                "{u} should not have been accepted"
+            );
+        }
     }
 
     #[test]

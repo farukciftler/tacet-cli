@@ -80,6 +80,24 @@ impl HttpTransport {
             // The name that lands in a third party's log: the product name, not
             // the crate name.
             .user_agent("tacet/1.0")
+            // NO REDIRECTS (audit L2). ureq follows ten by default, so a
+            // connected server could answer `302 Location: http://127.0.0.1/…`
+            // and make this machine fetch an address the user never configured
+            // — measured: the target saw `GET /internal-admin` carrying
+            // `mcp-method: tools/call`. ureq does drop `Authorization` on the
+            // hop, but the request still goes, and the address it went to was
+            // never put through `validate_url`. An MCP endpoint has no reason to
+            // move mid-session; with 0, the 3xx comes back as a status and the
+            // client reports it as the server's answer.
+            .max_redirects(0)
+            // NO AMBIENT PROXY (audit M12, the MCP half). `Config::default()`
+            // reads ALL_PROXY / HTTPS_PROXY / HTTP_PROXY, so a variable set for
+            // some other tool silently routed a LOCAL server's plain-http bearer
+            // token through a third host — measured through a CONNECT harness:
+            // `authorization: Bearer …` was visible in the tunnel. A program
+            // whose promise is "you see where everything goes" does not take
+            // its route from the environment.
+            .proxy(None)
             .build();
         Self {
             agent: config.into(),
@@ -89,6 +107,15 @@ impl HttpTransport {
 
 impl Transport for HttpTransport {
     fn post(&self, request: &Request) -> MCPResult<Reply> {
+        // THE ADDRESS RULE AGAIN, AT THE SOCKET (audit L2). `MCPClient::new`
+        // already checked the server URL, but the OAuth token endpoint comes
+        // through here too, and a rule that only holds for the callers that
+        // remembered it is the second call path `validate_url` warns about.
+        // Remote means https, here, for every request; plain http only reaches
+        // the local network. (An `https_only` agent for remote hosts would add
+        // nothing on top: choosing that agent needs the same host parse this
+        // check already trusts.)
+        crate::client::validate_url(&request.url)?;
         let mut builder = self.agent.post(&request.url);
         for (name, value) in &request.headers {
             builder = builder.header(name, value);
@@ -248,6 +275,94 @@ pub mod replay {
                 session_id: None,
                 body: Box::new(std::io::Cursor::new(body.into_bytes())),
             })
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// THE TWO PARSERS MUST AGREE (audit M11). `validate_url` decides on the
+    /// host it sees; the socket goes to the host `ureq` sees. Every address
+    /// `validate_url` accepts here must name the same host to both — the bug
+    /// this guards was a URL on which they disagreed (`localhost` vs
+    /// `evil.example`). The corpus is the tricky shapes, not the easy ones.
+    #[test]
+    fn the_host_we_check_is_the_host_ureq_dials() {
+        let corpus = [
+            "http://localhost:8080@evil.example/mcp",
+            "http://127.0.0.1@evil.example/mcp",
+            "http://user:pw@localhost/mcp",
+            "http://localhost\\@evil.example/mcp",
+            "http://localhost#@evil.example/mcp",
+            "http://localhost?@evil.example/mcp",
+            "http://localhost:8080/mcp",
+            "http://[::1]:9000/mcp",
+            "http://[::1]/mcp",
+            "http://10.0.0.5/mcp",
+            "https://example.com/mcp",
+            "https://example.com:8443/a@b",
+        ];
+        for url in corpus {
+            if crate::client::validate_url(url).is_err() {
+                continue;
+            }
+            let uri: ureq::http::Uri = url.parse().expect("an accepted URL parses for ureq");
+            let theirs = uri
+                .host()
+                .expect("an accepted URL has a host for ureq")
+                .trim_matches(['[', ']'])
+                .to_ascii_lowercase();
+            let rest = url.split_once("://").map(|(_, r)| r).unwrap_or_default();
+            let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+            let ours = crate::client::host_of(authority).expect("accepted, so it has a host");
+            assert_eq!(
+                ours, theirs,
+                "{url}: we checked {ours}, ureq would dial {theirs}"
+            );
+        }
+    }
+
+    /// The real agent's settings, read back from the agent itself — the comment
+    /// on `new` is a claim, this is the measurement. (The behaviour is measured
+    /// over a socket in `tests/no_redirects.rs` and `tests/no_ambient_proxy.rs`.)
+    #[test]
+    fn the_real_agent_follows_no_redirect_and_takes_no_proxy_from_the_environment() {
+        let transport = HttpTransport::new();
+        let config = transport.agent.config();
+        assert_eq!(
+            config.max_redirects(),
+            0,
+            "a 3xx must come back, not be followed"
+        );
+        assert!(
+            config.proxy().is_none(),
+            "no route may come from the environment"
+        );
+    }
+
+    /// A request to a remote host over plain http never reaches `ureq`, even
+    /// when it does not come from `MCPClient` (the OAuth token request does
+    /// not). The host is `0.0.0.0`: outside the local list, so the rule must
+    /// refuse it, yet if the check is missing the dial lands on this machine's
+    /// closed port 1 and fails at once as `Unreachable` — the test never sends
+    /// a packet off the machine, red or green.
+    #[test]
+    fn plain_http_to_a_remote_host_is_refused_at_the_socket() {
+        let transport = HttpTransport::new();
+        for url in [
+            "http://0.0.0.0:1/token",
+            "http://localhost:8080@0.0.0.0:1/token",
+        ] {
+            let request = Request {
+                url: url.into(),
+                ..Request::default()
+            };
+            assert!(
+                matches!(transport.post(&request), Err(MCPError::InvalidAddress(_))),
+                "{url} reached the network layer"
+            );
         }
     }
 }
