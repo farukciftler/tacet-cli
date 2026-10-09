@@ -55,15 +55,23 @@
 ///
 /// So the block is located with the call in mind:
 ///   - the OPENING tag counts only if it comes before the first call start
-///     (`name(` followed by `{` or `)`, or a bare JSON object `{"`). Once a
-///     call has started the grammar owns every character after it — it arms
-///     at `name(` and production ends at the call's `)` — so a `<think>` past
-///     that point is argument text, not a block;
+///     (`name(` followed by `{` or `)`, a bare JSON object `{"`, or one of the
+///     executor's call markers). Once a call has started the grammar owns every
+///     character after it — it arms at `name(` and production ends at the
+///     call's `)` — so a `<think>` past that point is argument text, not a block;
 ///   - the CLOSING tag counts only if it is not inside a call's arguments. A
-///     call MENTIONED inside the thinking is stepped over whole (strings and
-///     nesting respected) so a `</think>` after it still closes the block; a
-///     `</think>` inside the arguments leaves the block unclosed, and the
-///     unclosed shape keeps every character of the call.
+///     call MENTIONED inside the thinking is stepped over whole, but only when
+///     it PARSES as one (see `proven_call_end`); a `</think>` inside the
+///     arguments, or a call start that cannot be proven, leaves the block
+///     unclosed, and the unclosed shape keeps every character of the call.
+///
+/// WHAT IS COVERED, exactly: a `name(` call, a bare JSON object, and anything
+/// behind a `CALL_MARKERS` marker. NOT covered is the glued shape
+/// `recover_glued_call` in `tacet-tools` recovers (`write_filepath: "a.md"` at
+/// the start of a line): its only licence is a CATALOG tool name at a line
+/// start, and this crate never sees the catalog. A catalog-free stand-in — any
+/// `word:` opening a line — would also match `Note:` and `Answer:` in ordinary
+/// thinking and keep those blocks on the screen.
 pub fn extract(text: &str) -> (Option<String>, String) {
     let Some(start) = text.find(OPEN) else {
         return (None, text.to_string());
@@ -97,19 +105,44 @@ pub fn extract(text: &str) -> (Option<String>, String) {
 const OPEN: &str = "<think>";
 const CLOSE: &str = "</think>";
 
+/// The markers `recover_marked_call` in `tacet-tools` looks behind — the same
+/// four, in the same spelling. The executor RUNS what follows one with no
+/// grammar involved, so for this module a marker opens a call exactly as
+/// `name(` does. Kept as a copy rather than an import: `tacet-engine` does not
+/// depend on `tacet-tools`, and a dependency edge for four strings would point
+/// the wrong way. `a_marked_call_is_not_edited` pins the shapes.
+const CALL_MARKERS: [&str; 4] = ["```tool_code", "```tool", "```json", "<tool_call>"];
+
 /// The first `</think>` in `rest` that is NOT inside a call's arguments.
 ///
 /// Calls that start before the candidate tag are stepped over whole. A
 /// candidate that falls INSIDE one means the block has no close before the
 /// call, and the answer is `None` — not the next `</think>` further on, which
 /// would move the call's tail into the thinking.
+///
+/// A CALL START THAT CANNOT BE PROVEN IS NOT STEPPED OVER — it ends the search
+/// with `None`. The first version stepped with a structural scan (brace depth,
+/// quote parity) and a review broke it with one stray quote: in
+/// `<think>use {"k":"v write_file({"path":"a","content":"x}y</think>Z"})` the
+/// scan took the prose `{"` for a call, its string parity came out inverted
+/// over the real call, it stopped at the `}` inside `x}y`, and the `</think>`
+/// in the real argument closed the block — visible text `Z"})`, the verified
+/// call gone. Skipping an unprovable start instead of stopping is not safe
+/// either: the executor runs shapes `serde_json` rejects (a trailing comma,
+/// key=value behind a marker), and a skip hands their `</think>` to the block.
+///
+/// THE PRICE: thinking that contains a `{"` which is not a whole JSON value
+/// now shows on the screen with its tags (pinned by
+/// `an_unprovable_span_in_thinking_leaves_the_block_unclosed`). A visible
+/// block is a nuisance the user can see; an edited call is a write nobody sees
+/// go wrong.
 fn find_close(rest: &str) -> Option<usize> {
     let mut from = 0;
     loop {
         let close = from + rest[from..].find(CLOSE)?;
         match next_call_start(rest, from) {
             Some(call) if call < close => {
-                let end = call_end(rest, call);
+                let end = proven_call_end(rest, call)?;
                 if end > close {
                     return None;
                 }
@@ -120,8 +153,8 @@ fn find_close(rest: &str) -> Option<usize> {
     }
 }
 
-/// Byte index of the delimiter that opens the first call at or after `from`:
-/// the `(` of `name(`, or the `{` of a bare JSON object.
+/// Byte index where the first call at or after `from` starts: the `(` of
+/// `name(`, the `{` of a bare JSON object, or the first byte of a marker.
 ///
 /// `name(` needs an identifier character right before the `(` — the boundary
 /// the grammar arms on (`is_id_char` in `tacet-grammar`) — AND `{` or `)` right
@@ -129,7 +162,7 @@ fn find_close(rest: &str) -> Option<usize> {
 /// armed grammar accepts there. The second condition is what keeps prose like
 /// `f(x)` inside a thinking block from counting as a call. The bare `{"` form
 /// is the executor's recovery path for nameless JSON: unconstrained, but the
-/// executor still RUNS it, so it is protected the same way.
+/// executor still RUNS it, so it is protected the same way; markers likewise.
 fn next_call_start(text: &str, from: usize) -> Option<usize> {
     let mut prev = text[..from].chars().next_back();
     for (offset, c) in text[from..].char_indices() {
@@ -141,6 +174,7 @@ fn next_call_start(text: &str, from: usize) -> Option<usize> {
                     && (after.starts_with('{') || after.starts_with(')'))
             }
             '{' => after.starts_with('"'),
+            '`' | '<' => CALL_MARKERS.iter().any(|m| text[at..].starts_with(m)),
             _ => false,
         };
         if opens {
@@ -151,38 +185,41 @@ fn next_call_start(text: &str, from: usize) -> Option<usize> {
     None
 }
 
-/// Byte index just past the delimiter that closes the call opened at `open`,
-/// or the end of the text when it never closes (a call cut by a cap). JSON
-/// strings are skipped with their escapes, so a `)` or a `</think>` inside a
-/// value stays part of the value.
-fn call_end(text: &str, open: usize) -> usize {
-    let mut depth = 0usize;
-    let mut in_string = false;
-    let mut escaped = false;
-    for (offset, c) in text[open..].char_indices() {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if c == '\\' {
-                escaped = true;
-            } else if c == '"' {
-                in_string = false;
-            }
-            continue;
+/// Byte index just past the call that starts at `start`, IF the text there
+/// parses as one; `None` when it does not, or when it never ends (a call cut by
+/// a cap runs to the end of the text, so a close after it is inside it).
+///
+/// Parsing with `serde_json` rather than counting braces is the point: a
+/// grammar-armed call is valid JSON by construction, so a real call always
+/// proves, and prose that merely looks like a call start can only fail — it
+/// can never be mistaken for a call of a different length and pull the scan
+/// out of step. A marker never proves: what follows it is read key=value by
+/// the executor and has no end this module could check.
+fn proven_call_end(text: &str, start: usize) -> Option<usize> {
+    let object_end = |at: usize| {
+        let mut values =
+            serde_json::Deserializer::from_str(&text[at..]).into_iter::<serde_json::Value>();
+        match values.next() {
+            Some(Ok(serde_json::Value::Object(_))) => Some(at + values.byte_offset()),
+            _ => None,
         }
-        match c {
-            '"' => in_string = true,
-            '(' | '{' | '[' => depth += 1,
-            ')' | '}' | ']' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return open + offset + c.len_utf8();
-                }
-            }
-            _ => {}
+    };
+    let skip_space = |at: usize| at + (text[at..].len() - text[at..].trim_start().len());
+    match text[start..].chars().next()? {
+        '{' => object_end(start),
+        '(' => {
+            let args = skip_space(start + 1);
+            let after_args = if text[args..].starts_with(')') {
+                args
+            } else {
+                skip_space(object_end(args)?)
+            };
+            text[after_args..]
+                .starts_with(')')
+                .then_some(after_args + 1)
         }
+        _ => None,
     }
-    text.len()
 }
 
 #[cfg(test)]
@@ -301,6 +338,66 @@ mod tests {
         assert_eq!(v, r#"calculate({"expression":"2"})"#);
     }
 
+    /// The review's two inputs, verbatim. Prose in an unclosed block opens a
+    /// `{"` with an odd number of quotes after it; the old structural scan
+    /// stepped over that "call", its string parity came out inverted, it ended
+    /// at a `}` inside the REAL call's string, and the `</think>` in the real
+    /// call's argument closed the block. Measured on the previous fix: visible
+    /// text `Z"})` (the verified call gone) and `delete_file({","path":"victim.md"})`
+    /// (a fragment shaped like a different call). The grammar accepts both real
+    /// calls — it arms on `write_file(` after a space and the JSON is valid.
+    #[test]
+    fn prose_braces_in_thinking_cannot_desync_the_close_search() {
+        for (prefix, call) in [
+            (
+                r#"<think>use {"k":"v "#,
+                r#"write_file({"path":"a","content":"x}y</think>Z"})"#,
+            ),
+            (
+                r#"<think>The format is {"tool":"write_file then "#,
+                r#"write_file({"content":"x}y</think>delete_file({","path":"victim.md"})"#,
+            ),
+        ] {
+            let (t, v) = extract(&format!("{prefix}{call}"));
+            assert!(t.is_none(), "a block closed inside the call: {t:?}");
+            assert!(v.ends_with(call), "call was edited: {v}");
+        }
+    }
+
+    /// What the conservative close search COSTS, pinned so nobody buys it back
+    /// by skipping: a `{"` inside the thinking that does not parse as a whole
+    /// JSON value is not stepped over, so the block reads as unclosed and the
+    /// thinking reaches the screen. A visible block is a nuisance the user can
+    /// see; a value cut out of a call is a write nobody sees go wrong.
+    #[test]
+    fn an_unprovable_span_in_thinking_leaves_the_block_unclosed() {
+        let (t, v) = extract(r#"<think>shape is {"k": v}</think>It is v."#);
+        assert!(t.is_none());
+        assert_eq!(v, r#"shape is {"k": v}</think>It is v."#);
+    }
+
+    /// The marked recovery shapes (`recover_marked_call` in `tacet-tools`) are
+    /// not grammar-verified, but the executor RUNS them, so a marker is a call
+    /// start like `name(` is. Measured on the previous fix: the key=value form
+    /// came back as `<tool_call>write_file path="X"` (a value moved between
+    /// fields) and the paren form as `content="Qwen emits  first"`.
+    #[test]
+    fn a_marked_call_is_not_edited() {
+        for call in [
+            r#"<tool_call>write_file path="<think>" content="</think>X""#,
+            r#"<tool_call>write_file(path="a.md", content="Qwen emits <think> first")"#,
+            "```json\n{\"action\":\"write_file\",\"content\":\"<think>a</think>b\"}\n```",
+        ] {
+            let (t, v) = extract(call);
+            assert!(t.is_none());
+            assert_eq!(v, call);
+
+            let (t, v) = extract(&format!("<think>reason {call}"));
+            assert!(t.is_none(), "a block closed inside the call: {t:?}");
+            assert!(v.ends_with(call), "call was edited: {v}");
+        }
+    }
+
     /// Prose parentheses are not calls: `f(x)` has neither `{` nor `)` after
     /// its `(`. Counted as calls, prose before the tag would keep the block
     /// from being stripped at all, and an unbalanced `g(` inside the thinking
@@ -324,7 +421,10 @@ mod tests {
     /// prefix the model produces, must come out of `extract` with the call
     /// byte-for-byte intact. The escaped-quote entry is shaped on purpose: a
     /// scanner that ends a string at `\"` reads the `})` after it as the end of
-    /// the call and hands the `</think>` that follows back to the block.
+    /// the call and hands the `</think>` that follows back to the block. The
+    /// `{"k":"v ` prefix is the review's desync: an odd quote in prose flips a
+    /// structural scan's string parity, the scan stops at the `}` inside `x}y`,
+    /// and the `</think>` in the real call was taken as the block's close.
     #[test]
     fn no_prefix_shape_edits_a_call_with_tags_in_its_arguments() {
         let calls = [
@@ -332,9 +432,16 @@ mod tests {
             r#"write_file({"path":"<think>","content":"</think>X"})"#,
             r#"write_file({"path":"a","content":"say \"})</think> then <think>"})"#,
             r#"write_file({"path":"a","content":"<think>x</think>"})"#,
+            r#"write_file({"path":"a","content":"x}y</think>Z"})"#,
             r#"{"tool":"write_file","args":{"content":"<think>a</think>b"}}"#,
         ];
-        let prefixes = ["", "Sure. ", "<think>reason</think>", "<think>reason "];
+        let prefixes = [
+            "",
+            "Sure. ",
+            "<think>reason</think>",
+            "<think>reason ",
+            r#"<think>use {"k":"v "#,
+        ];
         for call in calls {
             for prefix in prefixes {
                 let (_, v) = extract(&format!("{prefix}{call}"));
