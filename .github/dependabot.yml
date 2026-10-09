@@ -1,0 +1,22 @@
+# WHY THIS FILE EXISTS: every `uses:` in .github/workflows is pinned to a commit
+# SHA with its tag in a trailing comment. A pin nobody moves is a pin that ages
+# into a known-vulnerable action; this is what moves them. Dependabot reads the
+# `# vX.Y.Z` comment, proposes the new SHA and the new comment together, and the
+# bump arrives as a reviewable pull request rather than as a tag somebody else
+# moved under us.
+#
+# `dtolnay/rust-toolchain` is pinned to the head of its `stable` BRANCH, which
+# has no tag to compare against, so Dependabot leaves it alone; it is bumped by
+# hand with `git ls-remote https://github.com/dtolnay/rust-toolchain refs/heads/stable`.
+#
+# Cargo dependencies are deliberately NOT here. Adding or moving one is an
+# architectural decision in this repository (see the README's dependency list
+# and the floors in `[workspace.dependencies]`), not a weekly chore.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"

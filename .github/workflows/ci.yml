@@ -5,6 +5,18 @@ on:
     branches: [main]
   pull_request:
 
+# READ-ONLY, AND SAID HERE RATHER THAN LEFT TO THE REPOSITORY DEFAULT. Every job
+# below compiles and runs third-party build scripts (`ring`, `onig_sys`) and
+# third-party actions; none of them has a reason to push, comment or mint an
+# OIDC token, so none of them is given a token that could.
+#
+# EVERY `uses:` IS A COMMIT SHA, with the tag it was taken from in the comment.
+# A tag is a pointer its owner can move; a SHA is the code that was read.
+# `.github/dependabot.yml` proposes the bumps, so pinning does not mean
+# freezing. `the_workflows_keep_their_promises.rs` fails on an unpinned action.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -20,9 +32,14 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # `stable` IS A BRANCH of dtolnay/rust-toolchain, not a tag, so the pin is
+      # that branch's head on 10 Oct 2026 and the toolchain is named explicitly
+      # — a SHA carries no toolchain name for the action to infer one from.
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # THE SANDBOX, ON THE ONE PLATFORM WHERE IT HAD NEVER RUN.
       #
@@ -122,44 +139,99 @@ jobs:
   # being true: a git dependency, a patched fork, a yanked crate, a licence
   # nobody chose.
   #
-  # `continue-on-error` IS DELIBERATE. A new advisory filed against a crate four
-  # levels down is news about the world, not a defect in this pull request, and a
-  # hard gate there would block a documentation fix on someone else's CVE. The
-  # value is the annotation on the run; the settings that are hard failures live
-  # in `deny.toml` (`unknown-git`, `unknown-registry`, `wildcards`) because those
-  # can only be caused from inside this repository.
+  # TWO JOBS, BECAUSE ONE JOB CANNOT BE BOTH A GATE AND A NEWS FEED.
+  #
+  # This used to be a single `cargo deny check` with `continue-on-error: true`
+  # at the job level, and the README said `unknown-git` and `unknown-registry`
+  # were "hard failures". They were not: `continue-on-error` applies to the
+  # whole job, so a `git =` dependency produced the same green tick as a clean
+  # graph. `deny.toml` saying `deny` was a setting nothing enforced.
+  #
+  # So the split is by WHO CAN CAUSE THE FAILURE. Sources, bans and licences
+  # change only when a manifest or `Cargo.lock` in this repository changes, so
+  # a failure there is a defect in the pull request and it gates. Measured
+  # before the split, 10 Oct 2026, with cargo-deny 0.20.2 and all features:
+  # `bans ok, licenses ok, sources ok` — the gate starts green.
   supply-chain:
     name: supply chain
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check sources bans licenses
+          arguments: --all-features
+
+  # ADVISORIES ARE NEWS ABOUT THE WORLD, so this one alone is soft. A new
+  # advisory filed against a crate four levels down is not a defect in this
+  # pull request, and a hard gate here would block a documentation fix on
+  # someone else's CVE. The value is the annotation on the run.
+  supply-chain-advisories:
+    name: supply chain (advisories)
+    runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
-          command: check
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check advisories
           arguments: --all-features
 
   lint:
     name: clippy + fmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
+          toolchain: stable
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo fmt --all -- --check
+
+  # THE FOURTH GATE, ON EVERY PULL REQUEST.
+  #
+  # `tacet-engine`'s whole `candle_engine` module is behind
+  # `#[cfg(feature = "candle")]`, so the `test` job above does not compile a
+  # line of it. This lived only in nightly.yml, which meant a pull request
+  # could break the decode loop's COMPILE and merge green — CONTRIBUTING
+  # records that happening, with the failure arriving hours later from the
+  # nightly run. `--no-run` because every test behind the feature needs a
+  # 2.5 GB GGUF and would print SKIPPED; the claim this job makes is "it
+  # compiles", and that is the claim it can check.
+  #
+  # ITS OWN JOB, so it gets its own `rust-cache` entry: the candle tree is the
+  # largest part of the graph and sharing a key with the `test` job would make
+  # the two evict each other.
+  candle-compiles:
+    name: the candle-gated code compiles
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo test --workspace --features candle --no-run
 
   eval:
     name: behavioural eval
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # Runs against the deterministic mock engine: it measures the routing and
       # tool-call machinery, not a model. No weights are downloaded.
       - run: cargo run -p tacet-cli -- eval

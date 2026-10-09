@@ -72,16 +72,22 @@ cargo run -p tacet-cli -- eval              # behavioural cases, deterministic, 
 cargo run -p tacet-cli -- eval --routing    # the router's own choice, no model needed
 ```
 
-CI runs all of it on macOS, Linux and Windows. Neither of these loads weights or opens a socket.
+CI runs every line of it on each pull request, but not every line everywhere:
+`cargo build` and `cargo test` run on macOS, Linux and Windows; clippy, fmt, the
+candle `--no-run` compile and both evals run on Linux only. A clippy lint that
+fires only under `cfg(windows)` is therefore yours to find. None of it loads
+weights or opens a socket.
 
 **The fourth line is the one people skip, and it is the one that bites.**
 `tacet-engine`'s whole `candle_engine` module — the decode loop, the loop
 backstop, the call budget, the greedy sampler and every test over them — is
 behind `#[cfg(feature = "candle")]`. A plain `cargo test --workspace` does not
 compile a line of it, so a change there can pass the local gate completely and
-fail to COMPILE in the nightly job. That has happened: a test module gained two
-tests referencing constants it did not import, `cargo test --workspace` was
-green, and the failure arrived hours later from CI. `--no-run` is enough — the
+fail to COMPILE. That has happened: a test module gained two tests referencing
+constants it did not import, `cargo test --workspace` was green, and the failure
+arrived hours later from the nightly job — the only place it ran then. It is now
+the `candle-compiles` job in `ci.yml` too, so a pull request finds out before it
+merges; running it locally finds out before you push. `--no-run` is enough — the
 cost is a compile, not the tests.
 
 ### The measurements, and which one to reach for
@@ -123,10 +129,17 @@ single character stuck in a loop. Its exit code is the number of failing
 messages, so it gates.
 
 ```bash
-scripts/smoke-selftest.sh            # ~5 s, no weights: does the check go red?
+scripts/smoke-selftest.sh            # ~5 s on a built tree, no weights: does the check go red?
 scripts/smoke.sh                     # ~4 min, the configured model
 scripts/smoke.sh ~/models/qwen3-4b   # ~4 min, a named one
 ```
+
+**It builds before it measures.** Both scripts run `cargo build --release` from
+the checkout first (metal on macOS, cuda on Linux, `TACET_SMOKE_FEATURES=candle`
+for a CPU-only box) and then ask the binary `--print-features`. They used to
+measure whatever `target/release/tacet` held — and `nightly-eval.sh` writes that
+same path from whatever was checked out at 03:07, so the release gate could pass
+on last night's binary.
 
 **Run the self-test too, and run it first.** A guard nobody has watched fail is
 not a guard, and this one is easy to break silently — read the wrong stream,
@@ -187,19 +200,24 @@ builds first (a run against a stale binary produces a number attributed to a
 commit it did not measure — that has happened here once already, on a line
 saying `cargo: command not found` that nobody read); it passes `--journal`, so a
 closed lid at case 180 costs one case rather than the 47 minutes behind it, and
-re-running the script continues where it stopped; and it writes everything to
-`~/.tacet/nightly/<date>-<commit>/run.log`, with `~/.tacet/nightly/latest.log`
-pointing at the newest, so `tail -f` is the live view and a number found later
-can be traced to what produced it.
+re-running the script continues where it stopped, the next morning included;
+and it writes everything to
+`~/.tacet/nightly/<commit>[-dirty-<hash>]-<model>-<features>/run.log`, with
+`~/.tacet/nightly/latest.log` pointing at the newest, so `tail -f` is the live
+view and a number found later can be traced to what produced it.
+`scripts/nightly-eval.sh --print-run-dir` prints that path and touches nothing.
 
 ```bash
 scripts/nightly-eval.sh            # resumes if it can; safe to re-run
 tail -f ~/.tacet/nightly/latest.log
 ```
 
-The journal directory is keyed by commit, and its own stamp refuses a model or
-catalog it was not started with — so a report can never be half one build and
-half another.
+The journal directory is keyed by what was built — the commit, a hash of any
+uncommitted changes (untracked files included), the model and the features — and
+never by the date, so a run cut off before midnight resumes after it. The
+directory is what keeps two builds apart; the journal's own stamp additionally
+refuses a model, engine or catalog it was not started with. A report can never be
+half one build and half another.
 
 **And every night, if you want it.** `scripts/com.tacet.nightly-eval.plist` is
 the same script as a `launchd` job at 03:07 — off the hour on purpose, because
@@ -444,15 +462,20 @@ writing about it publicly.
 
 ## The supply chain
 
-`cargo deny check` runs on every push (`deny.toml`, and the `supply chain` job in
-`ci.yml`) over the full graph with all features on. Run it locally with
+`cargo deny check` runs on every push (`deny.toml`, and the two `supply chain`
+jobs in `ci.yml`) over the full graph with all features on. Run it locally with
 `cargo install cargo-deny && cargo deny check`.
 
-Two of its four checks are hard failures and two are not, deliberately.
-`unknown-git`, `unknown-registry` and `wildcards` can only be caused from inside
-this repository, so they gate. An advisory filed against a crate four levels down
-is news about the world rather than a defect in your pull request, so the CI job
-carries `continue-on-error` and the value is the annotation.
+Three of its four checks are a hard gate and one is not, deliberately — split by
+who can cause the failure. `sources`, `bans` and `licenses` change only when a
+manifest or the lockfile here changes, so `unknown-git`, `unknown-registry`,
+`wildcards` and an unlisted licence fail the `supply chain` job and block the
+merge. An advisory filed against a crate four levels down is news about the world
+rather than a defect in your pull request, so `supply chain (advisories)` carries
+`continue-on-error` and the value is the annotation. Until 10 Oct 2026 this was
+one job with `continue-on-error`, which made every one of those "hard failures"
+a green tick; `the_workflows_keep_their_promises.rs` now fails if a soft job
+checks anything but advisories.
 
 **An entry in `deny.toml`'s `ignore` list needs a sentence and a date.** There
 are two, both from its first run, both with the reason written next to them.
@@ -460,8 +483,17 @@ Silencing something without saying why is how this file stops meaning anything �
 and then it is worse than not having it, because it looks like an audit.
 
 Releases carry a Sigstore build-provenance attestation over every asset and an
-SPDX SBOM. `SHA256SUMS`, which was there before, proves only that the release job
+SPDX SBOM, which is generated first so that both `SHA256SUMS` and the attestation
+cover it. `SHA256SUMS`, which was there before, proves only that the release job
 agreed with itself.
+
+**The workflows themselves.** Every `uses:` is pinned to a full commit SHA with
+its tag in a trailing comment, and `.github/dependabot.yml` proposes the bumps.
+Every workflow is `contents: read` by default; in `release.yml` only `publish` —
+which compiles nothing — holds `contents: write`, `id-token: write` and
+`attestations: write`. The release runs `cargo test --workspace` on all three
+platforms against the tagged commit and `publish` waits for it, and it builds
+with no shared cache.
 
 ## Licence
 

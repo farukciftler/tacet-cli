@@ -236,6 +236,34 @@ fn the_self_test_covers_both_directions() {
     );
 }
 
+/// THE RELEASE GATE MEASURES THE CODE IT IS GATING (audit M29).
+///
+/// `smoke.sh` checked only that `target/release/tacet` existed, then measured
+/// it. `nightly-eval.sh` builds into that same path from whatever was checked
+/// out at 03:07, so the gate could pass on last night's binary while the tag
+/// named this morning's commit — a green check standing for code it never ran.
+/// The build has to come BEFORE the first message, and the binary has to be
+/// asked what it is rather than assumed to be the build just made.
+#[test]
+fn the_smoke_check_builds_the_binary_it_measures() {
+    let text = code_only("scripts/smoke.sh");
+    let build = text
+        .find("cargo build --release -p tacet-cli")
+        .expect("scripts/smoke.sh no longer builds the binary it measures");
+    let first_message = text
+        .find("run_message \"$m\"")
+        .expect("the per-message loop calls run_message");
+    assert!(
+        build < first_message,
+        "the build comes after the first message is measured"
+    );
+    assert!(
+        text.contains("\"$BIN\" --print-features"),
+        "the binary must be asked what it was built with, not assumed to be the \
+         build just made"
+    );
+}
+
 /// THE SEAM IS `+x`, NOT `:-`.
 ///
 /// An emptiness test here sends the EMPTY-ANSWER case — one of the five — to

@@ -10,22 +10,25 @@
 # same command every night rather than whatever was in the shell history.
 #
 # WHAT IT GUARANTEES:
-#   * RESUMABLE. `--journal` keeps every finished case, keyed by the commit. A
-#     closed lid at case 180 costs one case, not the 47 minutes behind it.
-#     Running this script again continues; running it twice in a row is a no-op
-#     that re-reports.
-#   * LOGGED. Everything the run prints goes to a dated file, with the commit,
-#     the machine and the model fingerprint at the top, so a number found later
-#     can be traced to what produced it.
+#   * RESUMABLE. `--journal` keeps every finished case, keyed by the commit,
+#     the uncommitted diff, the model and the features — never by the date. A
+#     closed lid at case 180 costs one case, not the 47 minutes behind it, and
+#     that stays true across midnight. Running this script again continues;
+#     running it twice in a row is a no-op that re-reports.
+#   * LOGGED. Everything the run prints goes to `run.log` in that directory,
+#     each attempt headed by its start time, the commit, the machine and the
+#     model, so a number found later can be traced to what produced it.
 #   * LIVE. The eval's own progress line ("[103/184] case · 31m elapsed · ~20m
 #     left") is in the log as it happens; `tail -f` is the live view.
-#   * IT REFUSES TO MIX. A journal stamped for a different model or catalog
-#     stops the run (see `CaseJournal::open`), so a report can never be half one
-#     build and half another.
+#   * IT REFUSES TO MIX. Different code gets a different directory (below), and
+#     a journal stamped for a different model or catalog stops the run (see
+#     `CaseJournal::open`), so a report can never be half one build and half
+#     another.
 #
 # USAGE
 #   scripts/nightly-eval.sh                 # tonight's run, resuming if it can
 #   scripts/nightly-eval.sh --model qwen2.5-3b
+#   scripts/nightly-eval.sh --print-run-dir # where it would go; touches nothing
 #   tail -f ~/.tacet/nightly/latest.log     # the live view
 #
 # The exit code is the eval's, so cron mail says whether it passed.
@@ -37,10 +40,12 @@ FEATURES="metal"
 case "$(uname -s)" in
   Linux) FEATURES="cuda" ;;
 esac
+PRINT_RUN_DIR=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --model) MODEL="$2"; shift 2 ;;
     --features) FEATURES="$2"; shift 2 ;;
+    --print-run-dir) PRINT_RUN_DIR=1; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -48,16 +53,52 @@ done
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO" || exit 1
 
-# THE COMMIT IS PART OF THE DIRECTORY NAME, and that is the resume key. Two
-# runs of the same commit share a journal and continue each other; a new commit
-# starts a new one, because the cases are not comparable across a code change
-# and the journal's own stamp would refuse them anyway.
+# THE DIRECTORY NAME IS THE RESUME KEY, and it names exactly what was built:
+# the commit, the uncommitted changes if there are any, the model and the
+# features. Two runs of the same code share a journal and continue each other;
+# different code starts a new one, because the cases are not comparable across
+# a code change.
+#
+# THIS DIRECTORY IS WHAT KEEPS TWO BUILDS APART, not the journal. The journal's
+# own stamp (`CaseJournal::open`) refuses a different model, engine or catalog;
+# it is not relied on here to tell one commit from another, so the key has to.
+#
+# NO DATE IN IT. It used to be `<yyyymmdd>-<commit>`, so a run interrupted at
+# 02:00 and re-run after midnight — the common case for a job that starts at
+# 03:07 and takes most of an hour — opened a fresh directory and started from
+# case 1, while the header above promised it would continue. The log carries
+# the start time of every attempt instead.
+#
+# `-dirty` CARRIES A HASH OF THE DIFF. A bare `-dirty` flag made every
+# uncommitted state of one commit share a journal, so a run could be half one
+# edit and half the next. The hash covers tracked changes against HEAD and the
+# content of untracked, non-ignored files (a new module is an untracked file),
+# and it is computed without writing anything into the repository.
 COMMIT="$(git rev-parse --short HEAD)"
+working_copy_hash() {
+  {
+    git diff HEAD --binary
+    git ls-files --others --exclude-standard -z | while IFS= read -r -d '' f; do
+      printf '%s\0' "$f"
+      git hash-object -- "$f"
+    done
+  } | git hash-object --stdin | cut -c1-12
+}
 DIRTY=""
-if ! git diff --quiet || ! git diff --cached --quiet; then DIRTY="-dirty"; fi
-STAMP="$(date +%Y%m%d)"
+if ! git diff HEAD --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+  DIRTY="-dirty-$(working_copy_hash)"
+fi
 OUT="$HOME/.tacet/nightly"
-RUN="$OUT/$STAMP-$COMMIT$DIRTY"
+RUN="$OUT/$COMMIT$DIRTY-${MODEL//\//_}-$FEATURES"
+
+# `--print-run-dir` answers "where would tonight's run go" and stops before
+# touching anything — no directory, no build, no model. It exists so the resume
+# key can be tested by running the script instead of by reading it:
+# `the_journal_directory_survives_midnight_and_tells_edits_apart`.
+if [ "$PRINT_RUN_DIR" = 1 ]; then
+  echo "$RUN"
+  exit 0
+fi
 mkdir -p "$RUN"
 
 LOG="$RUN/run.log"
