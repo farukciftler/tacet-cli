@@ -146,15 +146,32 @@ pub fn fold(message: &str) -> String {
 /// unreadable — a router that panics because a generated file was truncated is
 /// worse than one that falls back to its trigger list.
 pub fn predict(message: &str) -> Option<&'static str> {
-    if BLOB.len() < 8 {
+    predict_with(BLOB, message)
+}
+
+/// The header of a blob, checked against the blob's own length, or `None`.
+///
+/// SEPARATE FROM `predict` SO IT CAN BE FED A BAD BLOB. The shipped file is
+/// well formed, so a test that only ever reads it cannot tell this guard from
+/// its absence: the audit of 9 Oct 2026 (T2) deleted the guard in a copy and
+/// all four tests in this file still passed. The arithmetic is checked because
+/// the counts come from the file — `u32::MAX * 3` wraps on a 32-bit target and
+/// would let a short weight slice past the length comparison.
+fn header(blob: &[u8]) -> Option<(usize, usize, &[u8])> {
+    if blob.len() < 8 {
         return None;
     }
-    let buckets = u32::from_le_bytes(BLOB[0..4].try_into().ok()?) as usize;
-    let classes = u32::from_le_bytes(BLOB[4..8].try_into().ok()?) as usize;
-    let weights = &BLOB[8..];
-    if classes != CLASSES.len() || weights.len() != buckets * classes || buckets == 0 {
+    let buckets = u32::from_le_bytes(blob[0..4].try_into().ok()?) as usize;
+    let classes = u32::from_le_bytes(blob[4..8].try_into().ok()?) as usize;
+    let weights = &blob[8..];
+    if classes != CLASSES.len() || buckets == 0 || weights.len() != buckets.checked_mul(classes)? {
         return None;
     }
+    Some((buckets, classes, weights))
+}
+
+fn predict_with(blob: &[u8], message: &str) -> Option<&'static str> {
+    let (buckets, classes, weights) = header(blob)?;
 
     let folded = fold(message);
     let text = folded.as_bytes();
@@ -173,6 +190,19 @@ pub fn predict(message: &str) -> Option<&'static str> {
                 *slot += i32::from(weights[row + c] as i8);
             }
         }
+    }
+
+    // NO EVIDENCE IS NOT A VOTE. The fold drops everything outside ASCII and
+    // the Turkish letters, so "спасибо", "谢谢", "שלום" and the empty string all
+    // fold to " " and hash no n-gram at all. Every accumulator is then 0, and
+    // `max_by_key` returns the LAST of equal maxima — the last class is
+    // `message_intent`, so before this check all four (audit M19, measured
+    // 9 Oct 2026) put `message_intent`, `search_filter`, `web_search` and
+    // `web_fetch` in the router's top four while "thanks" reached neither tool.
+    // The model has said nothing about such a message, so it abstains and the
+    // trigger list decides alone.
+    if acc.iter().all(|&v| v == 0) {
+        return None;
     }
 
     let best = acc
@@ -256,13 +286,57 @@ mod tests {
 
     /// A truncated or replaced blob must degrade to the trigger list, never
     /// panic. The header is checked against the file's own length for that.
+    ///
+    /// THIS USED TO READ THE SHIPPED BLOB'S HEADER, which is well formed, so it
+    /// passed with the guard deleted (audit T2). It now feeds the guard blobs
+    /// that are wrong in each way the guard checks, through the same code path
+    /// `predict` takes, and a message long enough to hash many n-grams so that
+    /// an unguarded read would index past the end of the weights.
     #[test]
     fn a_malformed_blob_is_refused_rather_than_indexed() {
-        // The shipped one is well formed; this asserts the guard exists by
-        // checking the header the guard reads.
-        let buckets = u32::from_le_bytes(BLOB[0..4].try_into().unwrap()) as usize;
-        let classes = u32::from_le_bytes(BLOB[4..8].try_into().unwrap()) as usize;
-        assert_eq!(classes, CLASSES.len());
-        assert_eq!(BLOB.len(), 8 + buckets * classes);
+        // The control: the shipped blob passes the guard, so the refusals below
+        // are about the malformation and not a guard that refuses everything.
+        assert!(header(BLOB).is_some(), "the shipped blob was refused");
+
+        let message = "free things to do in London this weekend";
+        let well_formed = |buckets: u32, classes: u32, weights: usize| {
+            let mut b = Vec::new();
+            b.extend_from_slice(&buckets.to_le_bytes());
+            b.extend_from_slice(&classes.to_le_bytes());
+            b.resize(8 + weights, 1);
+            b
+        };
+        let truncated = {
+            let mut b = BLOB.to_vec();
+            b.truncate(BLOB.len() / 2);
+            b
+        };
+        for (what, blob) in [
+            ("empty", Vec::new()),
+            ("shorter than the header", vec![0u8; 7]),
+            ("truncated", truncated),
+            ("one weight short", well_formed(1024, 3, 1024 * 3 - 1)),
+            ("one weight long", well_formed(1024, 3, 1024 * 3 + 1)),
+            ("wrong class count", well_formed(1024, 2, 1024 * 2)),
+            ("zero buckets", well_formed(0, 3, 0)),
+            ("counts that overflow", well_formed(u32::MAX, 3, 16)),
+        ] {
+            assert_eq!(header(&blob), None, "accepted a blob that is {what}");
+            assert_eq!(
+                predict_with(&blob, message),
+                None,
+                "predicted from a blob that is {what}"
+            );
+        }
+    }
+
+    /// NON-LATIN SMALL TALK AND THE EMPTY STRING carry no n-gram the model can
+    /// see, so the gate abstains rather than letting a tie-break pick a tool.
+    /// Before the fix every one of these returned `Some("message_intent")`.
+    #[test]
+    fn a_message_with_no_ngrams_reaches_neither_tool() {
+        for quiet in ["спасибо", "谢谢", "こんにちは", "שלום", "", "   "] {
+            assert_eq!(predict(quiet), None, "fired on {quiet:?}");
+        }
     }
 }
