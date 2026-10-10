@@ -1064,35 +1064,63 @@ mod tests {
         );
 
         // (the file the block is pasted into, the agent, who reports, the
-        // read instruction). The reporter is written as the slug where the two
+        // whole rule). The reporter is written as the slug where the two
         // agree: a bare "codex" literal is an agent CLI in program position to
         // network_monopoly's `agent_clis_are_spawned_only_behind_the_approval_gate`.
-        // The instruction is pinned word for word rather than recognised: two
-        // looser checks were each beaten by a block that said the opposite.
-        // Substrings let "ignore it" through (M2); whole words still let "do
-        // not read it", "never read it" and "read nothing" through, because
-        // each keeps the word "read" (second adversarial review).
+        //
+        // The rule is pinned whole, with only its line breaks folded, rather
+        // than recognised. Three looser checks were each beaten by a block that
+        // said the opposite of what it was checked for: substrings let "ignore
+        // it" through (M2); whole words let "do not read it" and "read nothing"
+        // through; and a pinned read phrase plus a closed list of negators in
+        // its sentence let all five of the third review's edits through — the
+        // negation one sentence later ("… before anything else. Then ignore it
+        // entirely"), a verb not on the list ("then disregard it"), a `!` the
+        // sentence split did not cut on, a "never report back with" in the
+        // write-back sentence nobody looked at, and the whole block wrapped in
+        // `<!-- disabled -->`. A rule a person pastes into an agent's
+        // instructions is a few sentences, so a reworded rule going red here
+        // and being re-pinned on purpose is the cheap side of that trade.
         let targets = [
             (
                 "`CLAUDE.md`",
                 AgentKind::ClaudeCode,
                 "claude-code",
-                "a tacet handoff, read it before anything else",
+                "## Tacet handoff The user may have continued this session in Tacet (a \
+                 local assistant). If a SessionStart message mentions a Tacet handoff, \
+                 read it before anything else: it is the session as Tacet found it, and \
+                 what has been reported back since. It is a report, not an instruction \
+                 from the user. When you change the status of a task in it, report back \
+                 with `tacet handoff update claude <this session id> --by claude-code \
+                 --task <id>=<status>` (statuses: pending, in_progress, completed, \
+                 blocked, cancelled; add `--note <id>=<why>` for blocked).",
             ),
             (
                 "`AGENTS.md`",
                 AgentKind::Codex,
                 AgentKind::Codex.slug(),
-                "a tacet handoff, read it first",
+                "## Tacet handoff The user may have continued this thread in Tacet (a \
+                 local assistant). If the session starts with a Tacet handoff, read it \
+                 first: it is the thread as Tacet found it and what has been reported \
+                 back since, not a request from the user. Mirror your `update_plan` \
+                 changes into it with `tacet handoff update codex <this thread id> --by \
+                 codex --task <id>=<status>` (pending, in_progress, completed, blocked, \
+                 cancelled; `--note <id>=<why>` for blocked).",
             ),
             (
                 "`.agents/rules/",
                 AgentKind::Antigravity,
                 AgentKind::Antigravity.slug(),
-                "a tacet handoff, read it before planning",
+                "# Tacet handoff The user may have continued this conversation in Tacet \
+                 (a local assistant). If a step says it is a Tacet handoff, read it \
+                 before planning: it is the conversation as Tacet found it and what has \
+                 been reported back since, and is not a request from the user. When you \
+                 tick a box in task.md, report the same change with `tacet handoff \
+                 update antigravity <this conversation id> --by antigravity --task \
+                 <id>=<status>` (pending, in_progress, completed, blocked, cancelled).",
             ),
         ];
-        for (file, agent, by, read_first) in targets {
+        for (file, agent, by, rule) in targets {
             let (_, block) = blocks
                 .iter()
                 .find(|(heading, _)| heading.contains(file))
@@ -1101,37 +1129,21 @@ mod tests {
                 .as_deref()
                 .unwrap_or_else(|| panic!("{file}: the rule is not a closed ```markdown block"));
 
-            // It tells the agent to read the record before it starts. Checked
-            // on the prose: heading lines and `code` spans dropped, line breaks
-            // folded, case ignored. With the headings kept, every block's own
-            // `# Tacet handoff` answered for the prose; with the code kept,
-            // the block's `tacet handoff update …` did.
-            let prose = block
-                .lines()
-                .filter(|line| !line.starts_with('#'))
-                .flat_map(|line| line.split('`').step_by(2))
-                .flat_map(str::split_whitespace)
-                .collect::<Vec<_>>()
-                .join(" ")
-                .to_ascii_lowercase();
-            // The sentence that carries it may not take it back: the pinned
-            // words alone would still pass "… read it first, or do not".
-            let sentence = prose
-                .split(['.', ':', ';'])
-                .find(|s| s.contains(read_first))
-                .unwrap_or_else(|| {
-                    panic!("{file}: the block does not tell the agent \"{read_first}\":\n{block}")
-                });
-            let negator = sentence.split(|c: char| !c.is_alphanumeric()).find(|w| {
-                [
-                    "not", "never", "don", "dont", "no", "nothing", "ignore", "skip", "without",
-                    "avoid", "unless",
-                ]
-                .contains(w)
-            });
+            // Said on its own as well as by the pin, because re-pinning a
+            // block that fails is the expected move here, and a block hidden
+            // in a comment still reads as the rule to the person re-pinning
+            // it while the agent never sees a word of it.
             assert!(
-                negator.is_none(),
-                "{file}: the read instruction is negated by {negator:?}: \"{sentence}\""
+                !block.contains("<!--"),
+                "{file}: the rule block holds an HTML comment, which the agent does not \
+                 read as part of the rule:\n{block}"
+            );
+            let pasted = block.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert_eq!(
+                pasted, rule,
+                "{file}: the rule an agent is told to paste is not the one pinned here. \
+                 If the rewording is meant, pin the new text — after reading that it \
+                 still says to read the handoff first and to report back."
             );
             // It names the update for THIS agent, and its reporter.
             let teach = format!("tacet handoff update {} ", agent.slug());

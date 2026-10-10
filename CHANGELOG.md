@@ -111,7 +111,11 @@ without the fix.
 * A continuation's handoff record starts with the session as Tacet found it,
   labelled as the other agent's work, and no tasks; the note and the hook no
   longer say Tacet did that work (RG-27). The hook tells the agent to run the
-  same absolute `tacet` path the hook entry runs (RG-21).
+  same absolute `tacet` path the hook entry runs (RG-21). Each agent's rule
+  block in `docs/agent-handoff.md` is pinned word for word by a test that also
+  runs the `tacet handoff update` it teaches through the real parser; a pinned
+  phrase plus a list of negators had let a block that told the agent to
+  discard the handoff, or never to report back, pass (RG-27).
 * `write_code`'s test-file rule follows the extension: `testimonials.js` is
   delivered, and a refusal names the runner that would really collect the
   file (M3). The digest lists a file named both absolute and relative once
