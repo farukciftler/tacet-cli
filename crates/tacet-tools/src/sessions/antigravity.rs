@@ -434,19 +434,26 @@ pub fn parse_task_md(text: &str) -> Vec<TaskLine> {
     let mut out: Vec<TaskLine> = Vec::new();
     // (indent, index in `out`) of the items still open above this line.
     let mut open: Vec<(usize, usize)> = Vec::new();
-    let mut fence: Option<&str> = None;
+    // The opener's character and run length. CommonMark closes a fence only
+    // with the same character, a run at least as long, and nothing after it:
+    // remembering just "```" let the first inner ``` of a ````md example close
+    // the outer fence, and the example's checkboxes became real Pending tasks.
+    let mut fence: Option<(char, usize)> = None;
     for line in text.lines() {
         let trimmed = line.trim_start();
-        for marker in ["```", "~~~"] {
-            if trimmed.starts_with(marker) {
-                fence = match fence {
-                    None => Some(marker),
-                    Some(open) if open == marker => None,
-                    other => other,
-                };
-            }
+        if let Some((ch, run)) = fence_run(trimmed) {
+            fence = match fence {
+                None => Some((ch, run)),
+                Some((open_ch, open_run))
+                    if ch == open_ch && run >= open_run && trimmed[run..].trim().is_empty() =>
+                {
+                    None
+                }
+                still_open => still_open,
+            };
+            continue;
         }
-        if fence.is_some() || trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+        if fence.is_some() {
             continue;
         }
         let Some(item) = parse_task_md_line(line) else {
@@ -466,6 +473,15 @@ pub fn parse_task_md(text: &str) -> Vec<TaskLine> {
         open.push((indent, out.len() - 1));
     }
     out
+}
+
+/// A fence marker at the start of `trimmed`: its character and how many of
+/// it run, when that is three or more backticks or tildes.
+fn fence_run(trimmed: &str) -> Option<(char, usize)> {
+    let ch = trimmed.chars().next().filter(|c| matches!(c, '`' | '~'))?;
+    // Both marker characters are one byte, so the count is also a byte index.
+    let run = trimmed.chars().take_while(|&c| c == ch).count();
+    (run >= 3).then_some((ch, run))
 }
 
 /// One of the agent's reports to the user, with what its metadata says.
@@ -944,5 +960,77 @@ not json at all
                 (0, None, Status::Cancelled, "Rewrite in Go"),
             ]
         );
+
+        // A markdown example inside a longer fence: the inner ``` lines open
+        // and close nothing, because a fence closes only on a run of its own
+        // character at least as long as the one that opened it.
+        let nested = "- [x] A\r\n    - [/] A1\r\n````md\r\n```\r\n- [ ] inner example\r\n```\r\n````\r\n* [X] B\r\n";
+        let got: Vec<_> = parse_task_md(nested)
+            .iter()
+            .map(|t| (t.depth, t.title.clone()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (0, "A".to_string()),
+                (1, "A1".to_string()),
+                (0, "B".to_string())
+            ]
+        );
+
+        // ```md inside a ``` fence is an info string on an opener, not a
+        // closer; a tilde run never closes a backtick fence.
+        let info = "```\n```md\n- [ ] still an example\n~~~\n- [ ] and this\n```\n- [ ] C\n";
+        let got: Vec<_> = parse_task_md(info)
+            .iter()
+            .map(|t| t.title.clone())
+            .collect();
+        assert_eq!(got, ["C"]);
+    }
+
+    /// RG-17 is the caller that shows this warning; until it lands, this is
+    /// what proves the reader gives the gate what it needs. The reader has
+    /// no version to pass (`session.version` is None: nothing in brain/
+    /// records one), so every root must warn, and under its own flavor's
+    /// label — a root mapped to the wrong flavor would cite the wrong
+    /// measured range.
+    #[test]
+    fn every_root_reads_with_a_version_warning_under_its_own_flavor() {
+        use super::super::version::{ReadVerdict, check_read};
+        let roots = roots_under(Path::new("/home/u"));
+        let warnings: Vec<String> = roots
+            .iter()
+            .map(
+                |r| match check_read(AgentKind::Antigravity, flavor(r), None) {
+                    ReadVerdict::Unknown { warning } => warning,
+                    ReadVerdict::Known => panic!("{} read as a known version", r.display()),
+                },
+            )
+            .collect();
+        // The agent's name comes from `display_name`, not a literal: the
+        // network-monopoly guard reads any literal naming the IDE launcher as
+        // a program it might run.
+        let name = AgentKind::Antigravity.display_name();
+        let expected = [
+            (
+                format!("{name} (ide) of unrecorded version"),
+                "versions 2.5.5–2.5.5 were measured",
+            ),
+            (
+                format!("{name} (cli) of unrecorded version"),
+                "versions 1.1.10–1.1.10 were measured",
+            ),
+            (
+                format!("{name} of unrecorded version"),
+                "no version of it was measured",
+            ),
+        ];
+        assert_eq!(warnings.len(), expected.len());
+        for (warning, (prefix, range)) in warnings.iter().zip(&expected) {
+            assert!(
+                warning.starts_with(prefix.as_str()) && warning.contains(range),
+                "{warning}"
+            );
+        }
     }
 }
