@@ -42,7 +42,6 @@ cd "$REPO" || exit 1
 export PATH="$HOME/.cargo/bin:$PATH"
 
 MODEL_DIR="${1:-}"
-BIN="$REPO/target/release/tacet"
 
 # THE BINARY IS BUILT HERE, FROM THIS CHECKOUT, BEFORE ANYTHING IS MEASURED.
 #
@@ -68,8 +67,26 @@ else
 fi
 FEATURE_ARGS=(--features "$FEATURES")
 [ "$FEATURES" = "none" ] && FEATURE_ARGS=()
-if ! cargo build --release -p tacet-cli ${FEATURE_ARGS[@]+"${FEATURE_ARGS[@]}"} >&2; then
+# THE PATH IS CARGO'S ANSWER, NOT A GUESS. This first built and then measured a
+# hard-coded `target/release/tacet` — but `CARGO_TARGET_DIR`, `build.target-dir`
+# and `build.target` all move where a release build lands, and with any of them
+# set the fresh build went elsewhere while the check measured whatever older
+# binary sat in `target/`. `--print-features` below would still pass whenever
+# that stale binary had the same features: the very failure this build exists to
+# stop. So cargo is asked, in its own JSON, for the executable it just produced
+# (`fresh` or not, a `compiler-artifact` line names it), and that file is what
+# gets measured. Rendered diagnostics still go to the terminal on stderr.
+if ! build_json="$(cargo build --release -p tacet-cli --bin tacet \
+  ${FEATURE_ARGS[@]+"${FEATURE_ARGS[@]}"} --message-format=json-render-diagnostics)"; then
   echo "the build failed; nothing was measured" >&2
+  exit 127
+fi
+BIN="$(printf '%s\n' "$build_json" \
+  | jq -r 'select(.reason == "compiler-artifact" and .target.name == "tacet"
+             and (.target.kind | index("bin"))) | .executable // empty' 2>/dev/null \
+  | tail -1)"
+if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
+  echo "cargo did not report a tacet executable (is jq installed?); nothing was measured" >&2
   exit 127
 fi
 
@@ -79,7 +96,7 @@ fi
 # build above, and measuring it would be measuring something else.
 got="$("$BIN" --print-features 2>/dev/null)"
 if [ "$got" != "$FEATURES" ]; then
-  echo "target/release/tacet reports features '$got', expected '$FEATURES'; refusing to measure it" >&2
+  echo "$BIN reports features '$got', expected '$FEATURES'; refusing to measure it" >&2
   exit 127
 fi
 # A build with no inference feature answers every message from FakeEngine. That
@@ -89,7 +106,7 @@ if [ "$FEATURES" = "none" ] && [ -z "${TACET_SMOKE_SCRIPT+x}" ]; then
   echo "TACET_SMOKE_FEATURES=none builds no model; that is only for smoke-selftest.sh" >&2
   exit 127
 fi
-echo "measuring $(git rev-parse --short HEAD 2>/dev/null)$(git diff --quiet HEAD 2>/dev/null || echo -dirty), features $FEATURES" >&2
+echo "measuring $(git rev-parse --short HEAD 2>/dev/null)$(git diff --quiet HEAD 2>/dev/null || echo -dirty), features $FEATURES, $BIN" >&2
 
 if [ -n "$MODEL_DIR" ]; then
   export TACET_MODEL="$MODEL_DIR/model.gguf"

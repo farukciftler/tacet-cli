@@ -341,8 +341,27 @@ fn the_supply_chain_checks_this_repository_can_break_are_a_hard_gate() {
                         .map(|c| c.trim().to_string())
                 })
                 .unwrap_or_else(|| "check".to_string());
-            let soft = j.key("continue-on-error").iter().any(|v| v == "true");
-            (j.name.clone(), command, soft)
+            // SOFT AT EITHER LEVEL. GitHub honours `continue-on-error` on the
+            // job and on the step, and either one turns a failed check into a
+            // green tick. The first version of this guard read only the job
+            // key; an adversarial review put `continue-on-error: true` on the
+            // cargo-deny-action STEP of the gating job and this test stayed
+            // green while a `git =` dependency would have merged. Anything but
+            // a literal `false` counts — `${{ … }}` and `'true'` are soft too.
+            let is_soft = |v: &str| v.trim().trim_matches(['\'', '"']) != "false";
+            let at_job = j.key("continue-on-error").iter().any(|v| is_soft(v));
+            let at_step = j
+                .steps()
+                .iter()
+                .filter(|s| s.iter().any(|l| l.contains("cargo-deny-action")))
+                .flatten()
+                .any(|l| {
+                    l.trim()
+                        .trim_start_matches("- ")
+                        .strip_prefix("continue-on-error:")
+                        .is_some_and(is_soft)
+                });
+            (j.name.clone(), command, at_job || at_step)
         })
         .collect();
     assert!(!deny.is_empty(), "ci.yml runs cargo-deny nowhere");

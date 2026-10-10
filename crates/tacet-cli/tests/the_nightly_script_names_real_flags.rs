@@ -38,7 +38,7 @@ fn flags_used(text: &str) -> Vec<String> {
         if trimmed.starts_with('#') {
             continue;
         }
-        if !inside && !trimmed.contains("target/release/tacet") {
+        if !inside && !trimmed.contains("\"$BIN\" eval") {
             continue;
         }
         inside = true;
@@ -154,6 +154,48 @@ fn the_script_keeps_its_three_promises() {
         "an interrupted run leaves a zero-byte report, and comparing against it \
          reads as a run in which nothing passed"
     );
+}
+
+/// THE BINARY THAT RUNS IS THE BINARY THAT WAS BUILT.
+///
+/// The build step is there so the number belongs to this commit, but the eval
+/// then ran a hard-coded `./target/release/tacet`. `CARGO_TARGET_DIR`,
+/// `build.target-dir` and `build.target` each send a release build somewhere
+/// else, and the run would measure whatever older binary was left in
+/// `target/` — the stale-binary number the build exists to prevent. An
+/// adversarial review of audit M29 found the same hole in smoke.sh.
+#[test]
+fn the_eval_runs_the_binary_cargo_reports_building() {
+    let code: String = script()
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !code.contains("target/release/tacet"),
+        "scripts/nightly-eval.sh names `target/release/tacet` again; any \
+         target-dir override makes that a stale binary"
+    );
+    let build = code
+        .find("cargo build --release")
+        .expect("the script builds");
+    assert!(
+        code[build..].contains("--message-format=json"),
+        "the build must report the executable it produced"
+    );
+    let assigned = code.find("BIN=").expect("the script sets BIN");
+    assert!(
+        assigned > build,
+        "BIN is fixed before the build, so it cannot be the build's output"
+    );
+    let assignment = &code[assigned..];
+    let assignment = &assignment[..assignment.find("\nif ").unwrap_or(assignment.len())];
+    assert!(
+        assignment.contains("$build_json") && assignment.contains(".executable"),
+        "BIN must be the `executable` cargo reported: `{assignment}`"
+    );
+    let first_run = code.find("\"$BIN\" eval").expect("the eval runs $BIN");
+    assert!(first_run > assigned, "the eval runs before BIN is known");
 }
 
 /// THE RESUME KEY, TESTED BY RUNNING THE SCRIPT RATHER THAN READING IT.

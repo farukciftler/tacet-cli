@@ -127,14 +127,34 @@ fi
 
 # THE BUILD IS PART OF THE MEASUREMENT. A run against a stale binary is worse
 # than no run: it produces a number attributed to a commit it did not measure.
+#
+# AND THE BINARY RUN IS THE ONE CARGO REPORTS BUILDING, not a hard-coded
+# `./target/release/tacet`: `CARGO_TARGET_DIR`, `build.target-dir` and
+# `build.target` each move a release build elsewhere, and the run would then
+# measure whatever older binary was left in `target/` — the stale-binary number
+# this build step exists to prevent. smoke.sh had the same hole (audit M29).
 echo "--- building" >> "$LOG"
-if ! cargo build --release -p tacet-cli --features "$FEATURES" >> "$LOG" 2>&1; then
+if ! command -v jq >/dev/null 2>&1; then
+  echo "jq is not on PATH; the built binary cannot be located" >> "$LOG"
+  exit 127
+fi
+if ! build_json="$(cargo build --release -p tacet-cli --bin tacet --features "$FEATURES" \
+  --message-format=json-render-diagnostics 2>> "$LOG")"; then
   echo "the build failed; nothing was measured" >> "$LOG"
   exit 1
 fi
+BIN="$(printf '%s\n' "$build_json" \
+  | jq -r 'select(.reason == "compiler-artifact" and .target.name == "tacet"
+             and (.target.kind | index("bin"))) | .executable // empty' \
+  | tail -1)"
+if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
+  echo "cargo did not report a tacet executable; nothing was measured" >> "$LOG"
+  exit 1
+fi
+echo "binary    $BIN" >> "$LOG"
 
 echo "--- running (resumable; $(ls "$RUN/cases" 2>/dev/null | grep -c '\.json$') files already there)" >> "$LOG"
-./target/release/tacet eval --tool-selection --model "$MODEL" --json \
+"$BIN" eval --tool-selection --model "$MODEL" --json \
   --journal "$RUN/cases" \
   > "$RUN/report.json" 2>> "$LOG"
 CODE=$?
@@ -155,7 +175,7 @@ BASE="crates/tacet-eval/baselines/qwen3-4b-both.json"
 if [ -f "$BASE" ]; then
   echo >> "$LOG"
   echo "--- against $BASE" >> "$LOG"
-  ./target/release/tacet eval --compare "$BASE" "$RUN/report.json" >> "$LOG" 2>&1
+  "$BIN" eval --compare "$BASE" "$RUN/report.json" >> "$LOG" 2>&1
 fi
 
 echo >> "$LOG"

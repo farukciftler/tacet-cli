@@ -96,7 +96,7 @@ cost is a compile, not the tests.
 |---|---|---|---|
 | `eval` | Tacet's LOGIC, on a mock engine | milliseconds | yes |
 | `eval --routing` | which tools the ROUTER puts in the prompt | milliseconds | yes |
-| `scripts/smoke.sh [model-dir]` | whether the answer is READABLE, on real weights | ~4 min | no |
+| `scripts/smoke.sh [model-dir]` | whether the answer is READABLE, on real weights | ~4 min on a built tree (it builds first) | no |
 | `eval --tool-selection --model <name>` | the MODEL's choice, on real weights | ~48 min on Metal (~6 min on a 3090) | no |
 
 Reach for `--routing` first when a tool "stops being called". The router shows the
@@ -130,8 +130,8 @@ messages, so it gates.
 
 ```bash
 scripts/smoke-selftest.sh            # ~5 s on a built tree, no weights: does the check go red?
-scripts/smoke.sh                     # ~4 min, the configured model
-scripts/smoke.sh ~/models/qwen3-4b   # ~4 min, a named one
+scripts/smoke.sh                     # ~4 min on a built tree, the configured model
+scripts/smoke.sh ~/models/qwen3-4b   # ~4 min on a built tree, a named one
 ```
 
 **It builds before it measures.** Both scripts run `cargo build --release` from
@@ -139,7 +139,11 @@ the checkout first (metal on macOS, cuda on Linux, `TACET_SMOKE_FEATURES=candle`
 for a CPU-only box) and then ask the binary `--print-features`. They used to
 measure whatever `target/release/tacet` held — and `nightly-eval.sh` writes that
 same path from whatever was checked out at 03:07, so the release gate could pass
-on last night's binary.
+on last night's binary. The path they run is the `executable` cargo reports for
+that build (`--message-format=json`), not a hard-coded `target/release/tacet`:
+with `CARGO_TARGET_DIR`, `build.target-dir` or `build.target` set, the fresh
+build lands elsewhere and the old file in `target/` would otherwise be measured.
+They need `jq` for that; `smoke.sh` already needed it.
 
 **Run the self-test too, and run it first.** A guard nobody has watched fail is
 not a guard, and this one is easy to break silently — read the wrong stream,

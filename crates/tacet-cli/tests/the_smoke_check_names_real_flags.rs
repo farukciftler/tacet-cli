@@ -262,6 +262,48 @@ fn the_smoke_check_builds_the_binary_it_measures() {
         "the binary must be asked what it was built with, not assumed to be the \
          build just made"
     );
+
+    // THE BUILD AND THE MEASUREMENT AGREE ON WHERE THE BINARY IS. The first
+    // fix built and then measured a hard-coded `target/release/tacet`; with
+    // `CARGO_TARGET_DIR`, `build.target-dir` or `build.target` set the fresh
+    // build landed elsewhere and the stale file in `target/` was measured —
+    // and passed `--print-features` whenever its features matched. So `BIN`
+    // must be read out of the build's own JSON, after the build.
+    assert!(
+        !text.contains("target/release/tacet"),
+        "scripts/smoke.sh names `target/release/tacet` again; any target-dir \
+         override sends the build elsewhere and that path is a stale binary"
+    );
+    let build_end = text[build..].find('\n').map_or(text.len(), |n| build + n);
+    let invocation: String = text[build..]
+        .lines()
+        .scan(true, |more, line| {
+            let keep = *more;
+            *more = line.trim_end().ends_with('\\');
+            keep.then_some(line)
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        invocation.contains("--message-format=json"),
+        "the build must report what it produced (`--message-format=json…`) so \
+         the path measured is cargo's answer, not a guess: `{invocation}`"
+    );
+    let assigned = text
+        .find("BIN=")
+        .expect("scripts/smoke.sh no longer sets BIN");
+    assert!(
+        assigned > build_end,
+        "BIN is fixed before the build runs, so it cannot be the build's output"
+    );
+    let assignment = &text[assigned
+        ..text[assigned..]
+            .find("\nif ")
+            .map_or(text.len(), |n| assigned + n)];
+    assert!(
+        assignment.contains("$build_json") && assignment.contains(".executable"),
+        "BIN must be the `executable` cargo reported for this build: `{assignment}`"
+    );
 }
 
 /// THE SEAM IS `+x`, NOT `:-`.
