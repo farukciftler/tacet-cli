@@ -50,6 +50,7 @@ use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use tacet_kernel::context::CancelToken;
 use tacet_kernel::{
     ArgSchema, Field, Tool, ToolContext, ToolError, ToolFuture, ToolOutcome, ToolState,
     TraceUpdate, boxed,
@@ -97,6 +98,15 @@ unsafe extern "C" {
 
 #[cfg(unix)]
 const SIGKILL: i32 = 9;
+#[cfg(unix)]
+const SIGTERM: i32 = 15;
+
+/// After a Ctrl-C (audit M4): how long the group gets between SIGTERM and
+/// SIGKILL. SIGTERM first because a stopped `cargo` or `git` that gets to run
+/// its own cleanup leaves no half-written lock file; SIGKILL after, because a
+/// program can ignore SIGTERM and the user's "stop" cannot be optional. Half a
+/// second keeps the whole stop inside the ~1 s the audit asks for.
+const TERM_GRACE: Duration = Duration::from_millis(500);
 
 // ---------------------------------------------------------------------------
 // The allowlist
@@ -249,6 +259,9 @@ enum RunOutcome {
     },
     /// The deadline passed and the process GROUP was killed.
     TimedOut { ms: u128 },
+    /// The call was told to stop (Ctrl-C, or the executor's deadline) and the
+    /// process GROUP was ended — SIGTERM, then SIGKILL.
+    Stopped { ms: u128 },
 }
 
 /// Spawns the program, waits with a deadline, and returns whatever came back.
@@ -260,7 +273,13 @@ enum RunOutcome {
 /// was a measured failure over there; rediscovering them here would mean
 /// rediscovering the bugs first. The function is not reused because that one is
 /// welded to the shield and to a wiped environment, and both are wrong here.
-fn execute(program: &str, argv: &[OsString], dir: &Path, timeout: Duration) -> RunResult {
+fn execute(
+    program: &str,
+    argv: &[OsString],
+    dir: &Path,
+    timeout: Duration,
+    cancel: &CancelToken,
+) -> RunResult {
     let mut command = Command::new(program);
     command
         .args(argv)
@@ -346,6 +365,7 @@ fn execute(program: &str, argv: &[OsString], dir: &Path, timeout: Duration) -> R
     };
 
     let mut timed_out = false;
+    let mut stopped = false;
     let exit = loop {
         match child.try_wait() {
             Ok(Some(state)) => break Some(state),
@@ -361,10 +381,39 @@ fn execute(program: &str, argv: &[OsString], dir: &Path, timeout: Duration) -> R
             timed_out = true;
             break None;
         }
+        // THE USER'S STOP IS READ ON THE SAME TICK AS THE CLOCK (audit M4). It
+        // used to be read by nobody: Ctrl-C during `sleep 9` printed
+        // "(cancelling…)" and then "exit 0 · 9018 ms".
+        if cancel.is_cancelled() {
+            stopped = true;
+            break None;
+        }
         std::thread::sleep(POLL_INTERVAL);
     };
 
-    if timed_out {
+    if stopped {
+        // SIGTERM TO THE GROUP, a bounded wait, then SIGKILL — see `TERM_GRACE`.
+        // The reap at the end is what keeps a zombie per stopped call away.
+        #[cfg(unix)]
+        unsafe {
+            killpg(group, SIGTERM);
+        }
+        let asked = Instant::now();
+        while asked.elapsed() < TERM_GRACE {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                break;
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
+        // The group, even when the leader already left: a child that ignored
+        // SIGTERM is still in it.
+        #[cfg(unix)]
+        unsafe {
+            killpg(group, SIGKILL);
+        }
+        child.kill().ok();
+        child.wait().ok();
+    } else if timed_out {
         // THE GROUP, then reap. `child.kill()` alone leaves the descendants;
         // `kill` without `wait` leaves a zombie per call.
         #[cfg(unix)]
@@ -411,6 +460,9 @@ fn execute(program: &str, argv: &[OsString], dir: &Path, timeout: Duration) -> R
     let (out, cut_out) = drain(&out_sink);
     let (err, cut_err) = drain(&err_sink);
 
+    if stopped {
+        return Ok(RunOutcome::Stopped { ms });
+    }
     if timed_out {
         return Ok(RunOutcome::TimedOut { ms });
     }
@@ -612,6 +664,23 @@ impl Tool for ShellTool {
         true
     }
 
+    /// IT ACTS ON THE HOST (audit H2-c). The allow-list is the user's choice of
+    /// programs; the ARGUMENTS are the model's, and `git -c alias.x='!cmd' x` or
+    /// `python3 -c …` turn an allowed program into any program. After the
+    /// session has read a web page, a remote answer or another agent's
+    /// transcript, those arguments may be that text's, so every call asks.
+    fn acts_on_host(&self) -> bool {
+        true
+    }
+
+    /// The user's own cap plus room for the stop to be reported: SIGTERM,
+    /// `TERM_GRACE`, SIGKILL, the readers' `JOIN_GRACE`. The tool's own timeout
+    /// must fire first — it kills the group and says so; the executor's
+    /// deadline only abandons a thread.
+    fn deadline(&self) -> Duration {
+        Duration::from_secs(MAX_TIMEOUT) + TERM_GRACE + JOIN_GRACE + Duration::from_secs(10)
+    }
+
     fn run<'a>(&'a self, args: serde_json::Value, ctx: &'a mut ToolContext) -> ToolFuture<'a> {
         boxed(async move {
             // THE SECOND CHECK OF THE SAME RULE, AND IT RUNS BEFORE THE SCHEMA
@@ -688,7 +757,7 @@ impl Tool for ShellTool {
 
             let printable = display_command(command, &argv);
             let trace = ctx.start_chip("shell", &format!("Running {command}…"));
-            let result = execute(command, &argv, &dir, timeout);
+            let result = execute(command, &argv, &dir, timeout, ctx.cancel_token());
             let (outcome, ran) = match result {
                 Ok(run) => (self.report(run, command, timeout, ctx), true),
                 // The spawn itself failed: no process was started, so nothing
@@ -750,6 +819,19 @@ impl ShellTool {
                 ),
             )
             .raw_output(format!("timed out after {ms} ms")),
+
+            // `Failed`, not `Written`: the command did not finish what it was
+            // asked to do. The executor still treats the turn as stopped, and
+            // the text says plainly that part of the work may have happened.
+            RunOutcome::Stopped { ms } => ToolOutcome::new(
+                format!("{command} · stopped"),
+                ToolState::Failed("the command was stopped".into()),
+                format!(
+                    "stopped: '{command}' was stopped before it finished. It may have done part \
+                     of its work."
+                ),
+            )
+            .raw_output(format!("stopped after {ms} ms")),
 
             RunOutcome::Finished {
                 text,
@@ -1231,6 +1313,121 @@ mod tests {
         assert!(outcome.to_model.contains("did not finish"));
         // It DID run, so the session is tainted even though it was killed.
         assert!(ctx.session_tainted());
+    }
+
+    /// AUDIT M4, MEASURED THE WAY THE AUDIT DID: Ctrl-C two seconds into
+    /// `sleep 9` printed "(cancelling…)" and then "exit 0 · 9018 ms". The stop
+    /// must end the process GROUP within about a second — here with a group
+    /// that IGNORES SIGTERM, so only the SIGKILL that follows can end it.
+    #[cfg(unix)]
+    #[test]
+    fn a_stop_ends_the_group_within_a_second_even_when_sigterm_is_ignored() {
+        use tacet_kernel::context::CancelToken;
+        let root = temp_dir("stop");
+        let token = CancelToken::new();
+        let mut ctx = ToolContext::new(
+            Arc::new(InMemoryDataStore::new()),
+            &root,
+            Arc::new(SilentReporter),
+        )
+        .with_cancel_token(token.clone());
+        let stopper = {
+            let token = token.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(300));
+                token.cancel();
+            })
+        };
+        // An ignored signal is inherited across exec, so the `sleep` ignores
+        // SIGTERM too: the whole group survives the polite half.
+        let script = "trap '' TERM; sleep 30 & echo $! > sleep.pid; wait";
+        let start = Instant::now();
+        let outcome = block_on(tool(&["sh"]).run(
+            json!({ "command": "sh", "args": ["-c", script], "timeout_s": 60 }),
+            &mut ctx,
+        ));
+        let elapsed = start.elapsed();
+        stopper.join().expect("stopper");
+
+        assert!(
+            elapsed < Duration::from_millis(300) + Duration::from_millis(1500),
+            "the stop took {elapsed:?}"
+        );
+        assert!(
+            matches!(&outcome.state, ToolState::Failed(why) if why.contains("stopped")),
+            "{:?}",
+            outcome.state
+        );
+        let pid = std::fs::read_to_string(root.join("sleep.pid")).expect("pid file");
+        let pid = pid.trim();
+        let alive = || {
+            std::process::Command::new("kill")
+                .args(["-0", pid])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        };
+        let reaped = Instant::now();
+        while alive() && reaped.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!alive(), "the child that ignored SIGTERM outlived the stop");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The whole Ctrl-C path minus the key watcher: the shell's flag, a context
+    /// watching it, the executor, the real tool, a real process.
+    #[cfg(unix)]
+    #[test]
+    fn ctrl_c_stops_a_running_command_through_the_executor() {
+        use crate::executor::{ExecutionReason, ToolCall, ToolExecutor};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tacet_kernel::ToolCatalog;
+        use tacet_kernel::context::CancelToken;
+        static CTRL_C: AtomicBool = AtomicBool::new(false);
+
+        let root = temp_dir("ctrl-c");
+        let catalog: ToolCatalog = [Arc::new(tool(&["sleep"])) as Arc<dyn Tool>]
+            .into_iter()
+            .collect();
+        let executor = ToolExecutor::new(catalog);
+        let mut ctx = ToolContext::new(
+            Arc::new(InMemoryDataStore::new()),
+            &root,
+            Arc::new(SilentReporter),
+        )
+        .with_cancel_token(CancelToken::watching(&CTRL_C));
+        let presser = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(300));
+            CTRL_C.store(true, Ordering::SeqCst);
+        });
+        let start = Instant::now();
+        let outcome = block_on(executor.execute(
+            &ToolCall::new("shell", json!({ "command": "sleep", "args": ["30"] })),
+            executor.active_turn(),
+            &mut ctx,
+        ));
+        let elapsed = start.elapsed();
+        presser.join().expect("presser");
+        CTRL_C.store(false, Ordering::SeqCst);
+
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "the stop took {elapsed:?}"
+        );
+        assert_eq!(outcome.reason, ExecutionReason::Cancelled);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// H2-c and M30 as properties of the tool: it acts on the host, and the
+    /// executor's deadline never beats the tool's own timeout — the one that
+    /// kills the group and says so.
+    #[test]
+    fn the_tool_acts_on_the_host_and_its_own_timeout_fires_first() {
+        let shell = tool(&["ls"]);
+        assert!(shell.acts_on_host());
+        assert!(shell.deadline() > Duration::from_secs(MAX_TIMEOUT) + JOIN_GRACE + TERM_GRACE);
     }
 
     /// BIG OUTPUT DOES NOT GO THROUGH THE MODEL. What the model sees is bounded

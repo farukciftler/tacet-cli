@@ -1105,6 +1105,21 @@ impl Tool for DbWriteTool {
         true
     }
 
+    /// TRUE (audit H2-c): the SQL is the model's, and after the session has
+    /// read outside text it may be that text's. The executor then asks before
+    /// the measurement runs, in addition to the confirmation of the effect.
+    fn acts_on_host(&self) -> bool {
+        true
+    }
+
+    /// LONG, BECAUSE THE USER IS IN THE LOOP. A call waits on `confirm`, and a
+    /// person reading a diff is not a hung tool; an executor deadline that cut
+    /// them off would leave the question on screen with nobody listening, and a
+    /// "yes" typed after it would write behind a call already reported failed.
+    fn deadline(&self) -> Duration {
+        Duration::from_secs(60 * 60)
+    }
+
     fn run<'a>(&'a self, args: Value, ctx: &'a mut ToolContext) -> ToolFuture<'a> {
         boxed(async move {
             let trace = ctx.start_chip("database", "Measuring the change…");
@@ -1703,6 +1718,10 @@ mod tests {
         let s = tool.schema();
         assert_eq!(tool.name(), "db_write");
         assert!(tool.taints_session());
+        // Audit H2-c: after outside text, every statement asks first. And a
+        // user reading the effect is never cut off by the executor's deadline.
+        assert!(tool.acts_on_host());
+        assert!(tool.deadline() >= Duration::from_secs(30 * 60));
         assert_eq!(
             s.fields()[0].schema.choices(),
             Some(&["app.db".to_string()][..])

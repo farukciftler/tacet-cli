@@ -53,6 +53,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use tacet_kernel::context::CancelToken;
 use tacet_kernel::{
     ArgSchema, Field, Tool, ToolContext, ToolError, ToolFuture, ToolOutcome, ToolResult, ToolState,
     TraceUpdate, boxed,
@@ -99,6 +100,18 @@ unsafe extern "C" {
 /// `SIGKILL` is 9 on every unix (POSIX fixes the first fifteen numbers).
 #[cfg(unix)]
 const SIGKILL: i32 = 9;
+/// `SIGTERM` is 15, from the same fixed range.
+#[cfg(unix)]
+const SIGTERM: i32 = 15;
+
+/// After a stop (audit M4), the time between SIGTERM and SIGKILL — the same
+/// half second `shell` gives, so a Ctrl-C ends either tool's process inside the
+/// ~1 s the audit asks for.
+const TERM_GRACE: Duration = Duration::from_millis(500);
+
+/// The chip sentence for a run that was stopped. The model never sees it — a
+/// stopped turn is answered by the executor's own fixed text.
+const STOPPED: &str = "the script was stopped";
 
 // ---------------------------------------------------------------------------
 // The network shield
@@ -945,6 +958,26 @@ pub fn run(
     code: &str,
     timeout: Duration,
 ) -> ToolResult<CodeOutcome> {
+    run_until(
+        shield,
+        interpreter,
+        sandbox,
+        code,
+        timeout,
+        &CancelToken::new(),
+    )
+}
+
+/// `run`, listening to `cancel`: a fired token ends the script's process group
+/// (SIGTERM, then SIGKILL) and the call returns an error saying it was stopped.
+pub fn run_until(
+    shield: &NetworkShield,
+    interpreter: &Interpreter,
+    sandbox: &Path,
+    code: &str,
+    timeout: Duration,
+    cancel: &CancelToken,
+) -> ToolResult<CodeOutcome> {
     if code.trim().is_empty() {
         return Err(ToolError::InvalidArgument("empty script".into()));
     }
@@ -969,12 +1002,13 @@ pub fn run(
     let runtime = crate::sandbox_path::fresh_private_dir(sandbox, &nonce())?;
     let script = runtime.join(format!("script-{}.{}", nonce(), interpreter.extension));
     let outcome = match create_script(&script, code.as_bytes()) {
-        Ok(()) => run_program(
+        Ok(()) => run_program_until(
             shield,
             &runtime,
             &interpreter.path,
             &[script.clone().into()],
             timeout,
+            cancel,
         ),
         Err(e) => Err(ToolError::Io(e)),
     };
@@ -1147,6 +1181,21 @@ pub fn run_program(
     args: &[OsString],
     timeout: Duration,
 ) -> ToolResult<CodeOutcome> {
+    run_program_until(shield, runtime, program, args, timeout, &CancelToken::new())
+}
+
+/// `run_program`, listening to `cancel` (audit M4). A SEPARATE ENTRY rather than
+/// a new parameter on `run_program`, so its other callers (`write_code`'s
+/// syntax checks) keep compiling unchanged; a check that takes ten seconds at
+/// most has less need of a Ctrl-C than a script that may loop.
+pub fn run_program_until(
+    shield: &NetworkShield,
+    runtime: &Path,
+    program: &Path,
+    args: &[OsString],
+    timeout: Duration,
+    cancel: &CancelToken,
+) -> ToolResult<CodeOutcome> {
     let mut command = shielded_command(shield, runtime, program, args, std::env::var_os("HOME"))?;
 
     let start = Instant::now();
@@ -1175,6 +1224,7 @@ pub fn run_program(
     };
 
     let mut timed_out = false;
+    let mut stopped = false;
     let exit = loop {
         match child.try_wait() {
             Ok(Some(state)) => break Some(state),
@@ -1190,10 +1240,37 @@ pub fn run_program(
             timed_out = true;
             break None;
         }
+        // THE STOP IS READ ON THE CLOCK'S TICK (audit M4). Before, a Ctrl-C
+        // could not reach a running script at all: it ran to its own timeout
+        // while the screen said "cancelling".
+        if cancel.is_cancelled() {
+            stopped = true;
+            break None;
+        }
         std::thread::sleep(POLL_INTERVAL);
     };
 
-    if timed_out {
+    if stopped {
+        // SIGTERM to the group, a bounded wait, SIGKILL, reap — `shell`'s
+        // order, for the same reasons (see `TERM_GRACE`).
+        #[cfg(unix)]
+        unsafe {
+            killpg(group, SIGTERM);
+        }
+        let asked = Instant::now();
+        while asked.elapsed() < TERM_GRACE {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                break;
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
+        #[cfg(unix)]
+        unsafe {
+            killpg(group, SIGKILL);
+        }
+        child.kill().ok();
+        child.wait().ok();
+    } else if timed_out {
         // KILL THE WHOLE GROUP, then reap. `child.kill()` alone signals only the
         // process we spawned; anything it left behind survives. `kill` without
         // `wait` leaves a zombie and in a long session the process table fills up.
@@ -1248,6 +1325,12 @@ pub fn run_program(
     let (output, truncated_out) = drain(&out_sink);
     let (error_text, truncated_err) = drain(&err_sink);
 
+    if stopped {
+        // AN ERROR, NOT A NEW `CodeOutcome` VARIANT: `write_code` matches that
+        // enum exhaustively, and a stopped run is, from its side, a run that
+        // produced nothing to check.
+        return Err(ToolError::Other(STOPPED.into()));
+    }
     if timed_out {
         return Ok(CodeOutcome::Timeout);
     }
@@ -2245,7 +2328,14 @@ impl RunCodeTool {
             Err(h) => return ToolOutcome::failed(&h),
         };
 
-        let raw = match run(&self.shield, interpreter, &sandbox, code, timeout) {
+        let raw = match run_until(
+            &self.shield,
+            interpreter,
+            &sandbox,
+            code,
+            timeout,
+            ctx.cancel_token(),
+        ) {
             Ok(s) => s,
             Err(h) => return ToolOutcome::failed(&h),
         };
@@ -4236,10 +4326,18 @@ Num       RefCount Protocol Flags    Type St Inode Path
         );
     }
 
-    /// 9) AN INFINITE LOOP: on the timeout the process is KILLED and the
-    ///    duration really is cut at the cap (no silent hang).
+    /// 9) AN INFINITE LOOP ENDS AT ONE OF TWO THINGS, and both are measured: on
+    ///    the timeout the process is KILLED and the duration really is cut at
+    ///    the cap (no silent hang); on a STOP (audit M4) it ends within about a
+    ///    second, whatever the timeout says. The second half is new — before
+    ///    it, nothing read the stop, and an endless loop ran to its full timeout
+    ///    while the screen said "cancelling".
+    ///
+    ///    ONE TEST FOR BOTH, not two: the subject is "what ends a looping
+    ///    script", and the setup (the tool, the loop) is the same.
     #[test]
-    fn an_infinite_loop_is_killed_on_timeout() {
+    fn an_infinite_loop_is_killed_on_timeout_or_on_a_stop() {
+        use tacet_kernel::context::CancelToken;
         let Some(tool) = tool_or_skip() else { return };
         let root = temp_dir("loop");
         let mut ctx = context(&root);
@@ -4269,6 +4367,34 @@ Num       RefCount Protocol Flags    Type St Inode Path
             elapsed >= Duration::from_secs(2),
             "it returned before the cap: {elapsed:?}"
         );
+
+        // THE STOP. A fresh turn (the tool allows two attempts per turn), the
+        // longest timeout the schema permits, and a stop after 300 ms.
+        tool.turn_state().new_turn();
+        let token = CancelToken::new();
+        let mut ctx = context(&root).with_cancel_token(token.clone());
+        let stopper = {
+            let token = token.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(300));
+                token.cancel();
+            })
+        };
+        let started = Instant::now();
+        let outcome = hold(tool.run(json!({ "code": code, "timeout_s": MAX_TIMEOUT }), &mut ctx));
+        let elapsed = started.elapsed();
+        stopper.join().expect("stopper");
+        assert!(
+            elapsed < Duration::from_millis(300) + Duration::from_millis(1500),
+            "the stop took {elapsed:?}"
+        );
+        assert_eq!(
+            outcome.state,
+            ToolState::Failed(STOPPED.into()),
+            "{}",
+            outcome.to_model
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// 9b) THE TIMEOUT REALLY BOUNDS THE CALL, even when the script tries to
