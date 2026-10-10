@@ -247,6 +247,66 @@ fn every_test_count_on_the_page_is_dated() {
     );
 }
 
+/// D23: every figure the page gives for how many test binaries the suite has
+/// NOW is the one the Linux row re-counted.
+///
+/// The Linux row moved from 99 binaries to 100 and the Windows row, in the
+/// same table, went on saying "the suite has grown to 99 binaries since" —
+/// the same stale number this file exists to stop, created by the commit that
+/// refreshed its neighbour (review of 10 Oct 2026). The two kinds of figure on
+/// the page are told apart by their shape: a past run's own record opens its
+/// parenthesis, "(33 binaries, 4 Sep 2026)", "(31 binaries; …)"; every other
+/// "N binaries" or "N test binaries" is a statement about the suite today and
+/// must equal the one after "the current size of the suite, which is".
+#[test]
+fn every_binary_count_for_the_suite_today_is_the_current_one() {
+    const CURRENT: &str = "the current size of the suite, which is ";
+    let page = prose(&read("README.md"));
+    let current = page
+        .split(CURRENT)
+        .nth(1)
+        .and_then(|rest| rest.split(" test binaries").next())
+        .and_then(|figure| figure.rsplit(' ').next())
+        .expect("the Linux row still states the suite's current size");
+    assert!(
+        current.chars().all(|c| c.is_ascii_digit()) && !current.is_empty(),
+        "the current binary count reads as {current:?}"
+    );
+    let words: Vec<&str> = page.split(' ').collect();
+    let mut today = 0;
+    let mut records = 0;
+    for i in 1..words.len() {
+        let noun = words[i].trim_end_matches([',', ';', '.', ')']);
+        let figure = if noun == "binaries" && words[i - 1] == "test" && i >= 2 {
+            words[i - 2]
+        } else if noun == "binaries" {
+            words[i - 1]
+        } else {
+            continue;
+        };
+        if figure.starts_with('(') {
+            records += 1;
+            continue;
+        }
+        if !figure.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        today += 1;
+        assert_eq!(
+            figure,
+            current,
+            "README.md says the suite has {figure} binaries where the Linux row \
+             re-counted {current}: …{}…",
+            words[i.saturating_sub(12)..(i + 4).min(words.len())].join(" ")
+        );
+    }
+    assert!(
+        today >= 2 && records >= 2,
+        "found {today} figures for today's suite and {records} past records — the \
+         scan stopped matching"
+    );
+}
+
 /// D4: no table on the page is cut in two by a blank line.
 ///
 /// GitHub ends a table at the first blank line and renders what follows as
@@ -882,4 +942,182 @@ fn the_last_publish_is_the_changelogs() {
         folded.contains(&want),
         "README.md must say \"{want}\" — the newest publish CHANGELOG.md records"
     );
+}
+
+/// The page as prose: fenced blocks removed (their text is output, not a
+/// claim in a sentence) and every run of whitespace folded to one space, so a
+/// sentence wrapped across lines reads as one.
+fn prose(markdown: &str) -> String {
+    let mut out = String::new();
+    let mut fenced = false;
+    for line in markdown.lines() {
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+            continue;
+        }
+        if !fenced {
+            out.push_str(line);
+            out.push(' ');
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// L38: the actions the page lists for `git` are the tool's actions.
+///
+/// It said "status, log, diff, show" while `Action::ALL` held three — the
+/// model was never offered `show`. Read from `Action::ALL` itself, the
+/// constant the tool's schema and parser are built from, so an action added
+/// to the tool without a word on the page fails here as well.
+#[test]
+fn the_git_actions_the_page_lists_are_the_tools() {
+    const MARKER: &str = "`git` is **read-only**:";
+    let page = prose(&read("README.md"));
+    assert_eq!(
+        page.matches(MARKER).count(),
+        1,
+        "README.md states the git tool's actions once, after {MARKER:?}"
+    );
+    let listed = page
+        .split(MARKER)
+        .nth(1)
+        .and_then(|rest| rest.split('.').next())
+        .expect("a list after the marker");
+    let mut shown: Vec<String> = listed
+        .split(',')
+        .map(|a| a.trim().trim_start_matches("and ").trim().to_string())
+        .filter(|a| !a.is_empty())
+        .collect();
+    let mut actual: Vec<String> = tacet_tools::git::Action::ALL
+        .iter()
+        .map(|a| a.name().to_string())
+        .collect();
+    shown.sort();
+    actual.sort();
+    assert_eq!(
+        shown, actual,
+        "README.md lists the git actions as {listed:?}; the tool has {actual:?}"
+    );
+}
+
+/// D8: the page never says `--compare` refuses two runs whose catalogs
+/// differ. It does not: it leaves out the cases that touch a tool one side
+/// lacked, names them, and pairs the rest.
+///
+/// The sentence said it "refuses to pair across either a different model or a
+/// different catalog". The model half is true
+/// (`a_comparison_across_two_models_is_refused`); the catalog half was the
+/// comparator's first design and was replaced on purpose, because refusing
+/// threw away 164 sound cases to avoid 20 unsound ones (eval_cmd.rs). The
+/// guard reads every refusal the page attributes to `--compare` to the end of
+/// its SENTENCE, and the warning the comparator really prints.
+///
+/// To the sentence, not the clause: a first version stopped at the first
+/// comma, and "`--compare` refuses, when catalogs differ, to pair two
+/// different models" passed it (review of 10 Oct 2026). Nor only the word
+/// "refuses": the second version matched "refus" alone, so "`--compare`
+/// rejects runs whose catalogs differ" passed it, and so did any sentence
+/// that called it "the comparator" instead of `--compare` (second review, same
+/// day). The misstatements the guard has been shown to miss or catch are
+/// checked below as well, so a rewrite of the scan that goes blind to one
+/// fails here.
+#[test]
+fn the_page_says_compare_leaves_out_what_a_differing_catalog_touches() {
+    let page = prose(&read("README.md"));
+    let (refusals, wrong) = compare_refusals(&page);
+    assert!(
+        wrong.is_empty(),
+        "README.md says `--compare` refuses on a catalog difference; it leaves those \
+         cases out and pairs the rest: {wrong:#?}"
+    );
+    assert!(
+        refusals >= 1,
+        "no refusal attributed to `--compare` was found — the scan stopped matching"
+    );
+    for misstated in [
+        "`--compare` refuses two runs whose tool sets differ. Next.",
+        "`--compare` refuses, when catalogs differ, to pair two different models. Next.",
+        "`--compare` refuses to pair two different models, and runs whose catalogs differ. Next.",
+        "`--compare` refuses to pair two models and two catalogs. Next.",
+        "`--compare` rejects two runs whose catalogs differ. Next.",
+        "`--compare` will not pair runs whose catalogs differ. Next.",
+        "`--compare` won't pair runs whose catalogs differ. Next.",
+        "`--compare` declines runs whose catalogs differ. Next.",
+        "`--compare` stops when the catalogs differ. Next.",
+        "The comparator refuses runs whose catalogs differ. Next.",
+    ] {
+        assert!(
+            !compare_refusals(misstated).1.is_empty(),
+            "the scan no longer sees a misstatement: {misstated}"
+        );
+    }
+    let sentences: Vec<&str> = page
+        .split(". ")
+        .filter(|s| s.contains("--compare"))
+        .collect();
+    assert!(
+        sentences.iter().any(|s| {
+            let s = s.to_lowercase();
+            s.contains("catalog") && (s.contains("leaves out") || s.contains("exclud"))
+        }),
+        "README.md must say what `--compare` does when the catalogs differ: it leaves \
+         out the cases that touch a tool one side lacked"
+    );
+    // The behaviour the sentence describes, read from the comparator: on a
+    // catalog difference it warns and excludes; it does not stop.
+    let comparator = read("crates/tacet-cli/src/eval_cmd.rs");
+    assert!(
+        comparator.contains("touch a tool one side lacked are EXCLUDED from the test below"),
+        "eval_cmd.rs no longer excludes on a catalog difference — the README sentence \
+         this test guards must change with it"
+    );
+}
+
+/// How many refusals `prose` attributes to `--compare`, and those that are
+/// about a catalog.
+///
+/// In every sentence that names `--compare` or "the comparator", from each
+/// verb of refusal to the end of the sentence, split at ", and " / "; " into
+/// clauses. The refusal's own clause may not mention a catalog or a tool at
+/// all; a later clause may, only when it is the one that says what happens
+/// instead ("leaves out", "exclud"). The true sentence is exactly that shape:
+/// "refuses to pair two different models, and when the catalogs differ it
+/// leaves out every case that touches a tool one side lacked".
+///
+/// "stops" and not "stop": the page's `requires` sentence names `eval
+/// --compare` and says it makes the runner "*stop* when the machine lacks a
+/// tool" — the runner, not the comparator, and true. "cannot" is left out for
+/// the same reason: "the comparator cannot say" is about what it reports.
+fn compare_refusals(prose: &str) -> (usize, Vec<String>) {
+    const REFUSING: [&str; 7] = [
+        "refus", "reject", "will not", "won't", "declin", "stops", "not pair",
+    ];
+    let about_catalog = |c: &str| c.contains("catalog") || c.contains("tool");
+    let says_instead = |c: &str| c.contains("leaves out") || c.contains("exclud");
+    let mut refusals = 0;
+    let mut wrong = Vec::new();
+    for sentence in prose.split(". ") {
+        let lower = sentence.to_lowercase();
+        if !lower.contains("--compare") && !lower.contains("comparator") {
+            continue;
+        }
+        let mut rest = lower.as_str();
+        while let Some((at, verb)) = REFUSING
+            .iter()
+            .filter_map(|v| rest.find(v).map(|at| (at, *v)))
+            .min()
+        {
+            refusals += 1;
+            let tail = &rest[at..];
+            let mut clauses = tail.split(", and ").flat_map(|c| c.split("; "));
+            let own = clauses.next().unwrap_or_default();
+            let misstated =
+                about_catalog(own) || clauses.any(|c| about_catalog(c) && !says_instead(c));
+            if misstated {
+                wrong.push(tail.to_string());
+            }
+            rest = &rest[at + verb.len()..];
+        }
+    }
+    (refusals, wrong)
 }

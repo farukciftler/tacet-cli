@@ -2216,10 +2216,19 @@ fn print_continuable(color: &Color) {
         }
         return;
     }
-    let list = tacet_tools::sessions_tool::list_sessions(
+    // Each reader's `discover` runs under `guarded` inside `list_sessions`
+    // (RG-04): there is no executor above this call, so a reader panicking on
+    // one malformed file would otherwise end the shell.
+    let tacet_tools::sessions_tool::Listing {
+        sessions: list,
+        failed,
+    } = tacet_tools::sessions_tool::list_sessions(
         &tacet_tools::sessions_tool::SessionRoots::Registry,
         &tacet_tools::sessions::AgentKind::ALL,
     );
+    for f in &failed {
+        println!("{}", color.paint(YELLOW, &visible(&format!("({f})"))));
+    }
     if list.is_empty() {
         println!(
             "{}",
