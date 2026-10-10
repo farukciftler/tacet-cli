@@ -1085,9 +1085,24 @@ mod tests {
                 .as_deref()
                 .unwrap_or_else(|| panic!("{file}: the rule is not a closed ```markdown block"));
 
-            // It tells the agent to read the record before it starts.
+            // It tells the agent to read the record before it starts. Checked
+            // on whole words of the prose, heading lines and `code` spans
+            // dropped: as substrings, every block's own `# Tacet handoff`
+            // heading answered the first half and Codex's "thread" answered
+            // "read", so the AGENTS.md block could say "ignore it" and stay
+            // green (adversarial review, M2); and with the code kept, the
+            // block's own `tacet handoff update …` stood in for the prose.
+            let words: Vec<String> = block
+                .lines()
+                .filter(|line| !line.starts_with('#'))
+                .flat_map(|line| line.split('`').step_by(2))
+                .flat_map(|prose| prose.split(|c: char| !c.is_alphanumeric()))
+                .filter(|w| !w.is_empty())
+                .map(str::to_ascii_lowercase)
+                .collect();
             assert!(
-                block.contains("Tacet handoff") && block.contains("read"),
+                words.windows(2).any(|w| w == ["tacet", "handoff"])
+                    && words.iter().any(|w| w == "read"),
                 "{file}: the block does not tell the agent to read the handoff:\n{block}"
             );
             // It names the update for THIS agent, and its reporter.
