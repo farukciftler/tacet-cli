@@ -97,6 +97,130 @@ fn the_oldest_turn_is_dropped_when_the_history_outgrows_the_budget() {
     );
 }
 
+/// THE TOOL DESCRIPTIONS ARE INSIDE THE BUDGET.
+///
+/// WHY THE TEST ABOVE WAS NOT ENOUGH. Its first message is so long that the
+/// history overflows the cap with or without the `<tools>` block, so it stayed
+/// green while the eval truncated BEFORE attaching the tools and the shell
+/// truncated AFTER (audit M22, T3). Measured on a 4096 window: the shell dropped
+/// 21 turns and sent 3 016 tokens, the eval dropped none and sent 4 502.
+///
+/// So this fixture is sized to overflow ONLY with the tools: the second step's
+/// prompt without its tools fits under the cap with a margin, and with them it
+/// does not. The size is computed from the same pieces the eval assembles — the
+/// system block with its census, the router's selection, the guide and the
+/// nudge — rather than written down, because the tool descriptions change and a
+/// hard-coded length would quietly stop being in the window that matters.
+#[test]
+fn a_history_that_fits_only_without_the_tools_is_still_cut() {
+    use tacet_engine::Turn;
+    use tacet_eval::env::Env;
+    use tacet_eval::tool_selection::suite_catalog;
+    use tacet_tools::memory::SharedMemory;
+
+    const OLDEST: &str = "ZZ-OLDEST-TURN-MARKER-ZZ";
+    const FIRST_ANSWER: &str = "the first answer.";
+    const SECOND: &str = "and now the total";
+    // A FEW HUNDRED TOKENS EITHER SIDE, so the test does not turn on the census
+    // of one temporary directory being a few bytes longer than another's.
+    const MARGIN: usize = 120;
+
+    let Ok(env) = Env::setup() else {
+        eprintln!("skipped: the eval environment could not be set up on this machine");
+        return;
+    };
+    let memory = SharedMemory::in_memory();
+    let catalog = suite_catalog(&env, &memory).catalog;
+    let selected: tacet_kernel::ToolCatalog = tacet_tools::router::Router::new()
+        .select(SECOND, &catalog)
+        .into_iter()
+        .collect();
+    let selected_names: Vec<String> = selected.names().into_iter().map(String::from).collect();
+    let guide = tacet_skills::SkillStore::default_set()
+        .matching(SECOND, Some(&selected_names))
+        .map(tacet_skills::injection_text);
+    let note = (tacet_tools::router::score_intent(SECOND).dominant()
+        == tacet_tools::router::IntentProfile::Web)
+        .then_some(tacet_engine::WEB_NUDGE);
+    let system =
+        tacet_engine::system_text(tacet_engine::dir_context(&env.dir().to_string_lossy()).as_ref());
+
+    let first_message = |k: usize| {
+        format!(
+            "{OLDEST} {}",
+            "and the quarterly budget review totals against the summary from last week ".repeat(k)
+        )
+    };
+    let second_step = |k: usize, with_tools: bool| {
+        let mut p = Prompt::new(&system, SECOND)
+            .with_history([Turn::user(first_message(k)), Turn::assistant(FIRST_ANSWER)]);
+        if with_tools {
+            p = p.with_tools(&selected);
+        }
+        if let Some(g) = &guide {
+            p = p.with_guide(g);
+        }
+        if let Some(n) = note {
+            p = p.with_note(n);
+        }
+        TokenCounter::estimate(&p.text())
+    };
+
+    let cap = floor_counter().prompt_cap();
+    let mut k = 0;
+    while second_step(k + 1, false) + MARGIN <= cap {
+        k += 1;
+    }
+    assert!(k > 0, "the system block alone leaves no room for a history");
+    assert!(
+        second_step(k, false) + MARGIN <= cap,
+        "the fixture must FIT without the tools, or it measures what the test above does"
+    );
+    assert!(
+        second_step(k, true) > cap + MARGIN,
+        "the fixture must NOT fit with the tools ({} of {cap}); the tools are too small \
+         for this shape and it measures nothing",
+        second_step(k, true)
+    );
+
+    let first = first_message(k);
+    let engine =
+        Arc::new(FakeEngine::script([FIRST_ANSWER, "the second answer."]).with_default("done."));
+    let provider: Arc<dyn EngineProvider> = engine.clone();
+    let case = SelectionCase {
+        name: "fits-without-tools".into(),
+        category: tacet_eval::Category::MultiTurn,
+        steps: vec![
+            SelectionStep::new(&first, None),
+            SelectionStep::new(SECOND, None),
+        ],
+    };
+    let _ = run_selection_case(&case, &provider);
+
+    let prompts = engine.seen_prompts();
+    assert_eq!(
+        prompts.len(),
+        2,
+        "one pass per step: both answers are prose"
+    );
+    let sent = &prompts[1];
+    assert!(
+        sent.contains("<tools>"),
+        "the second step must have been offered its tools, or there is nothing to budget"
+    );
+    assert!(
+        !sent.contains(OLDEST),
+        "the oldest turn survived although the prompt with its tools is over the cap — \
+         the eval truncated before the tools were attached, and the shell does not"
+    );
+    assert!(
+        TokenCounter::estimate(sent) <= floor_counter().prompt_cap(),
+        "the prompt sent is over the cap: {} > {}",
+        TokenCounter::estimate(sent),
+        floor_counter().prompt_cap()
+    );
+}
+
 /// THE FLOOR CANNOT FIT THE WHOLE CATALOG UNDER THE CAP, and both programs are
 /// in the same position.
 ///

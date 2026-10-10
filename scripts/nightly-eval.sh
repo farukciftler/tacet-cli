@@ -21,9 +21,10 @@
 #   * LIVE. The eval's own progress line ("[103/184] case · 31m elapsed · ~20m
 #     left") is in the log as it happens; `tail -f` is the live view.
 #   * IT REFUSES TO MIX. Different code gets a different directory (below), and
-#     a journal stamped for a different model or catalog stops the run (see
-#     `CaseJournal::open`), so a report can never be half one build and half
-#     another.
+#     a journal stamped for a different model, catalog, commit, set of
+#     uncommitted edits, prompt text or router options, or holding a case that
+#     has since been rewritten, stops the run (see `JournalStamp`), so a report
+#     can never be half one build and half another.
 #
 # USAGE
 #   scripts/nightly-eval.sh                 # tonight's run, resuming if it can
@@ -59,9 +60,10 @@ cd "$REPO" || exit 1
 # different code starts a new one, because the cases are not comparable across
 # a code change.
 #
-# THIS DIRECTORY IS WHAT KEEPS TWO BUILDS APART, not the journal. The journal's
-# own stamp (`CaseJournal::open`) refuses a different model, engine or catalog;
-# it is not relied on here to tell one commit from another, so the key has to.
+# TWO THINGS KEEP TWO BUILDS APART, and either alone would do. This directory
+# is the first. The journal's own stamp (`JournalStamp`) is the second: it
+# hashes the commit, the uncommitted edits (untracked files included), the
+# prompt text and every case, and refuses a journal stamped for anything else.
 #
 # NO DATE IN IT. It used to be `<yyyymmdd>-<commit>`, so a run interrupted at
 # 02:00 and re-run after midnight — the common case for a job that starts at
@@ -72,8 +74,9 @@ cd "$REPO" || exit 1
 # `-dirty` CARRIES A HASH OF THE DIFF. A bare `-dirty` flag made every
 # uncommitted state of one commit share a journal, so a run could be half one
 # edit and half the next. The hash covers tracked changes against HEAD and the
-# content of untracked, non-ignored files (a new module is an untracked file),
-# and it is computed without writing anything into the repository.
+# content of untracked, non-ignored files (a new module is an untracked file:
+# code the binary was built from, which `git diff` alone missed), and it is
+# computed without writing anything into the repository.
 COMMIT="$(git rev-parse --short HEAD)"
 working_copy_hash() {
   {

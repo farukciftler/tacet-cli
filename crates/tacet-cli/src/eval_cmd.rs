@@ -380,6 +380,44 @@ as of two builds."
             )
         );
     }
+    // ONE SIDE WITH A FINGERPRINT AND ONE WITHOUT IS NOT "SAME WEIGHTS" (audit
+    // L30). The guard below only fired when BOTH reports carried one, so a
+    // report with its `identity` stripped — or written by something that never
+    // recorded it — paired silently against any model at all. Two reports
+    // without one still compare: the logic and routing reports carry none, and
+    // there is no model in either to hold still.
+    //
+    // Only when both files parse: an unreadable file is reported as unreadable
+    // by the loader below, not as a missing fingerprint.
+    let parses = |p: &str| {
+        std::fs::read_to_string(p)
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .is_some()
+    };
+    if parses(before_path) && parses(after_path) {
+        let (fb, fa) = (fingerprint(before_path), fingerprint(after_path));
+        if fb.is_some() != fa.is_some() {
+            let (with, without) = if fb.is_some() {
+                (before_path, after_path)
+            } else {
+                (after_path, before_path)
+            };
+            eprintln!(
+                "{}",
+                color.paint(
+                    YELLOW,
+                    &format!(
+                        "only one of these reports says which weights produced it:\n  \
+with     {with}\n  without  {without}\nNothing shows the two were the same model, and a \
+sign test over paired cases answers whether THIS CHANGE helped only with one model held \
+still. Re-run the side without an `identity.model_fingerprint`."
+                    )
+                )
+            );
+            return ExitCode::FAILURE;
+        }
+    }
     if let (Some((fa, ea, _)), Some((fb, eb, _))) =
         (fingerprint(before_path), fingerprint(after_path))
         && fa != fb
@@ -702,24 +740,44 @@ share names. Pair reports from the same suite.",
                 "  verdict: NOT DISTINGUISHABLE from no change at 95%."
             )
         );
-        // NOTHING MOVED IS NOT A SMALL EFFECT, it is no observation at all —
-        // and `cases_needed(0.0)` returns `usize::MAX` to say exactly that.
-        // Printing the number would read as a suite-size requirement of
-        // eighteen quintillion cases, which is true and useless.
-        let points = delta.abs() * 100.0;
-        if fixed == 0 && broken == 0 {
-            println!(
-                "           no case changed verdict — this is no evidence, not evidence of no effect."
-            );
-        } else {
-            println!(
-                "           this instrument needs {} paired cases to call a {points:.1}-point \
-                 effect; this suite has {n}.",
-                tacet_eval::analysis::cases_needed(points)
-            );
-        }
+        println!("           {}", resolution_sentence(fixed, broken, n));
     }
     ExitCode::SUCCESS
+}
+
+/// What it would take to call the effect this comparison saw, for a verdict
+/// that could not.
+///
+/// TWO-SIDED, and that is the fix (audit L30). The sentence was built from
+/// `cases_needed(|delta|)`, which assumes every discordant pair moved one way.
+/// On fixed 10 / broke 4 / 100 cases — p = 0.1796, NOT DISTINGUISHABLE — it
+/// printed "needs 100 paired cases to call a 6.0-point effect; this suite has
+/// 100", which says the suite was big enough directly under a verdict saying
+/// it was not. The broken cases are noise the effect is seen through.
+///
+/// NOTHING MOVED IS NOT A SMALL EFFECT, it is no observation at all; and as
+/// many broken as fixed is an effect of zero, which no suite size calls —
+/// `cases_needed(0.0)` printed that as eighteen quintillion cases.
+fn resolution_sentence(fixed: usize, broken: usize, n: usize) -> String {
+    if fixed == 0 && broken == 0 {
+        return "no case changed verdict — this is no evidence, not evidence of no effect."
+            .to_string();
+    }
+    let points = 100.0 * fixed.abs_diff(broken) as f64 / n.max(1) as f64;
+    match tacet_eval::analysis::cases_needed_observed(fixed, broken, n) {
+        Some(needed) => format!(
+            "at these rates ({fixed} fixed, {broken} broke) this instrument needs about \
+             {needed} paired cases to call a {points:.1}-point effect; this suite has {n}."
+        ),
+        None if fixed == broken => format!(
+            "{fixed} fixed and {broken} broke: the net effect is zero, and no suite size \
+             calls zero."
+        ),
+        None => format!(
+            "at these rates ({fixed} fixed, {broken} broke) no suite under a million cases \
+             would call a {points:.1}-point effect."
+        ),
+    }
 }
 
 /// The ROUTING measurement — the router's own choice, with no model loaded.
@@ -825,6 +883,32 @@ pub struct SelectionRun<'a> {
     /// See the `--journal` flag: a directory where every finished case is kept,
     /// so an interrupted run resumes instead of starting over.
     pub journal: Option<&'a str>,
+}
+
+/// The stamp `tacet eval --journal DIR` opens its journal with.
+///
+/// THE COMMIT AND THE UNCOMMITTED EDITS ARE IN IT, so a journal from
+/// yesterday's code refuses today's run instead of joining it (audit M24); the
+/// journal directory itself is left out of them, so a journal inside the
+/// checkout can still be resumed. A function of its own so a test can check the
+/// stamp the COMMAND builds: the library's tests use a fixed provenance, and a
+/// `BuildProvenance::default()` here passed all of them.
+fn selection_stamp(
+    identity: &tacet_engine::EngineIdentity,
+    catalog: &tacet_kernel::ToolCatalog,
+    cases: &[tacet_eval::SelectionCase],
+    budget: Option<usize>,
+    force_tool_name: bool,
+    journal: &std::path::Path,
+) -> tacet_eval::tool_selection::JournalStamp {
+    tacet_eval::tool_selection::JournalStamp::new(
+        identity,
+        catalog,
+        &tacet_eval::tool_selection::BuildProvenance::of_source_tree(journal),
+        cases,
+        budget,
+        force_tool_name,
+    )
 }
 
 pub fn eval_tool_selection(run: SelectionRun<'_>) -> ExitCode {
@@ -957,7 +1041,7 @@ pub fn eval_tool_selection(run: SelectionRun<'_>) -> ExitCode {
     let journal = match journal {
         None => None,
         Some(dir) => {
-            let names: Vec<String> = tacet_eval::tool_selection::suite_catalog(
+            let catalog = tacet_eval::tool_selection::suite_catalog(
                 &match tacet_eval::env::Env::setup() {
                     Ok(e) => e,
                     Err(e) => {
@@ -967,16 +1051,17 @@ pub fn eval_tool_selection(run: SelectionRun<'_>) -> ExitCode {
                 },
                 &tacet_tools::memory::SharedMemory::in_memory(),
             )
-            .catalog
-            .names()
-            .into_iter()
-            .map(String::from)
-            .collect();
-            match tacet_eval::tool_selection::CaseJournal::open(
-                std::path::Path::new(dir),
+            .catalog;
+            let dir = std::path::Path::new(dir);
+            let stamp = selection_stamp(
                 &engine.identity(),
-                &names,
-            ) {
+                &catalog,
+                &cases,
+                budget,
+                force_tool_name,
+                dir,
+            );
+            match tacet_eval::tool_selection::CaseJournal::open(dir, &stamp) {
                 Ok(j) => {
                     opened = j;
                     Some(&opened)
@@ -1279,6 +1364,62 @@ mod compare_identity {
         assert_eq!(eval_compare(&p, &p), ExitCode::SUCCESS);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// ONE SIDE WITHOUT A FINGERPRINT (audit L30). The weights guard only fired
+    /// when both reports carried one, so stripping `identity` from either side
+    /// was enough to pair two models without a word.
+    #[test]
+    fn a_report_without_a_fingerprint_does_not_pair_against_one_with() {
+        let dir = scratch("cmp-onesided");
+        let cases: Vec<String> = (0..24)
+            .map(|i| format!(r#"{{"name":"c{i}","passed":{}}}"#, i % 2 == 0))
+            .collect();
+        let with = report(
+            &dir,
+            "with.json",
+            format!(
+                r#"{{"identity":{{"engine":"candle","model_fingerprint":"aaaa0000"}},"cases":[{}]}}"#,
+                cases.join(",")
+            ),
+        );
+        let without = report(
+            &dir,
+            "without.json",
+            format!(r#"{{"cases":[{}]}}"#, cases.join(",")),
+        );
+        assert_eq!(eval_compare(&with, &without), ExitCode::FAILURE);
+        assert_eq!(eval_compare(&without, &with), ExitCode::FAILURE);
+        // NOT VACUOUS: each side still compares with its own kind.
+        assert_eq!(eval_compare(&with, &with), ExitCode::SUCCESS);
+        assert_eq!(eval_compare(&without, &without), ExitCode::SUCCESS);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The number in the sentence under a NOT DISTINGUISHABLE verdict.
+    fn needed_in(sentence: &str) -> Option<usize> {
+        let after = sentence.split("needs about ").nth(1)?;
+        after.split_whitespace().next()?.parse().ok()
+    }
+
+    /// THE SENTENCE MUST NOT CONTRADICT THE VERDICT ABOVE IT (audit L30).
+    /// fixed 10 / broke 4 / 100 is p = 0.1796, and the one-way formula printed
+    /// "needs 100 paired cases … this suite has 100" under it.
+    #[test]
+    fn the_resolution_sentence_counts_the_broken_cases() {
+        let sentence = resolution_sentence(10, 4, 100);
+        let needed = needed_in(&sentence).unwrap_or_else(|| panic!("no number in: {sentence}"));
+        assert!(
+            needed > 100,
+            "the suite that just failed to call the effect is said to be big enough: {sentence}"
+        );
+        // A wash is not eighteen quintillion cases.
+        let wash = resolution_sentence(5, 5, 100);
+        assert!(
+            needed_in(&wash).is_none() && wash.contains("zero"),
+            "{wash}"
+        );
+        assert!(resolution_sentence(0, 0, 100).contains("no evidence"));
+    }
 }
 
 /// THE TWO RUNS MUST HAVE HAD THE SAME TOOLS.
@@ -1393,5 +1534,64 @@ mod compare_catalog {
         );
         let after = run(Some(&["calculate"]), &[("sums", "calculate")]);
         assert!(incomparable_cases(&before, &after).is_empty());
+    }
+}
+
+/// THE STAMP THE COMMAND BUILDS, not the one the library's tests hand it
+/// (audit M24 review). Replacing `of_source_tree(journal)` in `selection_stamp`
+/// with `BuildProvenance::default()` dropped the commit from every `tacet eval
+/// --journal` stamp and left every test green; so did a journal inside this
+/// checkout that could never be resumed.
+#[cfg(test)]
+mod the_commands_stamp {
+    use super::*;
+
+    /// The journal directory is created inside the crate, where a user's
+    /// `--journal ./night` would land, and removed however the test ends.
+    struct Remove(std::path::PathBuf);
+    impl Drop for Remove {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn the_command_stamps_the_commit_and_leaves_its_journal_out() {
+        let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let head = std::process::Command::new("git")
+            .arg("-C")
+            .arg(here)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+        let Some(head) = head else {
+            eprintln!("skipped: this crate was not built from a git checkout");
+            return;
+        };
+        let journal = here.join(format!("eval-journal-stamp-test-{}", std::process::id()));
+        let _remove = Remove(journal.clone());
+        let identity = tacet_engine::EngineIdentity::default();
+        let catalog = tacet_kernel::ToolCatalog::new();
+        let stamp = || selection_stamp(&identity, &catalog, &[], None, false, &journal);
+
+        let before = stamp();
+        assert_eq!(
+            before.build().commit.as_deref(),
+            Some(head.as_str()),
+            "`tacet eval --journal` stamped no commit, or the wrong one"
+        );
+
+        // What a run leaves behind: the stamp and a finished case.
+        std::fs::create_dir_all(&journal).unwrap();
+        std::fs::write(journal.join("identity.json"), "{}").unwrap();
+        std::fs::write(journal.join("some-case.json"), "{}").unwrap();
+        assert_eq!(
+            stamp().build(),
+            before.build(),
+            "the journal's own files changed the build the command stamps, so it \
+             can never be resumed"
+        );
     }
 }

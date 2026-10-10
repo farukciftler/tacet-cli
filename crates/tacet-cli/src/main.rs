@@ -969,36 +969,29 @@ fn apply_workspace_roots(color: &Color) {
     }
 }
 
-/// The thinking switch for Qwen3-family (ChatML) engines.
+/// The thinking switch for Qwen3-family (ChatML) engines: `tacet config set
+/// thinking on|off|auto` read here, the rule itself in
+/// `tacet_engine::thinking_switch`. The caller has already checked the
+/// template is ChatML.
 ///
-/// Thinking multiplies latency on a simple tool turn and buys little; on a
-/// genuine planning/summarising turn it buys real quality. `auto` (the
-/// default) decides per turn with a cheap heuristic; `tacet config set
-/// thinking on|off` overrides it. Non-ChatML engines get no suffix at all —
-/// the soft switch is a Qwen convention, not a standard.
+/// NO COPY OF THE RULE LIVES HERE ANY MORE (audit M23). This function used to
+/// carry its own keyword list and its own 220-character threshold while the
+/// eval called the engine's; nothing linked the two, and a reviewer changed this
+/// threshold to 20 with every test in the workspace staying green. The shell and
+/// the eval now call one function, and `the_shells_switch_is_the_engines` fails
+/// if a private rule is ever put back.
 fn thinking_switch(message: &str) -> &'static str {
-    match config::get_str("thinking").as_deref() {
-        Some("on") => return " /think",
-        Some("off") => return " /no_think",
-        _ => {}
-    }
-    let plain = tacet_tools::router::simplify(message);
-    const HEAVY: [&str; 12] = [
-        "plan",
-        "ozetle",
-        "summar",
-        "analiz",
-        "analy",
-        "karsilastir",
-        "compare",
-        "strateji",
-        "strategy",
-        "neden",
-        "why",
-        "adim adim",
-    ];
-    let heavy = message.chars().count() > 220 || HEAVY.iter().any(|k| plain.contains(k));
-    if heavy { " /think" } else { " /no_think" }
+    thinking_switch_for(config::get_str("thinking").as_deref(), message)
+}
+
+/// `thinking_switch` with the config value passed in, so a test can run the
+/// shell's path without reading the user's config file.
+fn thinking_switch_for(setting: Option<&str>, message: &str) -> &'static str {
+    tacet_engine::thinking_switch::soft_switch(
+        tacet_engine::Template::ChatML,
+        tacet_engine::thinking_switch::ThinkingSetting::parse(setting),
+        message,
+    )
 }
 
 /// Rebuilds everything that derives from the catalog, IN PLACE. The catalog is
@@ -1449,6 +1442,41 @@ mod tests {
     use tacet_engine::{CONTEXT_BUDGET, FakeEngine, TokenCounter};
     use tacet_kernel::ArgSchema;
     use tacet_memory::MemoryStore;
+
+    /// THE SHELL SENDS THE SWITCH THE EVAL MEASURES (audit M23). The eval calls
+    /// `tacet_engine::thinking_switch::soft_switch`; this runs the shell's own
+    /// path over every message the eval sends, both languages, plus a message
+    /// either side of the length threshold, under every config value.
+    ///
+    /// Not a list compared against itself: with the shell's old private rule
+    /// put back and its threshold changed from 220 to 20 — the edit that left
+    /// the whole workspace green — this fails on the first suite message
+    /// between 21 and 220 characters with no planning word in it.
+    #[test]
+    fn the_shells_switch_is_the_engines() {
+        use tacet_engine::thinking_switch::{ThinkingSetting, soft_switch};
+        let mut messages: Vec<String> = tacet_eval::selection_suite()
+            .into_iter()
+            .flat_map(|c| c.steps.into_iter().map(|s| s.message))
+            .collect();
+        assert!(messages.len() > 100, "the suite is the corpus");
+        messages.push("x".repeat(220));
+        messages.push("x".repeat(221));
+        for setting in [None, Some("auto"), Some("on"), Some("off")] {
+            for m in &messages {
+                assert_eq!(
+                    thinking_switch_for(setting, m),
+                    soft_switch(
+                        tacet_engine::Template::ChatML,
+                        ThinkingSetting::parse(setting),
+                        m
+                    ),
+                    "the shell and the eval send different switches on {m:?} \
+                     with thinking = {setting:?}"
+                );
+            }
+        }
+    }
 
     /// `shell` MUST STAY IN THE APPROVAL LIST. It was left out on the grounds
     /// that it opens no socket — true of the tool, false of its effect, because

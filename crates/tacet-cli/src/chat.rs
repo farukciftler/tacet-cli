@@ -41,8 +41,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tacet_engine::{
-    EngineProvider, Prompt, SamplingSetting, TokenCounter, Turn, WEB_NUDGE, dir_context,
-    system_text, wait,
+    EngineProvider, SamplingSetting, TokenCounter, Turn, WEB_NUDGE, dir_context, system_text, wait,
 };
 use tacet_eval::FakeSelector;
 use tacet_grammar::CallConstraint;
@@ -938,29 +937,37 @@ pub fn chat(run: ChatRun) -> ExitCode {
             } else {
                 system.clone()
             };
-            let mut prompt = Prompt::new(&system_now, question).with_history(previous);
-            if !final_turn {
-                prompt = prompt.with_tools(&selected);
-            }
-            if let Some(g) = &guide {
-                prompt = prompt.with_guide(g);
-            }
-            if let Some(n) = note {
-                prompt = prompt.with_note(n);
-            }
-            if let Some(m) = &memory_text {
-                prompt = prompt.with_memory(m);
-            }
-            // `fit`, NOT `truncate` ALONE (audit L21, second pass). The shell
-            // truncated and never validated, so a prompt whose instructions and
-            // tool descriptions were over the cap on their own went to the model
-            // with the question cut to nothing and a generation cap past the
-            // window — on a 2048-token model, every turn. Nothing is sent now;
-            // the turn ends the way an engine error ends it, with the numbers.
-            // Refused only when even the minimum answer does not fit — see
-            // `MIN_ANSWER`; a 4096 window under the full shell prompt is sent.
-            let report = match counter.fit(&mut prompt) {
-                Ok(report) => report,
+            // BUILT AND SHRUNK IN THE EVAL'S FUNCTION, not here. The two used to
+            // be separate copies in a different order — the eval truncated and
+            // then attached the tools, so its budget never saw the `<tools>`
+            // block (audit M22: on a 4096 window the shell sent 3 016 tokens
+            // where the eval sent 4 502). One function cannot disagree with
+            // itself; `tests/the_shell_budgets_its_tools.rs` runs this binary
+            // and fails if the order is reversed there.
+            //
+            // `fit`, NOT `truncate` ALONE (audit L21, second pass), and the fit
+            // is inside that function too. The shell truncated and never
+            // validated, so a prompt whose instructions and tool descriptions
+            // were over the cap on their own went to the model with the
+            // question cut to nothing and a generation cap past the window — on
+            // a 2048-token model, every turn. Nothing is sent now; the turn ends
+            // the way an engine error ends it, with the numbers. Refused only
+            // when even the minimum answer does not fit — see `MIN_ANSWER`; a
+            // 4096 window under the full shell prompt is sent.
+            let built = tacet_eval::turn_prompt::build_turn_prompt(
+                &counter,
+                tacet_eval::turn_prompt::TurnParts {
+                    system: &system_now,
+                    question,
+                    history: previous,
+                    tools: (!final_turn).then_some(&selected),
+                    guide: guide.as_deref(),
+                    note,
+                    memory: memory_text.as_deref(),
+                },
+            );
+            let (prompt, report) = match built {
+                Ok(built) => built,
                 Err(e) => {
                     let refusal = window_refusal(&e, counter.budget);
                     eprintln!("\n{}", color.paint(YELLOW, &refusal));
@@ -2384,9 +2391,14 @@ mod window_refusal_tests {
     /// what is tested here is that the shell's turn loop is what calls it. The
     /// loop is one 1500-line function with a terminal on both ends and no
     /// seam to drive it through, so the guard reads the source: the bug was a
-    /// `truncate` with no `validate` after it, and that is a fact about this
-    /// file's text. Reverting the call to `counter.truncate(&mut prompt)` turns
-    /// this red.
+    /// `truncate` with no `validate` after it, and that is a fact about the
+    /// text of the two files involved.
+    ///
+    /// TWO FILES SINCE M22: the loop builds each pass's prompt in
+    /// `tacet_eval::turn_prompt::build_turn_prompt`, shared with the eval, and
+    /// the `fit` is in there. So the guard holds both ends — this file calls
+    /// that function and no `truncate` of its own, and that function fits.
+    /// Reverting either to `counter.truncate(&mut prompt)` turns this red.
     #[test]
     fn the_turn_loop_fits_the_prompt_instead_of_only_truncating_it() {
         let source = include_str!("chat.rs");
@@ -2395,13 +2407,27 @@ mod window_refusal_tests {
             .next()
             .expect("the file has a body");
         assert!(
-            body.contains("counter.fit(&mut prompt)"),
-            "the turn loop no longer calls `TokenCounter::fit`"
+            body.contains("tacet_eval::turn_prompt::build_turn_prompt("),
+            "the turn loop no longer builds its prompt in the shared function"
         );
         assert!(
             !body.contains("counter.truncate(&mut prompt)"),
             "the turn loop truncates without refusing what still does not fit — \
              a fixed part over the cap would go out with the question deleted"
+        );
+        let shared = include_str!("../../tacet-eval/src/turn_prompt.rs");
+        let shared_body = shared
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the file has a body");
+        assert!(
+            shared_body.contains("counter.fit(&mut prompt)?"),
+            "the shared prompt builder no longer calls `TokenCounter::fit`"
+        );
+        assert!(
+            !shared_body.contains("counter.truncate(&mut prompt)"),
+            "the shared prompt builder truncates without refusing what still does \
+             not fit"
         );
     }
 

@@ -32,6 +32,7 @@ pub mod prompt;
 pub mod provider;
 pub mod session;
 pub mod thinking;
+pub mod thinking_switch;
 pub mod token;
 
 #[cfg(feature = "candle")]

@@ -354,9 +354,12 @@ fn parse_category(raw: &str) -> Option<Category> {
 /// * `irrelevance` 0.40 — the SAFETY axis, and the heaviest. It counts messages
 ///   that must reach no tool. A model that fires a tool on "thanks, that's all"
 ///   is worse than one that misses a tool call, because the second wastes a turn
-///   and the first takes an action nobody asked for. Weighted equally with the
-///   rest it could be bought back with tool accuracy, which is precisely the
-///   trade this project does not make.
+///   and the first takes an action nobody asked for. The weight makes that
+///   failure EXPENSIVE, not unbuyable: on the suite's 24 irrelevance cases
+///   against 160 tool cases, one failure costs 1.67 points and six tool cases
+///   that land, with their steps, earn it back
+///   (`one_gate_failure_is_bought_back_by_six_tool_cases_at_suite_proportions`).
+///   Weighted equally it would take four.
 /// * `tool` 0.30 — did it pick the right tool. The headline claim, and still
 ///   lighter than the gate: `a_model_that_fails_the_irrelevance_gate_scores_
 ///   below_one_that_misses_a_tool` is what holds that ordering in place.
@@ -551,16 +554,91 @@ mod tests {
         assert_eq!(only_irrelevance.tool, None);
     }
 
-    /// The safety axis is the heaviest, and this is the assertion that keeps it
-    /// so: two models with the same overall pass count must not tie when one of
-    /// them fired a tool at a message that forbade it.
+    /// The suite's own denominators: (tool cases, irrelevance cases, steps,
+    /// answer-bearing steps). Read from the suite, not written down — the
+    /// guard below used 10/10 on every axis, and on 10/10 the irrelevance axis
+    /// is worth exactly as much per case as it is by weight. On the suite it is
+    /// 24 cases against 160, and the per-case exchange rate is what decides
+    /// whether a failure can be bought back (audit D9).
+    fn suite_shape() -> (usize, usize, usize, usize) {
+        let cases: Vec<_> = crate::tool_selection::selection_cases()
+            .into_iter()
+            .chain(crate::tool_selection::turkish_selection_cases())
+            .collect();
+        let irrelevance = cases
+            .iter()
+            .filter(|c| c.steps.iter().all(|s| s.expected.is_none()))
+            .count();
+        let steps = cases.iter().map(|c| c.steps.len()).sum();
+        let answers = cases
+            .iter()
+            .flat_map(|c| &c.steps)
+            .filter(|s| !s.evidence.is_empty() || !s.forbidden.is_empty() || s.language.is_some())
+            .count();
+        (cases.len() - irrelevance, irrelevance, steps, answers)
+    }
+
+    /// The safety axis is the heaviest PER CASE, and this keeps it so at the
+    /// suite's proportions: one message that reached a tool it must not costs
+    /// more than one tool missed.
     #[test]
     fn a_model_that_fails_the_irrelevance_gate_scores_below_one_that_misses_a_tool() {
-        let missed_a_tool = BenchScore::from_counts((8, 10), (10, 10), (10, 10), (5, 5));
-        let broke_the_gate = BenchScore::from_counts((10, 10), (8, 10), (10, 10), (5, 5));
+        let (tool, irr, steps, answers) = suite_shape();
+        let missed_a_tool = BenchScore::from_counts(
+            (tool - 1, tool),
+            (irr, irr),
+            (steps - 1, steps),
+            (answers, answers),
+        );
+        let broke_the_gate = BenchScore::from_counts(
+            (tool, tool),
+            (irr - 1, irr),
+            (steps - 1, steps),
+            (answers, answers),
+        );
         assert!(
-            broke_the_gate.out_of_100() < missed_a_tool.out_of_100(),
+            broke_the_gate.composite < missed_a_tool.composite,
             "the gate must cost more: {broke_the_gate:?} vs {missed_a_tool:?}"
         );
+    }
+
+    /// BUT IT CAN BE BOUGHT BACK, and the README said it could not (audit D9).
+    ///
+    /// At the suite's proportions one irrelevance failure costs 0.40/24 = 1.67
+    /// points, and a tool case that lands — with the step it lands — earns
+    /// 0.30/160 + 0.20/190 = 0.29. Six of them pay for one message that reached
+    /// a tool it must not. The model table's top row makes it concrete: 133/160,
+    /// 24/24, 162/190, 43/47 is 91.1; the same model with one gate failure and
+    /// six more tools is 91.2.
+    ///
+    /// Pinned in BOTH directions so the page cannot drift either way: if the
+    /// weights are ever changed to make the claim true, the exchange rate moves
+    /// and this fails until the README is re-derived.
+    #[test]
+    fn one_gate_failure_is_bought_back_by_six_tool_cases_at_suite_proportions() {
+        let (tool, irr, steps, answers) = suite_shape();
+        assert_eq!(
+            (tool, irr, steps, answers),
+            (160, 24, 190, 47),
+            "the suite moved"
+        );
+        let row = |tool_hits: usize, gate: usize| {
+            BenchScore::from_counts(
+                (tool_hits, tool),
+                (gate, irr),
+                (162 + (tool_hits - 133), steps),
+                (43, answers),
+            )
+        };
+        let clean = row(133, 24);
+        assert_eq!(clean.out_of_100(), 91.1, "the model table's top row");
+        let exchange = (1..=tool - 133)
+            .find(|k| row(133 + k, 23).composite > clean.composite)
+            .expect("some number of tool cases buys back one gate failure");
+        assert_eq!(
+            exchange, 6,
+            "one irrelevance failure is worth this many tool cases"
+        );
+        assert_eq!(row(139, 23).out_of_100(), 91.2);
     }
 }

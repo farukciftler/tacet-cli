@@ -44,7 +44,22 @@ pub fn sign_test(fixed: usize, broken: usize) -> f64 {
         return 1.0;
     }
     let smaller = fixed.min(broken);
-    let tail: f64 = (0..=smaller).map(|k| binomial_pmf(n, k, 0.5)).sum();
+    // C(n, k) · 0.5^n, walked from k = 0 by the ratio (n - k) / (k + 1).
+    //
+    // IN LOG SPACE ON PURPOSE: C(1000, 500) overflows an f64 while 0.5^1000
+    // underflows it, and the product is a perfectly ordinary number.
+    // Multiplying them directly gives `inf * 0 = NaN` — a p-value that silently
+    // becomes NaN is worse than no p-value.
+    //
+    // WALKED RATHER THAN RECOMPUTED PER TERM: `cases_needed_observed` asks this
+    // for suites of tens of thousands of cases, and three O(n) log-factorials
+    // per term made each call quadratic.
+    let mut log_pmf = n as f64 * 0.5f64.ln();
+    let mut tail = 0.0;
+    for k in 0..=smaller {
+        tail += log_pmf.exp();
+        log_pmf += ((n - k) as f64).ln() - ((k + 1) as f64).ln();
+    }
     (2.0 * tail).min(1.0)
 }
 
@@ -60,6 +75,64 @@ pub fn cases_needed(points: f64) -> usize {
         return usize::MAX;
     }
     (600.0 / points).ceil() as usize
+}
+
+/// How many paired cases a suite needs to call, at 95%, the effect a
+/// comparison ACTUALLY OBSERVED — with the cases it broke counted, not only the
+/// ones it fixed.
+///
+/// WHY `cases_needed` IS NOT ENOUGH FOR THIS (audit L30). That function answers
+/// for a one-way effect: every discordant pair in the same direction. A real
+/// comparison is two-sided. `--compare` read fixed 10 / broke 4 on 100 cases,
+/// p = 0.1796, NOT DISTINGUISHABLE — and then printed "this instrument needs 100
+/// paired cases to call a 6.0-point effect; this suite has 100", a sentence that
+/// contradicts the verdict above it. The four broken cases are noise the effect
+/// has to be seen through, and only a larger suite does that.
+///
+/// The answer is the smallest suite on which the SAME fixed and broken rates
+/// would pass the sign test, to within the rounding of a case count. `None`
+/// when no suite would: as many cases broke as were fixed, or a zero-case run.
+/// Searched up to a million cases; past that, `None` as well, because "more
+/// than a million" is not a suite anyone is going to write.
+pub fn cases_needed_observed(fixed: usize, broken: usize, n: usize) -> Option<usize> {
+    const LIMIT: usize = 1_000_000;
+    if n == 0 || fixed == broken {
+        return None;
+    }
+    let p_at = |m: usize| {
+        let scale = m as f64 / n as f64;
+        sign_test(
+            (fixed as f64 * scale).round() as usize,
+            (broken as f64 * scale).round() as usize,
+        )
+    };
+    if p_at(n) < 0.05 {
+        return Some(n);
+    }
+    // Doubling to an upper bound, then halving down to the smallest. The
+    // p-value is not strictly monotone in `m` — the counts are rounded — so this
+    // finds the boundary, not every isolated size that happens to dip under it.
+    let mut low = n;
+    let mut high = n;
+    loop {
+        if high >= LIMIT {
+            return None;
+        }
+        high = (high * 2).min(LIMIT);
+        if p_at(high) < 0.05 {
+            break;
+        }
+        low = high;
+    }
+    while high - low > 1 {
+        let mid = low + (high - low) / 2;
+        if p_at(mid) < 0.05 {
+            high = mid;
+        } else {
+            low = mid;
+        }
+    }
+    Some(high)
 }
 
 /// The paired difference and its interval, by resampling CASES (not steps).
@@ -234,29 +307,90 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
     sorted[low] * (1.0 - weight) + sorted[high] * weight
 }
 
-/// C(n, k) · p^k · (1-p)^(n-k), computed in log space.
-///
-/// IN LOG SPACE ON PURPOSE: C(1000, 500) overflows an f64 while 0.5^1000
-/// underflows it, and the product is a perfectly ordinary number. Multiplying
-/// them directly gives `inf * 0 = NaN` — a p-value that silently becomes NaN is
-/// worse than no p-value.
-fn binomial_pmf(n: usize, k: usize, p: f64) -> f64 {
-    if k > n {
-        return 0.0;
-    }
-    let log = log_factorial(n) - log_factorial(k) - log_factorial(n - k)
-        + (k as f64) * p.ln()
-        + ((n - k) as f64) * (1.0 - p).ln();
-    log.exp()
-}
-
-fn log_factorial(n: usize) -> f64 {
-    (2..=n).map(|i| (i as f64).ln()).sum()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The per-term formula `sign_test` used before it walked the terms, kept
+    /// as the reference the walk must reproduce.
+    fn binomial_pmf(n: usize, k: usize, p: f64) -> f64 {
+        let log_factorial = |n: usize| (2..=n).map(|i| (i as f64).ln()).sum::<f64>();
+        let log = log_factorial(n) - log_factorial(k) - log_factorial(n - k)
+            + (k as f64) * p.ln()
+            + ((n - k) as f64) * (1.0 - p).ln();
+        log.exp()
+    }
+
+    #[test]
+    fn the_walked_tail_is_the_per_term_tail() {
+        for fixed in 0..40 {
+            for broken in 0..40 {
+                let n = fixed + broken;
+                if n == 0 {
+                    continue;
+                }
+                let tail: f64 = (0..=fixed.min(broken))
+                    .map(|k| binomial_pmf(n, k, 0.5))
+                    .sum();
+                let want = (2.0 * tail).min(1.0);
+                assert!(
+                    (sign_test(fixed, broken) - want).abs() < 1e-9,
+                    "{fixed}/{broken}: {} vs {want}",
+                    sign_test(fixed, broken)
+                );
+            }
+        }
+        // And it does not turn into NaN where the naive product would.
+        assert!(sign_test(600, 400).is_finite());
+    }
+
+    /// THE AUDIT'S OWN NUMBERS (L30): fixed 10 / broke 4 / 100 is p = 0.1796,
+    /// so whatever suite would call it, it is not the 100 cases that just
+    /// failed to.
+    #[test]
+    fn a_two_sided_effect_needs_more_than_the_suite_that_could_not_call_it() {
+        assert!(sign_test(10, 4) > 0.05);
+        let needed = cases_needed_observed(10, 4, 100).expect("a net effect is callable somewhere");
+        assert!(needed > 100, "{needed}");
+        // And the answer is a suite on which the same rates DO pass.
+        let at = |m: usize| sign_test((10 * m).div_ceil(100), (4 * m) / 100);
+        assert!(at(needed + 10) < 0.05, "{needed}");
+        // The broken cases cost: the one-way bound for the same net 6 points is
+        // the 100 that `cases_needed` printed.
+        assert_eq!(cases_needed(6.0), 100);
+    }
+
+    #[test]
+    fn a_one_way_effect_lands_where_the_one_way_bound_says() {
+        // 3 of 100, all one way: six such pairs need about 200 cases.
+        let needed = cases_needed_observed(3, 0, 100).unwrap();
+        assert!((101..=cases_needed(3.0)).contains(&needed), "{needed}");
+        // Already callable: the suite it was measured on is enough.
+        assert_eq!(cases_needed_observed(6, 0, 50), Some(50));
+    }
+
+    /// The README quotes two `--compare` outputs; these are their resolution
+    /// lines as the command prints them now, so the page can be re-derived
+    /// rather than remembered. 0 fixed / 3 broke / 184 printed 368 under the
+    /// one-way formula; 8 fixed / 5 broke / 115 printed 230, which ignored the
+    /// five broken cases entirely.
+    #[test]
+    fn the_resolution_lines_the_readme_quotes() {
+        assert_eq!(cases_needed_observed(0, 3, 184), Some(338));
+        assert_eq!(cases_needed_observed(8, 5, 115), Some(712));
+    }
+
+    #[test]
+    fn no_suite_calls_a_wash() {
+        assert_eq!(cases_needed_observed(5, 5, 100), None);
+        assert_eq!(cases_needed_observed(0, 0, 100), None);
+        assert_eq!(cases_needed_observed(1, 0, 0), None);
+        // 51 against 49 needs far more than any suite here (9 719 by this
+        // search, 9 604 by the normal approximation), and the search
+        // must end rather than walk to infinity.
+        let tiny = cases_needed_observed(51, 49, 100);
+        assert!(tiny.is_none_or(|m| m > 5_000), "{tiny:?}");
+    }
 
     #[test]
     fn the_sign_test_matches_hand_computed_values() {
