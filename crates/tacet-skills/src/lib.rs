@@ -35,7 +35,7 @@ pub use injection::{
     CORE_MARKER, INJECTION_LIMIT, InjectionState, injection_body, injection_text, split_core,
 };
 pub use matching::{WHOLE_TERM_LIMIT, contains, lowercase, score};
-pub use skill::{Skill, USER_BODY_LIMIT, parse};
+pub use skill::{NAME_LIMIT, Skill, USER_BODY_LIMIT, parse, skill_name};
 pub use store::SkillStore;
 
 /// The directory user skills are read from: config directory + `skills`.
