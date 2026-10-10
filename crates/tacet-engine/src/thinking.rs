@@ -272,10 +272,12 @@ fn seam_makes_a_call(joined: &str, seam: usize, names: &[&str]) -> bool {
 enum Close {
     /// At this byte index into `text`.
     At(usize),
-    /// Nowhere: no `</think>` outside a call that parses.
+    /// Nowhere: no `</think>` in the rest of the text at all.
     Missing,
     /// Unknown: a call start before the next `</think>` does not parse, so
-    /// whether that `</think>` is inside it cannot be told.
+    /// whether that `</think>` is inside it cannot be told — or the only
+    /// `</think>`s left are inside parsed calls, so the block either never
+    /// closes or closed inside one of them.
     Unprovable,
 }
 
@@ -290,7 +292,7 @@ enum Close {
 /// candidate INSIDE one included: the call parsed, so that `</think>` sits in
 /// one of its JSON strings, and the search goes on after the call's end. The
 /// call then belongs to the block if a `</think>` follows it, and is left
-/// visible if none does. The first version answered "unclosed" on any such
+/// visible — as a guess, see the end of this comment — if none does. The first version answered "unclosed" on any such
 /// candidate, and a review measured what that cost:
 /// `<think>I could write_file({"path":"a","content":"</think>"}) but no</think>No.`
 /// put the whole block on the screen and the executor ran the `write_file`
@@ -314,15 +316,32 @@ enum Close {
 /// text is ALSO the executor's input, and the block's calls with it, which is
 /// why this case is a distinct answer rather than `Missing`: `split` reports it
 /// as a second reading, and the loops run nothing the two readings disagree on.
+///
+/// A STEPPED-OVER CLOSE WITH NOTHING AFTER IT IS A GUESS TOO. With no later
+/// `</think>`, "the call is the answer" and "the block ended inside the call"
+/// are both readings of the same bytes, and only the first runs anything. A
+/// review measured the cost of calling that `Missing`:
+/// `<think>I might call web_search({"query":"</think>"}) but no` ran
+/// `web_search` with the production catalog, where the split before H5 left
+/// `"}) but no` and ran nothing. The same text with a later `</think>No.`
+/// was already stripped; only the unclosed case read as proven.
 fn find_close(text: &str, from: usize, names: &[&str]) -> Close {
     let mut from = from;
+    let mut stepped_over_a_close = false;
     loop {
         let Some(close) = text[from..].find(CLOSE).map(|at| from + at) else {
-            return Close::Missing;
+            return if stepped_over_a_close {
+                Close::Unprovable
+            } else {
+                Close::Missing
+            };
         };
         match next_call_start(text, from, names) {
             Some(call) if call.at < close => match proven_call_end(text, call.at) {
-                Some(end) => from = end,
+                Some(end) => {
+                    stepped_over_a_close |= close < end;
+                    from = end;
+                }
                 None => return Close::Unprovable,
             },
             _ => return Close::At(close),
@@ -619,6 +638,9 @@ mod tests {
             r#"Use {"x <think>I could <tool_call>web_search query="leak"</think>No."#,
             // So is a kept seam: the block's own call is in the unchanged text.
             r#"x_<think>maybe web_search({"query":"leak"}) no</think>()"#,
+            // A block that never closes, around a call holding the only
+            // `</think>`: the call is the answer, or the block ended inside it.
+            r#"<think>I might call web_search({"query":"</think>"}) but no"#,
         ] {
             let s = split(text, &names);
             let other = s
@@ -630,13 +652,21 @@ mod tests {
 
     /// The other side of the gate: where the split PROVED its answer there is no
     /// second reading, so the loops keep running the call. A grammar call with
-    /// `<think>` in its argument, an unclosed block before a call whose argument
-    /// holds the only `</think>`, a block stripped normally.
+    /// `<think>` in its argument, a block stripped normally, an unclosed block
+    /// with no `</think>` anywhere.
+    ///
+    /// NOT here any more: an unclosed block before a call whose argument holds
+    /// the only `</think>` (`<think>plan it write_file({…"</think>X"})`). This
+    /// test used to pin it as proven, and a review showed the same bytes are a
+    /// call the model declined — `<think>I might call web_search({"query":
+    /// "</think>"}) but no` ran `web_search`. Nothing in the text tells the two
+    /// apart, so it is a guess now (see `a_block_kept_on_a_guess_carries_the_
+    /// other_reading`): the call is never edited, and it is refused rather than
+    /// run, which is what the split before H5 did with it.
     #[test]
     fn a_proven_split_has_one_reading() {
         for text in [
             r#"write_file({"path":"<think>","content":"</think>X"})"#,
-            r#"<think>plan it write_file({"path":"a.md","content":"</think>X"})"#,
             r#"<think>need a file</think>write_file({"path":"a.md"})"#,
             "<think>1247 times 89 equals 110983.",
         ] {
