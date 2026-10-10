@@ -119,6 +119,11 @@ pub struct Token {
     /// Unix seconds. `None` means the server did not say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<u64>,
+    /// The RFC 8707 resource (the MCP server) this token was asked for, so a
+    /// refresh asks for the same audience again. `None` only for a token
+    /// stored before the parameter was sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
 }
 
 impl Token {
@@ -196,11 +201,47 @@ pub struct Authorization {
     pub state: String,
     /// PKCE: never leaves this machine until the code is redeemed.
     pub verifier: String,
+    /// RFC 8707: the MCP server the token is for, in canonical form. Kept here
+    /// so the token request names EXACTLY the resource the user consented to.
+    pub resource: String,
 }
 
-/// Builds the authorization URL with PKCE (S256) and a random state.
-pub fn begin(setting: &AuthSetting) -> MCPResult<Authorization> {
+/// The RFC 8707 resource indicator for an MCP server URL.
+///
+/// WHY THE PARAMETER EXISTS (audit L1): without it a token is not bound to an
+/// audience. The authorization server mints a token good for everything that
+/// trusts it, and the MCP server that receives it can replay it against any of
+/// those other resources — the "confused deputy" the MCP authorization spec
+/// closes by REQUIRING `resource` on both the authorization and the token
+/// request. The canonical form is what that spec asks for: an absolute URI,
+/// no fragment, scheme and host lowercased. The server URL must already pass
+/// the address rule; a resource that could not be connected to is not one a
+/// token should be minted for.
+pub fn resource_indicator(server_url: &str) -> MCPResult<String> {
+    let refuse = || MCPError::InvalidAddress(server_url.to_string());
+    crate::client::validate_url(server_url)?;
+    if server_url.contains('#') {
+        return Err(refuse());
+    }
+    let (scheme, rest) = server_url.split_once("://").ok_or_else(refuse)?;
+    let end = rest.find(['/', '?']).unwrap_or(rest.len());
+    Ok(format!(
+        "{}://{}{}",
+        scheme.to_ascii_lowercase(),
+        rest[..end].to_ascii_lowercase(),
+        &rest[end..]
+    ))
+}
+
+/// Builds the authorization URL with PKCE (S256), a random state and the
+/// RFC 8707 `resource` — `server_url` is the MCP server the token is for.
+///
+/// THE SERVER URL IS AN ARGUMENT, NOT A FIELD OF `AuthSetting`: the resource is
+/// the connection's own `url`, and a second, separately editable copy of it in
+/// the `auth` block is a value that can quietly name some other audience.
+pub fn begin(setting: &AuthSetting, server_url: &str) -> MCPResult<Authorization> {
     setting.validate()?;
+    let resource = resource_indicator(server_url)?;
     let verifier = random_token();
     let challenge = base64url(&tacet_kernel::sha256(verifier.as_bytes()));
     let state = random_token();
@@ -211,10 +252,11 @@ pub fn begin(setting: &AuthSetting) -> MCPResult<Authorization> {
     };
     let mut url = format!(
         "{}{separator}response_type=code&client_id={}&redirect_uri={}&state={state}\
-         &code_challenge={challenge}&code_challenge_method=S256",
+         &code_challenge={challenge}&code_challenge_method=S256&resource={}",
         setting.authorization_endpoint,
         escape(&setting.client_id),
         escape(&setting.redirect_uri),
+        escape(&resource),
     );
     if !setting.scopes.is_empty() {
         url.push_str(&format!("&scope={}", escape(&setting.scopes.join(" "))));
@@ -223,6 +265,7 @@ pub fn begin(setting: &AuthSetting) -> MCPResult<Authorization> {
         url,
         state,
         verifier,
+        resource,
     })
 }
 
@@ -289,20 +332,33 @@ pub fn check_redirect(
 /// is testable and so nothing about a secret has to be reconstructed in a test.
 pub fn token_request_body(setting: &AuthSetting, started: &Authorization, code: &str) -> String {
     format!(
-        "grant_type=authorization_code&code={}&redirect_uri={}&client_id={}&code_verifier={}",
+        "grant_type=authorization_code&code={}&redirect_uri={}&client_id={}&code_verifier={}\
+         &resource={}",
         escape(code),
         escape(&setting.redirect_uri),
         escape(&setting.client_id),
         escape(&started.verifier),
+        escape(&started.resource),
     )
 }
 
-pub fn refresh_request_body(setting: &AuthSetting, refresh_token: &str) -> String {
-    format!(
+/// `resource` is the token's own (RFC 8707 asks for it on a refresh too, or the
+/// fresh token comes back unbound). A token stored before the parameter
+/// existed has none, and is refreshed as it was minted.
+pub fn refresh_request_body(
+    setting: &AuthSetting,
+    refresh_token: &str,
+    resource: Option<&str>,
+) -> String {
+    let mut body = format!(
         "grant_type=refresh_token&refresh_token={}&client_id={}",
         escape(refresh_token),
         escape(&setting.client_id),
-    )
+    );
+    if let Some(resource) = resource {
+        body.push_str(&format!("&resource={}", escape(resource)));
+    }
+    body
 }
 
 /// Turns a token endpoint's answer into a bound token.
@@ -329,6 +385,9 @@ pub fn token_from_response(setting: &AuthSetting, body: &Value, now: u64) -> MCP
             .get("expires_in")
             .and_then(Value::as_u64)
             .map(|seconds| now + seconds),
+        // Set by the caller that knows which resource was asked for; the
+        // response is not trusted to say.
+        resource: None,
     })
 }
 
@@ -352,7 +411,9 @@ pub fn redeem(
     let code = check_redirect(setting, started, redirect)?;
     let body = token_request_body(setting, started, &code);
     let response = post_form(transport, &setting.token_endpoint, body)?;
-    token_from_response(setting, &response, now)
+    let mut token = token_from_response(setting, &response, now)?;
+    token.resource = Some(started.resource.clone());
+    Ok(token)
 }
 
 /// Trades a refresh token for a fresh access token. The new token is bound to
@@ -371,9 +432,10 @@ pub fn refresh(
         .refresh_token
         .as_deref()
         .ok_or(MCPError::NotAuthorized)?;
-    let body = refresh_request_body(setting, refresh_token);
+    let body = refresh_request_body(setting, refresh_token, token.resource.as_deref());
     let response = post_form(transport, &setting.token_endpoint, body)?;
     let mut fresh = token_from_response(setting, &response, now)?;
+    fresh.resource = token.resource.clone();
     // A server that does not rotate the refresh token expects the old one to
     // keep working; dropping it would log the user out on the next expiry.
     if fresh.refresh_token.is_none() {
@@ -523,6 +585,54 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// The MCP server the token is for — deliberately NOT on the issuer's
+    /// host, as in any real deployment with a separate authorization server.
+    const SERVER: &str = "https://MCP.Example.com/mcp";
+
+    /// Audit L1. Both requests must name the audience, and the token request
+    /// must name the SAME one the user consented to at the authorize step.
+    #[test]
+    fn both_requests_carry_the_rfc_8707_resource() {
+        let started = begin(&setting(), SERVER).expect("built");
+        let canonical = "https://mcp.example.com/mcp";
+        assert_eq!(started.resource, canonical, "scheme and host lowercased");
+        assert!(
+            started
+                .url
+                .contains("&resource=https%3A%2F%2Fmcp.example.com%2Fmcp"),
+            "{}",
+            started.url
+        );
+        let body = token_request_body(&setting(), &started, "the-code");
+        assert!(
+            body.contains("&resource=https%3A%2F%2Fmcp.example.com%2Fmcp"),
+            "{body}"
+        );
+        let refresh = refresh_request_body(&setting(), "rt-1", Some(canonical));
+        assert!(
+            refresh.contains("&resource=https%3A%2F%2Fmcp.example.com%2Fmcp"),
+            "{refresh}"
+        );
+    }
+
+    #[test]
+    fn a_resource_that_is_not_a_valid_server_address_is_refused() {
+        for bad in [
+            "",
+            "mcp.example.com",
+            "https://mcp.example.com/mcp#frag",
+            "http://example.com/mcp",
+            "http://localhost:8080@evil.example/mcp",
+        ] {
+            assert!(begin(&setting(), bad).is_err(), "{bad:?} was accepted");
+        }
+        // The path and query are part of the identity and kept as they are.
+        assert_eq!(
+            resource_indicator("http://127.0.0.1:3000/Tools?x=Y").expect("local"),
+            "http://127.0.0.1:3000/Tools?x=Y"
+        );
+    }
+
     fn setting() -> AuthSetting {
         AuthSetting {
             issuer: "https://auth.example.com".into(),
@@ -549,7 +659,7 @@ mod tests {
 
     #[test]
     fn the_authorization_url_carries_pkce_and_state() {
-        let started = begin(&setting()).expect("built");
+        let started = begin(&setting(), SERVER).expect("built");
         assert!(
             started
                 .url
@@ -571,7 +681,7 @@ mod tests {
         // RFC 9207. THE CASE THAT MATTERS: an attacker's authorization server
         // simply omits the parameter, and a client that treats `iss` as
         // optional trades the code in at the honest server.
-        let started = begin(&setting()).expect("built");
+        let started = begin(&setting(), SERVER).expect("built");
         let redirect = parse_redirect(&format!(
             "http://127.0.0.1/callback?code=abc&state={}",
             started.state
@@ -584,7 +694,7 @@ mod tests {
 
     #[test]
     fn a_response_from_another_issuer_is_not_redeemed() {
-        let started = begin(&setting()).expect("built");
+        let started = begin(&setting(), SERVER).expect("built");
         let redirect = parse_redirect(&format!(
             "http://127.0.0.1/callback?code=abc&state={}&iss=https%3A%2F%2Fevil.example.com",
             started.state
@@ -597,7 +707,7 @@ mod tests {
 
     #[test]
     fn a_matching_response_yields_the_code() {
-        let started = begin(&setting()).expect("built");
+        let started = begin(&setting(), SERVER).expect("built");
         let redirect = parse_redirect(&format!(
             "http://127.0.0.1/callback?code=the-code&state={}&iss=https%3A%2F%2Fauth.example.com",
             started.state
@@ -610,7 +720,7 @@ mod tests {
 
     #[test]
     fn a_replayed_state_is_refused() {
-        let started = begin(&setting()).expect("built");
+        let started = begin(&setting(), SERVER).expect("built");
         let redirect = parse_redirect(
             "http://127.0.0.1/callback?code=abc&state=someone-elses&iss=https%3A%2F%2Fauth.example.com",
         );
@@ -676,7 +786,7 @@ mod tests {
 
     #[test]
     fn the_token_request_carries_the_verifier_and_nothing_extra() {
-        let started = begin(&setting()).expect("built");
+        let started = begin(&setting(), SERVER).expect("built");
         let body = token_request_body(&setting(), &started, "the code&injected=1");
         assert!(body.contains("grant_type=authorization_code"));
         assert!(body.contains(&format!("code_verifier={}", escape(&started.verifier))));

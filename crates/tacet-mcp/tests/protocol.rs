@@ -503,6 +503,10 @@ fn c9_an_unconvertible_schema_is_reported_rather_than_narrowed() {
 // C10 — M3: authorization is bound to its issuer
 // ---------------------------------------------------------------------------
 
+/// The MCP server being logged in to. On another host than the issuer, as it
+/// is in practice — the resource and the issuer are different things.
+const MCP_SERVER: &str = "https://mcp.example.com/mcp";
+
 fn auth_setting() -> AuthSetting {
     AuthSetting {
         issuer: "https://auth.example.com".into(),
@@ -517,7 +521,7 @@ fn auth_setting() -> AuthSetting {
 #[test]
 fn c10_a_response_without_a_valid_iss_is_never_redeemed() {
     let setting = auth_setting();
-    let started = auth::begin(&setting).expect("authorization url");
+    let started = auth::begin(&setting, MCP_SERVER).expect("authorization url");
     let transport = Arc::new(ReplayTransport::new(fixture("oauth-token.json")));
 
     // No `iss` at all — the shape an attacker's authorization server produces.
@@ -558,6 +562,43 @@ fn c10_a_response_without_a_valid_iss_is_never_redeemed() {
     let body = String::from_utf8_lossy(&transport.sent()[0].body).to_string();
     assert!(body.contains("grant_type=authorization_code"));
     assert!(body.contains("code_verifier="));
+    // Audit L1 (RFC 8707), measured on the wire: the token request names the
+    // audience, and the token remembers it for its refreshes.
+    assert!(
+        body.contains("&resource=https%3A%2F%2Fmcp.example.com%2Fmcp"),
+        "{body}"
+    );
+    assert_eq!(token.resource.as_deref(), Some(MCP_SERVER));
+}
+
+/// Audit L1: a refresh asks for the SAME audience the token was minted for.
+/// Without the parameter the refreshed token comes back unbound, and the
+/// binding the login made would last exactly one expiry.
+#[test]
+fn c10_a_refresh_asks_for_the_same_resource_again() {
+    let setting = auth_setting();
+    let started = auth::begin(&setting, MCP_SERVER).expect("authorization url");
+    let transport = Arc::new(ReplayTransport::new(
+        fixture("oauth-token.json")
+            .into_iter()
+            .chain(fixture("oauth-token.json"))
+            .collect(),
+    ));
+    let good = auth::parse_redirect(&format!(
+        "http://127.0.0.1/callback?code=abc&state={}&iss=https%3A%2F%2Fauth.example.com",
+        started.state
+    ));
+    let token =
+        auth::redeem(transport.as_ref(), &setting, &started, &good, 1_000).expect("redeemed");
+    let fresh = auth::refresh(transport.as_ref(), &setting, &token, 2_000).expect("refreshed");
+    let sent = transport.sent();
+    let body = String::from_utf8_lossy(&sent[1].body).to_string();
+    assert!(body.contains("grant_type=refresh_token"), "{body}");
+    assert!(
+        body.contains("&resource=https%3A%2F%2Fmcp.example.com%2Fmcp"),
+        "{body}"
+    );
+    assert_eq!(fresh.resource.as_deref(), Some(MCP_SERVER));
 }
 
 #[test]

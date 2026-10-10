@@ -489,7 +489,9 @@ pub fn begin_login(name: &str) -> Result<LoginStep, String> {
     let auth = setting.auth.clone().ok_or_else(|| {
         format!("{name:?} has no `auth` block in mcp.json — nothing to log in to")
     })?;
-    let started = tacet_mcp::auth::begin(&auth).map_err(|e| e.short_error())?;
+    // The connection's own URL is the RFC 8707 resource: the token is minted
+    // for this server and no other (audit L1).
+    let started = tacet_mcp::auth::begin(&auth, &setting.url).map_err(|e| e.short_error())?;
     Ok(LoginStep {
         url: started.url.clone(),
         started,
