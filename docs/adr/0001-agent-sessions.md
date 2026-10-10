@@ -137,8 +137,20 @@ measurements.
 |---|---|---|---|
 | Claude Code | 2.1.263–2.1.293 | write 2.1.285–2.1.285 | read: 30 newest transcripts (340 MB, no unparsed line); write: the E2–E5 append/resume experiment |
 | Antigravity IDE | 2.5.5–2.5.5 | none | brain/ transcripts and task.md; no write was ever verified |
-| Antigravity CLI (`agy`) | 1.1.10–1.1.10 | none | brain/ transcripts; no write was ever verified |
+| Antigravity CLI (`agy`) | 1.1.10–1.1.10, measured but not reachable: no version can be read without running the binary, so every read warns | none | brain/ transcripts; no write was ever verified |
 | Codex CLI | none | none | not installed; source and fixtures only |
+
+Where the version comes from: Claude Code's is the `version` on the entries of
+the rebuilt chain; Codex's is `session_meta.cli_version`. Antigravity writes no
+version into anything Tacet opens, so the gate is asked about the **installed
+app**: on macOS, `Antigravity IDE.app/Contents/Resources/app/product.json` in
+`/Applications` or `~/Applications`, its `ideVersion` (2.5.5 on the measuring
+Mac — its `version` key is the forked editor's, 1.107.0), accepted only when its
+`applicationName` is the root's own directory name and only for a session last
+written after that file was. Everything else — `agy` (a single binary; reading
+its version would mean running it), Antigravity.app, any Linux install, a
+session older than the installed build — has no version and reads with the
+warning.
 
 A range is widened by a measurement, never by an edit: a read range after the
 fixture corpus (RG-28) parses that version with no unparsed line, a write range

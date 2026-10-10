@@ -109,7 +109,7 @@ pub const PLAN_UPDATED: &str = "Plan updated";
 /// fragment matchers in `core/src/context/` and `protocol/src/protocol.rs` at
 /// a06545b. Shown as `Role::System`, and never used as a title: the first
 /// user-role message of every Codex session is one of these.
-const INJECTED_PREFIXES: &[&str] = &[
+pub(crate) const INJECTED_PREFIXES: &[&str] = &[
     "<environment_context>",
     "<environments_instructions>",
     "<user_instructions>",
