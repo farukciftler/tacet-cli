@@ -1,6 +1,6 @@
 //! THE SMALL CLAIMS THE DOCUMENTS MAKE ABOUT THIS TREE, EACH READ BACK FROM IT.
 //!
-//! WHY THIS FILE EXISTS (audit D4, D10, D11, D13, D14, D23, and RG-36's "the
+//! WHY THIS FILE EXISTS (audit D4, D10–D14, D19–D23, and RG-36's "the
 //! gate list matches CI"). None of these was a large error. Each was a sentence
 //! true on the day it was written about something that then moved — a version,
 //! a directory, a manifest, a workflow — and each was found by a person reading
@@ -452,63 +452,285 @@ fn the_sessions_section_quotes_the_version_table() {
     );
 }
 
+/// Where a test path the page cites lives, or why it does not.
+///
+/// `path` is a cargo filter, `module::inline_mod::test_name`, and cargo
+/// matches it as a SUBSTRING of the real path — so `thinking::a_proven_split`
+/// selects nothing when the test sits in `thinking::tests`, and runs zero tests
+/// green. A citation is therefore checked as the whole path, not as "a
+/// function by that name exists somewhere in the file": the first segment is a
+/// file under `src/`, the last a `fn`, and the ones between exactly the inline
+/// `mod`s that enclose it. A trailing `::` (`thinking::`) cites a whole module.
+fn resolve_test_path(src: &Path, path: &str) -> Result<(), String> {
+    let segments: Vec<&str> = path.split("::").filter(|s| !s.is_empty()).collect();
+    let Some((&module, rest)) = segments.split_first() else {
+        return Err(format!("`{path}` names nothing"));
+    };
+    let file = [
+        src.join(format!("{module}.rs")),
+        src.join(module).join("mod.rs"),
+    ]
+    .into_iter()
+    .find(|f| f.is_file())
+    .ok_or_else(|| format!("there is no module {module}"))?;
+    let Some((&test, mods)) = rest.split_last() else {
+        return Ok(());
+    };
+    let text = std::fs::read_to_string(&file).expect("the module is readable");
+    let lines: Vec<&str> = text.lines().collect();
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let at = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with(&format!("fn {test}(")))
+        .ok_or_else(|| format!("{} has no `fn {test}`", file.display()))?;
+    // Walk outwards: the first line at a smaller indent that opens a block is
+    // the item the test sits in. Lines that open nothing (a raw string's
+    // continuation at column 0) are passed over.
+    let mut chain = Vec::new();
+    let mut level = indent(lines[at]);
+    for line in lines[..at].iter().rev() {
+        if level == 0 {
+            break;
+        }
+        let t = line.trim();
+        if t.is_empty() || indent(line) >= level || !t.ends_with('{') {
+            continue;
+        }
+        let name = t
+            .trim_start_matches("pub(crate) ")
+            .trim_start_matches("pub ")
+            .strip_prefix("mod ")
+            .and_then(|m| m.strip_suffix(" {"))
+            .ok_or_else(|| {
+                format!(
+                    "`fn {test}` in {} is inside `{t}`, not a module",
+                    file.display()
+                )
+            })?;
+        chain.push(name);
+        level = indent(line);
+    }
+    chain.reverse();
+    if chain != mods {
+        return Err(format!(
+            "`fn {test}` is at {module}::{}{test}, so `{path}` selects no test",
+            chain.iter().map(|m| format!("{m}::")).collect::<String>()
+        ));
+    }
+    Ok(())
+}
+
+/// Every `cargo test …` command the page quotes, whitespace folded, without
+/// its backticks.
+fn cited_commands(readme: &str) -> Vec<String> {
+    // Fold first: the page wraps a long command across lines inside its
+    // backticks.
+    let folded = readme.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Anchored on the opening backtick and cut at the next one. Splitting the
+    // page on backticks and taking every other piece is the obvious way and it
+    // does not work: a ``` fence shifts the parity and the scan saw 3 of 10.
+    folded
+        .match_indices("`cargo test -p ")
+        .map(|(at, _)| {
+            let rest = &folded[at + 1..];
+            rest[..rest.find('`').unwrap_or(rest.len())].to_string()
+        })
+        .collect()
+}
+
 /// D19–D22: every `cargo test` the page cites as the demonstration of a claim
-/// names a test that exists.
+/// names a test that exists — and a path that selects it.
 ///
 /// The headline claims were re-checked after the fixes that made them true
 /// (H5, L25, H3, H4, M4, H1), and the page now points at the test that shows
 /// each one. A claim whose demonstration was renamed or deleted reads exactly
 /// as well as one that still holds, so the citation is checked rather than
-/// trusted: `--test <name>` must be `crates/<crate>/tests/<name>.rs`, and
-/// `--lib <module>::` a module of that crate's library.
+/// trusted: `--test <name>` must be `crates/<crate>/tests/<name>.rs`, and the
+/// filter after `--lib` or `--bin <bin>` a path `resolve_test_path` accepts.
 #[test]
 fn every_test_the_page_cites_exists() {
     let readme = read("README.md");
-    // Fold first: the page wraps a long command across lines inside its
-    // backticks.
-    let folded = readme.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut cited = 0;
-    // Anchored on the opening backtick and cut at the next one. Splitting the
-    // page on backticks and taking every other piece is the obvious way and it
-    // does not work: a ``` fence shifts the parity and the scan saw 3 of 10.
-    for (at, _) in folded.match_indices("`cargo test -p ") {
-        let rest = &folded[at + 1..];
-        let span = &rest[..rest.find('`').unwrap_or(rest.len())];
-        let command = &span["cargo test -p ".len()..];
-        let words: Vec<&str> = command.split_whitespace().collect();
+    for span in cited_commands(&readme) {
+        let words: Vec<&str> = span["cargo test -p ".len()..].split_whitespace().collect();
         let krate = words[0];
         let root = repo_root().join("crates").join(krate);
         assert!(
             root.is_dir(),
             "README cites `{span}`, and there is no crate {krate}"
         );
-        for pair in words.windows(2) {
-            match pair[0] {
+        let filter_after = |i: usize| words.get(i).filter(|w| !w.starts_with('-')).copied();
+        for (i, word) in words.iter().enumerate() {
+            let filter = match *word {
                 "--test" => {
                     cited += 1;
-                    let file = root.join("tests").join(format!("{}.rs", pair[1]));
+                    let file = root.join("tests").join(format!("{}.rs", words[i + 1]));
                     assert!(
                         file.is_file(),
                         "README cites `{span}`, and {} does not exist",
                         file.display()
                     );
+                    None
                 }
                 "--lib" => {
                     cited += 1;
-                    let module = pair[1].trim_end_matches("::");
-                    let src = root.join("src");
-                    assert!(
-                        src.join(format!("{module}.rs")).is_file()
-                            || src.join(module).join("mod.rs").is_file(),
-                        "README cites `{span}`, and {krate} has no module {module}"
-                    );
+                    filter_after(i + 1)
                 }
-                _ => {}
+                "--bin" => {
+                    cited += 1;
+                    assert!(
+                        root.join("src/main.rs").is_file(),
+                        "README cites `{span}`, and {krate} has no binary"
+                    );
+                    filter_after(i + 2)
+                }
+                _ => None,
+            };
+            if let Some(path) = filter {
+                if let Err(why) = resolve_test_path(&root.join("src"), path) {
+                    panic!("README cites `{span}`: {why}");
+                }
             }
         }
     }
     assert!(
-        cited >= 5,
+        cited >= 8,
         "only {cited} cited tests were found — the scan stopped matching"
+    );
+}
+
+/// D22: a question the page says a test types an answer at is a question that
+/// test waits for.
+///
+/// The `db_write` paragraph said `consent_reaches_the_person` answers its
+/// question through a pty, and the file drove only the OUTBOUND approval —
+/// another prompt, another type (`TerminalApproval`, not
+/// `TerminalWriteConfirm`). Both checks that existed passed: the cited file
+/// existed and the approval worked. So a paragraph that cites a test and quotes
+/// a `[y/N]` question is held to the test waiting for exactly that text.
+#[test]
+fn every_question_the_page_says_a_test_answers_is_one_it_waits_for() {
+    let readme = read("README.md");
+    let mut checked = 0;
+    for paragraph in readme.split("\n\n") {
+        let folded = paragraph.split_whitespace().collect::<Vec<_>>().join(" ");
+        let questions: Vec<&str> = folded
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .filter(|q| q.ends_with("[y/N]"))
+            .collect();
+        if questions.is_empty() {
+            continue;
+        }
+        for span in cited_commands(paragraph) {
+            let words: Vec<&str> = span.split_whitespace().collect();
+            let Some(i) = words.iter().position(|w| *w == "--test") else {
+                continue;
+            };
+            let file = format!("crates/{}/tests/{}.rs", words[3], words[i + 1]);
+            let test = read(&file);
+            for q in &questions {
+                checked += 1;
+                assert!(
+                    test.contains(&format!("wait_for(\"{q} \"")),
+                    "README quotes `{q}` beside `{span}`, and {file} never waits for it"
+                );
+            }
+        }
+    }
+    assert!(
+        checked >= 1,
+        "no quoted question beside a cited test — the db_write paragraph lost \
+         its question or its citation"
+    );
+}
+
+/// D19: the claim that a call carrying both thinking tags is refused cites the
+/// place that refuses it.
+///
+/// The paragraph said every such call is refused and cited `thinking::`,
+/// whose tests pin the opposite for a call the grammar proved
+/// (`a_proven_split_has_one_reading`); the refusal of the RECOVERED shapes is
+/// decided in the executor, and pinned there. A sentence about a refusal whose
+/// only citation is in another crate cannot be read against its test.
+#[test]
+fn a_refusal_of_both_thinking_tags_cites_the_executor() {
+    let readme = read("README.md");
+    let paragraph = readme
+        .split("\n\n")
+        .find(|p| p.contains("`</think>`") && p.contains("is refused rather than"))
+        .expect("the page still says which calls with both tags are refused");
+    let cites = cited_commands(paragraph);
+    assert!(
+        cites
+            .iter()
+            .any(|c| c.starts_with("cargo test -p tacet-tools --lib executor::")),
+        "the paragraph says a call is refused and cites only {cites:?} — the \
+         refusal is in tacet-tools' executor"
+    );
+    assert!(
+        cites
+            .iter()
+            .any(|c| c.starts_with("cargo test -p tacet-engine --lib thinking::")),
+        "the paragraph says a proven call runs as written and no longer cites \
+         the split that proves it: {cites:?}"
+    );
+}
+
+/// D12: "the last publish" is the newest one the CHANGELOG records for
+/// `tacet-cli`.
+///
+/// The paragraph was written to stop the page claiming it is what
+/// `cargo install` gives you; it names a version and a date, and the next
+/// publish makes both wrong. crates.io is not reachable from a test, but every
+/// publish lands a `## Published YYYY-MM-DD` section whose table bolds the new
+/// version — that is the record this reads.
+#[test]
+fn the_last_publish_is_the_changelogs() {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let changelog = read("CHANGELOG.md");
+    let mut date = None;
+    let mut found = None;
+    for line in changelog.lines() {
+        if let Some(rest) = line.strip_prefix("## Published ") {
+            date = rest.split_whitespace().next();
+        } else if line.starts_with("## ") {
+            date = None;
+        } else if let (Some(d), true) = (date, line.starts_with("| `tacet-cli` |")) {
+            let version = line
+                .split("**")
+                .nth(1)
+                .expect("the published version is in bold");
+            found = Some((d, version));
+            break;
+        }
+    }
+    let (date, version) = found.expect("CHANGELOG.md records a tacet-cli publish");
+    let mut parts = date.split('-');
+    let (y, m, d) = (
+        parts.next().expect("year"),
+        parts
+            .next()
+            .and_then(|m| m.parse::<usize>().ok())
+            .expect("month"),
+        parts
+            .next()
+            .and_then(|d| d.parse::<u32>().ok())
+            .expect("day"),
+    );
+    let want = format!(
+        "The last publish was `tacet-cli` {version} on {d} {} {y}",
+        MONTHS[m - 1]
+    );
+    let folded = read("README.md")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        folded.contains(&want),
+        "README.md must say \"{want}\" — the newest publish CHANGELOG.md records"
     );
 }

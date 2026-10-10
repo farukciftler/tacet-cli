@@ -382,6 +382,85 @@ fn the_turkish_corpus_is_compared_on_the_same_card() {
     );
 }
 
+/// "6 Sep 2026" from a report's "2026-09-06".
+fn day_month_year(iso: &str) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let mut parts = iso.split('-');
+    let y = parts.next().expect("year");
+    let m: usize = parts.next().and_then(|m| m.parse().ok()).expect("month");
+    let d: u32 = parts.next().and_then(|d| d.parse().ok()).expect("day");
+    format!("{d} {} {y}", MONTHS[m - 1])
+}
+
+/// D2, D3 (review): the two 3090 runs are dated by what the files record, and
+/// are one KIND of card, not provably one box.
+///
+/// Both sentences the first fix wrote claimed more than the files hold. "Made
+/// later the same day" as the +4.9 verdict: the verdict entered the page on
+/// 5 Sep 2026 and the runs were committed on the 6th — and no committed file
+/// records the verdict's date at all, so the page may date the runs only by
+/// the corpus report's own `date`. "The same box": the corpus report says its
+/// box had no web tools, while the suite's catalog lists them. Neither file
+/// names a machine, so the page says what differs instead.
+#[test]
+fn the_two_3090_runs_are_dated_by_their_files_and_not_called_one_box() {
+    let page = readme();
+    let corpus = report("tr-corpus-qwen3-4b-cuda.json");
+    let suite = report("qwen3-4b-cuda-3090.json");
+    let date = day_month_year(corpus["date"].as_str().expect("the corpus report is dated"));
+    let paragraph = |opening: &str| {
+        page.split("\n\n")
+            .map(folded)
+            .find(|p| p.starts_with(opening))
+            .unwrap_or_else(|| panic!("the page has a paragraph opening {opening:?}"))
+    };
+
+    let after =
+        paragraph("**And the \"after\" report behind this verdict is not in the repository.**");
+    assert!(
+        !after.contains("same day"),
+        "D2: the page dates the 3090 runs against the verdict, whose date no committed file holds: {after}"
+    );
+    assert!(
+        after.contains(&date),
+        "D2: the 3090 runs are dated {date} by the corpus report, and the paragraph does not say so: {after}"
+    );
+
+    let beside = paragraph("The right-hand column is");
+    assert!(
+        !beside.contains("same box"),
+        "D3: neither report names a machine, so the page cannot call them one box: {beside}"
+    );
+    assert!(
+        beside.contains(&date),
+        "D3: the suite is set beside the corpus without the corpus report's date {date}: {beside}"
+    );
+    let note = corpus["note"]
+        .as_str()
+        .expect("the corpus report has a note");
+    let web: Vec<&str> = suite["catalog"]
+        .as_array()
+        .expect("catalog")
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|t| t.starts_with("web_"))
+        .collect();
+    assert!(
+        note.contains("no web tools") && !web.is_empty(),
+        "the reports no longer differ in web tools (corpus note: {note:?}); the \
+         sentence that says they do must be rewritten, and this test with it"
+    );
+    for tool in web {
+        assert!(
+            beside.contains(&format!("`{tool}`")),
+            "D3: the suite's catalog has {tool} and the corpus box had no web \
+             tools — the page must say the two runs differ there: {beside}"
+        );
+    }
+}
+
 /// The comparator block under the 3090 paragraph is what `eval --compare`
 /// prints for the two committed files TODAY — the old block was the replaced
 /// run's, and nothing re-ran it when the file changed.

@@ -105,8 +105,12 @@ const SCRIPT: [&str; 5] = [
 ];
 
 fn script_args(c: &mut Command) {
+    script_args_from(c, &SCRIPT);
+}
+
+fn script_args_from(c: &mut Command, steps: &[&str]) {
     c.args(["chat", "--engine", "fake"]);
-    for step in SCRIPT {
+    for step in steps {
         c.args(["--script", step]);
     }
 }
@@ -268,11 +272,15 @@ mod under_a_pty {
 
     impl Session {
         fn start(scratch: &Scratch) -> Session {
+            Session::start_with(scratch, &SCRIPT)
+        }
+
+        fn start_with(scratch: &Scratch, steps: &[&str]) -> Session {
             let mut c = Command::new("/usr/bin/script");
             // `-q /dev/null`: no banner, no typescript file. Everything after is
             // the command to run on the pty.
             c.args(["-q", "/dev/null", env!("CARGO_BIN_EXE_tacet")]);
-            script_args(&mut c);
+            script_args_from(&mut c, steps);
             let mut child = c
                 .env_remove("XDG_CONFIG_HOME")
                 .env_remove("TACET_MODEL")
@@ -496,5 +504,119 @@ mod under_a_pty {
     fn ctrl_d_at_the_approval_refuses() {
         let screen = answer_the_question("consent-pty-ctrld", "\x04", "ANSWER-ONE.");
         refused(&screen, "ctrl-d");
+    }
+
+    /// THE SECOND QUESTION: `db_write`'s "Apply it? [y/N]".
+    ///
+    /// AUDIT H1 NAMED THREE PROMPTS — the outbound approval, this one and
+    /// `ask_user` — and the tests above drive only the first. They share
+    /// `ui::Prompt`, but sharing a type is an argument, not a measurement, and
+    /// the README says this question is answered at a terminal. So it is put to
+    /// a pty here, through the same binary and the real `db` installer.
+    ///
+    /// The file is made by `/usr/bin/sqlite3` — the same binary the tool
+    /// measures and writes with, and the one macOS always ships — inside the
+    /// temp work directory. The statement is an `INSERT`, so the row count is
+    /// the whole answer to "was it written".
+    const WRITE: [&str; 2] = [
+        r#"{"name":"db_write","arguments":{"path":"app.db","statement":"INSERT INTO t VALUES(7)"}}"#,
+        "ANSWER-ONE.",
+    ];
+
+    fn sqlite(db: &Path, sql: &str) -> String {
+        let out = Command::new("/usr/bin/sqlite3")
+            .arg(db)
+            .arg(sql)
+            .output()
+            .expect("/usr/bin/sqlite3 runs");
+        assert!(
+            out.status.success(),
+            "sqlite3 {sql:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// Installs `db` with `app.db` writable, then types `keys` at the write
+    /// question. Returns the screen and the number of rows `t` holds after.
+    fn answer_the_write_question(tag: &str, keys: &str) -> (String, String, Scratch) {
+        let scratch = Scratch::new(tag);
+        let db = scratch.work().join("app.db");
+        sqlite(&db, "CREATE TABLE t(a)");
+
+        let mut child = tacet(scratch.home())
+            .args(["addon", "install", "db"])
+            .current_dir(scratch.work())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the tacet binary runs");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(b"app.db\n\ny\n")
+            .expect("answers the installer");
+        let out = child.wait_with_output().expect("the installer finishes");
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("the db addon is installed and open"),
+            "the db addon did not install:\n{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let mut session = Session::start_with(&scratch, &WRITE);
+        let ready = session
+            .wait_for("/help", 0, 20)
+            .unwrap_or_else(|| panic!("the shell never started:\n{}", session.text()));
+        session.type_text("add a row\r");
+        let asked = session
+            .wait_for("Apply it? [y/N] ", ready, 20)
+            .unwrap_or_else(|| panic!("the write question was never asked:\n{}", session.text()));
+
+        // Same check as the approval's: the indicator must not erase the line.
+        std::thread::sleep(Duration::from_millis(400));
+        let after_question = session.text()[asked..].to_string();
+        assert!(
+            !after_question.contains("\x1b[2K"),
+            "something erased the line the write question is on: {after_question:?}"
+        );
+
+        session.type_text(keys);
+        let screen = match session.wait_for("ANSWER-ONE.", asked, 15) {
+            Some(_) => session.text(),
+            None => panic!(
+                "typing {keys:?} at the write question did not reach db_write:\n{}",
+                session.text()
+            ),
+        };
+        session.type_text("/exit\r");
+        drop(session);
+        let rows = sqlite(&db, "SELECT count(*) FROM t");
+        (screen, rows, scratch)
+    }
+
+    /// `y⏎` at "Apply it?" writes the row and leaves the measured copy beside
+    /// the file.
+    ///
+    /// RED WITH THE ANSWER DROPPED (`confirm_write` made to ignore what was
+    /// typed and return `false`): the row count stays 0.
+    #[test]
+    fn yes_typed_at_the_write_question_writes() {
+        let (screen, rows, scratch) = answer_the_write_question("consent-pty-dbw-yes", "y\r");
+        assert_eq!(rows, "1", "a typed `y` did not write the row:\n{screen}");
+        assert!(
+            scratch.work().join("app.db.tacet-backup").is_file(),
+            "the row was written but the copy that was measured is not beside it"
+        );
+    }
+
+    /// `n⏎` writes nothing — the other answer reaches the tool too, and is
+    /// not a hang.
+    #[test]
+    fn no_typed_at_the_write_question_writes_nothing() {
+        let (screen, rows, _scratch) = answer_the_write_question("consent-pty-dbw-no", "n\r");
+        assert_eq!(rows, "0", "a typed `n` let the write through:\n{screen}");
     }
 }

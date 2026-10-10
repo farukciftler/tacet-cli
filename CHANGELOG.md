@@ -21,9 +21,12 @@ releases to follow.
 
 ## Unreleased — the audit of 9 Oct 2026, wave 6: the documents
 
-No code changes and no API changes: the README, its crates.io mirror,
-SECURITY, CONTRIBUTING, this file, one comment in the workspace manifest, and
-two tests that hold the documents to the tree.
+No change to what the program does and no API changes: the README, its
+crates.io mirror, SECURITY, CONTRIBUTING, this file, one comment in the
+workspace manifest, two tests that hold the documents to the tree, and three
+tests that measure what the page already said: `db_write`'s question answered
+through a pseudo-terminal, both ways, and a stopped tool that will not stop
+abandoned after its 3 s grace.
 
 **Fixed:**
 
@@ -32,9 +35,12 @@ two tests that hold the documents to the tree.
   from the two committed files (23 cases excluded, 161 paired, +2.5 points,
   not distinguishable) (D1).
 * `baselines/` holds seven files, two of them 3090 runs, and neither is the
-  "after" report of the +4.9 verdict, which is still not committed (D2).
-* The Turkish corpus is compared with the 184-case suite on the same card, not
-  with the Metal run: 72.4% against 78.1%, or 89.3% with the twenty cases
+  "after" report of the +4.9 verdict, which is still not committed; the runs
+  are dated 6 Sep 2026, the day after the verdict, by the corpus report's own
+  date (D2).
+* The Turkish corpus is compared with the 184-case suite on the same kind of
+  card the same day — not provably the same machine, since the suite's catalog
+  has the web tools and the corpus box had none — not with the Metal run: 72.4% against 78.1%, or 89.3% with the twenty cases
   whose tool that box lacked skipped the way the corpus skipped them — a 16.9
   point gap, not "thirteen" (D3).
 * The model table is one table again (a blank line split it), and it says
@@ -49,11 +55,16 @@ two tests that hold the documents to the tree.
   workspace manifest's version comment names `tacet-zip` alone as inheriting
   the workspace version; `tacet-skills` left it on 7 Sep 2026 (D14).
 * The headline claims re-checked against the fixes that made them true: what
-  runs is the call the grammar validated (D19, after H5 and L25); the summary of
+  runs is the call the grammar validated, a grammar call carrying both thinking
+  tags runs as written and only a recovered one is refused, each half citing
+  the test that pins it (D19, after H5 and L25); the summary of
   an imported session is on the list of defanged inputs (D20, after H3 and H4);
-  the Cancel gate says what an abandoned tool still does and that Windows is
-  not wired (D21, after M4); the `db_write` question says when it became
-  answerable at a terminal (D22, after H1). The test count is re-measured and
+  the Cancel gate says what an abandoned tool still does, which of its two
+  paths — the signal and the key — each test shows, that the key path and the
+  3 s abandonment are unit tests only, and that the signal path is run on
+  macOS only and not wired on Windows (D21, after M4); the `db_write` question
+  says when it became answerable at a terminal, and a pty test now answers it
+  — the earlier citation drove only the outbound approval (D22, after H1). The test count is re-measured and
   dated (D23).
 * CONTRIBUTING's gate list is the list CI runs, the pressure run and the fmt
   `--check` included, and a test now holds that direction too.
@@ -74,8 +85,15 @@ two tests that hold the documents to the tree.
   `network_monopoly`'s `RUNTIME_SPAWN_SITES`.
 * `crates/tacet-cli/tests/the_docs_match_the_tree.rs`: the version example,
   the journal path, the config directory, the manifest comment, an undated test
-  count, a table split by a blank line, and CI steps missing from
-  CONTRIBUTING's list each fail the build.
+  count, a table split by a blank line, CI steps missing from CONTRIBUTING's
+  list, a cited test path that selects no test (cargo's filter is a substring,
+  so a wrong path runs zero tests green), a quoted `[y/N]` question its cited
+  test never waits for, a refusal claim that does not cite the executor, and a
+  "last publish" that is not CHANGELOG's newest each fail the build.
+* `consent_reaches_the_person` answers `db_write`'s `Apply it? [y/N]` under a
+  pty with `y` and with `n` and counts the rows the file holds after;
+  `executor::guarded` abandons a cancelled tool that ignores the stop after
+  `ABANDON_GRACE`, and not before.
 
 **The audit's IDs, all six waves.** Every ID below is named by a commit on this
 branch (re-counted from the log on 10 Oct 2026), and that commit's message
