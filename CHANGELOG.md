@@ -19,6 +19,33 @@ releases to follow.
 
 ---
 
+## Unreleased — the audit of 9 Oct 2026, wave 4
+
+Not published, and kept apart from waves 1 to 3 so a reader can tell which
+round a line belongs to. `tacet_tools::sessions_tool` is new public API in
+`tacet-tools`; nothing existing changed shape.
+
+**Added:**
+
+* The `agent-sessions` addon (off by default), with `sessions_list` and
+  `session_read`, `tacet chat --from <agent>:<id>` and `/resume-from`
+  (RG-17, RG-18, RG-19, RG-20). A continuation stores the full transcript and
+  sends a summary plus a reference to it. The folder a transcript names is
+  entered only on a yes, and the question cannot carry terminal control
+  characters. No program is started and no network is opened.
+
+**Fixed (before it shipped):**
+
+* The router's session triggers no longer fire on a qualifier alone: "leave
+  off the VAT", "my last session with the dentist", a parliament's or a
+  court's "dünkü/önceki oturumu" and "kaldığım yer" (where I stayed) each put
+  `sessions_list` first and now score nothing (RG-19).
+* A test now runs `tacet why` over a written `addons.json` and fails if an
+  open `agent-sessions` addon does not put both readers in the catalog, or a
+  closed one does (RG-17).
+
+---
+
 ## Unreleased — the audit of 9 Oct 2026, wave 3
 
 Not published either, and kept apart from waves 1 and 2 for the same reason.

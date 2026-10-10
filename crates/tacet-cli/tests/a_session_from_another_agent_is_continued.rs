@@ -179,3 +179,76 @@ fn a_bad_or_unknown_reference_ends_the_run() {
     }
     assert!(!scratch.0.join("handoff").exists());
 }
+
+fn why(scratch: &Scratch, message: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_tacet"))
+        .args(["why", message])
+        .current_dir(scratch.0.join("work"))
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("TACET_MODEL")
+        .env_remove("TACET_TOKENIZER")
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("CODEX_HOME")
+        .env("HOME", &scratch.0)
+        .env("TACET_HOME", &scratch.0)
+        .stdin(Stdio::null())
+        .output()
+        .expect("the tacet binary runs")
+}
+
+/// RG-17 third review: THE USER'S PATH, through the command that prints it.
+/// Installed and open, the two readers are in the session's catalog and
+/// `sessions_list` heads what the model sees; closed, neither name is
+/// anywhere in the catalog — not shown, not left out.
+///
+/// WHY `tacet why` AND NOT THE CATALOG FUNCTION. The review replaced
+/// `addon::is_open(addon::AGENT_SESSIONS)` in `AddonGates::read()` with
+/// `false` and the whole workspace stayed green: the catalog tests build the
+/// gates by hand, and `--from` / `/resume-from` check the addon themselves.
+/// Only a run of the binary over a written `addons.json` sees the gate the
+/// model's tool list is actually built from.
+#[test]
+fn an_open_addon_puts_both_readers_in_the_catalog_and_a_closed_one_does_not() {
+    use tacet_tools::sessions_tool::{LIST_TOOL, READ_TOOL};
+    let message = "continue my claude code session";
+
+    let open = Scratch::new("why-open");
+    install(&open, true);
+    let out = why(&open, message);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "tacet why failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let shown = stdout
+        .split("tools the model will see")
+        .nth(1)
+        .and_then(|s| s.split("the guidance block").next())
+        .unwrap_or_else(|| panic!("no tool list in:\n{stdout}"));
+    let first = shown
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("1. "))
+        .and_then(|l| l.split_whitespace().next())
+        .unwrap_or_else(|| panic!("no first tool in:\n{shown}"));
+    assert_eq!(
+        first, LIST_TOOL,
+        "an open addon's lister is not first:\n{stdout}"
+    );
+    assert!(
+        shown.contains(READ_TOOL),
+        "an open addon's reader is not shown:\n{stdout}"
+    );
+
+    let closed = Scratch::new("why-closed");
+    install(&closed, false);
+    let out = why(&closed, message);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success());
+    for name in [LIST_TOOL, READ_TOOL] {
+        assert!(
+            !stdout.contains(name),
+            "a closed addon's {name} is in the catalog:\n{stdout}"
+        );
+    }
+}

@@ -755,16 +755,31 @@ impl IntentProfile {
                 // owned and pointed at as easily as a transcript. What is left
                 // carries the resumption, the plural listing, or the other
                 // agent.
+                //
+                // NOR A QUALIFIER WITHOUT ITS VERB. "my last session" and
+                // "leave off" were here after the second review, and the third
+                // measured them (`tacet why`, built binary) putting
+                // `sessions_list` FIRST for "my last session with the dentist
+                // cost 300 dollars, add 18% tax" (15) and for "calculate the
+                // total but leave off the VAT" (9, tying `calculate`). "Last"
+                // and "previous" are said of appointments; "leave off" is said
+                // of a line item. They stay only behind the continuation verb,
+                // and "left off" only behind the "where" that makes it a place
+                // in a piece of work.
                 "continue my session",
                 "resume my session",
+                "continue my last session",
+                "resume my last session",
+                "continue my previous session",
+                "resume my previous session",
                 "my sessions",
-                "my last session",
-                "my previous session",
                 "other agent",
                 "agent session",
                 "coding session",
-                "left off",
-                "leave off",
+                "where i left off",
+                "where we left off",
+                "where did i leave off",
+                "where did we leave off",
                 "where i stopped",
                 "pick up where",
             ],
@@ -907,21 +922,33 @@ impl IntentProfile {
                 // out, "mahkeme oturumu" is a sitting of court, and each scored
                 // 6. Every possessive inflection is a sign-out too ("tüm
                 // oturumlarımı kapat"), so no stem of the bare word is safe.
-                // What is left pins the word to the day it was left, or to a
-                // continuation; a request that names the agent fires on the
-                // name above.
-                "dunku oturum",
-                "onceki oturum",
+                // What is left pins the word to the day it was left AND to the
+                // first person, or to a continuation; a request that names the
+                // agent fires on the name above.
+                //
+                // "dunku oturum" / "onceki oturum" WERE HERE and the RG-19
+                // third review measured them putting `sessions_list` first for
+                // "Meclisin dünkü oturumunda" (12, a sitting of parliament) and
+                // "mahkemenin önceki oturumunda" (13, a court). A parliament's
+                // or a court's sitting is "oturumu-n-da"; the user's own is
+                // "oturumum-…". Matching is by term START, so "oturumum" reaches
+                // "oturumuma", "oturumumu" and "oturumumda" and nothing else.
+                "dunku oturumum",
+                "onceki oturumum",
                 "oturumuma devam",
                 "oturumumdan devam",
                 // The Turkish "other agent", reaching "diğer ajanlardaki".
                 "diger ajan",
                 // "kaldigim" ALONE IS NOT HERE, and a benchmark is why:
                 // "bodrumda kaldigimiz otel" (the hotel we stayed at) folds to
-                // the same stem. The place-I-left-off sense always carries
-                // "yer".
-                "kaldigim yer",
-                "kaldigimiz yer",
+                // the same stem. NOR IS "kaldigim yer": the third review
+                // measured "Antalya'da kaldığım yerin adresi neydi" (the place I
+                // stayed, 12) heading the list with `sessions_list`, and
+                // "kaldığım yerden" is still where-I-stay ("kaldığım yerden
+                // havalimanı ne kadar uzak"). Only the continuation verb makes it
+                // the place a piece of work was left.
+                "kaldigim yerden devam",
+                "kaldigimiz yerden devam",
                 "gorevine devam",
                 "gorevime devam",
             ],
@@ -2553,6 +2580,19 @@ mod tests {
             "remind me of my session with the dentist",
             "that session of parliament was long",
             "the last session of the conference ran late",
+            // RG-19 third review, measured with `tacet why` on the built
+            // binary: each of these put `sessions_list` FIRST, above the tool
+            // the message is for. A qualifier alone ("leave off", "my last
+            // session", "dünkü oturum", "kaldığım yer") is shared with VAT,
+            // a dentist, a parliament, a court and a hotel.
+            "calculate the total but leave off the VAT",
+            "my last session with the dentist cost 300 dollars, add 18% tax",
+            "Meclisin dünkü oturumunda kaç milletvekili vardı",
+            "mahkemenin önceki oturumunda ne karar çıktı",
+            "Antalya'da kaldığım yerin adresi neydi",
+            // The reviewer's suggested repair, "kaldigim yerden", still fires
+            // on where-I-stay; this is why the trigger carries "devam".
+            "kaldığım yerden havalimanı ne kadar uzak",
         ] {
             assert_eq!(
                 score_intent(message).score(IntentProfile::Sessions),

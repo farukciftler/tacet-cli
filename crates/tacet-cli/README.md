@@ -286,6 +286,7 @@ tacet addon close shell          # keep the config, take the tool away
 | `http` | `http` | only the exact hosts you list, HTTPS only, no redirects |
 | `db` | `db`, and `db_write` only if you list a file and the session is at a terminal | read-only SQLite by default, over the `sqlite3` binary already on your machine |
 | `clipboard` | `clipboard` | reads and writes the system clipboard |
+| `agent-sessions` | `sessions_list`, `session_read`; `tacet chat --from <agent>:<id>` and `/resume-from` | read-only: the Claude Code, Codex and Antigravity session folders the install names; no network, and the other agent and its model are never run |
 
 Two things worth knowing before you install `shell`:
 
@@ -300,6 +301,8 @@ There is a second question, and it does not depend on personal data. Once the se
 Every `db_write` call is measured before it happens. The statement runs first against a **copy** of the file, and what you are shown is the difference that copy actually took: objects created, dropped or redefined, row counts moved, journal mode changed. Then it asks you, at the terminal. Nothing is written until you say yes, the copy that was measured is left beside the database as `<name>.tacet-backup`, and the question is asked again for the next statement — a "no" is about one statement, not about the session.
 
 Two things it does **not** promise. It is not one statement: `sqlite3` re-parses the string it is given, so `SELECT 1; DROP TABLE t` runs both halves — measured, and the reason the effect is shown rather than the statement filtered. And allowing a file allows everything SQL can do to that file, `DROP` and a `WHERE`-less `UPDATE` included. What holds is the file boundary: `-safe` refuses `ATTACH`, `VACUUM INTO` and `writefile()`, all three measured at startup, so the statement cannot reach a second file.
+
+**Continuing another agent's work.** With `agent-sessions` installed, `tacet chat --from claude:<id>` (or `codex:`, `antigravity:`), or `/resume-from <agent>:<id>` inside the shell, reads that session and sends a summary of it (goal, last request, open plan, files touched, last steps) above your next question. The summary is capped at 1,200 characters, about 480 tokens. The full transcript stays in the session's store, and the model gets only a reference to it. The session starts tainted and is treated as outside text, so outbound and host-acting tools ask first. If the other session worked in a different folder, Tacet asks before moving there, and it never moves in a `--message` run or a piped shell. `/resume-from` with no argument lists the sessions you can continue.
 
 Third-party tools do not plug in here — they plug in through [MCP](#mcp).
 
@@ -378,8 +381,9 @@ was one omission with a date on it: `Memory`, `Web`, `Archive` and `Integrity`
 were given triggers in the other five languages when a natively-authored
 benchmark in each was gated; `Files`, `Document` and `DocEdit` were not. So
 "再加一行" — *add another line* — reached no profile at all and `edit_document`
-sat outside the nine. All eleven now route, `eval --routing` is unchanged at
-166/166 with mean rank 1.33, and `every_benchmark_step_can_pass` runs the check
+sat outside the nine. All eleven now route, `eval --routing` was unchanged at
+166/166 with mean rank 1.33 (it is 177/177 at 1.32 since the eleven
+agent-session cases joined it), and `every_benchmark_step_can_pass` runs the check
 over the whole corpus on every `cargo test`.
 
 ## MCP
@@ -1127,7 +1131,8 @@ signal that only ever raises a score and never overrules one, takes that to
 **102** — it catches 15 of the 18 requests no substring can reach, including the
 ones that name no place at all. Measured against `eval --routing`, which is the
 guard for exactly this: 166/166 reach and 166/166 in the top three, unchanged, at
-pressure 0 and 20. An earlier version of the same head, trained without the other
+pressure 0 and 20 (177/177 and 177/177 since the eleven agent-session cases
+joined the suite, re-derived 10 Oct 2026 on macOS). An earlier version of the same head, trained without the other
 tools' work as negatives, called 38% of the other suites' messages an extraction
 request and cost fourteen of those top-three positions — which is why it is in
 the repository with its false-positive rate measured rather than asserted.
