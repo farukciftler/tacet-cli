@@ -1063,20 +1063,36 @@ mod tests {
             "docs/agent-handoff.md has no `## Rule text to paste` section"
         );
 
-        // (the file the block is pasted into, the agent, who reports). The
-        // reporter is written as the slug where the two agree: a bare "codex"
-        // literal is an agent CLI in program position to
+        // (the file the block is pasted into, the agent, who reports, the
+        // read instruction). The reporter is written as the slug where the two
+        // agree: a bare "codex" literal is an agent CLI in program position to
         // network_monopoly's `agent_clis_are_spawned_only_behind_the_approval_gate`.
+        // The instruction is pinned word for word rather than recognised: two
+        // looser checks were each beaten by a block that said the opposite.
+        // Substrings let "ignore it" through (M2); whole words still let "do
+        // not read it", "never read it" and "read nothing" through, because
+        // each keeps the word "read" (second adversarial review).
         let targets = [
-            ("`CLAUDE.md`", AgentKind::ClaudeCode, "claude-code"),
-            ("`AGENTS.md`", AgentKind::Codex, AgentKind::Codex.slug()),
+            (
+                "`CLAUDE.md`",
+                AgentKind::ClaudeCode,
+                "claude-code",
+                "a tacet handoff, read it before anything else",
+            ),
+            (
+                "`AGENTS.md`",
+                AgentKind::Codex,
+                AgentKind::Codex.slug(),
+                "a tacet handoff, read it first",
+            ),
             (
                 "`.agents/rules/",
                 AgentKind::Antigravity,
                 AgentKind::Antigravity.slug(),
+                "a tacet handoff, read it before planning",
             ),
         ];
-        for (file, agent, by) in targets {
+        for (file, agent, by, read_first) in targets {
             let (_, block) = blocks
                 .iter()
                 .find(|(heading, _)| heading.contains(file))
@@ -1086,24 +1102,36 @@ mod tests {
                 .unwrap_or_else(|| panic!("{file}: the rule is not a closed ```markdown block"));
 
             // It tells the agent to read the record before it starts. Checked
-            // on whole words of the prose, heading lines and `code` spans
-            // dropped: as substrings, every block's own `# Tacet handoff`
-            // heading answered the first half and Codex's "thread" answered
-            // "read", so the AGENTS.md block could say "ignore it" and stay
-            // green (adversarial review, M2); and with the code kept, the
-            // block's own `tacet handoff update …` stood in for the prose.
-            let words: Vec<String> = block
+            // on the prose: heading lines and `code` spans dropped, line breaks
+            // folded, case ignored. With the headings kept, every block's own
+            // `# Tacet handoff` answered for the prose; with the code kept,
+            // the block's `tacet handoff update …` did.
+            let prose = block
                 .lines()
                 .filter(|line| !line.starts_with('#'))
                 .flat_map(|line| line.split('`').step_by(2))
-                .flat_map(|prose| prose.split(|c: char| !c.is_alphanumeric()))
-                .filter(|w| !w.is_empty())
-                .map(str::to_ascii_lowercase)
-                .collect();
+                .flat_map(str::split_whitespace)
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_ascii_lowercase();
+            // The sentence that carries it may not take it back: the pinned
+            // words alone would still pass "… read it first, or do not".
+            let sentence = prose
+                .split(['.', ':', ';'])
+                .find(|s| s.contains(read_first))
+                .unwrap_or_else(|| {
+                    panic!("{file}: the block does not tell the agent \"{read_first}\":\n{block}")
+                });
+            let negator = sentence.split(|c: char| !c.is_alphanumeric()).find(|w| {
+                [
+                    "not", "never", "don", "dont", "no", "nothing", "ignore", "skip", "without",
+                    "avoid", "unless",
+                ]
+                .contains(w)
+            });
             assert!(
-                words.windows(2).any(|w| w == ["tacet", "handoff"])
-                    && words.iter().any(|w| w == "read"),
-                "{file}: the block does not tell the agent to read the handoff:\n{block}"
+                negator.is_none(),
+                "{file}: the read instruction is negated by {negator:?}: \"{sentence}\""
             );
             // It names the update for THIS agent, and its reporter.
             let teach = format!("tacet handoff update {} ", agent.slug());
