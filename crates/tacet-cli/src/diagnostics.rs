@@ -336,12 +336,7 @@ pub fn mcp_try(name: &str, call: Option<String>, args: &str) -> ExitCode {
                 // WHAT IS ABOUT TO BE SENT IS SHOWN FIRST, the same rule the
                 // approval gate follows: this command has no gate in front of
                 // it, so the transparency has to be here.
-                println!(
-                    "  {} {} {}",
-                    color.paint(DIM, "→"),
-                    crate::ui::one_line(&tool),
-                    color.paint(DIM, &crate::ui::one_line(&parsed.to_string()))
-                );
+                println!("{}", mcp_try_sending_line(&tool, &parsed, &color));
                 Some((tool, parsed))
             }
             Err(error) => {
@@ -356,9 +351,7 @@ pub fn mcp_try(name: &str, call: Option<String>, args: &str) -> ExitCode {
     let outcome = match mcp::try_connection(name, Arc::new(TerminalAsk), call) {
         Ok(outcome) => outcome,
         Err(message) => {
-            // The message can quote the server (an error body, a refused
-            // revision); it goes through the same funnel as everything below.
-            eprintln!("  {}", color.paint(YELLOW, &crate::ui::one_line(&message)));
+            eprintln!("{}", mcp_try_error_line(&message, &color));
             return ExitCode::FAILURE;
         }
     };
@@ -366,6 +359,27 @@ pub fn mcp_try(name: &str, call: Option<String>, args: &str) -> ExitCode {
         println!("{line}");
     }
     ExitCode::SUCCESS
+}
+
+/// The `→ tool {args}` line `tacet mcp try` prints before it sends anything.
+/// The tool name is the user's own typing, but it is echoed next to JSON that
+/// may have been pasted from anywhere; both go through `one_line`, and the
+/// function is pure so that can be measured.
+fn mcp_try_sending_line(tool: &str, args: &serde_json::Value, color: &Color) -> String {
+    use crate::ui::one_line;
+    format!(
+        "  {} {} {}",
+        color.paint(DIM, "→"),
+        one_line(tool),
+        color.paint(DIM, &one_line(&args.to_string()))
+    )
+}
+
+/// The line `tacet mcp try` prints when the connection fails. The message can
+/// quote the server (an error body, a refused revision), so it goes through
+/// the same funnel as every other far-side string.
+fn mcp_try_error_line(message: &str, color: &Color) -> String {
+    format!("  {}", color.paint(YELLOW, &crate::ui::one_line(message)))
 }
 
 /// What `tacet mcp try` prints for an outcome. PURE, so the bytes can be
@@ -854,14 +868,33 @@ mod mcp_try_tests {
             tools: vec![(hostile.into(), hostile.into())],
             called: Some((hostile.into(), hostile.into(), true)),
         };
-        let lines = mcp_try_lines(&outcome, &Color::plain());
-        let printed = lines.join("\n");
-        for bad in ['\u{1b}', '\u{7}', '\u{9b}', '\r'] {
-            assert!(
-                !printed.contains(bad),
-                "{bad:?} reached the terminal: {printed:?}"
-            );
+        let color = Color::plain();
+        let mut lines = mcp_try_lines(&outcome, &color);
+        // The two lines printed outside the outcome: what is about to be sent,
+        // and the failure.
+        lines.push(mcp_try_sending_line(
+            hostile,
+            &serde_json::json!({ "q": hostile }),
+            &color,
+        ));
+        lines.push(mcp_try_error_line(hostile, &color));
+        // PER LINE, so a `\n` that paints a second, fake line is caught too:
+        // on the joined text every line break looks the same.
+        for line in &lines {
+            for bad in ['\u{1b}', '\u{7}', '\u{9b}', '\r', '\n'] {
+                assert!(
+                    !line.contains(bad),
+                    "{bad:?} reached the terminal: {line:?}"
+                );
+            }
         }
-        assert!(printed.contains("RED"), "{printed:?}");
+        // Still readable, field by field: the revision, the tool row, the
+        // called tool's name, the first line of its output, the arrow line and
+        // the error. Hiding what the server said would hide the error.
+        assert_eq!(
+            lines.iter().filter(|l| l.contains("RED")).count(),
+            6,
+            "{lines:#?}"
+        );
     }
 }

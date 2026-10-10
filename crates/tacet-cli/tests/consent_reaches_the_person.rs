@@ -162,6 +162,95 @@ fn a_piped_y_is_a_message_not_consent() {
     );
 }
 
+/// AUDIT L31, the catalog half: a piped session is not handed `db_write`.
+///
+/// `db_write` asks before every change; on a pipe there is nobody to ask, so
+/// the tool could only ever be refused, and a tool that can only refuse is a
+/// trap that costs the model a turn (see `session_catalog`). The pipe tests
+/// above cannot see this — `Prompt::open` refuses on its own, so the gate
+/// verdict is the same either way — which is why reverting the chat layer's
+/// `can_ask` to plain `interactive` stayed green until this test.
+///
+/// THE CONTROL IS `tacet tools`, which reports the catalog an interactive
+/// session gets. If it does not list `db_write` either, this machine cannot
+/// build the tool at all (no `sqlite3` that passes the write-lock measurement)
+/// and the absence below would prove nothing. macOS ships `/usr/bin/sqlite3`,
+/// so there that is a failure; elsewhere the test says so and stops.
+///
+/// RED BEFORE THE FIX: `/tools` in the piped session listed `db_write`.
+#[test]
+fn a_piped_session_is_not_handed_db_write() {
+    let scratch = Scratch::new("consent-pipe-db");
+    let mut child = tacet(scratch.home())
+        .args(["addon", "install", "db"])
+        .current_dir(scratch.work())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the tacet binary runs");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(b"app.db\n\ny\n")
+        .expect("answers the installer");
+    let out = child.wait_with_output().expect("the installer finishes");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("the db addon is installed and open"),
+        "the db addon did not install:\n{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let listed = |text: &str, name: &str| {
+        text.lines()
+            .any(|l| l.split_whitespace().next() == Some(name))
+    };
+
+    let control = tacet(scratch.home())
+        .arg("tools")
+        .current_dir(scratch.work())
+        .output()
+        .expect("tacet tools runs");
+    let control = String::from_utf8_lossy(&control.stdout).into_owned();
+    if !listed(&control, "db_write") {
+        if cfg!(target_os = "macos") {
+            panic!(
+                "`tacet tools` does not list db_write, so this test measures nothing:\n{control}"
+            );
+        }
+        eprintln!("db_write cannot be built on this machine; the piped-catalog check is skipped");
+        return;
+    }
+
+    let mut c = tacet(scratch.home());
+    c.args(["chat", "--engine", "fake", "--script", "unused"]);
+    let mut child = c
+        .current_dir(scratch.work())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the tacet binary runs");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(b"/tools\n")
+        .expect("feeds the command");
+    let out = child.wait_with_output().expect("the shell finishes");
+    let tools = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        listed(&tools, "db"),
+        "`/tools` did not list the catalog, so its silence about db_write means nothing:\n{tools}"
+    );
+    assert!(
+        !listed(&tools, "db_write"),
+        "a piped session was handed db_write, a tool nobody can approve:\n{tools}"
+    );
+}
+
 #[cfg(target_os = "macos")]
 mod under_a_pty {
     use super::*;
@@ -263,6 +352,13 @@ mod under_a_pty {
     /// Drives one turn up to the approval question and answers it with `keys`.
     /// Returns the whole screen once `until` has appeared.
     fn answer_the_question(tag: &str, keys: &str, until: &str) -> String {
+        answer_then_talk(tag, keys, until, None)
+    }
+
+    /// `answer_the_question`, and then — if `next` is given — one more message
+    /// typed at the shell and the text its answer must contain. A shell that
+    /// answers it is still alive; one that the answer killed cannot.
+    fn answer_then_talk(tag: &str, keys: &str, until: &str, next: Option<(&str, &str)>) -> String {
         let scratch = Scratch::new(tag);
         install_echo(&scratch);
         let mut session = Session::start(&scratch);
@@ -294,6 +390,21 @@ mod under_a_pty {
                  question is open and the answer went nowhere:\n{}",
                 session.text()
             ),
+        };
+        let screen = match next {
+            None => screen,
+            Some((message, reply)) => {
+                let from = screen.len();
+                session.type_text(message);
+                match session.wait_for(reply, from, 15) {
+                    Some(_) => session.text(),
+                    None => panic!(
+                        "the shell did not answer the next message after {keys:?} — \
+                         the answer to the question ended the session:\n{}",
+                        session.text()
+                    ),
+                }
+            }
         };
         session.type_text("/exit\r");
         screen
@@ -333,5 +444,57 @@ mod under_a_pty {
             1,
             "the refused call ran:\n{screen}"
         );
+    }
+
+    /// Asserts the gated call was refused — `not sent`, and only the first
+    /// `echo` ran.
+    fn refused(screen: &str, keys: &str) {
+        assert!(
+            screen.contains("not sent"),
+            "{keys:?} at the approval did not refuse:\n{screen}"
+        );
+        assert_eq!(
+            screen.matches("exit 0").count(),
+            1,
+            "{keys:?} at the approval let the gated call run:\n{screen}"
+        );
+    }
+
+    /// ESC THEN ENTER IS A NO (review of H1). The pty delivers the three keys
+    /// together, as a quick typist would; crossterm reads `\x1b\r` as
+    /// Alt+Enter.
+    ///
+    /// RED BEFORE THE FIX: two `exit 0` chips, no `not sent` — Alt+Enter was an
+    /// enter, the line was `y`, and the call was approved.
+    #[test]
+    fn escape_then_enter_at_the_approval_refuses() {
+        let screen = answer_the_question("consent-pty-esc", "y\x1b\r", "ANSWER-ONE.");
+        refused(&screen, "y Esc Enter");
+    }
+
+    /// CTRL-C DECLINES THE QUESTION AND THE SHELL LIVES ON — the turn's rule,
+    /// "ctrl-c cancels the turn, never the program", holds at a question too.
+    ///
+    /// RED BEFORE THE FIX: with the answer read cooked, `\x03` was a SIGINT;
+    /// `script(1)` exited with status 2 and `ANSWER-ONE.` never appeared.
+    #[test]
+    fn ctrl_c_at_the_approval_refuses_and_the_shell_survives() {
+        let screen = answer_then_talk(
+            "consent-pty-ctrlc",
+            "\x03",
+            "ANSWER-ONE.",
+            Some(("still there?\r", "ANSWER-TWO.")),
+        );
+        refused(&screen, "ctrl-c");
+    }
+
+    /// CTRL-D DECLINES.
+    ///
+    /// RED BEFORE THE FIX: cooked mode echoed `^D` and the question kept
+    /// waiting; `ANSWER-ONE.` never appeared.
+    #[test]
+    fn ctrl_d_at_the_approval_refuses() {
+        let screen = answer_the_question("consent-pty-ctrld", "\x04", "ANSWER-ONE.");
+        refused(&screen, "ctrl-d");
     }
 }

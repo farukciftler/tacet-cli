@@ -824,8 +824,10 @@ impl IndicatorCore {
         // 2. Nothing will erase the question.
         self.screen.clear_indicator();
         self.screen.forget_last_chip();
-        // 3. The terminal is a line terminal again: echo on, and the enter key
-        // arrives as the newline a line reader waits for.
+        // 3. Cooked again, so the question's `eprintln!` lines end where they
+        // should (raw mode has no `\n` → `\r\n`). The answer is then read raw
+        // once more by `Terminal::read_answer`, which does its own echo — so
+        // that Esc, ctrl-c and ctrl-d reach it as keys; see `Terminal`.
         if run.raw_on {
             self.keyboard.set_raw(false);
             self.screen.raw_mode(false);
@@ -1208,12 +1210,31 @@ pub trait Console {
     fn read_answer(&self) -> Option<String>;
 }
 
-/// The real terminal: stdin, read THROUGH CROSSTERM.
+/// The real terminal: stdin, read THROUGH CROSSTERM, IN RAW MODE.
 ///
 /// WHY CROSSTERM AND NOT `stdin().read_line` — the same reason `ask_yes_no`
 /// gives: the input field and the indicator both read the tty through
 /// crossterm, which keeps bytes it has already pulled off the fd in its own
 /// buffer, where a std `read_line` would never see them and would hang.
+///
+/// WHY RAW, with the echo done here. A cooked read leaves three keys to the
+/// line discipline, and each of them said yes or killed the shell instead of
+/// declining. Measured on this binary under a pty (10 Oct 2026, macOS,
+/// `/usr/bin/script`), with the answer read cooked:
+/// * `y`, Esc, Enter APPROVED the gated call — the line discipline holds the
+///   Esc until Enter, crossterm parses `\x1b\n` as Alt+Enter, and Alt+Enter was
+///   an enter;
+/// * ctrl-c was a SIGINT, and SIGINT killed the whole shell — the session was
+///   lost, against the turn's own rule that ctrl-c cancels the turn and never
+///   the program (`swallow_key`);
+/// * ctrl-d echoed `^D` and the question kept waiting.
+///
+/// In raw mode each of them arrives as the key it is, and `collect_answer`
+/// declines on it. The window this leaves: the question is printed while the
+/// terminal is still cooked (the gates print with `eprintln!`, which needs the
+/// output side's `\n` → `\r\n`), so a ctrl-c typed between the question
+/// appearing and the read starting is still a signal. That is the time it takes
+/// to flush a line and make one `tcsetattr` call.
 pub struct Terminal;
 
 impl Console for Terminal {
@@ -1222,11 +1243,24 @@ impl Console for Terminal {
     }
 
     fn read_answer(&self) -> Option<String> {
-        collect_answer(std::iter::from_fn(|| event::read().ok()))
+        // The state is put back the way it was found, not forced off: a caller
+        // that already held raw mode keeps it.
+        let was_raw = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
+        let raw = was_raw || enable_raw_mode().is_ok();
+        // NO ECHO IF RAW MODE COULD NOT BE HAD: the terminal is still echoing,
+        // and a second copy of every key would garble the line being answered.
+        let mut stderr = std::io::stderr();
+        let mut sink = std::io::sink();
+        let echo: &mut dyn Write = if raw { &mut stderr } else { &mut sink };
+        let answer = collect_answer(std::iter::from_fn(|| event::read().ok()), echo);
+        if raw && !was_raw {
+            let _ = disable_raw_mode();
+        }
+        answer
     }
 }
 
-/// Turns key events into one answer line.
+/// Turns key events into one answer line, echoing what was typed to `echo`.
 ///
 /// THE LINE ENDS ON `\r` AND ON `\n` ALIKE. Which of the two the enter key
 /// produces depends on the terminal's mode — `\r` raw, `\n` cooked — and the
@@ -1235,38 +1269,70 @@ impl Console for Terminal {
 /// reports `\r` as Enter in every mode and `\n` as Enter in cooked mode but as
 /// ctrl-J in raw mode, so ctrl-J is an enter here too.
 ///
+/// ANY KEY CARRYING ALT IS A NO. Crossterm has no way to tell Esc-then-Enter
+/// from Alt+Enter when the two bytes arrive together: it parses `\x1b\r`
+/// (raw) and `\x1b\n` (cooked) as Alt+Enter, and `\x1b` followed by a letter
+/// as Alt+letter. Someone who pressed Esc to back out of a consent question
+/// and then Enter must get the no they asked for, not the yes the letters
+/// before it spelled (measured — see `Terminal`). A real Alt chord at a y/N
+/// question is not an answer anyone needs.
+///
+/// THE ECHO IS OURS because raw mode turns the terminal's off. Only what was
+/// accepted into the line is echoed, as text; every way out ends the line with
+/// `\r\n` (raw mode has no output translation either), so the next thing
+/// printed starts on a fresh line.
+///
 /// PURE over its input so the line discipline can be tested without a tty.
-fn collect_answer(events: impl IntoIterator<Item = Event>) -> Option<String> {
+fn collect_answer(events: impl IntoIterator<Item = Event>, echo: &mut dyn Write) -> Option<String> {
     let mut line = String::new();
+    let end = |echo: &mut dyn Write, answer: Option<String>| {
+        let _ = echo.write_all(b"\r\n");
+        let _ = echo.flush();
+        answer
+    };
     for event in events {
         match event {
             // A paste answers with its first line only — a consent question is
             // one line, and the rest of a paste is not an answer to it.
             Event::Paste(text) => {
-                line.push_str(text.lines().next().unwrap_or(""));
-                return Some(line);
+                let first = text.lines().next().unwrap_or("");
+                let _ = echo.write_all(one_line(first).as_bytes());
+                line.push_str(first);
+                return end(echo, Some(line));
             }
             Event::Key(k) if k.kind != KeyEventKind::Release => {
                 let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+                if k.modifiers.contains(KeyModifiers::ALT) {
+                    return end(echo, None);
+                }
                 match k.code {
-                    KeyCode::Enter => return Some(line),
-                    KeyCode::Char('j') | KeyCode::Char('m') if ctrl => return Some(line),
-                    // Declining is always available and always means no.
-                    KeyCode::Char('c') | KeyCode::Char('d') if ctrl => return None,
-                    KeyCode::Esc => return None,
-                    KeyCode::Backspace => {
-                        line.pop();
+                    KeyCode::Enter => return end(echo, Some(line)),
+                    KeyCode::Char('j') | KeyCode::Char('m') if ctrl => {
+                        return end(echo, Some(line));
                     }
-                    KeyCode::Char(c) if !ctrl => line.push(c),
+                    // Declining is always available and always means no.
+                    KeyCode::Char('c') | KeyCode::Char('d') if ctrl => return end(echo, None),
+                    KeyCode::Esc => return end(echo, None),
+                    KeyCode::Backspace => {
+                        if line.pop().is_some() {
+                            let _ = echo.write_all(b"\x08 \x08");
+                        }
+                    }
+                    KeyCode::Char(c) if !ctrl && !c.is_control() => {
+                        line.push(c);
+                        let mut buf = [0u8; 4];
+                        let _ = echo.write_all(c.encode_utf8(&mut buf).as_bytes());
+                    }
                     _ => {}
                 }
+                let _ = echo.flush();
             }
             _ => {}
         }
     }
     // The input ended (or the terminal stopped answering) mid-line: nobody said
     // yes.
-    None
+    end(echo, None)
 }
 
 /// Is this answer a yes? Only `y` and `yes`, any case — the `[y/N]` the
@@ -1871,6 +1937,11 @@ mod tests {
             .collect()
     }
 
+    /// `collect_answer` with the echo thrown away.
+    fn answer(events: Vec<Event>) -> Option<String> {
+        collect_answer(events, &mut std::io::sink())
+    }
+
     /// The answer line ends on `\r` and on `\n` alike (audit H1 — under raw
     /// mode the enter key is a `\r`, which the old `read_line` never ended
     /// on). Crossterm hands `\r` over as Enter and a raw-mode `\n` as ctrl-J.
@@ -1882,29 +1953,95 @@ mod tests {
         let mut cr = typed("y");
         cr.push(enter.clone());
         cr.extend(typed("ignored"));
-        assert_eq!(collect_answer(cr), Some("y".into()));
+        assert_eq!(answer(cr), Some("y".into()));
 
         let mut lf = typed("yes");
         lf.push(ctrl('j'));
-        assert_eq!(collect_answer(lf), Some("yes".into()));
+        assert_eq!(answer(lf), Some("yes".into()));
 
         let mut edited = typed("nx");
         edited.push(key(KeyCode::Backspace, KeyModifiers::NONE));
         edited.push(enter.clone());
-        assert_eq!(collect_answer(edited), Some("n".into()));
+        assert_eq!(answer(edited), Some("n".into()));
 
         // Declining is always a `None`, and so is input that simply stops.
         let mut esc = typed("y");
         esc.push(key(KeyCode::Esc, KeyModifiers::NONE));
-        assert_eq!(collect_answer(esc), None);
+        assert_eq!(answer(esc), None);
         let mut interrupted = typed("y");
         interrupted.push(ctrl('c'));
-        assert_eq!(collect_answer(interrupted), None);
-        assert_eq!(collect_answer(typed("y")), None, "no enter, no answer");
+        assert_eq!(answer(interrupted), None);
+        let mut ended = typed("y");
+        ended.push(ctrl('d'));
+        assert_eq!(answer(ended), None);
+        assert_eq!(answer(typed("y")), None, "no enter, no answer");
 
         assert!(is_yes(Some(" Y ")));
         assert!(!is_yes(Some("yeah")));
         assert!(!is_yes(None));
+    }
+
+    /// ESC GLUED TO THE NEXT KEY IS STILL AN ESC (review of H1). Crossterm
+    /// parses `\x1b\r` and `\x1b\n` as Alt+Enter and `\x1b` + a letter as
+    /// Alt+letter; measured on the binary, `y` Esc Enter approved a gated call
+    /// while Alt+Enter counted as an enter.
+    #[test]
+    fn an_escape_that_arrives_glued_to_enter_is_a_no() {
+        for glued in [
+            key(KeyCode::Enter, KeyModifiers::ALT),
+            key(
+                KeyCode::Char('j'),
+                KeyModifiers::ALT | KeyModifiers::CONTROL,
+            ),
+            key(KeyCode::Char('y'), KeyModifiers::ALT),
+        ] {
+            let mut keys = typed("y");
+            keys.push(glued.clone());
+            keys.push(key(KeyCode::Enter, KeyModifiers::NONE));
+            assert_eq!(
+                answer(keys),
+                None,
+                "{glued:?} after `y` was read as consent"
+            );
+        }
+    }
+
+    /// RAW MODE HAS NO ECHO, SO THE READER IS THE ECHO. What was typed shows,
+    /// a backspace takes it off the screen as well as off the line, control
+    /// keys do not show, and every way out ends the line.
+    #[test]
+    fn the_answer_is_echoed_and_every_ending_starts_a_new_line() {
+        let echoed = |events: Vec<Event>| {
+            let mut out = Vec::new();
+            let answer = collect_answer(events, &mut out);
+            (answer, String::from_utf8(out).expect("utf-8 echo"))
+        };
+        let mut keys = typed("nx");
+        keys.push(key(KeyCode::Backspace, KeyModifiers::NONE));
+        keys.push(key(KeyCode::Tab, KeyModifiers::NONE));
+        keys.push(key(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(echoed(keys), (Some("n".into()), "nx\x08 \x08\r\n".into()));
+
+        // A backspace on an empty line erases nothing on screen either: the
+        // question's own text is not the answer's to take back.
+        let keys = vec![
+            key(KeyCode::Backspace, KeyModifiers::NONE),
+            key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        ];
+        assert_eq!(echoed(keys), (None, "\r\n".into()));
+
+        // A pasted answer is echoed as one sanitised line.
+        let paste = vec![Event::Paste("y\u{1b}[2J\nsecond".into())];
+        let (got, screen) = echoed(paste);
+        assert_eq!(got.as_deref(), Some("y\u{1b}[2J"));
+        assert!(!screen.contains('\u{1b}'), "{screen:?}");
+        assert!(screen.ends_with("\r\n"), "{screen:?}");
+
+        assert_eq!(
+            echoed(typed("y")).1,
+            "y\r\n",
+            "input that stops still ends the line"
+        );
     }
 
     /// A keyboard that is a counter: raw mode is a flag, and every WAITING

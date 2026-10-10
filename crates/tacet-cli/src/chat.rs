@@ -331,7 +331,7 @@ pub fn chat(run: ChatRun) -> ExitCode {
     // that can only ever be refused is a trap; see `session_catalog`). The
     // prompts check the same thing themselves (`ui::Prompt::open`); deciding it
     // here as well is what keeps the catalog honest about it.
-    let can_ask = interactive && std::io::stdin().is_terminal();
+    let can_ask = somebody_to_ask(interactive, &ui::Terminal);
 
     let (mut catalog, mut code_state) = session_catalog(&store, &memory, &color, can_ask);
 
@@ -2339,6 +2339,47 @@ fn mcp_report_lines(load: &mcp::LoadOutcome) -> Vec<(&'static str, String)> {
         ));
     }
     lines
+}
+
+/// The `can_ask` of a chat session: an interactive loop AND a person on stdin.
+///
+/// A FUNCTION OF ITS OWN so the second half can be measured: the line it
+/// replaced (`interactive && stdin.is_terminal()`) could be reverted to
+/// `interactive` with every test staying green (review of L31), and that
+/// revert hands a piped session `db_write` — a tool that can only ever be
+/// refused — and a gate that asks a pipe.
+fn somebody_to_ask(interactive: bool, console: &dyn ui::Console) -> bool {
+    interactive && console.is_terminal()
+}
+
+#[cfg(test)]
+mod somebody_to_ask_tests {
+    use super::*;
+
+    struct Stdin(bool);
+
+    impl ui::Console for Stdin {
+        fn is_terminal(&self) -> bool {
+            self.0
+        }
+        fn read_answer(&self) -> Option<String> {
+            panic!("deciding whether to ask must not read an answer")
+        }
+    }
+
+    /// AUDIT L31, the chat layer: interactive is not enough, a pipe is nobody.
+    #[test]
+    fn an_interactive_loop_on_a_pipe_has_nobody_to_ask() {
+        assert!(
+            !somebody_to_ask(true, &Stdin(false)),
+            "a piped interactive session was treated as a person"
+        );
+        assert!(somebody_to_ask(true, &Stdin(true)));
+        assert!(
+            !somebody_to_ask(false, &Stdin(true)),
+            "a one-shot run asks nobody"
+        );
+    }
 }
 
 #[cfg(test)]
