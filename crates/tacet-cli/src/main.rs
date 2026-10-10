@@ -96,6 +96,7 @@ mod engine_setup;
 mod eval_cmd;
 mod filter;
 mod format;
+mod handoff_cmd;
 mod host_memory;
 mod input;
 mod models;
@@ -343,6 +344,7 @@ fn main() -> ExitCode {
             ),
         },
         Command::Sessions { json, purge } => sessions(json, purge),
+        Command::Handoff { job } => handoff_cmd::run(job),
         Command::Eval {
             json,
             threshold,
