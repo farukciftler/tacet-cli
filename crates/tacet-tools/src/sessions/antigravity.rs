@@ -442,16 +442,24 @@ pub fn parse_task_md(text: &str) -> Vec<TaskLine> {
     for line in text.lines() {
         let trimmed = line.trim_start();
         if let Some((ch, run)) = fence_run(trimmed) {
-            fence = match fence {
-                None => Some((ch, run)),
+            match fence {
+                // CommonMark: a backtick opener's info string may not hold a
+                // backtick, so "```inline``` text" is a code span. Opening on
+                // it left a fence nothing closed, and every task below it
+                // silently left the plan. Such a line falls through as text.
+                None if ch == '`' && trimmed[run..].contains('`') => {}
+                None => {
+                    fence = Some((ch, run));
+                    continue;
+                }
                 Some((open_ch, open_run))
                     if ch == open_ch && run >= open_run && trimmed[run..].trim().is_empty() =>
                 {
-                    None
+                    fence = None;
+                    continue;
                 }
-                still_open => still_open,
-            };
-            continue;
+                Some(_) => continue,
+            }
         }
         if fence.is_some() {
             continue;
@@ -986,6 +994,22 @@ not json at all
             .map(|t| t.title.clone())
             .collect();
         assert_eq!(got, ["C"]);
+
+        // A backtick run with another backtick after it is a code span, not
+        // an opener: treating it as one dropped every task below it.
+        let span = "```inline``` text\n- [ ] real task\n";
+        let got: Vec<_> = parse_task_md(span)
+            .iter()
+            .map(|t| t.title.clone())
+            .collect();
+        assert_eq!(got, ["real task"]);
+        // Tildes have no such rule: a ~~~ opener's info string may hold '`'.
+        let tilde = "~~~ a`b\n- [ ] in the fence\n~~~\n- [ ] after\n";
+        let got: Vec<_> = parse_task_md(tilde)
+            .iter()
+            .map(|t| t.title.clone())
+            .collect();
+        assert_eq!(got, ["after"]);
     }
 
     /// RG-17 is the caller that shows this warning; until it lands, this is
