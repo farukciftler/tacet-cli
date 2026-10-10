@@ -415,10 +415,16 @@ const OPEN_FLAGS: i32 = 0o100000 /* O_NOFOLLOW */ | 0o4000 /* O_NONBLOCK */;
 ))]
 const OPEN_FLAGS: i32 = 0;
 
-/// Opens for reading without following a link at the last component.
-fn open_no_follow(real: &Path) -> std::io::Result<std::fs::File> {
+/// Opens without following a link at the last component: for reading, or —
+/// `append` — for appending to a file that already exists (never created
+/// here: a write-back that finds no transcript has nothing to add to).
+fn open_no_follow(real: &Path, append: bool) -> std::io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
-    options.read(true);
+    if append {
+        options.append(true);
+    } else {
+        options.read(true);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -429,6 +435,25 @@ fn open_no_follow(real: &Path) -> std::io::Result<std::fs::File> {
 
 /// Opens a file for reading, after `check`. THE ONLY OPEN IN THIS MODULE.
 pub fn open(path: &Path) -> Result<std::fs::File, Refusal> {
+    open_checked(path, false)
+}
+
+/// Opens an EXISTING file for appending, after every check `open` makes.
+///
+/// WHY THE WRITE-BACK GOES THROUGH THE SAME DOOR (RG-22, RG-24). An append is
+/// aimed at a path another program chose — a transcript name read out of a
+/// directory listing — and the three ways names lie hold for a write as they
+/// do for a read: a planted `rollout-x.jsonl -> ~/.codex/auth.json` link, a
+/// hard link, a swap between the check and the open. A note appended to
+/// `auth.json` breaks the user's login; so the same denylist, the same
+/// extension allowlist, `O_NOFOLLOW`, the inode comparison and the link count
+/// all apply. The handle is also what a rollback truncates through
+/// (`set_len`), so the file cut back is the file that was checked.
+pub fn open_append(path: &Path) -> Result<std::fs::File, Refusal> {
+    open_checked(path, true)
+}
+
+fn open_checked(path: &Path, append: bool) -> Result<std::fs::File, Refusal> {
     let (real, checked) = check_entry(path)?;
     let io = |error| Refusal::Io {
         path: path.to_path_buf(),
@@ -436,7 +461,7 @@ pub fn open(path: &Path) -> Result<std::fs::File, Refusal> {
     };
     #[cfg(test)]
     swap_seam::between_check_and_open(&real);
-    let file = match open_no_follow(&real) {
+    let file = match open_no_follow(&real, append) {
         Ok(file) => file,
         // `O_NOFOLLOW` on a link fails the open (ELOOP); name it for what it
         // is rather than as an I/O error the user would go looking for.
@@ -750,6 +775,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// RG-22/RG-24: the write-back opens through the same rules. A note
+    /// appended to `auth.json` — reached by name, by a planted link or by a
+    /// hard link under a rollout's name — would break the user's login; an
+    /// append to a transcript that is not there creates nothing.
+    #[cfg(unix)]
+    #[test]
+    fn the_append_door_refuses_what_the_read_door_refuses() {
+        use std::io::Write;
+        let root = scratch("append");
+        let codex = root.join(".codex");
+        std::fs::create_dir_all(codex.join("sessions")).unwrap();
+        let auth = codex.join("auth.json");
+        std::fs::write(&auth, "{\"OPENAI_API_KEY\":\"sk-append\"}").unwrap();
+        let hard = codex.join("sessions/rollout-h.jsonl");
+        std::fs::hard_link(&auth, &hard).unwrap();
+        let soft = codex.join("sessions/rollout-s.jsonl");
+        std::os::unix::fs::symlink(&auth, &soft).unwrap();
+        assert!(matches!(open_append(&auth), Err(Refusal::Secret { .. })));
+        assert!(matches!(open_append(&soft), Err(Refusal::Secret { .. })));
+        assert!(matches!(
+            open_append(&hard),
+            Err(Refusal::HardLinked { links: 2, .. })
+        ));
+        let missing = codex.join("sessions/rollout-m.jsonl");
+        assert!(matches!(open_append(&missing), Err(Refusal::Io { .. })));
+        assert!(std::fs::symlink_metadata(&missing).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&auth).unwrap(),
+            "{\"OPENAI_API_KEY\":\"sk-append\"}"
+        );
+        // And a real transcript is appended to, at its end.
+        let ok = codex.join("sessions/rollout-ok.jsonl");
+        std::fs::write(&ok, "{\"a\":1}\n").unwrap();
+        open_append(&ok).unwrap().write_all(b"{\"b\":2}\n").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&ok).unwrap(),
+            "{\"a\":1}\n{\"b\":2}\n"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Something else renamed over the checked path between `check` and the
     /// open: a regular file, so `O_NOFOLLOW` has nothing to refuse and only
     /// the inode comparison stands between the reader and the key.
@@ -807,9 +873,9 @@ mod tests {
         let root = scratch("nofollow");
         std::fs::write(root.join("target.json"), "{}").unwrap();
         std::os::unix::fs::symlink(root.join("target.json"), root.join("link.json")).unwrap();
-        assert!(open_no_follow(&root.join("target.json")).is_ok());
+        assert!(open_no_follow(&root.join("target.json"), false).is_ok());
         assert!(
-            open_no_follow(&root.join("link.json")).is_err(),
+            open_no_follow(&root.join("link.json"), false).is_err(),
             "the open followed a link"
         );
         let _ = std::fs::remove_dir_all(&root);

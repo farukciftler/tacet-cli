@@ -270,6 +270,10 @@ const NAMED_NOT_RUN: &[(&str, &str)] = &[
         "tacet-tools/src/sessions/version.rs",
         "2.1.285 (Claude Code)",
     ),
+    // The `task.md` writer's liveness probe (RG-26, RG-31): the file name of
+    // the Antigravity CLI, looked for in `/bin/ps -A -o comm=` output so a
+    // running `agy` stops the write. Compared, never run.
+    ("tacet-tools/src/sessions/writeback/antigravity.rs", "agy"),
 ];
 
 /// Programs whose job IS the network. A program that merely CAN reach it with
@@ -391,6 +395,19 @@ const RUNTIME_SPAWN_SITES: &[(&str, &str)] = &[
         "tacet-cli/tests/ctrl_c_reaches_the_running_tool.rs",
         "the binary under test on the scripted engine, and the literals `kill -INT` and \
          `pgrep -f` aimed at it and its `sleep` (audit M4)",
+    ),
+    (
+        "tacet-tools/src/sessions/writeback/codex.rs",
+        "the Codex binary the USER names with `tacet handoff note codex --program <path>` \
+         (never looked up on PATH), run as `app-server` only after the y/N question that \
+         names it and says it can reach the network (RG-23); no model turn is started. Not a \
+         model tool: no AGENT_CLI_SPAWNERS row, because the model cannot reach this path. Its \
+         tests run a stand-in shell script from a temp directory",
+    ),
+    (
+        "tacet-cli/tests/the_handoff_hook_answers_its_agent.rs",
+        "`env!(\"CARGO_BIN_EXE_tacet\")`, the binary under test, as `tacet handoff hook` \
+         with a hook event on stdin (RG-21/23/25); no agent program is run",
     ),
 ];
 

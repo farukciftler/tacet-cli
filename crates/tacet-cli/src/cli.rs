@@ -135,6 +135,19 @@ pub enum Command {
         #[arg(long)]
         purge: bool,
     },
+    /// Reports Tacet's progress back to the coding agent a session came from
+    /// (Claude Code, Codex, Antigravity) — through the shared handoff record
+    /// and each agent's own hook; docs/agent-handoff.md has the protocol.
+    ///
+    /// THE HOOK IS THE DEFAULT PATH and writes nothing of the agent's: `hook`
+    /// is what the agent runs, `install` shows (and, asked, writes) the
+    /// settings entry that makes it run it. `note` and `tasks` write into the
+    /// agent's own storage, each refused unless the version was measured, the
+    /// session is closed, and you say yes.
+    Handoff {
+        #[command(subcommand)]
+        job: HandoffJob,
+    },
     /// Runs a BENCHMARK FILE — a measurement somebody else wrote, against the
     /// tools this machine actually has (addons and MCP included).
     ///
@@ -452,6 +465,95 @@ pub enum ConfigJob {
     Unset { key: String },
     /// Prints the path of `config.json`.
     Path,
+}
+
+/// The jobs of `tacet handoff` (RG-21..27). `<AGENT>` is `claude`, `codex` or
+/// `antigravity`; `<ID>` the agent's session id.
+#[derive(Subcommand)]
+pub enum HandoffJob {
+    /// What the agent's hook runs: reads the hook event (JSON) on stdin and
+    /// prints the handoff record of that session in the agent's hook format.
+    /// Prints nothing for a session Tacet has no record of; always exits 0, so
+    /// a hook can never stop the agent from starting.
+    Hook { agent: String },
+    /// Shows the hook entry for an agent's settings file. With `--path`, adds
+    /// it to that file — after showing the change and asking.
+    Install {
+        agent: String,
+        /// The settings file to add the entry to (`~/.claude/settings.json`,
+        /// `~/.codex/hooks.json`, `.agents/hooks.json`…). Nothing is written
+        /// without it.
+        #[arg(long)]
+        path: Option<std::path::PathBuf>,
+    },
+    /// Prints a session's handoff record.
+    Show {
+        agent: String,
+        id: String,
+        /// The record itself instead of its markdown.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Writes progress into a session's handoff record — the command the
+    /// other agents run to report back (docs/agent-handoff.md).
+    Update {
+        agent: String,
+        id: String,
+        /// Who is reporting: `tacet`, `claude-code`, `codex`, `antigravity`.
+        #[arg(long)]
+        by: String,
+        #[arg(long)]
+        summary: Option<String>,
+        #[arg(long)]
+        next: Option<String>,
+        /// `ID=STATUS` or `ID=STATUS=TITLE` (repeatable). STATUS is pending,
+        /// in_progress, completed, blocked or cancelled; a new ID needs a
+        /// title.
+        #[arg(long = "task", value_name = "ID=STATUS[=TITLE]")]
+        tasks: Vec<String>,
+        /// `ID=TEXT` (repeatable): the note on a task — why it is blocked.
+        #[arg(long = "note", value_name = "ID=TEXT")]
+        notes: Vec<String>,
+    },
+    /// Writes the record as a note into the agent's own session — the
+    /// opt-in path. Claude Code: appended to the transcript, or `--fork`ed
+    /// into a new session. Codex: through `--program <codex> app-server`, or
+    /// `--append-rollout`. Each one asks first and refuses an open session or
+    /// an unmeasured version.
+    Note {
+        agent: String,
+        id: String,
+        /// Claude Code: write a NEW session (a copy with the note) and leave
+        /// the original untouched.
+        #[arg(long)]
+        fork: bool,
+        /// Codex: the codex binary to run as `app-server`. Never looked up on
+        /// PATH: you name what runs.
+        #[arg(long, value_name = "PATH")]
+        program: Option<std::path::PathBuf>,
+        /// Codex: append to the rollout file instead (refused until a Codex
+        /// version is measured).
+        #[arg(long)]
+        append_rollout: bool,
+        /// The agent's data folder, when it is not the default one.
+        #[arg(long)]
+        root: Option<std::path::PathBuf>,
+    },
+    /// Antigravity, EXPERIMENTAL: sets checkboxes in a conversation's
+    /// `task.md`. Its terms forbid third-party access; the supported path is
+    /// the hook. Refused without the flag, and refused for every version until
+    /// a write is verified by hand.
+    Tasks {
+        agent: String,
+        id: String,
+        /// `TITLE=STATUS` (repeatable): pending, in_progress or completed.
+        #[arg(long = "set", value_name = "TITLE=STATUS")]
+        set: Vec<String>,
+        #[arg(long = "experimental-write-task-md")]
+        experimental: bool,
+        #[arg(long)]
+        root: Option<std::path::PathBuf>,
+    },
 }
 
 /// The jobs of the `addon` subcommand. The shape and the `--json` pattern are

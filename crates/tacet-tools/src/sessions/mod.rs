@@ -22,6 +22,7 @@ pub mod handoff;
 pub mod model;
 pub mod secrets;
 pub mod version;
+pub mod writeback;
 
 pub use handoff::{HandoffRecord, HandoffTask, Status};
 pub use model::{

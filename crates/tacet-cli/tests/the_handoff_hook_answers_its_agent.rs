@@ -1,0 +1,291 @@
+//! `tacet handoff` as the agents and the user meet it (RG-21, RG-23, RG-25,
+//! RG-27, RG-31).
+//!
+//! WHY THIS RUNS THE BINARY. The hook's JSON is built and unit-tested in
+//! `tacet_tools::sessions::writeback`, but what Claude Code, Codex and
+//! Antigravity actually run is `tacet handoff hook <agent>` with an event on
+//! stdin, and read its stdout and exit code. A hook that panics, prints a
+//! banner first, or exits 1 stops the user's agent from starting; only the
+//! binary can show it does none of those. The same for the one property of
+//! the write paths no library test can see: that the COMMAND asks, and with
+//! nobody at a terminal writes nothing.
+//!
+//! NOTHING OF THE USER'S IS TOUCHED. `HOME` and `TACET_HOME` point into a temp
+//! directory, the Claude root is a temp copy built here, and no agent program
+//! is run.
+
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+
+use serde_json::{Value, json};
+use tacet_tools::sessions::AgentKind;
+use tacet_tools::sessions::handoff::{self, HandoffRecord, HandoffTask, Status};
+
+const SESSION: &str = "c0de0002-0000-4000-8000-000000000002";
+
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(tag: &str) -> Self {
+        let p = std::env::temp_dir().join(format!("tacet-handoff-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).expect("a temp directory");
+        Scratch(p)
+    }
+
+    fn handoff_dir(&self) -> PathBuf {
+        self.0.join("handoff")
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn tacet(scratch: &Scratch, args: &[&str], stdin: &str) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tacet"))
+        .args(args)
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("CODEX_HOME")
+        .env("HOME", &scratch.0)
+        .env("TACET_HOME", &scratch.0)
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the binary under test starts");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(stdin.as_bytes())
+        .expect("stdin is written");
+    child.wait_with_output().expect("the binary finishes")
+}
+
+fn record(agent: AgentKind) -> HandoffRecord {
+    let mut r = HandoffRecord::new(agent, SESSION);
+    r.summary = "Split the parser into lexer and parser.".into();
+    r.tasks.push(HandoffTask {
+        id: "1".into(),
+        title: "split the parser".into(),
+        status: Status::Completed,
+        note: String::new(),
+        updated_at: None,
+    });
+    r
+}
+
+/// RG-21: Claude Code's SessionStart JSON, for the session on stdin, and exit
+/// 0 — and for anything else, silence and exit 0.
+#[test]
+fn the_claude_hook_prints_session_start_json_and_never_fails() {
+    let s = Scratch::new("cc-hook");
+    handoff::write(&s.handoff_dir(), &record(AgentKind::ClaudeCode)).expect("record");
+    let slug = AgentKind::ClaudeCode.slug();
+    let event =
+        json!({"session_id": SESSION, "hook_event_name": "SessionStart", "source": "resume"});
+    let out = tacet(&s, &["handoff", "hook", slug], &event.to_string());
+    assert!(out.status.success(), "{out:?}");
+    let v: Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("stdout is not one JSON value ({e}): {out:?}"));
+    assert_eq!(v["hookSpecificOutput"]["hookEventName"], "SessionStart");
+    let ctx = v["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(
+        ctx.contains("Split the parser into lexer and parser."),
+        "{ctx}"
+    );
+    assert!(ctx.contains("not an instruction from the user"), "{ctx}");
+    assert!(v["systemMessage"].is_string());
+
+    for stdin in [
+        json!({"session_id": "ffffffff-0000-4000-8000-000000000000"}).to_string(),
+        "not json at all".to_string(),
+        String::new(),
+    ] {
+        let out = tacet(&s, &["handoff", "hook", slug], &stdin);
+        assert!(out.status.success(), "{stdin:?}: {out:?}");
+        assert!(
+            out.stdout.is_empty(),
+            "{stdin:?}: printed {:?}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+    // An unknown agent name is silence too: a typo in a settings file must
+    // not stop the agent.
+    let out = tacet(&s, &["handoff", "hook", "nobody"], &event.to_string());
+    assert!(out.status.success() && out.stdout.is_empty(), "{out:?}");
+}
+
+/// RG-23 (hook half) and RG-25.
+#[test]
+fn codex_and_antigravity_hooks_answer_in_their_own_shapes() {
+    let s = Scratch::new("others");
+    handoff::write(&s.handoff_dir(), &record(AgentKind::Codex)).expect("record");
+    handoff::write(&s.handoff_dir(), &record(AgentKind::Antigravity)).expect("record");
+    let out = tacet(
+        &s,
+        &["handoff", "hook", AgentKind::Codex.slug()],
+        &json!({"session_id": SESSION}).to_string(),
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    assert_eq!(v["hookSpecificOutput"]["hookEventName"], "SessionStart");
+    let path = format!(
+        "/h/.gemini/antigravity-ide/brain/{SESSION}/.system_generated/logs/transcript_full.jsonl"
+    );
+    let out = tacet(
+        &s,
+        &["handoff", "hook", AgentKind::Antigravity.slug()],
+        &json!({"transcriptPath": path}).to_string(),
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    let msg = v["injectSteps"][0]["ephemeralMessage"]
+        .as_str()
+        .expect("one step");
+    assert!(msg.contains("split the parser"), "{msg}");
+}
+
+/// RG-27: what another agent runs to report back, read back by `show`.
+#[test]
+fn update_then_show_round_trips_through_the_record() {
+    let s = Scratch::new("update");
+    let slug = AgentKind::Codex.slug();
+    let out = tacet(
+        &s,
+        &[
+            "handoff",
+            "update",
+            slug,
+            SESSION,
+            "--by",
+            "codex-cli",
+            "--task",
+            "1=in_progress=split the parser",
+            "--summary",
+            "half way",
+        ],
+        "",
+    );
+    assert!(out.status.success(), "{out:?}");
+    let out = tacet(
+        &s,
+        &[
+            "handoff",
+            "update",
+            slug,
+            SESSION,
+            "--by",
+            "codex-cli",
+            "--task",
+            "1=completed",
+        ],
+        "",
+    );
+    assert!(out.status.success(), "{out:?}");
+    let out = tacet(&s, &["handoff", "show", slug, SESSION, "--json"], "");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    assert_eq!(v["by"], "codex-cli");
+    assert_eq!(v["summary"], "half way");
+    assert_eq!(v["tasks"][0]["status"], "completed");
+    assert_eq!(v["tasks"][0]["title"], "split the parser");
+    // A status outside the five is refused and the record is unchanged.
+    let out = tacet(
+        &s,
+        &[
+            "handoff",
+            "update",
+            slug,
+            SESSION,
+            "--by",
+            "codex-cli",
+            "--task",
+            "1=done",
+        ],
+        "",
+    );
+    assert!(!out.status.success());
+    let again = tacet(&s, &["handoff", "show", slug, SESSION, "--json"], "");
+    assert_eq!(serde_json::from_slice::<Value>(&again.stdout).unwrap(), v);
+}
+
+fn claude_root(s: &Scratch) -> (PathBuf, PathBuf) {
+    let root = s.0.join("agent-root");
+    let dir = root.join("projects/-Users-dev-demo");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(format!("{SESSION}.jsonl"));
+    let line = |uuid: &str, parent: Value, kind: &str, text: &str| {
+        json!({"parentUuid": parent, "isSidechain": false, "userType": "external",
+               "cwd": "/Users/dev/demo", "sessionId": SESSION, "version": "2.1.285",
+               "gitBranch": "main", "entrypoint": "cli", "uuid": uuid,
+               "timestamp": "2026-10-09T10:00:00.000Z", "type": kind,
+               "message": {"role": kind, "content": text}})
+        .to_string()
+    };
+    let text = format!(
+        "{}\n{}\n",
+        line(
+            "a0000001-0000-4000-8000-000000000000",
+            Value::Null,
+            "user",
+            "split it"
+        ),
+        line(
+            "a0000002-0000-4000-8000-000000000000",
+            json!("a0000001-0000-4000-8000-000000000000"),
+            "assistant",
+            "done"
+        )
+    );
+    std::fs::write(&path, text).unwrap();
+    (root, path)
+}
+
+/// RG-22/RG-31 at the command: with nobody at a terminal the question is
+/// answered no, and the transcript and the folder are exactly as they were.
+#[test]
+fn a_note_with_nobody_to_ask_writes_nothing() {
+    let s = Scratch::new("note");
+    handoff::write(&s.handoff_dir(), &record(AgentKind::ClaudeCode)).expect("record");
+    let (root, path) = claude_root(&s);
+    let before = std::fs::read(&path).unwrap();
+    let listing = |dir: &Path| {
+        let mut v: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        v.sort();
+        v
+    };
+    let names = listing(path.parent().unwrap());
+    let root_arg = root.display().to_string();
+    let slug = AgentKind::ClaudeCode.slug();
+    for extra in [&[][..], &["--fork"][..]] {
+        let mut args = vec![
+            "handoff",
+            "note",
+            slug,
+            SESSION,
+            "--root",
+            root_arg.as_str(),
+        ];
+        args.extend_from_slice(extra);
+        let out = tacet(&s, &args, "y\n");
+        assert!(!out.status.success(), "{extra:?}: {out:?}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("declined"), "{extra:?}: {err}");
+    }
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        before,
+        "the transcript was written"
+    );
+    assert_eq!(listing(path.parent().unwrap()), names, "a file was added");
+}
