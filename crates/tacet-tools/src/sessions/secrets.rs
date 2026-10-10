@@ -63,6 +63,33 @@ pub const DENIED_NAMES: &[&str] = &[
     "state.vscdb-shm",
     "state.vscdb.backup",
     ".netrc",
+    // Claude Code: `~/.claude.json` carries `primaryApiKey` on an API-key
+    // login and the signed-in account on every login. No reader needs it —
+    // transcripts, live sessions and titles are all under `~/.claude/`.
+    ".claude.json",
+];
+
+/// The stems of the credential files above, plus SSH private keys (which have
+/// no extension to deny). A name that IS a stem, or starts with one followed by
+/// anything but a letter or digit, is a credential too: `auth copy.json`
+/// (Finder's Duplicate), `auth (1).json` (a browser download), `auth-backup.json`,
+/// `auth.json.md`, `state.vscdb.json`, `id_rsa.json`. MEASURED by the RG-16
+/// second review: every one of those spellings returned the key through
+/// `read_text` while only the exact names were denied. The separator is what
+/// keeps `author.md` and `stateful.jsonl` readable.
+pub const DENIED_STEMS: &[&str] = &[
+    "auth",
+    ".credentials",
+    "credentials",
+    "oauth_creds",
+    "google_accounts",
+    "state.vscdb",
+    ".netrc",
+    ".claude",
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
 ];
 
 /// File extensions that are credentials whatever the name.
@@ -211,6 +238,26 @@ pub fn denied_by_name(path: &Path) -> Option<String> {
     let name = path.file_name()?.to_string_lossy().to_lowercase();
     if DENIED_NAMES.contains(&name.as_str()) {
         return Some(format!("named {name}"));
+    }
+    // A copy keeps the credential's name and adds to one end of it. A stem
+    // followed by a separator covers the suffixes (`auth.json.md`,
+    // `auth copy.json`); a denied name preceded by one covers the prefixes
+    // (`Copy of auth.json`, `old-auth.json`).
+    let separated = |rest: &str| rest.chars().next().is_none_or(|c| !c.is_alphanumeric());
+    if let Some(stem) = DENIED_STEMS
+        .iter()
+        .find(|stem| name.strip_prefix(*stem).is_some_and(separated))
+    {
+        return Some(format!("a copy of {stem}"));
+    }
+    if let Some(denied) = DENIED_NAMES.iter().find(|denied| {
+        name.strip_suffix(*denied).is_some_and(|rest| {
+            rest.chars()
+                .next_back()
+                .is_none_or(|c| !c.is_alphanumeric())
+        })
+    }) {
+        return Some(format!("a copy of {denied}"));
     }
     if let Some(ext) = Path::new(&name).extension().and_then(|e| e.to_str())
         && DENIED_EXTENSIONS.contains(&ext)
@@ -550,6 +597,31 @@ mod tests {
             (".codex/tokens.json", ".codex/history.jsonl"),
             (".claude/AUTH.JSON", ".claude/projects/p/a035ad6d.jsonl"),
             (".ssh/config.json", ".claude/sessions/4243.json"),
+            // Copies of a credential under a name a person or a tool gives a
+            // copy (RG-16 second review: each of these returned the key).
+            (".codex/auth copy.json", ".codex/author.md"),
+            (".codex/auth (1).json", ".codex/sessions/rollout-1.jsonl"),
+            (".codex/auth-backup.json", ".codex/hooks.json"),
+            (".codex/auth.json.json", ".codex/session_index.jsonl"),
+            (".codex/auth.json.md", ".codex/AGENTS.md"),
+            (".codex/Copy of auth.json", ".codex/copy of notes.md"),
+            (
+                ".gemini/antigravity-ide/state.vscdb.json",
+                ".gemini/antigravity-ide/brain/c1/task.md.metadata.json",
+            ),
+            (
+                ".gemini/google_accounts (1).json",
+                ".gemini/antigravity-cli/brain/c1/implementation_plan.md",
+            ),
+            ("home/id_rsa.json", "home/idea.md"),
+            (
+                "home/.claude.json",
+                ".claude/projects/p/s1/custom-title.json",
+            ),
+            (
+                "home/.claude.json.backup.json",
+                ".claude/projects/p/s1/subagents/agent-a1.meta.json",
+            ),
         ];
         for (secret, neighbour) in cases {
             for rel in [secret, neighbour] {

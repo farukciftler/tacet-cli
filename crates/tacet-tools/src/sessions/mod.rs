@@ -268,9 +268,17 @@ mod tests {
     /// `a :: b` call paths that open a file for reading, as token triples.
     /// Matching tokens rather than text means `std::fs::read::<&Path>(p)` and
     /// `fs :: read (p)` are seen too, and `read_dir`/`metadata` are not.
+    ///
+    /// `fs::copy` reads its source whole. A copy of `auth.json` named
+    /// `x.jsonl` has its own inode and one link, so neither the name rules
+    /// nor the hard-link rule can tell it from a transcript once it is read
+    /// back through the gate (RG-16 second review: the guard stayed green with
+    /// a planted `std::fs::copy`). `fs::rename` is NOT listed: the handoff
+    /// writer's atomic temp-then-rename needs it, and it reads nothing.
     const OPENERS: &[(&str, &str)] = &[
         ("fs", "read"),
         ("fs", "read_to_string"),
+        ("fs", "copy"),
         ("File", "open"),
         ("File", "options"),
         ("OpenOptions", "new"),
@@ -279,7 +287,8 @@ mod tests {
     /// Names that, imported from an `fs` module, open a file under a name the
     /// call-path check cannot see: `use std::fs::read_to_string;` and then a
     /// bare `read_to_string(p)` (break B14).
-    const IMPORTED_OPENERS: &[&str] = &["read", "read_to_string", "File", "OpenOptions", "*"];
+    const IMPORTED_OPENERS: &[&str] =
+        &["read", "read_to_string", "copy", "File", "OpenOptions", "*"];
 
     /// Every path a `use` tree brings in, as (segments, alias). Expands
     /// `use std::{fs::{self as f, File}, io};` into its leaves.
@@ -342,9 +351,19 @@ mod tests {
     /// entry per finding: (line, what).
     fn openers_in(toks: &[Tok]) -> Vec<(usize, String)> {
         let mut found = Vec::new();
-        for w in toks.windows(3) {
-            if w[1].text == "::" && OPENERS.contains(&(w[0].text.as_str(), w[2].text.as_str())) {
-                found.push((w[0].line, format!("{}::{}", w[0].text, w[2].text)));
+        for (k, head) in toks.iter().enumerate() {
+            // `<std::fs::File>::open(p)` is the same call as `File::open(p)`
+            // with a `>` between the type and the `::`; a plain three-token
+            // window never saw it (RG-16 second review, planted in version.rs).
+            let mut at = k + 1;
+            if toks.get(at).is_some_and(|t| t.text == ">") {
+                at += 1;
+            }
+            let (Some(sep), Some(tail)) = (toks.get(at), toks.get(at + 1)) else {
+                continue;
+            };
+            if sep.text == "::" && OPENERS.contains(&(head.text.as_str(), tail.text.as_str())) {
+                found.push((head.line, format!("{}::{}", head.text, tail.text)));
             }
         }
         for (k, t) in toks.iter().enumerate() {
@@ -427,6 +446,7 @@ mod tests {
         let fs_read = concat!("fs::", "read(");
         let fs_rts = concat!("fs::", "read_to_string");
         let file_open = concat!("File", "::open(");
+        let fs_copy = concat!("fs::", "copy(");
         let planted: &[(&str, String, Option<&str>)] = &[
             // The door itself, at the top level: allowed.
             (
@@ -488,6 +508,30 @@ mod tests {
                 "fn f() { std::fs :: read::<&str>(\"x\"); }".into(),
                 Some("spaced.rs:1: fs::read"),
             ),
+            // Nor does a qualified type: `<std::fs::File>::open` puts a `>`
+            // between the type and the `::` (RG-16 second review).
+            (
+                "qualified.rs",
+                "fn f(p: &str) { let _ = <std::fs::File>::open(p); }".into(),
+                Some("qualified.rs:1: File::open"),
+            ),
+            (
+                "qualified_new.rs",
+                "fn f() { let _ = < std :: fs :: OpenOptions >::new(); }".into(),
+                Some("qualified_new.rs:1: OpenOptions::new"),
+            ),
+            // A copy reads its source whole; `auth.json` copied to `x.jsonl`
+            // then passes every name rule.
+            (
+                "copied.rs",
+                format!("fn f(p: &str) {{ std::{fs_copy}p, \"x.jsonl\"); }}"),
+                Some("copied.rs:1: fs::copy"),
+            ),
+            (
+                "copied_bare.rs",
+                "use std::fs::copy;\nfn f(p: &str) { copy(p, \"x.jsonl\"); }".into(),
+                Some("copied_bare.rs:1: use std::fs::copy"),
+            ),
             // Not openers: a comment, a string, a test module, a directory walk.
             (
                 "comment.rs",
@@ -505,6 +549,14 @@ mod tests {
             (
                 "walk.rs",
                 "use std::fs::{read_dir, metadata};\nfn f() { std::fs::read_dir(\".\"); }".into(),
+                None,
+            ),
+            // `io::copy` moves bytes between handles the gate already opened,
+            // and the handoff writer's atomic rename reads nothing.
+            (
+                "streams.rs",
+                "use std::io::copy;\nfn f() { std::io::copy(&mut a, &mut b); std::fs::rename(t, p); }"
+                    .into(),
                 None,
             ),
         ];
@@ -589,6 +641,11 @@ mod tests {
         for name in super::secrets::DENIED_NAMES {
             if !adr.contains(&format!("`{name}`")) {
                 missing.push(format!("denied name `{name}`"));
+            }
+        }
+        for stem in super::secrets::DENIED_STEMS {
+            if !adr.contains(&format!("`{stem}`")) {
+                missing.push(format!("denied stem `{stem}`"));
             }
         }
         for ext in super::secrets::DENIED_EXTENSIONS {
