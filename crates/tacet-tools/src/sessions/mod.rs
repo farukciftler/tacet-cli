@@ -15,6 +15,7 @@
 //! reasons, and what was measured to reach them, are in
 //! docs/adr/0001-agent-sessions.md.
 
+pub mod claude;
 pub mod handoff;
 pub mod model;
 pub mod secrets;
