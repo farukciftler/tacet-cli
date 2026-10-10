@@ -9,14 +9,21 @@
 //! longer measures E5 at all. So the flags it passes are held to the ones the
 //! experiment actually typed, the order "ask, then spend" is held from source,
 //! and its verdict logic is driven both ways through a stand-in agent that
-//! behaves the way the measurement says the real one did.
+//! behaves the way the measurement says the real one did — and, one variant
+//! per experiment, the way it would if that one finding had changed. Each
+//! variant must turn exactly its own experiment to CHANGED: a check that is
+//! taken but never compared (E5's hash, before the review of 10 Oct 2026)
+//! stays green under the as-measured run alone.
 //!
-//! THE STAND-IN IS NOT THE AGENT. It reproduces the four behaviours the
-//! experiment recorded (resume walks `parentUuid` from the newest entry, a
-//! wrong parent drops what came before, a fork copies, `--version` prints a
-//! line) and nothing else. That is enough to show the script reads its own
-//! results correctly; whether the real agent still behaves that way is what
-//! the paid run is for.
+//! THE STAND-IN IS NOT THE AGENT. It reproduces what the experiment recorded
+//! (resume walks `parentUuid` from the newest entry, a wrong parent drops what
+//! came before, appended assistant text is claimed as its own, a user-role
+//! note is credited to Tacet, a fork copies and leaves the original alone,
+//! `--version` prints a line) and nothing else — plus one habit a real model
+//! has that a lenient check would mistake for a pass: it repeats the question
+//! in its answer. That is enough to show the script reads its own results
+//! correctly; whether the real agent still behaves that way is what the paid
+//! run is for.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -282,9 +289,17 @@ fn the_script_is_executable_and_parses() {
 
 // ------------------------------------------------- the stand-in agent --
 
-/// A stand-in with the behaviour the experiment recorded. `STUB_KEEP_HISTORY`
-/// makes it keep the whole file on resume, which is the one change E4 exists
-/// to notice.
+/// A stand-in with the behaviour the experiment recorded. Each `STUB_*`
+/// variable changes one finding, the one its experiment exists to notice:
+///
+/// * `STUB_DISOWN_ASSISTANT` (E2): appended assistant text is credited to its
+///   writer instead of claimed as the model's own;
+/// * `STUB_NO_ATTRIBUTION` (E3): the user-role note is credited to the user;
+/// * `STUB_KEEP_HISTORY` (E4): resume keeps the whole file behind a wrong
+///   parent;
+/// * `STUB_FORK_TOUCHES_ORIGINAL` (E5): a fork also writes to the original;
+/// * `STUB_NO_CHAIN`: transcripts carry no `parentUuid`, so the script must
+///   stop after E1 has been paid for.
 const STAND_IN: &str = r#"#!/usr/bin/env bash
 set -u
 if [ "${1:-}" = --version ]; then echo "2.1.285 (stand-in)"; exit 0; fi
@@ -308,7 +323,8 @@ entry() {
   jq -cn --arg u "$1" --arg p "$2" --arg t "$3" --arg x "$4" --arg s "$5" --arg cwd "$cwd" \
     '{parentUuid: (if $p == "" then null else $p end), isSidechain: false, userType: "external",
       cwd: $cwd, sessionId: $s, version: "2.1.285", gitBranch: "main", entrypoint: "sdk-cli",
-      uuid: $u, timestamp: "2026-10-09T10:00:00.000Z", type: $t, message: {role: $t, content: $x}}'
+      uuid: $u, timestamp: "2026-10-09T10:00:00.000Z", type: $t, message: {role: $t, content: $x}}
+     | if env.STUB_NO_CHAIN == "1" then del(.parentUuid) else . end'
 }
 leaf=""
 if [ -z "$resume" ]; then
@@ -319,17 +335,38 @@ else
   leaf="$(jq -r 'select(.uuid != null and .isSidechain != true) | .uuid' "$file" | tail -n 1)"
   text='.message.content // "" | if type == "string" then . else (map(.text? // "") | join(" ")) end'
   if [ "${STUB_KEEP_HISTORY:-0}" = 1 ]; then
-    context="$(jq -r "select(.uuid != null) | $text" "$file")"
+    chain="$(jq -c 'select(.uuid != null)' "$file")"
   else
-    context="$(jq -rs --arg leaf "$leaf" "(map(select(.uuid != null)) | INDEX(.uuid)) as \$m
-      | [\$leaf | recurse(\$m[.].parentUuid // empty)] | map(\$m[.] // {} | $text) | .[]" "$file")"
+    chain="$(jq -cs --arg leaf "$leaf" '(map(select(.uuid != null)) | INDEX(.uuid)) as $m
+      | [$leaf | recurse($m[.].parentUuid // empty)] | map($m[.] // {}) | .[]' "$file")"
   fi
+  context="$(jq -r "$text" <<<"$chain")"
+  mine="$(jq -r "select(.type == \"assistant\") | $text" <<<"$chain")"
   words="$(grep -oE '[A-Z]+-[0-9]+' <<<"$context" | sort -u | tr '\n' ' ')"
-  answer="Codewords: ${words:-none}."
-  if grep -q Tacet <<<"$context"; then answer="$answer Tacet left a note."; fi
+  # A real model repeats the question; a check that the question satisfies
+  # would pass without the transcript having been read.
+  answer="You asked: $prompt Codewords: ${words:-none}."
+  if grep -qE '[A-Z]+-[0-9]+' <<<"$mine"; then
+    if [ "${STUB_DISOWN_ASSISTANT:-0}" = 1 ]; then
+      answer="$answer That message was written by someone else, not by me."
+    else
+      answer="$answer It was in my previous message."
+    fi
+  fi
+  if grep -q Tacet <<<"$context"; then
+    if [ "${STUB_NO_ATTRIBUTION:-0}" = 1 ]; then
+      answer="$answer You left a note."
+    else
+      answer="$answer Tacet left a note."
+    fi
+  fi
   sid="$resume"
   if [ "$fork" = 1 ]; then
-    sid="$(new_id)"; cp "$file" "$proj/$sid.jsonl"; file="$proj/$sid.jsonl"
+    sid="$(new_id)"; cp "$file" "$proj/$sid.jsonl"
+    if [ "${STUB_FORK_TOUCHES_ORIGINAL:-0}" = 1 ]; then
+      printf '%s\n' '{"type":"last-prompt","lastPrompt":"fork"}' >>"$file"
+    fi
+    file="$proj/$sid.jsonl"
   fi
 fi
 u1="$(new_id)"; u2="$(new_id)"
@@ -373,7 +410,19 @@ fn tools_present() -> bool {
 }
 
 #[cfg(unix)]
-fn run_with_stand_in(tag: &str, keep_history: bool) -> (Run, PathBuf) {
+fn run_with_stand_in(tag: &str, variant: Option<&str>) -> (Run, PathBuf) {
+    run_script(tag, variant, &["--yes"], None)
+}
+
+/// The script with the stand-in at `TACET_ROUNDTRIP_CLAUDE` (or `agent`, when
+/// given) and `variant` set to 1.
+#[cfg(unix)]
+fn run_script(
+    tag: &str,
+    variant: Option<&str>,
+    args: &[&str],
+    agent: Option<&Path>,
+) -> (Run, PathBuf) {
     use std::os::unix::fs::PermissionsExt;
     let base = std::env::temp_dir().join(format!(
         "tacet-roundtrip-test-{tag}-{}-{}",
@@ -396,19 +445,20 @@ fn run_with_stand_in(tag: &str, keep_history: bool) -> (Run, PathBuf) {
         "{\"uuid\":\"k\",\"parentUuid\":null}\n",
     )
     .unwrap();
-    let out = Command::new("bash")
-        .arg(repo_root().join(SCRIPT))
-        .arg("--yes")
+    let mut cmd = Command::new("bash");
+    cmd.arg(repo_root().join(SCRIPT))
+        .args(args)
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("HOME", base.join("home"))
         .env("TMPDIR", base.join("tmp"))
         .env("CLAUDE_CONFIG_DIR", base.join("config"))
-        .env("TACET_ROUNDTRIP_CLAUDE", &stand_in)
-        .env("STUB_KEEP_HISTORY", if keep_history { "1" } else { "0" })
-        .stdin(Stdio::null())
-        .output()
-        .expect("bash");
+        .env("TACET_ROUNDTRIP_CLAUDE", agent.unwrap_or(&stand_in))
+        .stdin(Stdio::null());
+    if let Some(v) = variant {
+        cmd.env(v, "1");
+    }
+    let out = cmd.output().expect("bash");
     (
         Run {
             code: out.status.code(),
@@ -452,7 +502,7 @@ fn an_agent_that_behaves_as_measured_reads_as_the_measurement() {
     if !tools_present() {
         return;
     }
-    let (run, base) = run_with_stand_in("same", false);
+    let (run, base) = run_with_stand_in("same", None);
     let all = format!("{}\n{}", run.stdout, run.stderr);
     assert_eq!(run.code, Some(0), "{all}");
     for e in ["E1", "E2", "E3", "E4", "E5"] {
@@ -462,21 +512,85 @@ fn an_agent_that_behaves_as_measured_reads_as_the_measurement() {
     left_behind(&base);
 }
 
-/// An agent that keeps the history behind a wrong parent: E4 — and only E4 —
-/// reads CHANGED, and the exit code says one experiment differs.
+/// One changed finding: its experiment — and only it — reads CHANGED, and
+/// the exit code says one experiment differs.
 #[cfg(unix)]
-#[test]
-fn an_agent_that_changed_is_reported_as_changed() {
+fn only_this_one_changed(variant: &str, changed: &str) {
     if !tools_present() {
         return;
     }
-    let (run, base) = run_with_stand_in("changed", true);
+    let (run, base) = run_with_stand_in(&variant.to_lowercase(), Some(variant));
     let all = format!("{}\n{}", run.stdout, run.stderr);
-    assert_eq!(run.code, Some(1), "{all}");
-    assert!(all.contains("E4  CHANGED"), "{all}");
-    for e in ["E1", "E2", "E3", "E5"] {
+    assert_eq!(run.code, Some(1), "{variant}:\n{all}");
+    assert!(
+        all.contains(&format!("{changed}  CHANGED")),
+        "{variant} should turn {changed} to CHANGED:\n{all}"
+    );
+    for e in ["E1", "E2", "E3", "E4", "E5"]
+        .into_iter()
+        .filter(|e| *e != changed)
+    {
         assert!(all.contains(&format!("{e}  same")), "{e} not same:\n{all}");
     }
     assert!(all.contains("do NOT widen the write range"), "{all}");
     left_behind(&base);
+}
+
+/// The model credits the appended assistant text to someone else: E2's
+/// finding — that it claims the text as its own — no longer holds.
+#[cfg(unix)]
+#[test]
+fn an_agent_that_disowns_appended_assistant_text_changes_e2() {
+    only_this_one_changed("STUB_DISOWN_ASSISTANT", "E2");
+}
+
+/// The note is read but credited to the user. With the stand-in repeating
+/// the question, this goes green again if E3's question names Tacet.
+#[cfg(unix)]
+#[test]
+fn an_agent_that_does_not_credit_tacet_changes_e3() {
+    only_this_one_changed("STUB_NO_ATTRIBUTION", "E3");
+}
+
+/// An agent that keeps the history behind a wrong parent: E4 changes.
+#[cfg(unix)]
+#[test]
+fn an_agent_that_keeps_history_behind_a_wrong_parent_changes_e4() {
+    only_this_one_changed("STUB_KEEP_HISTORY", "E4");
+}
+
+/// A fork that writes to the session it forked from: E5's main finding, the
+/// original byte-identical, no longer holds.
+#[cfg(unix)]
+#[test]
+fn an_agent_whose_fork_touches_the_original_changes_e5() {
+    only_this_one_changed("STUB_FORK_TOUCHES_ORIGINAL", "E5");
+}
+
+/// 64 MEANS NOTHING WAS SPENT, AND ONLY THEN. A stop after E1's two paid
+/// turns — here the append finds no chain entry to continue — exits 65 and
+/// says money was spent; a stop before the first turn exits 64.
+#[cfg(unix)]
+#[test]
+fn a_stop_after_a_paid_turn_does_not_read_as_nothing_spent() {
+    if !tools_present() {
+        return;
+    }
+    let (run, base) = run_with_stand_in("no-chain", Some("STUB_NO_CHAIN"));
+    let all = format!("{}\n{}", run.stdout, run.stderr);
+    assert_eq!(run.code, Some(65), "{all}");
+    assert!(all.contains("no chain entry"), "{all}");
+    assert!(all.contains("money was spent"), "{all}");
+    assert!(!all.contains("nothing was spent"), "{all}");
+    left_behind(&base);
+
+    let missing = std::env::temp_dir().join("tacet-roundtrip-no-such-agent");
+    let (run, base) = run_script("no-agent", None, &["--yes"], Some(&missing));
+    let all = format!("{}\n{}", run.stdout, run.stderr);
+    assert_eq!(run.code, Some(64), "{all}");
+    // The die line names the agent; matched on its tail, because a literal
+    // that starts with the agent's name reads as a spawn to network_monopoly.
+    assert!(all.contains("not found as"), "{all}");
+    assert!(!all.contains("money was spent"), "{all}");
+    let _ = std::fs::remove_dir_all(base);
 }

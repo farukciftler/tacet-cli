@@ -10,7 +10,9 @@
 #   E2  a user+assistant pair chained to the leaf is loaded by --resume — and
 #       the model then believes it wrote the assistant text itself
 #   E3  ONE user-role "[Note from Tacet …]" entry is loaded and attributed to
-#       Tacet: the only format Tacet writes
+#       Tacet — asked without naming Tacet, so an answer that echoes the
+#       question cannot pass for one that read the note: the only format
+#       Tacet writes
 #   E4  a note with the WRONG parentUuid makes --resume drop every earlier
 #       message without a word: the risk the post-write chain check exists for
 #   E5  --resume --fork-session gives a new id and leaves the original file
@@ -22,10 +24,11 @@
 # range in version.rs (and the ADR's table) moves only if all five come out the
 # way they did on 9 Oct.
 #
-# IT COSTS MONEY. Every step after E1 is a real model turn on your Claude
-# account: about $1 in total when measured (E7: $0.59 + $0.39 + $0.02). That is
-# why it is a script a person runs and not a test, why CI never runs it, and
-# why it asks before the first call.
+# IT COSTS MONEY. Every step, E1 included, is a real model turn on your Claude
+# account — six turns, since E1 opens two sessions: about $1 in total when
+# measured (E7: $0.59 + $0.39 + $0.02). That is why it is a script a person
+# runs and not a test, why CI never runs it, and why it asks before the first
+# call.
 #
 # WHAT IT TOUCHES. Two new, empty directories under $TMPDIR, used as the
 # working directories of two new sessions, and the two project directories
@@ -41,7 +44,9 @@
 #   TACET_ROUNDTRIP_CLAUDE=/path/to/claude scripts/session-roundtrip.sh
 #
 # EXIT CODE: the number of experiments whose outcome differs from 9 Oct 2026
-# (0 = the measurement still holds), or 64 if it stopped before spending.
+# (0 = the measurement still holds); 64 if it stopped before the first paid
+# turn, so nothing was spent; 65 if it stopped AFTER one — money was spent and
+# there is no verdict (no table is printed).
 
 set -u
 
@@ -70,8 +75,16 @@ unset CLAUDE_CODE_PROJECT_DIR_NAME
 # One model turn measured at well under a minute; five minutes is a hang.
 PER_CALL_LIMIT=300
 
+# Set by run() before the first paid turn. A stop after it must not read as
+# the 64 that means "nothing was spent": a person deciding whether to rerun
+# needs to know the first run was paid for.
+SPENT=0
 die() {
   echo "session-roundtrip: $*" >&2
+  if [ "$SPENT" = 1 ]; then
+    echo "session-roundtrip: stopped after paid turns had run: money was spent, and there is no verdict" >&2
+    exit 65
+  fi
   exit 64
 }
 
@@ -148,6 +161,8 @@ mkdir -p "$WORK"
 run() {
   local label="$1" dir="$2"
   shift 2
+  # Before the call, not after: a turn that times out may still be billed.
+  SPENT=1
   (cd "$dir" && perl -e 'alarm shift; exec @ARGV or exit 127' "$PER_CALL_LIMIT" \
     "$CC" "$@" >"$WORK/$label.json" 2>"$WORK/$label.err")
 }
@@ -209,6 +224,12 @@ row() {
   [ "$2" = same ] || DIFFER=$((DIFFER + 1))
 }
 has() { grep -qiF -- "$2" <<<"$1"; }
+# E2's finding is that the model claims the appended assistant text as its
+# own; the 9 Oct answer said "the update appeared in my previous message".
+# First-person authorship in any of the usual phrasings counts.
+claims_own() {
+  grep -qiE '(^|[^a-z])(my (own |previous |earlier |last |prior )?(message|response|reply|update|answer|turn)|i (wrote|mentioned|said|reported|shared|gave|provided|posted|noted|stated))([^a-z]|$)' <<<"$1"
+}
 
 # ---- E1: a throwaway session lands where the reader looks ----------------
 run e1a "$DIR_A" -p "Reply with exactly: READY" --output-format json
@@ -230,15 +251,18 @@ if [ -n "$A" ] && [ -n "$B" ] && inside_scratch "$A_FILE" && inside_scratch "$B_
   append_note "$A_FILE" pair "[Tacet] While you were away the calendar month rollover bug was fixed. The codeword is PELICAN-42."
   run e2 "$DIR_A" -p --resume "$A" "What codeword was mentioned in this conversation, and who wrote the message that contained it?" --output-format json
   ans="$(field e2 result)"
-  if has "$ans" PELICAN-42 && [ "$(field e2 session_id)" = "$A" ]; then
-    row E2 same "loaded, same session id; model took the text as its own" "loaded — read the attribution: $ans"
+  if has "$ans" PELICAN-42 && [ "$(field e2 session_id)" = "$A" ] && claims_own "$ans"; then
+    row E2 same "loaded, same session id; model took the text as its own" "$ans"
   else
-    row E2 CHANGED "loaded, same session id" "$ans"
+    row E2 CHANGED "loaded, same session id; model took the text as its own" "$ans"
   fi
 
   # ---- E3: the one format Tacet writes ------------------------------------
   append_note "$B_FILE" user "$NOTE While you were away Tacet fixed the calendar month rollover bug (audit M17). Codeword: OSPREY-7."
-  run e3 "$DIR_B" -p --resume "$B" "What did Tacet report while I was away, and what was the codeword?" --output-format json
+  # The question must not name Tacet: "Tacet" in the answer is the
+  # attribution being measured, and a model that repeats the question would
+  # supply it otherwise.
+  run e3 "$DIR_B" -p --resume "$B" "Who left a note while I was away, and what was the codeword?" --output-format json
   ans="$(field e3 result)"
   if has "$ans" OSPREY-7 && has "$ans" Tacet; then
     row E3 same "loaded and attributed to Tacet" "$ans"

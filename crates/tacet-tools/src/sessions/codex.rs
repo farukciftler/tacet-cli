@@ -181,7 +181,8 @@ pub struct Rollout {
     /// JSON, no `type`, no `payload`, or — in paginated mode — no `ordinal`.
     pub skipped: Vec<usize>,
     /// The highest ordinal in this file (paginated mode). An append continues
-    /// after it.
+    /// after it — with `checked_add`: a damaged file can hold `u64::MAX`, and
+    /// then there is no next ordinal to write.
     pub last_ordinal: Option<u64>,
     /// Ordinals missing between the lowest and highest in this file.
     pub ordinal_gaps: u64,
@@ -470,7 +471,13 @@ fn assemble(prefix: Vec<Line>, own: Vec<Line>, skipped: Vec<usize>) -> Rollout {
                 numbered.last().and_then(|l| l.ordinal),
             ) {
                 r.last_ordinal = Some(hi);
-                r.ordinal_gaps = (hi - lo + 1).saturating_sub(numbered.len() as u64);
+                // Not `hi - lo + 1 - len`: the span 0..=u64::MAX has 2^64
+                // ordinals, one more than a u64 holds, and an ordinal that
+                // large is one line of an untrusted file away. `+ 1` panicked
+                // in a debug build and wrapped the count to 0 in a release one
+                // (corpus case 0199e000-0047-…-003). `by_ordinal` leaves one
+                // line per ordinal, so `len - 1 <= hi - lo` and this is exact.
+                r.ordinal_gaps = (hi - lo) - (numbered.len() as u64 - 1);
             }
             numbered
         }

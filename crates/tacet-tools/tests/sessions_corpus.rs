@@ -4,11 +4,20 @@
 //! shape at a time against one reader. What the version table in
 //! `sessions::version` needs is different: a place where "this version of
 //! this agent parses with no unparsed line" is a fact the build checks, so a
-//! read range is widened by adding that version's files here and watching
-//! them read cleanly — not by editing a number (ADR 0001, "A range is widened
-//! by a measurement, never by an edit"). So the tests below tie the corpus to
-//! the table in both directions: every measured version has a directory, and
-//! every directory's files say the version the directory is named after.
+//! read range cannot be widened by editing a number alone — a fixture for the
+//! new end has to be added here and read cleanly. So the tests below tie the
+//! corpus to the table in both directions: every measured version has a
+//! directory, and every directory's files say the version the directory is
+//! named after.
+//!
+//! WHAT THAT DOES NOT PROVE. ADR 0001 asks for a measurement ("a range is
+//! widened by a measurement, never by an edit"); the build can only ask for a
+//! fixture. It cannot tell a session captured from that version from a copy
+//! of another fixture with the version string edited — and today four Claude
+//! Code cases are exactly that (`VERSION_EDITED_COPIES`). Such a case shows
+//! the gate and the reader accept that version's string, nothing about that
+//! version's format; the measurement is the `measured` text in the table, and
+//! it is checked in review, not here.
 //!
 //! WHAT EVERY CASE IS HELD TO. The WHOLE context the reader rebuilds —
 //! role, kind, tool and text of every entry, in order — plus the title, the
@@ -80,7 +89,8 @@ enum Shape {
     LegacyRollout,
     /// `history_mode: paginated`, every line numbered.
     PaginatedRollout,
-    /// Ordinals out of file order, one repeated, one missing, one line without.
+    /// Ordinals out of file order, one repeated, one missing, one line
+    /// without, one at `u64::MAX`.
     OrdinalDisorder,
     /// A Codex `compacted` line.
     CompactedRollout,
@@ -315,6 +325,23 @@ fn paginated_compacted(r: &Read) {
     assert_eq!(f.rollout.history_mode, HistoryMode::Paginated);
     assert_eq!(f.rollout.last_ordinal, Some(5));
     assert_eq!(f.rollout.ordinal_gaps, 0);
+}
+
+/// Hostile, not measured: an ordinal of `u64::MAX` after ordinal 1. The
+/// reader's gap count was `hi - lo + 1`, which panicked in a debug build
+/// ("attempt to add with overflow") and, with no release profile set, wrapped
+/// to 0 in a release one — reporting a file with 2^64-3 missing lines as
+/// whole. The gaps are exact; the last ordinal is the one in the file, and
+/// that there is no ordinal after it is the appender's to refuse.
+fn an_ordinal_at_the_top_of_the_range(r: &Read) {
+    let f = r.codex();
+    assert_eq!(f.rollout.history_mode, HistoryMode::Paginated);
+    assert_eq!(f.rollout.last_ordinal, Some(u64::MAX));
+    assert_eq!(
+        f.rollout.ordinal_gaps,
+        u64::MAX - 2,
+        "2^64 ordinals from 0 to u64::MAX, three of them written"
+    );
 }
 
 fn the_log_trails_the_database(r: &Read) {
@@ -711,6 +738,25 @@ const CASES: &[Case] = &[
         warnings: &[],
         db_after_log: None,
         check: paginated_compacted,
+    },
+    Case {
+        agent: CX,
+        version: "0.47.0",
+        id: "0199e000-0047-7000-8000-000000000003",
+        shapes: &[PaginatedRollout, OrdinalDisorder],
+        title: "Check the lockfile",
+        // The absurd ordinal is still the last line, so it is still read: a
+        // number no writer could reach says the file was edited, not that its
+        // text is wrong.
+        entries: Some(&[
+            (User, Text, None, "Check the lockfile"),
+            (Assistant, Text, None, "The lockfile is current."),
+        ]),
+        plan: &[],
+        skipped: 0,
+        warnings: &[],
+        db_after_log: None,
+        check: an_ordinal_at_the_top_of_the_range,
     },
     // ----------------------------------------------------- Antigravity --
     Case {
@@ -1146,7 +1192,9 @@ fn every_measured_version_has_a_corpus_that_reads_cleanly() {
             let Some(case) = clean else {
                 panic!(
                     "{} {:?} {end} is in the version table with no Clean case in the corpus \
-                     ({}): a range is widened by a measurement, never by an edit",
+                     ({}): add a fixture for that version first. A fixture is what the build \
+                     can require; the measurement the range rests on is the table's `measured` \
+                     text, and a copy with the version edited does not supply it",
                     k.agent.display_name(),
                     k.flavor,
                     k.measured
@@ -1219,6 +1267,96 @@ fn every_file_records_the_version_of_its_directory() {
             assert!(seen > 0, "{}: no line records a version", case.id);
         }
     }
+    // ANTIGRAVITY'S VERSION IS THE DIRECTORY NAME ALONE. Nothing under brain/
+    // records one (the reader's own doc, written from the 12 IDE and 22 agy
+    // conversations of 9 Oct 2026; it returns `version: None`), so there is nothing in its files to
+    // hold against the directory — the version comes from where the case is
+    // filed, and the gate is handed the flavor and no version. If the reader
+    // ever finds one, this fails, and the loop above must learn where it is.
+    let gemini = Gemini::new("ag-version");
+    for case in CASES.iter().filter(|c| c.agent == AG) {
+        let r = read(case, &gemini).unwrap_or_else(|e| panic!("{}: {e}", case.id));
+        assert_eq!(
+            r.session().version,
+            None,
+            "{}: an Antigravity file now records a version, and nothing checks it \
+             against {}",
+            case.id,
+            case.version
+        );
+    }
+}
+
+/// The cases whose files are another case's files with only the version
+/// string and the session id changed. Each stands in for a version the corpus
+/// has no captured session of: it shows the gate and the reader accept that
+/// version's string, not that the version's format was looked at. Replacing
+/// one with an anonymised real session (README, "Adding a real session")
+/// takes it off this list; adding another copy puts it on.
+const VERSION_EDITED_COPIES: &[&str] = &[
+    "c0000220-0000-4000-8000-000000000001",
+    "c0000263-0000-4000-8000-000000000001",
+    "c0000285-0000-4000-8000-000000000001",
+    "c0000293-0000-4000-8000-000000000001",
+];
+
+/// A COPY IS NAMED AS ONE. The corpus guard above is satisfied by copying a
+/// fixture and editing one string — the adversarial review of 10 Oct 2026
+/// found three of the four measured-range ends were exactly that, with nothing
+/// saying so. This keeps the list above equal to what the files are, both
+/// ways: an undeclared copy fails, and so does a declared one that has become
+/// a real capture.
+#[test]
+fn version_edited_copies_are_declared_as_copies() {
+    let mut by_body: BTreeMap<(&str, String), Vec<&str>> = BTreeMap::new();
+    for case in CASES
+        .iter()
+        .filter(|c| c.agent != AG && c.entries.is_some())
+    {
+        let mut files: Vec<(String, String)> = Vec::new();
+        let mut stack = vec![version_dir(case.agent, case.version)];
+        while let Some(d) = stack.pop() {
+            for entry in std::fs::read_dir(&d).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                if !name.contains(case.id) {
+                    continue;
+                }
+                let neutral = |s: &str| {
+                    s.replace(case.version, "<version>")
+                        .replace(case.id, "<id>")
+                };
+                let text = std::fs::read_to_string(&path).unwrap();
+                files.push((neutral(&name), neutral(&text)));
+            }
+        }
+        assert!(!files.is_empty(), "{}: no file", case.id);
+        files.sort();
+        let body = files
+            .into_iter()
+            .map(|(n, t)| format!("{n}\n{t}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        by_body
+            .entry((case.agent.slug(), body))
+            .or_default()
+            .push(case.id);
+    }
+    let mut copies: Vec<&str> = by_body
+        .into_values()
+        .filter(|ids| ids.len() > 1)
+        .flatten()
+        .collect();
+    copies.sort_unstable();
+    assert_eq!(
+        copies, VERSION_EDITED_COPIES,
+        "the cases whose files differ only in version and id are not the ones \
+         VERSION_EDITED_COPIES declares"
+    );
 }
 
 /// ANONYMISED MEANS CHECKED, NOT PROMISED. A real session copied in for a new

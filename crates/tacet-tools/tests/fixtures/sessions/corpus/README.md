@@ -17,7 +17,14 @@ Every line is **synthetic**: written for the corpus in the measured *shape*
 (the field names, the line types, the order quirks the 9 Oct 2026 measurement
 counted), never copied out of a real session. The Claude Code versions are the
 two ends of the measured read range and the one version a write was measured
-on, plus one version outside the range that must read with a warning. The
+on, plus one version outside the range that must read with a warning — and
+those four are ONE file, copied with the version string and session id
+edited (`VERSION_EDITED_COPIES` in the test names them, and fails if that
+stops being true). They show the gate and the reader accept each version's
+string; they are not a capture of each version's format. The test can require
+a fixture for every end of a range, not a measurement; the measurement is the
+`measured` text in `version.rs`. Antigravity files record no version, so an
+Antigravity directory's version is its name alone. The
 Codex directories are named after the `cli_version` the fixtures carry; Codex
 was not installed where they were written, so they follow its source
 (openai/codex @ a06545b) and are not a measurement of those releases.
