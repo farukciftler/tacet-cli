@@ -237,6 +237,20 @@ const NAMED_NOT_RUN: &[(&str, &str)] = &[
     ("tacet-tools/src/sessions/model.rs", "Claude Code"),
     ("tacet-tools/src/sessions/model.rs", "Codex CLI"),
     ("tacet-tools/src/sessions/model.rs", "Antigravity"),
+    // The Antigravity reader (RG-14/15): the app's data directory under
+    // `~/.gemini/` is named `antigravity`, the same word as the IDE launcher;
+    // the reader lists it with `read_dir` and opens files in it through
+    // `sessions::secrets`, and spawns nothing. The other two literals are a
+    // test's expected root and the integration test's fixture directory.
+    ("tacet-tools/src/sessions/antigravity.rs", "antigravity"),
+    (
+        "tacet-tools/src/sessions/antigravity.rs",
+        "/home/u/.gemini/antigravity",
+    ),
+    (
+        "tacet-tools/tests/an_antigravity_session_is_read_from_its_log.rs",
+        "tests/fixtures/sessions/antigravity",
+    ),
     // The write gate's refusal text, and a version string `claude --version`
     // prints, fed to the parser in a test as a thing it must refuse.
     (

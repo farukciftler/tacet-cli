@@ -1,0 +1,2 @@
+{"step_index":0,"type":"USER_INPUT","source":"USER_EXPLICIT","status":"DONE","created_at":"2026-10-08T14:00:00Z","content":"Summarise the open pull requests"}
+{"step_index":1,"type":"PLANNER_RESPONSE","source":"MODEL","status":"RUNNING","created_at":"2026-10-08T14:00:05Z","content":"Looking at the list now."}
