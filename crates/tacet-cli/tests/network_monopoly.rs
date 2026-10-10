@@ -20,12 +20,19 @@
 //!    the manifests as TOML, and again from the dependency graph cargo itself
 //!    resolves (`cargo metadata`), so a client that arrives one crate removed
 //!    counts as much as one declared by name.
-//! 2. No crate reaches a socket some other way — no raw `std::net` in any `.rs`
-//!    file a crate holds, `build.rs` included, read by a lexer that knows what a
-//!    string literal and a comment are.
-//! 3. No crate spawns another agent's CLI (`claude -p`, `codex app-server`,
-//!    `agy -p`) without that path being an external tool behind the approval
-//!    gate — those programs ARE the network, one process away.
+//! 2. No crate reaches a socket some other way — no raw `std::net` in any file
+//!    a crate COMPILES (its whole directory, `build.rs`, and whatever `#[path]`,
+//!    `include!` and the manifest's target paths point rustc at), read by a
+//!    lexer that knows what a string literal and a comment are; and no program
+//!    whose job is the network (`docker`, `curl`, `ssh`, …) started outside the
+//!    two crates except by a row that says why — today one: the y/N-approved
+//!    local SearXNG setup in `tacet-cli/src/addon.rs`.
+//! 3. No crate — the two that own a socket included — names another agent's
+//!    CLI (`claude -p`, `codex app-server`, `agy -p`) as a program without that
+//!    path being an external tool behind the approval gate: those programs ARE
+//!    the network, one process away, and each call is a paid turn. A program
+//!    name built at run time is the one thing a source scan cannot read; every
+//!    file that spawns one is a reviewed row (`RUNTIME_SPAWN_SITES`).
 //!
 //! THE FIRST VERSION OF THIS FILE PARSED NOTHING, on the theory that a TOML
 //! parser to police a zero-dependency rule would be its own joke. The audit of
@@ -35,9 +42,12 @@
 //! and a `TcpStream` in `build.rs`. A guard that a rename defeats guards the
 //! spelling, not the property. The parser below is still hand-written — the
 //! rule it polices forbids the crate — but it is a parser: it knows tables,
-//! dotted keys, inline tables, quoted keys and every string form Cargo accepts.
-//! Each of the five bypasses has a self-test at the bottom of this file that
-//! feeds it in and expects red.
+//! dotted keys, inline tables, quoted keys and all four TOML string forms,
+//! escapes and line-ending backslashes included. Each of the five bypasses has
+//! a self-test at the bottom of this file that feeds it in and expects red —
+//! and so does each of the nine the review of 10 Oct 2026 then found in the
+//! rewrite (multi-line strings, `#[path]`, `include!`, a `Command` alias, `npx`
+//! and `sh -c` launchers, a spawn inside `tacet-mcp`).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -97,6 +107,121 @@ const AGENT_CLIS: &[&str] = &["claude", "codex", "agy", "antigravity", "gemini"]
 /// approval_gate` checks: the entry is the decision, the gate is what makes it
 /// safe.
 const AGENT_CLI_SPAWNERS: &[(&str, &str)] = &[];
+
+/// The npm packages the agent CLIs ship as. `npx @anthropic-ai/claude-code -p`
+/// runs `claude` without the word `claude` ever being a program name.
+const AGENT_CLI_PACKAGES: &[&str] = &[
+    "@anthropic-ai/claude-code",
+    "@openai/codex",
+    "@google/gemini-cli",
+];
+
+/// `(file suffix, exact literal)`: a literal whose first word is a watched
+/// program's name and which runs nothing — prose, or a source label such as
+/// the session readers' `"codex"`. The row is the reviewer's sentence that the
+/// literal never reaches a spawn; it covers that literal in that file and
+/// nothing else. Program names are matched without case (macOS's default file
+/// system runs `Docker` as `docker`), which is what puts prose here.
+const NAMED_NOT_RUN: &[(&str, &str)] = &[
+    // The routing eval's Turkish tool descriptions; tacet-eval spawns nothing.
+    (
+        "tacet-eval/src/routing.rs",
+        "Docker konteynerlerini listeler.",
+    ),
+    (
+        "tacet-eval/src/routing.rs",
+        "Docker konteynerini baslatir veya durdurur.",
+    ),
+    (
+        "tacet-eval/src/routing.rs",
+        "Docker compose yiginini yonetir.",
+    ),
+];
+
+/// Programs whose job IS the network. A program that merely CAN reach it with
+/// one subcommand among many local ones (`git fetch`, `cargo install`, `npm
+/// i`) is not here: listing it would make every `git rev-parse` a row, and the
+/// list would be read as noise. Those, and every user-allowlisted program, are
+/// what `shell` runs — itself an external tool.
+const NETWORK_PROGRAMS: &[&str] = &[
+    "docker",
+    "docker-compose",
+    "podman",
+    "curl",
+    "wget",
+    "ssh",
+    "scp",
+    "sftp",
+    "rsync",
+    "nc",
+    "ncat",
+    "netcat",
+    "socat",
+    "telnet",
+    "ftp",
+];
+
+/// `(file suffix, program, why it is safe there)`.
+const NETWORK_PROGRAM_SPAWNERS: &[(&str, &str, &str)] = &[
+    (
+        "tacet-cli/src/addon.rs",
+        "docker",
+        "`tacet addon` sets up a local SearXNG: it prints the image, files, command and \
+         bind address, then waits on `take_approval` (y/N) before `docker compose up -d` \
+         pulls anything; `docker --version` / `compose version` before that are local probes",
+    ),
+    (
+        "tacet-cli/src/addon.rs",
+        "docker-compose",
+        "the compose v1 fallback of the same approved setup",
+    ),
+];
+
+/// `(file suffix, where the program name comes from)`: the files that call
+/// `Command::new` with something other than a literal.
+const RUNTIME_SPAWN_SITES: &[(&str, &str)] = &[
+    (
+        "tacet-tools/src/shell.rs",
+        "a program the user allowlisted at addon install; `shell` is in EXTERNAL_TOOLS",
+    ),
+    (
+        "tacet-tools/src/db.rs",
+        "the sqlite3 binary `find_binary` resolved",
+    ),
+    ("tacet-tools/src/db_write.rs", "the same sqlite3 binary"),
+    (
+        "tacet-tools/src/git.rs",
+        "the git binary, three local-only subcommands",
+    ),
+    (
+        "tacet-tools/src/clipboard.rs",
+        "pbcopy/pbpaste, xclip and friends from a fixed backend table",
+    ),
+    (
+        "tacet-tools/src/run_code.rs",
+        "sandbox-exec or the interpreter, inside the network shield",
+    ),
+    (
+        "tacet-tools/src/time.rs",
+        "the fixed `offset_candidates` list",
+    ),
+    (
+        "tacet-cli/src/bench_cmd.rs",
+        "`shell_line`, called with literals the name scans read",
+    ),
+    (
+        "tacet-cli/src/update.rs",
+        "the tacet binary just downloaded, asked `--print-features`",
+    ),
+    (
+        THIS_FILE,
+        "`$CARGO`, for `cargo metadata --offline` in the graph check",
+    ),
+    (
+        "tacet-cli/src/addon.rs",
+        "the compose command `compose_command` built from the literals `docker`/`docker-compose`",
+    ),
+];
 
 fn workspace_root() -> PathBuf {
     // CARGO_MANIFEST_DIR is `<repo>/crates/tacet-cli`.
@@ -523,9 +648,23 @@ mod toml_lite {
             Ok(())
         }
 
+        /// A newline straight after an opening `"""` or `'''` is not content
+        /// (TOML 1.0, "Multi-line basic strings"). The first version kept it, so
+        /// `package = """\nureq"""` read as `"\nureq"`, matched no client, and
+        /// the audit's review of 10 Oct 2026 walked a rename past the manifest
+        /// check with it.
+        fn skip_opening_newline(&mut self) {
+            if self.at("\r\n") {
+                self.i += 2;
+            } else if self.peek() == Some('\n') {
+                self.i += 1;
+            }
+        }
+
         fn string(&mut self) -> Result<String, String> {
             if self.at("\"\"\"") {
                 self.i += 3;
+                self.skip_opening_newline();
                 let mut s = String::new();
                 loop {
                     if self.at("\"\"\"") {
@@ -541,9 +680,23 @@ mod toml_lite {
                         None => return self.err("unterminated multi-line string"),
                         Some('\\') => {
                             self.i += 1;
-                            if let Some(c) = self.peek() {
-                                s.push(c);
-                                self.i += 1;
+                            // A LINE-ENDING BACKSLASH: `\`, optional blanks, a
+                            // newline — then every blank and newline after it is
+                            // dropped. `"""ure\⏎   q"""` is `ureq`; checked
+                            // against real Cargo, whose `cargo metadata` on a
+                            // scratch crate written that way started locking
+                            // ureq's own dependencies.
+                            let mut j = self.i;
+                            while matches!(self.s.get(j), Some(' ' | '\t')) {
+                                j += 1;
+                            }
+                            if matches!(self.s.get(j), Some('\n' | '\r')) {
+                                self.i = j;
+                                while matches!(self.peek(), Some(' ' | '\t' | '\r' | '\n')) {
+                                    self.i += 1;
+                                }
+                            } else {
+                                self.escape(&mut s)?;
                             }
                         }
                         Some(c) => {
@@ -555,6 +708,7 @@ mod toml_lite {
             }
             if self.at("'''") {
                 self.i += 3;
+                self.skip_opening_newline();
                 let start = self.i;
                 while !self.at("'''") {
                     if self.peek().is_none() {
@@ -585,29 +739,7 @@ mod toml_lite {
                     }
                     Some('\\') => {
                         self.i += 1;
-                        let c = self.peek().ok_or("unterminated escape")?;
-                        self.i += 1;
-                        match c {
-                            'n' => s.push('\n'),
-                            't' => s.push('\t'),
-                            'r' => s.push('\r'),
-                            'b' => s.push('\u{8}'),
-                            'f' => s.push('\u{c}'),
-                            'u' | 'U' => {
-                                let n = if c == 'u' { 4 } else { 8 };
-                                let hex: String = self.s[self.i..(self.i + n).min(self.s.len())]
-                                    .iter()
-                                    .collect();
-                                self.i += n;
-                                let ch =
-                                    u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32);
-                                match ch {
-                                    Some(ch) => s.push(ch),
-                                    None => return self.err("bad unicode escape"),
-                                }
-                            }
-                            other => s.push(other),
-                        }
+                        self.escape(&mut s)?;
                     }
                     Some(c) => {
                         s.push(c);
@@ -615,6 +747,35 @@ mod toml_lite {
                     }
                 }
             }
+        }
+
+        /// The character after a `\`, decoded into `s`. ONE decoder for both
+        /// basic-string forms: the multi-line one used to copy the escape
+        /// letter through, so `"""ureq"""` read as `u0075req`.
+        fn escape(&mut self, s: &mut String) -> Result<(), String> {
+            let c = self.peek().ok_or("unterminated escape")?;
+            self.i += 1;
+            match c {
+                'n' => s.push('\n'),
+                't' => s.push('\t'),
+                'r' => s.push('\r'),
+                'b' => s.push('\u{8}'),
+                'f' => s.push('\u{c}'),
+                'u' | 'U' => {
+                    let n = if c == 'u' { 4 } else { 8 };
+                    let hex: String = self.s[self.i..(self.i + n).min(self.s.len())]
+                        .iter()
+                        .collect();
+                    self.i += n;
+                    let ch = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32);
+                    match ch {
+                        Some(ch) => s.push(ch),
+                        None => return self.err("bad unicode escape"),
+                    }
+                }
+                other => s.push(other),
+            }
+            Ok(())
         }
 
         fn literal_string(&mut self) -> Result<String, String> {
@@ -776,7 +937,9 @@ fn socket_offenders(crates: &Path) -> Vec<String> {
         if ALLOWED.contains(&name.as_str()) {
             continue;
         }
-        for file in scanned_files(&crates.join(&name), &manifest) {
+        let scan = crate_scan(&crates.join(&name), &manifest);
+        offenders.extend(scan.unfollowable);
+        for file in scan.files {
             let text = std::fs::read_to_string(&file).unwrap_or_default();
             for t in rust_lex::tokens(&text) {
                 if t.kind == rust_lex::Kind::Ident && CONNECTORS.contains(&t.text.as_str()) {
@@ -788,40 +951,219 @@ fn socket_offenders(crates: &Path) -> Vec<String> {
     offenders
 }
 
-/// The Rust files a crate holds: EVERY `.rs` below its directory, plus a build
-/// script the manifest points elsewhere.
+/// The files a crate COMPILES: every `.rs` below its directory, plus every file
+/// rustc is pointed at from there, wherever it lives and whatever it is called.
 ///
 /// THE SCOPE WAS `src` UNTIL THAT WASN'T ENOUGH TO SAY SO, then `src`, `tests`,
 /// `examples` and `benches` — and the audit of 9 Oct 2026 put a `TcpStream` in
 /// `build.rs`, which sits at the crate root, outside all four, and runs on
-/// every build of every user who compiles from source. A directory list is a
-/// list of the places someone remembered. The crate directory is the place.
-/// A non-compiled `.rs` fixture can only make this report MORE, which is the
-/// safe direction: a false alarm a human reads, never a socket waved through.
+/// every build of every user who compiles from source. So the scope became the
+/// crate directory — and the review of 10 Oct 2026 showed that was a list of
+/// places too: `#[path = "../../shared/net.rs"] mod net;` and
+/// `include!("net.inc")` both compiled a `TcpStream::connect` the scan never
+/// opened, the first from outside the crate, the second from a file that is not
+/// `.rs`. The crate is not a directory; it is what rustc reads. So this follows
+/// what rustc follows:
+///
+/// * the manifest's own roots — `[package] build`, and `path` under `[lib]`,
+///   `[[bin]]`, `[[test]]`, `[[example]]`, `[[bench]]`;
+/// * `mod name;` → `name.rs` / `name/mod.rs`, next to the file or under its
+///   stem, through any inline `mod a { … }` around it (only needed once a root
+///   lives outside the crate directory, where the directory walk cannot see);
+/// * `path = "…"` inside any attribute — `#[path]` and `#[cfg_attr(…, path)]`;
+///   a directory there (a `#[path]` on an inline module) is walked whole;
+/// * `include!("…")`, relative to the including file.
+///
+/// What it cannot follow is RED, not skipped (`unfollowable`): an `include!`
+/// whose argument is not one literal (`concat!(env!("OUT_DIR"), …)` — code a
+/// build script WROTE, which no source scan can read), and a `#[path]` that
+/// resolves to nothing. The tree has neither today. A non-compiled fixture can
+/// only make this report MORE, which is the safe direction: a false alarm a
+/// human reads, never a socket waved through.
 ///
 /// This is also why the agent-session module (RG-33, planned under
 /// `tacet-tools/src/sessions/`) needs no line here to be covered;
 /// `a_new_sessions_module_is_scanned_without_being_listed` holds that to it.
 fn scanned_files(crate_dir: &Path, manifest: &str) -> Vec<PathBuf> {
-    let mut files = rust_files(crate_dir);
-    // `[package] build = "tools/gen.rs"` — Cargo runs it, wherever it lives.
+    crate_scan(crate_dir, manifest).files
+}
+
+struct CrateScan {
+    files: Vec<PathBuf>,
+    /// `file:line: why` for each pointer to code the scan could not follow.
+    unfollowable: Vec<String>,
+}
+
+fn crate_scan(crate_dir: &Path, manifest: &str) -> CrateScan {
+    let mut queue: VecDeque<PathBuf> = rust_files(crate_dir).into();
     if let Ok(rows) = toml_lite::flatten(manifest) {
         for (path, value) in rows {
-            if let (["package", "build"], toml_lite::Value::Str(p)) = (
-                path.iter()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>()
-                    .as_slice(),
-                &value,
+            let toml_lite::Value::Str(target) = &value else {
+                continue;
+            };
+            let key: Vec<&str> = path.iter().map(String::as_str).collect();
+            if matches!(
+                key.as_slice(),
+                ["package", "build"] | ["lib" | "bin" | "test" | "example" | "bench", "path"]
             ) {
-                let script = crate_dir.join(p);
-                if !files.contains(&script) {
-                    files.push(script);
-                }
+                queue.push_back(crate_dir.join(target));
             }
         }
     }
-    files
+    let mut seen = BTreeSet::new();
+    let mut scan = CrateScan {
+        files: Vec::new(),
+        unfollowable: Vec::new(),
+    };
+    while let Some(file) = queue.pop_front() {
+        let file = normalized(&file);
+        if !seen.insert(file.clone()) {
+            continue;
+        }
+        let text = std::fs::read_to_string(&file).unwrap_or_default();
+        let (more, bad) = compiled_from(&file, &text);
+        queue.extend(more);
+        scan.unfollowable.extend(bad);
+        scan.files.push(file);
+    }
+    scan.files.sort();
+    scan
+}
+
+/// `a/b/../c` → `a/c`, without touching the disk: two spellings of one file
+/// must be scanned once, and a path that does not exist must still compare.
+fn normalized(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// The files `file` makes rustc read (existing ones only), and what it points
+/// at that cannot be followed. See `crate_scan` for the forms.
+fn compiled_from(file: &Path, text: &str) -> (Vec<PathBuf>, Vec<String>) {
+    use rust_lex::Kind;
+    let toks = rust_lex::tokens(text);
+    let dir = file.parent().unwrap_or(Path::new(""));
+    let stem = file.file_stem().map(PathBuf::from).unwrap_or_default();
+    let is = |i: usize, kind: Kind, text: &str| {
+        toks.get(i)
+            .is_some_and(|t| t.kind == kind && t.text == text)
+    };
+    let mut found = Vec::new();
+    let mut bad = Vec::new();
+    // Inline `mod a { … }` around the current token, with the brace depth each
+    // one closes at.
+    let mut inline: Vec<(String, usize)> = Vec::new();
+    let mut depth = 0usize;
+    // The bracket depth the open attribute (`#[…]`, `#![…]`) closes at.
+    let mut attribute: Option<usize> = None;
+    let mut brackets = 0usize;
+    let bases = |inline: &[(String, usize)]| -> Vec<PathBuf> {
+        let nested: PathBuf = inline.iter().map(|(n, _)| n.as_str()).collect();
+        vec![dir.join(&nested), dir.join(&stem).join(&nested)]
+    };
+    for (i, t) in toks.iter().enumerate() {
+        match (t.kind, t.text.as_str()) {
+            (Kind::Punct, "{") => depth += 1,
+            (Kind::Punct, "}") => {
+                if inline.last().is_some_and(|&(_, d)| d == depth) {
+                    inline.pop();
+                }
+                depth = depth.saturating_sub(1);
+            }
+            (Kind::Punct, "[") => {
+                brackets += 1;
+                let opens_attribute = i >= 1
+                    && (is(i - 1, Kind::Punct, "#")
+                        || (i >= 2 && is(i - 1, Kind::Punct, "!") && is(i - 2, Kind::Punct, "#")));
+                if opens_attribute && attribute.is_none() {
+                    attribute = Some(brackets);
+                }
+            }
+            (Kind::Punct, "]") => {
+                if attribute == Some(brackets) {
+                    attribute = None;
+                }
+                brackets = brackets.saturating_sub(1);
+            }
+            (Kind::Ident, "mod") => {
+                let Some(name) = toks.get(i + 1).filter(|n| n.kind == Kind::Ident) else {
+                    continue;
+                };
+                if is(i + 2, Kind::Punct, "{") {
+                    inline.push((name.text.clone(), depth + 1));
+                } else if is(i + 2, Kind::Punct, ";") {
+                    for base in bases(&inline) {
+                        for c in [
+                            normalized(&base.join(format!("{}.rs", name.text))),
+                            normalized(&base.join(&name.text).join("mod.rs")),
+                        ] {
+                            if c.is_file() {
+                                found.push(c);
+                            }
+                        }
+                    }
+                }
+            }
+            (Kind::Ident, "path") if attribute.is_some() && is(i + 1, Kind::Punct, "=") => {
+                let Some(target) = toks.get(i + 2).filter(|s| s.kind == Kind::Str) else {
+                    continue;
+                };
+                let mut resolved = false;
+                for base in bases(&inline) {
+                    // Lexically normalized: `src/a/../x` names a real file even
+                    // when no directory `a` exists for the OS to walk through.
+                    let c = normalized(&base.join(&target.text));
+                    if c.is_file() {
+                        found.push(c);
+                        resolved = true;
+                    } else if c.is_dir() {
+                        found.extend(rust_files(&c));
+                        resolved = true;
+                    }
+                }
+                if !resolved {
+                    bad.push(format!(
+                        "{}:{}: #[path = {:?}] resolves to no file this scan can read",
+                        file.display(),
+                        t.line,
+                        target.text
+                    ));
+                }
+            }
+            (Kind::Ident, "include") if is(i + 1, Kind::Punct, "!") => {
+                // `include!("x")` — the literal, then the closing delimiter.
+                let literal = toks.get(i + 3).filter(|s| s.kind == Kind::Str).filter(|_| {
+                    matches!(
+                        toks.get(i + 4).map(|c| c.text.as_str()),
+                        Some(")" | "]" | "}" | ",")
+                    )
+                });
+                match literal {
+                    Some(target) if dir.join(&target.text).is_file() => {
+                        found.push(dir.join(&target.text));
+                    }
+                    _ => bad.push(format!(
+                        "{}:{}: include! of code this scan cannot read",
+                        file.display(),
+                        t.line
+                    )),
+                }
+            }
+            _ => {}
+        }
+    }
+    (found, bad)
 }
 
 /// Every `.rs` file under `dir`, recursively, skipping a build directory. A
@@ -1042,13 +1384,30 @@ mod rust_lex {
 /// resume`, `codex app-server` or `agy -p` hands the conversation to a hosted
 /// model and costs a paid turn — measured at ~$0.2–0.6 a call in the R&D brief —
 /// so every such path is an external tool, off by default, behind the approval
-/// gate. This holds the code to that: a `Command::new("claude")` in a file not
-/// listed in `AGENT_CLI_SPAWNERS`, or listed under a tool that is not in
+/// gate. This holds the code to that: an agent CLI named as a program in a file
+/// not listed in `AGENT_CLI_SPAWNERS`, or listed under a tool that is not in
 /// tacet-cli's `EXTERNAL_TOOLS`, is red.
 ///
-/// It sees a LITERAL program name. A name assembled at run time passes, and
-/// that is the honest limit of a source scan; the review that adds the spawn is
-/// what this cannot replace.
+/// IT MATCHES THE NAME, NOT THE CALL. The first version looked for the tokens
+/// `Command::new("claude")`, and the review of 10 Oct 2026 walked three shapes
+/// past it, all with the name written out in full: `use std::process::Command
+/// as Cmd; Cmd::new("claude")`; a launcher — `Command::new("npx").args(
+/// ["@anthropic-ai/claude-code", "-p"])`, `Command::new("sh").args(["-c",
+/// "codex exec resume"])`; and any spawn at all inside `tacet-web` or
+/// `tacet-mcp`, which the scan skipped because they own a socket. Owning a
+/// socket is not consent to a paid turn (RG-34), so those two are scanned like
+/// every other crate. And any string literal in code that names an agent CLI IN
+/// PROGRAM POSITION — first word, first word after a shell separator, first
+/// word after a launcher such as `env`, `sh -c` or `npx` — or names its npm
+/// package anywhere, counts: aliases, wrappers and helper functions
+/// (`shell_line("claude", …)`) all have to write the name somewhere.
+///
+/// NAMES BUILT AT RUN TIME are the limit of a source scan, and are an accepted
+/// risk rather than an open item, because they are enumerated:
+/// `no_new_spawn_site_takes_its_program_from_a_variable` makes every
+/// `Command::new(<not a literal>)` a reviewed row with its reason. A name
+/// assembled with `concat!` in a new file is red there; in a listed file, it is
+/// what the review of that row has to catch.
 #[test]
 fn agent_clis_are_spawned_only_behind_the_approval_gate() {
     let main = std::fs::read_to_string(crates_dir().join("tacet-cli/src/main.rs"))
@@ -1058,7 +1417,8 @@ fn agent_clis_are_spawned_only_behind_the_approval_gate() {
         external.contains(&"web_search".to_string()),
         "EXTERNAL_TOOLS was not found in main.rs (read {external:?}); this check would be vacuous"
     );
-    let problems = agent_spawn_problems(&crates_dir(), AGENT_CLI_SPAWNERS, &external);
+    let problems =
+        agent_spawn_problems(&crates_dir(), AGENT_CLI_SPAWNERS, NAMED_NOT_RUN, &external);
     assert!(
         problems.is_empty(),
         "an agent CLI is spawned outside the approval gate:\n  {}",
@@ -1085,11 +1445,115 @@ fn external_tools(main_rs: &str) -> Vec<String> {
         .collect()
 }
 
-/// Every `Command::new("<agent cli>")` outside `ALLOWED` that is not covered
-/// by a `(file suffix, tool)` row in `spawners` whose tool is in `external`.
+/// This file names every program it looks for, in its lists and in the
+/// fixtures that prove the lists bite. It is the one file the name scans skip;
+/// it spawns nothing but `cargo metadata`.
+const THIS_FILE: &str = "tacet-cli/tests/network_monopoly.rs";
+
+/// Programs that only START another: the program that matters is the first
+/// word after them. `-c`, flags and `VAR=value` are skipped the same way.
+const LAUNCHERS: &[&str] = &[
+    "env",
+    "exec",
+    "command",
+    "nohup",
+    "sudo",
+    "doas",
+    "time",
+    "nice",
+    "timeout",
+    "stdbuf",
+    "xargs",
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "fish",
+    "npx",
+    "bunx",
+    "pnpx",
+    "npm",
+    "pnpm",
+    "yarn",
+    "dlx",
+    "cmd",
+    "cmd.exe",
+    "/c",
+    "powershell",
+    "pwsh",
+    "node",
+    "bun",
+    "deno",
+];
+
+/// The programs a literal names in program position — see
+/// `agent_clis_are_spawned_only_behind_the_approval_gate` for what that means.
+/// Lowercased file stems: `/opt/bin/Codex.exe` is `codex`, because macOS's
+/// default file system and Windows both run `Claude` as `claude`.
+fn programs_named(literal: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let separators = |c: char| {
+        matches!(
+            c,
+            ';' | '&' | '|' | '(' | ')' | '`' | '\n' | '$' | '{' | '}'
+        )
+    };
+    for segment in literal.split(separators) {
+        let program = segment
+            .split_whitespace()
+            .map(|w| w.trim_matches(|c| matches!(c, '"' | '\'' | '[' | ']' | ',')))
+            .find(|w| {
+                !w.is_empty()
+                    && !w.starts_with('-')
+                    && !w.contains('=')
+                    && !w
+                        .chars()
+                        .all(|c| c.is_ascii_digit() || c == '.' || c == 's')
+                    && !LAUNCHERS.contains(&w.to_lowercase().as_str())
+            });
+        if let Some(p) = program {
+            out.push(program_stem(p));
+        }
+    }
+    out
+}
+
+/// `/opt/bin/Codex.exe` → `codex`. Only an EXECUTABLE extension comes off:
+/// `CLAUDE.md` is a file this repository names in its messages, not a program,
+/// and the first version of this function stripped `.md` and read it as
+/// `claude` (tacet-cli/tests/readme_tool_list.rs).
+fn program_stem(word: &str) -> String {
+    let name = Path::new(word)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    for ext in [".exe", ".cmd", ".bat", ".ps1", ".js", ".mjs", ".cjs", ".sh"] {
+        if let Some(stem) = name.strip_suffix(ext) {
+            return stem.to_string();
+        }
+    }
+    name
+}
+
+/// A literal that runs an agent CLI: in program position, or as its package.
+fn names_agent_cli(literal: &str) -> Option<String> {
+    let lower = literal.to_lowercase();
+    if let Some(pkg) = AGENT_CLI_PACKAGES.iter().find(|p| lower.contains(*p)) {
+        return Some(pkg.to_string());
+    }
+    programs_named(literal)
+        .into_iter()
+        .find(|p| AGENT_CLIS.contains(&p.as_str()))
+}
+
+/// Every literal, in every crate — the two that own a socket included — that
+/// names an agent CLI and is not covered by a `(file suffix, tool)` row in
+/// `spawners` whose tool is in `external`, or by a `(file suffix, literal)` row
+/// in `named_not_run`.
 fn agent_spawn_problems(
     crates: &Path,
     spawners: &[(&str, &str)],
+    named_not_run: &[(&str, &str)],
     external: &[String],
 ) -> Vec<String> {
     let mut problems = Vec::new();
@@ -1100,48 +1564,161 @@ fn agent_spawn_problems(
             ));
         }
     }
-    for (name, manifest) in manifests_in(crates) {
-        if ALLOWED.contains(&name.as_str()) {
+    for (_, file, t) in literals_in_code(crates) {
+        let Some(program) = names_agent_cli(&t.text) else {
             continue;
+        };
+        let shown = file.to_string_lossy().replace('\\', "/");
+        let spawner = spawners.iter().any(|(suffix, _)| shown.ends_with(suffix));
+        let named = named_not_run
+            .iter()
+            .any(|(suffix, lit)| shown.ends_with(suffix) && *lit == t.text);
+        if !spawner && !named {
+            problems.push(format!(
+                "{}:{}: {:?} runs `{program}` and is not an external tool",
+                file.display(),
+                t.line,
+                t.text
+            ));
         }
+    }
+    problems
+}
+
+/// Every string-literal token in the code of every crate under `crates`, with
+/// the file it is in. `THIS_FILE` is left out (see there).
+fn literals_in_code(crates: &Path) -> Vec<(String, PathBuf, rust_lex::Token)> {
+    let mut out = Vec::new();
+    for (name, manifest) in manifests_in(crates) {
         for file in scanned_files(&crates.join(&name), &manifest) {
+            if file.ends_with(THIS_FILE) {
+                continue;
+            }
             let text = std::fs::read_to_string(&file).unwrap_or_default();
-            let toks = rust_lex::tokens(&text);
-            for w in toks.windows(6) {
-                let program = match w {
-                    [a, b, c, d, e, f]
-                        if a.text == "Command"
-                            && b.text == ":"
-                            && c.text == ":"
-                            && d.text == "new"
-                            && e.text == "("
-                            && f.kind == rust_lex::Kind::Str =>
-                    {
-                        f
-                    }
-                    _ => continue,
-                };
-                let base = Path::new(&program.text)
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_lowercase())
-                    .unwrap_or_default();
-                if !AGENT_CLIS.contains(&base.as_str()) {
-                    continue;
-                }
-                let shown = file.to_string_lossy().replace('\\', "/");
-                let listed = spawners.iter().any(|(suffix, _)| shown.ends_with(suffix));
-                if !listed {
-                    problems.push(format!(
-                        "{}:{}: spawns `{}` and is not an external tool",
-                        file.display(),
-                        program.line,
-                        program.text
-                    ));
+            for t in rust_lex::tokens(&text) {
+                if t.kind == rust_lex::Kind::Str {
+                    out.push((name.clone(), file.clone(), t));
                 }
             }
         }
     }
+    out
+}
+
+/// T4 NAMED SUBPROCESSES AS THE OTHER WAY OUT, and the first rewrite of this
+/// file guarded only the agent CLIs. A crate that cannot open a socket can
+/// still start a program whose whole job is to open one. Outside the two crates
+/// that own the network, naming one of `NETWORK_PROGRAMS` in program position is
+/// red unless a `NETWORK_PROGRAM_SPAWNERS` row says which file, which program,
+/// and why it is safe there.
+#[test]
+fn no_crate_outside_the_monopoly_spawns_a_network_program() {
+    let problems = network_program_problems(&crates_dir(), NETWORK_PROGRAM_SPAWNERS, NAMED_NOT_RUN);
+    assert!(
+        problems.is_empty(),
+        "a crate outside the network monopoly starts a program that is the network:\n  {}",
+        problems.join("\n  ")
+    );
+}
+
+fn network_program_problems(
+    crates: &Path,
+    rows: &[(&str, &str, &str)],
+    named_not_run: &[(&str, &str)],
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    for (krate, file, t) in literals_in_code(crates) {
+        // A crate that owns a socket gains nothing by starting `curl`. The
+        // agent CLIs are NOT exempt there (see above): those cost money.
+        if ALLOWED.contains(&krate.as_str()) {
+            continue;
+        }
+        let shown = file.to_string_lossy().replace('\\', "/");
+        for program in programs_named(&t.text) {
+            if !NETWORK_PROGRAMS.contains(&program.as_str()) {
+                continue;
+            }
+            let allowed = rows
+                .iter()
+                .any(|(suffix, p, _)| shown.ends_with(suffix) && *p == program)
+                || named_not_run
+                    .iter()
+                    .any(|(suffix, lit)| shown.ends_with(suffix) && *lit == t.text);
+            if !allowed {
+                problems.push(format!(
+                    "{}:{}: {:?} runs `{program}`",
+                    file.display(),
+                    t.line,
+                    t.text
+                ));
+            }
+        }
+    }
     problems
+}
+
+/// THE SPAWNS NO NAME SCAN CAN SEE: `Command::new(x)` where `x` is not a
+/// literal. Each file that does it is a row here with where its program comes
+/// from, so a NEW one is red until somebody writes that sentence. An alias
+/// (`use std::process::Command as Cmd`) is followed.
+#[test]
+fn no_new_spawn_site_takes_its_program_from_a_variable() {
+    let unlisted = runtime_spawn_sites(&crates_dir(), RUNTIME_SPAWN_SITES);
+    assert!(
+        unlisted.is_empty(),
+        "a new process is started from a program name built at run time; add the \
+         file to RUNTIME_SPAWN_SITES with where the name comes from:\n  {}",
+        unlisted.join("\n  ")
+    );
+    // A row for a file that no longer spawns is a row nobody will re-read.
+    let every = runtime_spawn_sites(&crates_dir(), &[]);
+    for (suffix, _) in RUNTIME_SPAWN_SITES {
+        assert!(
+            every.iter().any(|s| s
+                .split(':')
+                .next()
+                .is_some_and(|f| f.replace('\\', "/").ends_with(suffix))),
+            "RUNTIME_SPAWN_SITES lists {suffix}, which no longer spawns from a variable"
+        );
+    }
+}
+
+/// `file:line` of every `Command::new` (or alias) not called with a literal,
+/// in a file not covered by `listed`.
+fn runtime_spawn_sites(crates: &Path, listed: &[(&str, &str)]) -> Vec<String> {
+    use rust_lex::Kind;
+    let mut out = Vec::new();
+    for (name, manifest) in manifests_in(crates) {
+        for file in scanned_files(&crates.join(&name), &manifest) {
+            let shown = file.to_string_lossy().replace('\\', "/");
+            if listed.iter().any(|(suffix, _)| shown.ends_with(suffix)) {
+                continue;
+            }
+            let text = std::fs::read_to_string(&file).unwrap_or_default();
+            let toks = rust_lex::tokens(&text);
+            let mut names = BTreeSet::from(["Command".to_string()]);
+            for w in toks.windows(3) {
+                if w[0].text == "Command" && w[1].text == "as" && w[2].kind == Kind::Ident {
+                    names.insert(w[2].text.clone());
+                }
+            }
+            for w in toks.windows(6) {
+                let call = w[0].kind == Kind::Ident
+                    && names.contains(&w[0].text)
+                    && w[1].text == ":"
+                    && w[2].text == ":"
+                    && w[3].text == "new";
+                if !call {
+                    continue;
+                }
+                let literal = w[4].text == "(" && w[5].kind == Kind::Str;
+                if !literal {
+                    out.push(format!("{}:{}", file.display(), w[0].line));
+                }
+            }
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1206,6 +1783,31 @@ fn every_toml_spelling_of_a_dependency_is_a_dependency() {
             "[dependencies]\nx = { version = \"1\", features = [\n  \"a\", # c\n  \"b\",\n] }\nsocket2 = \"0.5\"\n"
         ),
         ["socket2"]
+    );
+    // The review of 10 Oct 2026: four multi-line strings that each read as
+    // something other than `ureq` and walked the rename past this check.
+    // The newline after the opening delimiter is not content, in both forms.
+    assert_eq!(
+        declarers_of("[dependencies]\nnet = { package = \"\"\"\nureq\"\"\" }\n"),
+        ["ureq"]
+    );
+    assert_eq!(
+        declarers_of("[dependencies.net]\npackage = '''\nureq'''\n"),
+        ["ureq"]
+    );
+    // A line-ending backslash swallows the newline and the indent after it.
+    assert_eq!(
+        declarers_of("[dependencies.net]\npackage = \"\"\"ure\\\n   q\"\"\"\n"),
+        ["ureq"]
+    );
+    assert_eq!(
+        declarers_of("[dependencies.net]\npackage = \"\"\"ure\\  \r\n\r\n  q\"\"\"\n"),
+        ["ureq"]
+    );
+    // Escapes decode in a multi-line basic string as in a one-line one.
+    assert_eq!(
+        declarers_of("[dependencies.net]\npackage = \"\"\"\\u0075req\"\"\"\n"),
+        ["ureq"]
     );
 }
 
@@ -1402,7 +2004,7 @@ fn an_agent_cli_outside_the_gate_is_red() {
     );
     let external = vec!["web_search".to_string(), "session_resume".to_string()];
 
-    let unlisted = agent_spawn_problems(&ws.0, &[], &external);
+    let unlisted = agent_spawn_problems(&ws.0, &[], &[], &external);
     assert_eq!(unlisted.len(), 2, "{unlisted:#?}");
     assert!(unlisted.iter().any(|p| p.contains("claude.rs:1")));
     assert!(unlisted.iter().any(|p| p.contains("codex.rs:2")));
@@ -1411,16 +2013,219 @@ fn an_agent_cli_outside_the_gate_is_red() {
         ("sessions/claude.rs", "session_resume"),
         ("sessions/codex.rs", "session_resume"),
     ];
-    assert!(agent_spawn_problems(&ws.0, &listed, &external).is_empty());
+    assert!(agent_spawn_problems(&ws.0, &listed, &[], &external).is_empty());
 
     // Listed, but under a tool the approval gate does not know.
     let ungated = [
         ("sessions/claude.rs", "session_resume"),
         ("sessions/codex.rs", "codex_bridge"),
     ];
-    let problems = agent_spawn_problems(&ws.0, &ungated, &external);
+    let problems = agent_spawn_problems(&ws.0, &ungated, &[], &external);
     assert_eq!(problems.len(), 1, "{problems:#?}");
     assert!(problems[0].contains("codex_bridge"));
+}
+
+#[test]
+fn an_agent_cli_is_red_however_it_is_spelled_and_wherever_it_is() {
+    // The review of 10 Oct 2026: each of these got past the `Command::new(`
+    // shape with the program name written out in full.
+    let ws = FakeWorkspace::new("agentbypass");
+    ws.write(
+        "tacet-tools/Cargo.toml",
+        "[package]\nname = \"tacet-tools\"\n",
+    );
+    ws.write(
+        "tacet-tools/src/alias.rs",
+        "use std::process::Command as Cmd;\nfn f() { Cmd::new(\"claude\").arg(\"-p\"); }\n",
+    );
+    ws.write(
+        "tacet-tools/src/npx.rs",
+        "fn f() { Command::new(\"npx\")\n    .args([\"-y\", \"@anthropic-ai/claude-code\", \"-p\"]); }\n",
+    );
+    ws.write(
+        "tacet-tools/src/sh.rs",
+        "fn f() { Command::new(\"sh\").args([\"-c\", \"cd /w && codex exec resume\"]); }\n",
+    );
+    ws.write(
+        "tacet-tools/src/helper.rs",
+        "fn f() { shell_line(\"/usr/local/bin/Gemini\", &[]); env(\"env FOO=1 agy -p\"); }\n",
+    );
+    // The crates that own a socket are scanned too: a socket is not consent
+    // to a paid turn (RG-34).
+    ws.write("tacet-mcp/Cargo.toml", "[package]\nname = \"tacet-mcp\"\n");
+    ws.write(
+        "tacet-mcp/src/lib.rs",
+        "fn f() { std::process::Command::new(\"codex\").arg(\"app-server\"); }\n",
+    );
+    // Text that names one and runs nothing stays green.
+    ws.write(
+        "tacet-tools/src/prose.rs",
+        "const A: &str = \"read the claude session\";\nconst B: &str = \".claude/projects\";\nconst C: &str = \"claude-code\";\nconst D: &str = \"CLAUDE.md: update the README\";\n",
+    );
+    let external = vec!["web_search".to_string()];
+    let problems = agent_spawn_problems(&ws.0, &[], &[], &external);
+    let hit = |file: &str, line: usize| {
+        problems
+            .iter()
+            .any(|p| p.replace('\\', "/").contains(&format!("{file}:{line}:")))
+    };
+    assert!(hit("src/alias.rs", 2), "{problems:#?}");
+    assert!(hit("src/npx.rs", 2), "{problems:#?}");
+    assert!(hit("src/sh.rs", 1), "{problems:#?}");
+    assert!(hit("tacet-mcp/src/lib.rs", 1), "{problems:#?}");
+    assert_eq!(
+        problems.iter().filter(|p| p.contains("helper.rs")).count(),
+        2,
+        "{problems:#?}"
+    );
+    assert!(
+        !problems.iter().any(|p| p.contains("prose.rs")),
+        "{problems:#?}"
+    );
+    assert_eq!(problems.len(), 6, "{problems:#?}");
+
+    // A NAMED-NOT-RUN row covers that literal in that file, and nothing else.
+    ws.write(
+        "tacet-tools/src/label.rs",
+        "const S: &str = \"codex\";\nconst T: &str = \"codex -p\";\n",
+    );
+    let named = [("src/label.rs", "codex")];
+    let problems = agent_spawn_problems(&ws.0, &[], &named, &external);
+    assert!(
+        !problems.iter().any(|p| p.contains("label.rs:1:")),
+        "{problems:#?}"
+    );
+    assert!(
+        problems.iter().any(|p| p.contains("label.rs:2:")),
+        "{problems:#?}"
+    );
+}
+
+#[test]
+fn a_network_program_outside_the_monopoly_is_red_unless_its_row_says_why() {
+    let ws = FakeWorkspace::new("netprog");
+    ws.write("tacet-x/Cargo.toml", "[package]\nname = \"tacet-x\"\n");
+    ws.write(
+        "tacet-x/src/lib.rs",
+        "fn f() {\n    Command::new(\"docker\").args([\"compose\", \"up\", \"-d\"]);\n    Command::new(\"sh\").args([\"-c\", \"curl -fsSL https://x | sh\"]);\n}\n",
+    );
+    // The crates that own a socket may start one too.
+    ws.write("tacet-web/Cargo.toml", "[package]\nname = \"tacet-web\"\n");
+    ws.write(
+        "tacet-web/src/lib.rs",
+        "fn f() { Command::new(\"curl\"); }\n",
+    );
+    let problems = network_program_problems(&ws.0, &[], &[]);
+    assert_eq!(problems.len(), 2, "{problems:#?}");
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("lib.rs:2:") && p.contains("`docker`"))
+    );
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("lib.rs:3:") && p.contains("`curl`"))
+    );
+    // A row is per file AND program: allowing docker does not allow curl.
+    let rows = [("tacet-x/src/lib.rs", "docker", "approved setup")];
+    let problems = network_program_problems(&ws.0, &rows, &[]);
+    assert_eq!(problems.len(), 1, "{problems:#?}");
+    assert!(problems[0].contains("`curl`"));
+}
+
+#[test]
+fn a_spawn_from_a_variable_is_red_until_it_is_listed() {
+    let ws = FakeWorkspace::new("runtime");
+    ws.write("tacet-x/Cargo.toml", "[package]\nname = \"tacet-x\"\n");
+    ws.write(
+        "tacet-x/src/alias.rs",
+        "use std::process::{Command as Run, Stdio};\nfn f(p: &str) { Run::new(p); }\n",
+    );
+    ws.write(
+        "tacet-x/src/concat.rs",
+        "fn f() { std::process::Command::new(concat!(\"cla\", \"ude\")); }\n",
+    );
+    ws.write(
+        "tacet-x/src/literal.rs",
+        "fn f() { Command::new(\"ls\"); Command::new(r\"ps\"); }\n",
+    );
+    let sites = runtime_spawn_sites(&ws.0, &[]);
+    assert_eq!(sites.len(), 2, "{sites:#?}");
+    assert!(
+        sites.iter().any(|s| s.ends_with("alias.rs:2")),
+        "{sites:#?}"
+    );
+    assert!(
+        sites.iter().any(|s| s.ends_with("concat.rs:1")),
+        "{sites:#?}"
+    );
+    let listed = [("src/alias.rs", "a test"), ("src/concat.rs", "a test")];
+    assert!(runtime_spawn_sites(&ws.0, &listed).is_empty());
+}
+
+#[test]
+fn code_compiled_from_outside_the_crate_or_from_a_non_rs_file_is_scanned() {
+    // The review of 10 Oct 2026, verbatim: both returned no offender.
+    let ws = FakeWorkspace::new("pathinclude");
+    ws.write("tacet-x/Cargo.toml", "[package]\nname = \"tacet-x\"\n");
+    ws.write(
+        "tacet-x/src/lib.rs",
+        "#[path = \"../../shared/net.rs\"]\nmod net;\ninclude!(\"net.inc\");\n",
+    );
+    ws.write("shared/net.rs", SOCKET_RS);
+    ws.write("tacet-x/src/net.inc", SOCKET_RS);
+    // `cfg_attr` carries a path just as well.
+    ws.write("tacet-y/Cargo.toml", "[package]\nname = \"tacet-y\"\n");
+    ws.write(
+        "tacet-y/src/lib.rs",
+        "#[cfg_attr(unix, path = \"../../shared_y/u.rs\")]\nmod u;\n",
+    );
+    ws.write("shared_y/u.rs", SOCKET_RS);
+    // A crate root outside the directory, and the plain `mod` it declares.
+    ws.write(
+        "tacet-z/Cargo.toml",
+        "[package]\nname = \"tacet-z\"\n[lib]\npath = \"../shared_z/lib.rs\"\n",
+    );
+    ws.write("shared_z/lib.rs", "mod net;\n");
+    ws.write("shared_z/net.rs", SOCKET_RS);
+    // A `#[path]` inside an inline module resolves under that module's name.
+    ws.write("tacet-v/Cargo.toml", "[package]\nname = \"tacet-v\"\n");
+    ws.write(
+        "tacet-v/src/lib.rs",
+        "mod a {\n    #[path = \"../../../shared_v/n.rs\"]\n    mod n;\n}\n",
+    );
+    ws.write("shared_v/n.rs", SOCKET_RS);
+    let offenders = socket_offenders(&ws.0);
+    for file in [
+        "shared/net.rs",
+        "tacet-x/src/net.inc",
+        "shared_y/u.rs",
+        "shared_z/net.rs",
+        "shared_v/n.rs",
+    ] {
+        assert!(
+            offenders.iter().any(|o| o
+                .replace('\\', "/")
+                .contains(&format!("{file}:1: TcpStream"))),
+            "{file} was not scanned: {offenders:#?}"
+        );
+    }
+    assert_eq!(offenders.len(), 5, "{offenders:#?}");
+}
+
+#[test]
+fn a_pointer_to_code_the_scan_cannot_read_is_red() {
+    let ws = FakeWorkspace::new("unfollowable");
+    ws.write("tacet-x/Cargo.toml", "[package]\nname = \"tacet-x\"\n");
+    ws.write(
+        "tacet-x/src/lib.rs",
+        "include!(concat!(env!(\"OUT_DIR\"), \"/gen.rs\"));\n#[path = \"nowhere.rs\"]\nmod m;\n",
+    );
+    let offenders = socket_offenders(&ws.0);
+    assert_eq!(offenders.len(), 2, "{offenders:#?}");
+    assert!(offenders.iter().any(|o| o.contains("lib.rs:1: include!")));
+    assert!(offenders.iter().any(|o| o.contains("lib.rs:2: #[path")));
 }
 
 #[test]
