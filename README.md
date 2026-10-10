@@ -76,7 +76,9 @@ a file name forging a system turn, a remembered note closing its own
 `</memory>` fence, and `<think>` passing as a live token. `cargo test -p
 tacet-engine --test a_tool_result_cannot_forge_a_turn --test
 a_file_name_cannot_forge_a_turn --test every_marker_from_outside_is_text` is
-the demonstration, in all three templates.
+the demonstration, in all three templates; for the imported summary it is `cargo
+test -p tacet-tools --lib
+sessions_tool::tests::a_transcript_cannot_forge_the_summary_or_close_the_seed`.
 
 **And then the whole prompt was printed and read, which found three more.** The
 `<memory>` block was **fenced twice** — a nested tag with a stray closing one in
@@ -710,8 +712,11 @@ The whole rental cost about twenty cents; `cargo build --features cuda` took
 2m 47s on fourteen cores.
 
 That file is the second 3090 run of the day. The first, which this paragraph
-quoted as 7m 34s and 6.3×, was replaced in the same directory by a run one
-commit later (the batch that made `CutOff` zero), and the paragraph was not
+quoted as 7m 34s and 6.3×, was replaced in the same directory by a later run the
+same evening, at 4af5484 (the batch that made `CutOff` zero) — seven commits after
+the first run's 511f8db, and two of the six between them change what the model is
+shown and how its answer is scored (384d41e, the skill guides; 1f41fc2, four
+places the harness threw a right answer away). The paragraph was not
 re-derived with it until 10 Oct 2026. Both figures now come from `wall_ms` in
 the two committed files, and `the_readme_quotes_the_baselines` fails the build
 if this page and those files disagree again.
@@ -754,13 +759,17 @@ comparator cannot say, so this page does: the committed Metal file predates the
 batch the committed 3090 file was run after, so the pair above is two builds as
 well as two machines — and still not distinguishable from no change.
 
-**Six minutes on a GPU — and the model matters more than the card.** The same
-184 cases on a rented RTX 3090: 6.4 minutes with these weights, and 53.7 minutes
-with `Qwen/Qwen3-4B`, the *other* model of the same name and size, which spends a
-median of 237 generated tokens per turn against 19. Before reaching for a bigger
-card, check which file is loaded. And when you do reach for one: running several
-copies of the suite side by side wins nothing, because one stream already
-saturates the card (measured — two streams give ~28 tok/s each where one gives
+**Seven minutes on a GPU — and the model matters more than the card.** The same
+184 cases on a rented RTX 3090: 7m 07s with these weights in the committed run
+above, and 53.7 minutes with `Qwen/Qwen3-4B`, the *other* model of the same name
+and size, which spends a median of 237 generated tokens per turn against 19. That
+second figure, and the token medians, were recorded by hand on a rented 3090 in
+the first days of September 2026 (first quoted on 5 Sep), against the code of that
+date, with no report kept — like the model table below, they cannot be re-derived
+from this repository. Two builds apart, a gap of more than seven to one is still
+the point. Before reaching for a bigger card, check which file is loaded. And
+when you do reach for one: running several copies of the suite side by side
+wins nothing, because one stream already saturates the card (measured — two streams give ~28 tok/s each where one gives
 ~55). Batching several sequences into a single forward pass is the thing that
 scales, and `cargo run --release --example batch_decode --features candle,cuda`
 measures where it stops: 124 tok/s at batch 1, 504 at batch 32 on that card.
@@ -907,7 +916,7 @@ the gate below; what survived is what a fresh install can actually be asked.
 expectation that could be scored there. The report is at
 [`baselines/tr-corpus-qwen3-4b-cuda.json`](crates/tacet-eval/baselines/tr-corpus-qwen3-4b-cuda.json).
 
-| axis | Turkish corpus | the 184-case suite, same model, same card |
+| axis | Turkish corpus | the 184-case suite, same model, same kind of card (RTX 3090) |
 |---|---|---|
 | tool selection | **105/145** · 72.4% | 125/160 · 78.1% — **125/140 · 89.3%** skipping what the box lacked |
 | irrelevance | **95/97** · 97.9% | 24/24 · 100% |
@@ -1502,7 +1511,7 @@ of distributional distortion it is not — the +20.5 points of *started* calls a
 |---|---|
 | macOS (arm64) | **Verified.** Full suite runs here: build, clippy `-D warnings`, tests, eval. |
 | Linux (arm64) | **Published, not yet run on a board.** Release binaries are built natively on an ARM runner and `tacet update` has always known this triple — the release simply did not carry it until v0.1.27, so a Raspberry Pi could download nothing and was told the platform was unpublished. A guard now fails the build if the updater asks for a target the release workflow does not build. What is still unmeasured is everything after the download: nobody has run the shell, the sandbox or a model on ARM64 Linux. This is the platform the work in [esp32/](esp32/) is heading towards, so it will be measured rather than assumed. |
-| Linux | **The sandbox is measured, and on a default install it is OFF.** Measured on a stock Ubuntu 24.04 (4 Sep 2026), not only in CI: as an ordinary user `bwrap --unshare-net` fails with `loopback: Failed RTM_NEWADDR: Operation not permitted`, because the distro ships `kernel.apparmor_restrict_unprivileged_userns=1`. So `run_code` and `write_code` are **absent from the catalog** — the honest-refusal path, working as designed, but it is the DEFAULT on the most common Linux rather than an edge case. The shell says so on startup — the line that reports `run_code` as off now names the sysctl and the one-line remedy, rather than leaving "no sandbox" as the whole explanation. As **root** on the same machine the shield verifies and both tools appear, which is why testing with sudo hides the problem. What the shield itself does is measured: with the restriction lifted, `the_network_is_really_cut`, `the_sandbox_cannot_be_escaped` and the timeout kill all pass against a real `bwrap` 0.9.0 — **1069 tests, 0 failures** (33 binaries, 4 Sep 2026) — the record of a sandbox measurement on that machine on that date, not the current size of the suite, which is 1886 tests in 99 test binaries (doc-tests included; 10 more ignored) on macOS as of 10 Oct 2026, re-counted from `cargo test --workspace` on an Apple M4 Pro (it was 1241 in 64 on 7 Sep 2026). Run under `TACET_SANDBOX_MUST_RUN=1`, the flag that makes the 24 tests that used to skip execute or fail the build (22 at that measurement; `nothing_survives_the_call` and `a_loose_socket_in_tmp_is_shadowed_under_bwrap` have joined them since, and the count is asserted against this page by `the_skip_count_the_documents_quote_is_the_count_in_the_source`). Still unmeasured: nobody has held a conversation with the interactive shell on Linux. |
+| Linux | **The sandbox is measured, and on a default install it is OFF.** Measured on a stock Ubuntu 24.04 (4 Sep 2026), not only in CI: as an ordinary user `bwrap --unshare-net` fails with `loopback: Failed RTM_NEWADDR: Operation not permitted`, because the distro ships `kernel.apparmor_restrict_unprivileged_userns=1`. So `run_code` and `write_code` are **absent from the catalog** — the honest-refusal path, working as designed, but it is the DEFAULT on the most common Linux rather than an edge case. The shell says so on startup — the line that reports `run_code` as off now names the sysctl and the one-line remedy, rather than leaving "no sandbox" as the whole explanation. As **root** on the same machine the shield verifies and both tools appear, which is why testing with sudo hides the problem. What the shield itself does is measured: with the restriction lifted, `the_network_is_really_cut`, `the_sandbox_cannot_be_escaped` and the timeout kill all pass against a real `bwrap` 0.9.0 — **1069 tests, 0 failures** (33 binaries, 4 Sep 2026) — the record of a sandbox measurement on that machine on that date, not the current size of the suite, which is 1888 tests in 99 test binaries (doc-tests included; 10 more ignored) on macOS as of 10 Oct 2026, re-counted from `cargo test --workspace` on an Apple M4 Pro (it was 1241 in 64 on 7 Sep 2026). Run under `TACET_SANDBOX_MUST_RUN=1`, the flag that makes the 24 tests that used to skip execute or fail the build (22 at that measurement; `nothing_survives_the_call` and `a_loose_socket_in_tmp_is_shadowed_under_bwrap` have joined them since, and the count is asserted against this page by `the_skip_count_the_documents_quote_is_the_count_in_the_source`). Still unmeasured: nobody has held a conversation with the interactive shell on Linux. |
 | Windows | **Measured for the first time, on a real machine.** Windows Server 2019 (Kamatera, 4 Sep 2026), Rust 1.98.1: the workspace builds and **1037 tests pass, 0 failures** (31 binaries; the suite has grown to 99 binaries since, and that machine has not been re-run). Two things that CI cannot see, because GitHub's runner is not a user's machine: (1) a clean Windows has no MSVC linker, so `cargo build` stops at ``error: linker `link.exe` not found`` until ~2 GB of Visual Studio Build Tools is installed — see CONTRIBUTING; (2) a Windows build prints a `dead_code` warning for `O_NOFOLLOW`, which no job fails on because `clippy -D warnings` runs only on ubuntu. That warning is real: the symlink second belt is Unix-only. The FIRST belt was measured there and holds — `create_new` on an existing symlink gives `os error 80` and leaves the target untouched. Still unmeasured: the interactive shell, and `0600` stamping is deliberately not applied here (`set_permissions` only flips a read-only flag, which would give the appearance of protection without the substance). |
 
 Where a guarantee holds on one platform and not another, the code says so at the point where it matters. `0600` permission stamping, for example, is deliberately not applied on Windows — there `set_permissions` only flips a read-only flag, which would produce the *appearance* of protection without the substance.

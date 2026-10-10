@@ -5,7 +5,7 @@
 //! report in `crates/tacet-eval/baselines/` was replaced or added, and the
 //! prose that quoted it was not re-derived.
 //!
-//! * `qwen3-4b-cuda-3090.json` was replaced by a run one commit later; the page
+//! * `qwen3-4b-cuda-3090.json` was replaced by a run seven commits later; the page
 //!   kept the old run's 7m 34s and 6.3× while the file said 426,988 ms — 7m 07s,
 //!   6.7× (D1). The comparator block under it was the old pair's too.
 //! * "`baselines/` holds two files and neither is a 3090 run" — it held seven,
@@ -210,6 +210,57 @@ fn the_3090_wall_time_is_the_committed_reports() {
     );
 }
 
+/// D1 (review): a 3090 wall time anywhere on the page is either a committed
+/// file's, or says that no report was kept.
+///
+/// The first fix corrected the sentence that cites the 3090 report and left the
+/// paragraph under it saying "6.4 minutes with these weights" — the hand-taken
+/// model-table figure, unqualified, one paragraph from the committed 7m 07s.
+/// Pinning the one sentence left every other 3090 sentence free to drift, so
+/// this scans every paragraph that names the card. A figure the Metal report
+/// holds is allowed (the speed-up sentence sets the two side by side); any
+/// other "N.N min" must sit in a paragraph that says it has no report.
+#[test]
+fn every_3090_wall_time_is_a_committed_file_or_says_it_is_not() {
+    let page = readme();
+    let cuda_ms = wall_ms(&report("qwen3-4b-cuda-3090.json"));
+    let metal = format!(
+        "{:.1}",
+        wall_ms(&report("qwen3-4b-both.json")) as f64 / 60_000.0
+    );
+    require(
+        &page,
+        &format!("{} with these weights", minutes_seconds(cuda_ms)),
+        "D1: the GPU paragraph quotes the committed 3090 run for these weights",
+    );
+
+    let mut scanned = 0;
+    for paragraph in page.split("\n\n").map(folded) {
+        if !paragraph.contains("3090") {
+            continue;
+        }
+        let words: Vec<&str> = paragraph.split(' ').collect();
+        for pair in words.windows(2) {
+            let figure = pair[0].trim_start_matches(|c: char| !c.is_ascii_digit());
+            let is_minutes = pair[1].starts_with("min");
+            if !is_minutes || !figure.contains('.') || figure.parse::<f64>().is_err() {
+                continue;
+            }
+            scanned += 1;
+            assert!(
+                figure == metal || paragraph.contains("no report kept"),
+                "D1: README quotes a 3090-paragraph wall time of {figure} min that no \
+                 committed report holds, and the paragraph does not say \"no report \
+                 kept\": {paragraph}"
+            );
+        }
+    }
+    assert!(
+        scanned >= 2,
+        "only {scanned} minute figures were found in 3090 paragraphs — the scan stopped matching"
+    );
+}
+
 /// D2: the page's count of the directory is the directory, and the 3090 run's
 /// whole-case count is the one the "after" paragraph sets against 155.
 #[test]
@@ -281,11 +332,12 @@ fn tool_axis_skipping_missing(v: &Value) -> ((usize, usize), usize) {
     ((passed, total), skipped)
 }
 
-/// D3: the corpus is compared with the suite on THE SAME CARD, both ways of
-/// counting a missing tool are shown, and the gap is the difference of the two
-/// files' rates.
+/// D3: the corpus is compared with the suite on the same KIND of card, both
+/// ways of counting a missing tool are shown, and the gap is the difference of
+/// the two files' rates. "Same card" in the header read as one physical card,
+/// which the paragraph under the table says neither file can show.
 #[test]
-fn the_turkish_corpus_is_compared_on_the_same_card() {
+fn the_turkish_corpus_is_compared_on_the_same_kind_of_card() {
     let page = readme();
     let corpus = report("tr-corpus-qwen3-4b-cuda.json");
     let suite = report("qwen3-4b-cuda-3090.json");
@@ -307,6 +359,15 @@ fn the_turkish_corpus_is_compared_on_the_same_card() {
     assert!(
         skipped > 0,
         "the 3090 box lacked tools; the scan found none"
+    );
+
+    let header = page
+        .lines()
+        .find(|l| l.starts_with("| axis | Turkish corpus |"))
+        .expect("the corpus table has its header row");
+    assert!(
+        header.contains("same kind of card (RTX 3090)") && !header.contains("same card"),
+        "D3: the header must not claim one physical card: {header}"
     );
 
     let rows = [
@@ -459,6 +520,65 @@ fn the_two_3090_runs_are_dated_by_their_files_and_not_called_one_box() {
              tools — the page must say the two runs differ there: {beside}"
         );
     }
+}
+
+/// D1 (review): the distance between the two 3090 runs is the history's, not a
+/// phrase. The page said the replacement came "one commit later"; it came seven
+/// commits later, and two of the six between them change what is scored — the
+/// difference the paragraph goes on to stress. The commits are named on the
+/// page, so the count is read back from git. A tarball without history cannot
+/// count them and says so instead of passing quietly; the names are checked
+/// either way.
+#[test]
+fn the_replaced_3090_run_is_as_many_commits_back_as_the_page_says() {
+    const FIRST: &str = "511f8db";
+    const REPLACEMENT: &str = "4af5484";
+    let page = readme();
+    let paragraph = page
+        .split("\n\n")
+        .map(folded)
+        .find(|p| p.starts_with("That file is the second 3090 run of the day."))
+        .expect("the page has the paragraph on the replaced 3090 run");
+    assert!(
+        !paragraph.contains("one commit later"),
+        "D1: the replacement was not one commit later: {paragraph}"
+    );
+    for sha in [FIRST, REPLACEMENT] {
+        assert!(
+            paragraph.contains(sha),
+            "D1: the paragraph must name {sha}: {paragraph}"
+        );
+    }
+
+    let counted = Command::new("git")
+        .args(["rev-list", "--count", &format!("{FIRST}..{REPLACEMENT}")])
+        .current_dir(repo_root())
+        .output();
+    let n: usize = match counted {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse()
+            .expect("git rev-list --count prints a number"),
+        _ => {
+            eprintln!("no git history here: the commit count on the page was NOT checked");
+            return;
+        }
+    };
+    const WORDS: [&str; 11] = [
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+    ];
+    let word = WORDS
+        .get(n)
+        .unwrap_or_else(|| panic!("{n} commits; give the page a numeral for it"));
+    assert!(
+        paragraph.contains(&format!("{word} commits after the first run's {FIRST}")),
+        "D1: git counts {n} commits from {FIRST} to {REPLACEMENT}, and the page \
+         does not say \"{word} commits after the first run's {FIRST}\": {paragraph}"
+    );
+    assert!(
+        n >= 1 && paragraph.contains(&format!("two of the {} between them", WORDS[n - 1])),
+        "D1: the page counts the commits BETWEEN the runs wrongly: {paragraph}"
+    );
 }
 
 /// The comparator block under the 3090 paragraph is what `eval --compare`
