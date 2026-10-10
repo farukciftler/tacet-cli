@@ -4,9 +4,11 @@
 //! ` /think` or ` /no_think` — to every user turn on a ChatML engine. The rule
 //! was a private function in `tacet-cli`'s `main.rs`, the eval could not reach
 //! it, and so it sent the bare message. Hybrid Qwen3 builds were measured in
-//! their default thinking mode, which no user of this program is ever given;
-//! the cost of that mode is on record in `tool_selection.rs` as a median of 237
-//! tokens per turn against 19.
+//! their default thinking mode, which a user gets on every turn only with `thinking = on`.
+//! The 237-against-19 token medians in `tool_selection.rs` are two different
+//! models, not the cost of the mode, which nobody has measured; the README's
+//! caveat for those rows is pinned by `tacet-cli`'s
+//! `the_hybrid_rows_say_how_they_were_asked`.
 //!
 //! The rule now lives in `tacet_engine::thinking_switch`, and this pins that the
 //! eval uses it — on the question, and in the history the next step replays.
@@ -109,6 +111,46 @@ fn the_next_step_replays_the_switched_question() {
         second.contains("What is 2 plus 2? /no_think"),
         "the first step's question is in the history without its switch:\n{second}"
     );
+}
+
+/// The `tacet eval` runner, which a ChatML engine reaches through
+/// `SingleEngine`: hands out a `ChatMlFake` over the case's own script and keeps
+/// it, so the prompts can be read afterwards.
+struct ChatMlSelector(std::sync::Mutex<Option<Arc<FakeEngine>>>);
+
+impl tacet_eval::EngineSelector for ChatMlSelector {
+    fn engine_for(&self, case: &tacet_eval::EvalCase) -> Arc<dyn EngineProvider> {
+        let fake = Arc::new(FakeEngine::script(case.script.clone()).with_default("Okay."));
+        *self.0.lock().expect("one test thread") = Some(fake.clone());
+        Arc::new(ChatMlFake(fake))
+    }
+    fn name(&self) -> &str {
+        "fake-chatml"
+    }
+}
+
+fn runner_prompts(case: &tacet_eval::EvalCase) -> Vec<String> {
+    let selector = ChatMlSelector(std::sync::Mutex::new(None));
+    let _ = tacet_eval::run_case(case, &selector);
+    let fake = selector.0.lock().expect("one test thread").take();
+    fake.expect("the runner asked for an engine").seen_prompts()
+}
+
+/// AUDIT M23 HAD A SECOND LOOP. The selection loop above was fixed and
+/// `runner.rs` — the `tacet eval` cases — still sent `case.input` bare, on the
+/// first pass and in the history every later pass replays.
+#[test]
+fn the_eval_runner_asks_a_chatml_model_with_the_switch() {
+    let case = tacet_eval::EvalCase::new("switch", "What time is it now?")
+        .script(&[r#"time({"kind":"all"})"#, "It is noon."]);
+    let prompts = runner_prompts(&case);
+    assert!(prompts.len() >= 2, "a call, then an answer: {prompts:?}");
+    for (pass, prompt) in prompts.iter().enumerate() {
+        assert!(
+            prompt.contains("What time is it now? /no_think"),
+            "pass {pass} of the runner asks without the shell's switch:\n{prompt}"
+        );
+    }
 }
 
 /// THE TWO FOLDS MUST AGREE. `thinking_switch::fold` is a copy of

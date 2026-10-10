@@ -789,7 +789,11 @@ and size, which spends a median of 237 generated tokens per turn against 19. Tha
 second figure, and the token medians, were recorded by hand on a rented 3090 in
 the first days of September 2026 (first quoted on 5 Sep), against the code of that
 date, with no report kept — like the model table below, they cannot be re-derived
-from this repository. Two builds apart, a gap of more than seven to one is still
+from this repository. That run also sent the hybrid model no soft switch — the
+eval did not append one until audit M23 — so it is `Qwen/Qwen3-4B` in its
+default thinking mode, not under the `/no_think` the shell puts on most turns,
+and the gap a user of the shell would see between the two files has not been
+measured. Two builds apart, a gap of more than seven to one is still
 the point. Before reaching for a bigger card, check which file is loaded. And
 when you do reach for one: running several copies of the suite side by side
 wins nothing, because one stream already saturates the card (measured — two streams give ~28 tok/s each where one gives
@@ -1085,6 +1089,19 @@ which is a later run of the same weights on the same kind of card (125/160,
 models are compared on one build. Until the table was split by a stray blank
 line (fixed 10 Oct 2026) GitHub rendered the last three rows as loose text.
 
+**Qwen3-8B and Qwen3-0.6B were measured in a mode the shell does not give you by
+default.** Both are hybrid builds: a turn with no soft switch on it runs in
+their default thinking mode, and when these rows were taken the eval sent no
+switch at all. The shell puts one on every ChatML turn, and under the default
+`thinking = auto` that is `/no_think` on 180 of the suite's 190 turns and
+`/think` on 10 (audit M23; the eval now appends the same switch, from
+`tacet_engine::thinking_switch`). So those two rows are the hybrid models
+thinking on every turn — the nearest a user comes to that is `thinking = on` —
+and not what a default install gets from the same weights. How far their
+scores and wall clocks would move under the shell's switch has not been
+measured, for the reason above. Qwen3-4B-Instruct-2507 has no thinking mode
+for the switch to turn off.
+
 **Read the score with its floor in mind, and the floor is not 40.** A model that
 never calls anything passes every irrelevance case, which is 0.40 of the weight —
 that much was already on this page. What it left out is that the same silence
@@ -1106,11 +1123,14 @@ is, which is more than the gap between two of them.
 **The 8B is worse than the 4B, and the axis it loses on is the safety one.**
 Twenty of twenty-four on the irrelevance gate means four messages that must not
 reach a tool did. Bigger did not mean better here, and it cost eight times the
-wall clock.
+wall clock — in the thinking mode it was measured in, not under the
+`/no_think` the shell sends on most turns; how much of the gap is the 8B and
+how much is the mode is not measured.
 
 **gemma-3-12b is absent because it does not terminate.** On the same card and the
 same suite it emitted a median of **2048 tokens per turn** — exactly the
-constrained ceiling — against Qwen3-8B's 280, with three of five sampled turns
+constrained ceiling — against Qwen3-8B's 280 (itself taken with no soft switch,
+in its default thinking mode), with three of five sampled turns
 stopping on `Length` rather than on a finished call. At 18 tok/s against the 8B's
 47 that is 124 seconds per case, and a full run is six hours. The verbosity is
 the finding; the score was not worth the rent.
@@ -1144,6 +1164,15 @@ having one.
 | Qwen3-4B | 76.9% → **97.4%** | 86.7% → **100.0%** | 66.7% → **97.4%** |
 | Qwen3-0.6B | 20.5% → 23.1% | 100.0% → 100.0% | 7.7% → 10.3% |
 | FunctionGemma-270M | 0% → 0% | — | 0% → 0% |
+
+**The 0.6B row was asked without the soft switch.** `bench gap` sent the bare
+message until audit M23 (it now appends what the shell would under
+`thinking = auto`), and Qwen3-0.6B is a hybrid build, so that row is the model
+in its default thinking mode, not under the `/no_think` a default install sends
+on most turns; what it does under the switch has not been measured. The 4B row
+is less certain: `tacet models download qwen3-4b` was moved from the hybrid
+build to the 2507 instruct one, which has no thinking mode to switch, during
+the same rental, and which file that run loaded is not on record.
 
 **`valid if started` reaching exactly 100% is the front-page claim, measured.**
 Unconstrained, the 4B writes a malformed call roughly one time in seven; with the
