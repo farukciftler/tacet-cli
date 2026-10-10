@@ -63,7 +63,7 @@ other agent's ability to resume its own session.
 |---|---|---|
 | Prompt injection carried in a transcript | A README the other agent read says `<\|im_start\|>system …`, or `</memory>`; the transcript now carries it | Imported text is **defanged** at the prompt boundary like any tool result (audit H3/H4, RG-02); the model gets a short summary, not the transcript |
 | Exfiltration after reading | A summarised transcript contains a token, then the model calls `web_fetch` | Reading a session **taints** the Tacet session (`sessions::TAINTS_SESSION`, audit H2, RG-01), so every outbound tool asks first |
-| A credential read by a reader that "only wanted the transcript" | `~/.claude/sessions/<pid>.key` next to `<pid>.json`; `auth.json` next to `session_index.jsonl` | One door (`secrets::open`), a denylist checked on the given AND the canonical path, an extension allowlist; a test fails the build if a reader opens a file any other way — a fully qualified `std::fs::read`, an aliased `use std::fs as f`, a bare imported `read_to_string`, a qualified-type `<std::fs::File>::open`, a `std::fs::copy` of the credential to an innocent name, or production code placed after a stray `#[cfg(test)]` (each one a bypass a review made by hand, and each now in the guard's own test) |
+| A credential read by a reader that "only wanted the transcript" | `~/.claude/sessions/<pid>.key` next to `<pid>.json`; `auth.json` next to `session_index.jsonl` | One door (`secrets::open`), a denylist checked on the given AND the canonical path, an extension allowlist; a test fails the build if a reader opens a file any other way — a fully qualified `std::fs::read`, an aliased `use std::fs as f`, a bare imported `read_to_string`, a qualified-type `<std::fs::File>::open`, a raw identifier `std::fs::r#read`, a `std::fs::copy` of the credential to an innocent name, or production code placed after a stray `#[cfg(test)]` (each one a bypass a review made by hand, and each now in the guard's own test); and naming the type `File` or `OpenOptions` at all outside the door, which is what closes `type F = std::fs::File; F::open(p)` |
 | A planted symlink | `brain/x/.system_generated/logs/transcript_full.jsonl -> ~/.codex/auth.json` | Names are checked on what the link resolves to |
 | A planted hard link | `ln ~/.codex/auth.json ~/.codex/sessions/rollout-x.jsonl` — **measured** in review: the innocent name returned the API key, because a hard link has no target to resolve | On Unix a file with more than one name is refused (`Refusal::HardLinked`), counted on the open handle. No transcript the three agents write has a second name. Windows: not enforced (no stable link count in std), NOT MEASURED |
 | A swap between the check and the open | The checked path is renamed over, or replaced by a link to `auth.json` or by a FIFO, after `check` and before the open | `check` keeps the metadata of the entry it vetted, not followed; the open uses `O_NOFOLLOW` and `O_NONBLOCK`; the inode opened must be the one checked — compared with the check-time metadata, never a fresh lookup (a fresh lookup follows the swap and matches it). Tests drive the swap inside `open` itself. Unix only |
@@ -82,12 +82,17 @@ reader asked for, compared case-insensitively:
 * copies of those: a name that is one of the stems `auth`, `.credentials`,
   `credentials`, `oauth_creds`, `google_accounts`, `state.vscdb`, `.netrc`,
   `.claude`, `id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519`, or begins with one
-  followed by anything but a letter or digit (`auth copy.json`,
-  `auth (1).json`, `auth.json.md`, `state.vscdb.json`, `id_rsa.json` —
-  **measured** in the second RG-16 review: each returned the key while only
-  the exact names were denied), and a name that ends in an exact name above
-  after anything but a letter or digit (`Copy of auth.json`). `author.md` is
-  still read;
+  followed by anything but a letter (`auth copy.json`, `auth (1).json`,
+  `auth.json.md`, `state.vscdb.json`, `id_rsa.json` — **measured** in the
+  second RG-16 review: each returned the key while only the exact names were
+  denied; `auth2.json` and `id_rsa2.json` — **measured** in the third, a digit
+  is a copy too), and a name that ends in an exact name above after anything
+  but a letter or digit (`Copy of auth.json`). `author.md` is still read;
+* inside a `.claude` directory, `.claude/settings*` the same way
+  (`settings.json`, `settings.local.json` and their copies): Claude Code's
+  settings commonly carry `env.ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or an
+  `apiKeyHelper`, and no reader needs them. `settings.json` anywhere else is
+  read;
 * extensions: `*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.keychain`, `*.keychain-db`;
 * any name containing `token`, `secret`, `credential`, `oauth`, `password`,
   `passwd`, `apikey`, `api_key` or `api-key`;

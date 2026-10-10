@@ -223,6 +223,18 @@ const AUTO_EXECUTED_STEMS: &[(&str, &str)] = &[
     ("gatsby-node", "gatsby"),
     ("gatsby-browser", "gatsby"),
     ("gatsby-ssr", "gatsby"),
+    // The review of 10 Oct 2026, read from each tool's documentation (none of
+    // them is installed here): `conan install .` executes conanfile.py the way
+    // `pip install .` executes setup.py; the Serverless Framework loads
+    // serverless.js on `sls deploy`; every `truffle` command loads
+    // truffle-config.js (truffle.js before v5); IPython and Jupyter load their
+    // `*_config.py` from the working folder.
+    ("conanfile", "conan"),
+    ("serverless", "the Serverless Framework"),
+    ("truffle-config", "truffle"),
+    ("truffle", "truffle"),
+    ("ipython_config", "ipython"),
+    ("ipython_kernel_config", "ipython"),
     ("makefile", "make"),
     ("gnumakefile", "make"),
     ("envrc", "direnv"),
@@ -259,6 +271,14 @@ fn auto_executed_name(stem: &str, extension: &str) -> Option<String> {
             "'{stem}' is a file name that {runner} runs automatically"
         ));
     }
+    // Jupyter's config files are a family: jupyter_config, jupyter_server_config,
+    // jupyter_notebook_config, jupyter_lab_config, and whatever the next
+    // application under the `jupyter` command is called.
+    if lower.starts_with("jupyter") && lower.ends_with("_config") {
+        return Some(format!(
+            "'{stem}' is a file name that jupyter loads automatically"
+        ));
+    }
     if extension == "py"
         && PYTHON_STDLIB
             .split_ascii_whitespace()
@@ -270,6 +290,50 @@ fn auto_executed_name(stem: &str, extension: &str) -> Option<String> {
         ));
     }
     None
+}
+
+/// Why `stem` must not be delivered as `.py` because `python` — the
+/// interpreter the user's own scripts in that folder run under — can import an
+/// INSTALLED package of that name, which the delivered file would shadow.
+///
+/// THE STANDARD LIBRARY WAS NOT THE WHOLE CLASS (review of 10 Oct 2026):
+/// `requests.py`, `numpy.py`, `pandas.py` shadow a third-party package by the
+/// same `sys.path` rule `PYTHON_STDLIB` measured for `json.py`, and no snapshot
+/// can list what this user has installed. So the interpreter is asked:
+/// `importlib.util.find_spec(name)` finds without importing, and `-I` keeps
+/// the current directory and the user's environment variables out of
+/// `sys.path`, so the answer is about installed packages only. The name is an
+/// argument, never code. Only a printed marker counts — an interpreter that
+/// prints nothing (or is a stand-in, as in the tests) refuses nothing, and the
+/// standard-library snapshot still holds.
+fn installed_module_shadowed(python: &Path, stem: &str) -> Option<String> {
+    let identifier = stem
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !identifier {
+        return None;
+    }
+    let out = std::process::Command::new(python)
+        .args([
+            "-I",
+            "-c",
+            "import importlib.util, sys\n\
+             print('TACET_IMPORTABLE' if importlib.util.find_spec(sys.argv[1]) else 'TACET_ABSENT')",
+            stem,
+        ])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    (String::from_utf8_lossy(&out.stdout).trim() == "TACET_IMPORTABLE").then(|| {
+        format!(
+            "'{stem}' is the name of a python package installed for {}: every python script \
+             in the folder that runs `import {stem}` imports and runs this file instead",
+            python.display()
+        )
+    })
 }
 
 /// The top-level names of python's standard library, which a `<name>.py` in
@@ -546,8 +610,13 @@ impl Tool for WriteCodeTool {
                         .map(|s| join_lines(s))
                         .unwrap_or_default();
                     let language = args.get("language").and_then(|v| v.as_str());
-                    let extension = self.resolve_interpreter(name, language, &code).extension;
-                    auto_executed_name(&safe_stem(name), extension)
+                    let interpreter = self.resolve_interpreter(name, language, &code);
+                    let stem = safe_stem(name);
+                    auto_executed_name(&stem, interpreter.extension).or_else(|| {
+                        (interpreter.extension == "py")
+                            .then(|| installed_module_shadowed(&interpreter.path, &stem))
+                            .flatten()
+                    })
                 }
             {
                 return ToolOutcome::new(
@@ -1023,6 +1092,17 @@ mod tests {
             "Gruntfile",
             "gatsby-config",
             "Makefile",
+            // conan, serverless, truffle, ipython, jupyter (review of 10 Oct 2026).
+            "conanfile",
+            "conanfile.py",
+            "serverless",
+            "serverless.js",
+            "truffle-config",
+            "truffle",
+            "ipython_config",
+            "jupyter_config",
+            "jupyter_server_config",
+            "jupyter_notebook_config.py",
             ".envrc",
             "package",
             "pyproject",
@@ -1097,6 +1177,9 @@ mod tests {
             "json_report",
             "my_random",
             "typing_speed",
+            "jupyter_notes",
+            "truffles",
+            "my_serverless_notes",
         ] {
             assert_eq!(
                 auto_executed_name(&safe_stem(name), "py"),
@@ -1111,6 +1194,70 @@ mod tests {
                 auto_executed_name(&safe_stem(name), "js"),
                 None,
                 "{name:?}.js shadows no python module"
+            );
+        }
+    }
+
+    /// THIRD-PARTY PACKAGES ARE SHADOWED THE SAME WAY (audit M3, review of 10
+    /// Oct 2026). A stand-in interpreter answers for `requests` and not for
+    /// anything else, which tests the plumbing; a real python on this machine,
+    /// when there is one, answers for the stdlib's `json` and not for a name
+    /// nothing installs, which tests the question asked.
+    #[cfg(unix)]
+    #[test]
+    fn an_installed_package_name_is_not_delivered_as_py() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("tacet-findspec-{}", crate::run_code::nonce()));
+        std::fs::create_dir_all(&dir).expect("fixture");
+        let fake = dir.join("python3");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\nif [ \"$4\" = requests ]; then echo TACET_IMPORTABLE; else echo TACET_ABSENT; fi\n",
+        )
+        .expect("fixture");
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let refused = installed_module_shadowed(&fake, "requests");
+        let kept = installed_module_shadowed(&fake, "prime_numbers");
+        // A name python cannot import is never asked about.
+        let dashed = installed_module_shadowed(&fake, "my-requests");
+        // An interpreter that prints nothing refuses nothing.
+        let silent = installed_module_shadowed(Path::new("/usr/bin/true"), "requests");
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            refused.as_deref().is_some_and(|w| w.contains("installed")),
+            "{refused:?}"
+        );
+        assert_eq!(kept, None);
+        assert_eq!(dashed, None);
+        assert_eq!(silent, None);
+
+        // Only an interpreter that RUNS: macOS's /usr/bin/python3 is a stub
+        // until the command-line tools are installed.
+        let runs = |p: &Path| {
+            std::process::Command::new(p)
+                .args(["-I", "-c", "print('TACET_RUNS')"])
+                .stdin(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .output()
+                .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "TACET_RUNS")
+        };
+        if let Some(python) = [
+            "/usr/bin/python3",
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3",
+        ]
+        .iter()
+        .map(Path::new)
+        .find(|p| p.exists() && runs(p))
+        {
+            assert!(
+                installed_module_shadowed(python, "json").is_some(),
+                "{} could not find `json`: the question is not being asked",
+                python.display()
+            );
+            assert_eq!(
+                installed_module_shadowed(python, "zz_tacet_no_such_module_q"),
+                None
             );
         }
     }

@@ -88,7 +88,11 @@ constants it did not import, `cargo test --workspace` was green, and the failure
 arrived hours later from the nightly job — the only place it ran then. It is now
 the `candle-compiles` job in `ci.yml` too, so a pull request finds out before it
 merges; running it locally finds out before you push. `--no-run` is enough — the
-cost is a compile, not the tests.
+cost is a compile, not the tests. The nightly job also RUNS the candle-gated tests
+that need no weights: every test in `candle_engine` and the fixture half of
+`tests/a_marker_is_not_text.rs`. To run the same check locally:
+`cargo test -p tacet-engine --features candle --lib -- candle_engine::` and
+`cargo test -p tacet-engine --features candle --test a_marker_is_not_text`.
 
 ### The measurements, and which one to reach for
 

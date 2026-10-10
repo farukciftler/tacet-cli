@@ -369,13 +369,14 @@ mod tests {
         assert_eq!(cases_needed_observed(6, 0, 50), Some(50));
     }
 
-    /// The README quotes two `--compare` outputs; these are their resolution
-    /// lines as the command prints them now, so the page can be re-derived
-    /// rather than remembered. 0 fixed / 3 broke / 184 printed 368 under the
-    /// one-way formula; 8 fixed / 5 broke / 115 printed 230, which ignored the
-    /// five broken cases entirely.
+    /// The numbers of the two `--compare` outputs the README quotes. 0 fixed /
+    /// 3 broke / 184 printed 368 under the one-way formula; 8 fixed / 5 broke /
+    /// 115 printed 230, which ignored the five broken cases entirely. Whether
+    /// the PAGE says so is checked where the sentence is printed:
+    /// `eval_cmd::tests::the_resolution_lines_the_readme_quotes_are_what_compare_prints`
+    /// in tacet-cli, which reads the README.
     #[test]
-    fn the_resolution_lines_the_readme_quotes() {
+    fn the_resolution_numbers_of_the_two_readme_blocks() {
         assert_eq!(cases_needed_observed(0, 3, 184), Some(338));
         assert_eq!(cases_needed_observed(8, 5, 115), Some(712));
     }

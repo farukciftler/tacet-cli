@@ -16,7 +16,7 @@ Tacet.
 > put that in a spreadsheet called countdown
 
 [create_document] countdown.xlsx · written
-Done — countdown.xlsx, one row, with a live =DATEDIF() formula.
+Done — countdown.xlsx, one row, with a live =SUM() under Days left.
 ```
 
 ---
@@ -44,11 +44,11 @@ not](#where-this-is-not-novel) says which is which, with citations.
 
 The four claims below are the ones this project would defend in that room.
 
-**A call that has started cannot be finished invalidly.** Once the model emits `calculate(`, a pushdown automaton masks the logits at every step. Malformed JSON, a field that isn't in the schema, an out-of-range number, a missing required key — none of them can be *generated*. Not validated after the fact: unrepresentable. Sampling runs after masking, so no sampling strategy can escape it.
+**A call that has started cannot be finished invalidly.** Once the model emits `calculate(`, a pushdown automaton masks the logits at every step. Malformed JSON, a field that isn't in the schema, an out-of-range number, a number the tool layer cannot read back as the type it asked for (`-0` in an integer, a value past u64), an enum value or key whose JSON spelling the grammar got wrong, a missing required key — none of them can be *generated*. Not validated after the fact: unrepresentable. Sampling runs after masking, so no sampling strategy can escape it.
 
 The sentence used to read "invalid tool calls are impossible", and measuring it showed that was wider than the truth: **the grammar arms after `name(`, so it says nothing about a call that never starts that way.** Running a real model over 115 cases, seven of the twenty-two failures were the right tool with the right arguments written in a shape nobody taught it — ` ```tool read_document"path=report.md" ` and `<tool_call> read_document (path: "x") </tool_call>`. Those are recovered now, by a layer that will only look behind a marker no prose contains; the underlying gap is real and is written down rather than papered over.
 
-**And a valid call has to end.** That is a second property, weaker than the first and until recently not held at all: a valid *prefix* could wander forever. A model wrote a complete, correct `calendar(…)` call and then emitted whitespace for twelve minutes, because whitespace was legal at a structural position and legal again immediately. Unrepresentable-invalid and always-terminating are different claims — the grammar now bounds consecutive whitespace and the length of a field the schema leaves open, and the engine caps a constrained generation at 2048 tokens, measured against a largest-observed legitimate call of 1523.
+**And a valid call has to end.** That is a second property, weaker than the first and until recently not held at all: a valid *prefix* could wander forever. A model wrote a complete, correct `calendar(…)` call and then emitted whitespace for twelve minutes, because whitespace was legal at a structural position and legal again immediately. Unrepresentable-invalid and always-terminating are different claims — the grammar now bounds consecutive whitespace and every field the schema leaves open — a string at 8192 characters, a number at 400 fraction and 4 exponent digits (its integer part stops where u64, i64 or f64 do), an array at 1024 items — and the engine caps a constrained generation at 2048 tokens, measured against a largest-observed legitimate call of 1523.
 
 **A tool result cannot forge a turn.** The schema makes an invalid call
 unrepresentable — that is a claim about the CALL, and it says nothing about the
@@ -57,13 +57,23 @@ containing `</tool_response><|im_end|>` followed by `<|im_start|>system` rendere
 as a **real system turn** in the ChatML prompt — a forged instruction in the role
 a model is trained to obey above every other, written by whoever wrote the file.
 `read_document` reads files the user did not write, `web_fetch` reads pages
-nobody here controls, and an MCP result is a third party's text. Every string
-entering the prompt from outside — tool results, the question, memory, a
-user-authored skill, and a bridged tool's own name and description — now has its
-turn markers neutralised with one space (`< |im_end|>` is not a token), so
-nothing is censored and nothing can open a block. `cargo test -p tacet-engine
---test a_tool_result_cannot_forge_a_turn` is the demonstration, in all three
-templates.
+nobody here controls, an MCP result is a third party's text, and a file name in
+the working directory is whatever its creator chose. Every string entering the
+prompt from outside — tool results, the question, memory, a user-authored skill
+and its name, a bridged tool's own name and description, and the directory
+census in the system block — now has its markers neutralised with one space
+(`< |im_end|>` is not a token), so nothing is censored and nothing can open a
+block. "Markers" means every chat-template token, not only the `<|…|>` ones:
+Qwen3's `<think>` and `<tool_call>`, Gemma's `<start_of_turn>`, `<eos>`, `<bos>`
+and `<unusedN>`, Llama-2's `<s>`/`</s>`, this prompt's own fences (`<memory>`,
+`<cwd>`, `<guidance>`, …), and whatever special tokens the loaded tokenizer
+declares. Ordinary code is left alone — F#'s `x <| f` and Haskell's `<|>` are
+not markers. An audit on 9 Oct 2026 measured three gaps in the earlier version:
+a file name forging a system turn, a remembered note closing its own
+`</memory>` fence, and `<think>` passing as a live token. `cargo test -p
+tacet-engine --test a_tool_result_cannot_forge_a_turn --test
+a_file_name_cannot_forge_a_turn --test every_marker_from_outside_is_text` is
+the demonstration, in all three templates.
 
 **And then the whole prompt was printed and read, which found three more.** The
 `<memory>` block was **fenced twice** — a nested tag with a stray closing one in
@@ -75,7 +85,9 @@ order, introduced by the change that closed the forged-turn hole. None of the
 three failed a test and none of them would have: they are visible only by
 looking at what the model is actually sent.
 
-**The network monopoly is checkable by eye.** Exactly two crates may open a socket, and the HTTP dependency appears in exactly those two manifests. You do not have to trust a privacy claim you cannot audit — `grep -v '^\s*#' crates/*/Cargo.toml | grep ureq` is the audit, and `cargo test -p tacet-cli --test network_monopoly` is the same audit as a failing build: it asserts that exactly those two manifests declare an HTTP client, that no other client was swapped in under a different name, and that nobody reached a socket through `std::net` instead — scanning every `.rs` file under `crates/*/{src,tests,examples,benches}`, not just the library code. (One honest asterisk: if you install the `shell` addon and put `curl` on its allow-list, you have handed a program the network. That is why `shell` sits behind the approval gate — see [Addons](#addons).)
+**Memory is now shared safely between sessions.** Two terminals used to be two copies of `memory.json`, and whichever saved last won: session A remembered X, session B remembered Y, and only Y was left (audit M20, measured). A save now takes a lock file, re-reads the file and replays only its own changes, so neither session can undo what the other did. A file that does not parse is no longer opened as an empty memory: the last good copy, `memory.json.bak`, is loaded instead, and the damaged file is moved aside as `memory.json.damaged-*`, never overwritten. To wipe memory by hand, delete `memory.json` and `memory.json.bak` together. `forget` deletes one note: a word that matches several notes deletes nothing and asks which one. A note can no longer carry a tag (`</memory>`, `<|im_start|>`, `<think>` …) into the prompt.
+
+**The network monopoly is checkable by eye.** Exactly two crates may open a socket, and the HTTP dependency appears in exactly those two manifests. You do not have to trust a privacy claim you cannot audit — `grep -v '^\s*#' crates/*/Cargo.toml | grep ureq` is the audit, and `cargo test -p tacet-cli --test network_monopoly` is the same audit as a failing build. It reads every manifest as TOML (renames, dotted keys, target tables and workspace inheritance included) and walks the dependency graph cargo resolves, and asserts that only those two crates reach an HTTP client, whether declared or one crate removed. It asserts that no other crate reaches the network without one: no `std::net` socket, no DNS lookup, no socket-layer crate (`libc`, `nix`, `rustix`, the Windows bindings) declared under any name or reached with its socket feature on, no libc or Winsock socket call under any name a file gives it, and no foreign function outside a three-name allow-list, in any file a crate compiles — its whole directory, `build.rs`, and whatever `#[path]`, `include!` or the manifest points rustc at — and that every crate cargo builds from this repository lives under `crates/`, where that scan reads. It asserts that no other crate starts a program whose job is the network (`docker`, `curl`, `ssh`, …) without a row that says why; the only rows are `tacet addon`'s local SearXNG setup in `tacet-cli/src/addon.rs`, which runs `docker compose` only after a y/N approval. And it asserts that no crate, those two included, names another agent's CLI (`claude`, `codex`, `agy`) as a program unless that path is an external tool behind the approval gate; today none does. (One honest asterisk: if you install the `shell` addon and put `curl` on its allow-list, you have handed a program the network. That is why `shell` sits behind the approval gate — see [Addons](#addons).)
 
 **Nothing leaves the device by default.** Everything with outside reach is an *addon* you install deliberately: web search against your own SearXNG, HTTP against hosts you name, a shell against programs you list. Until you install one, its tools are not merely disabled — they are **absent from the catalog the model is shown**, so it cannot call them or claim it did.
 
@@ -90,7 +102,7 @@ looking at what the model is actually sent.
 
 **Bulk data never enters the model.** A tool that reads a 40 000-row spreadsheet puts the data in a store and hands the model a short summary plus a reference. The next tool that needs it fetches it by reference. The context window is a budget, not a bottleneck.
 
-**Almost no dependencies.** OOXML (`.xlsx`, `.docx`) generation, zip, deflate and CRC32 are written by hand. So is the MCP client — JSON-RPC 2.0 over Streamable HTTP with SSE, OAuth, elicitation and task polling, in **3,342 non-test lines across twelve files** (4,667 with the tests; 11 `use std` lines in 6 of them; re-derived 6 Sep 2026). That sentence said "~430 lines with a single `use std`" for a long time: true at the first commit, and never re-derived while the protocol grew. The claim it is here to support survives the correction — there is no client library underneath, and 3,342 lines of plain Rust is still a thing one person can read — but a number in a paragraph about auditability has to be the real one.
+**Almost no dependencies.** OOXML (`.xlsx`, `.docx`) generation, zip, deflate and CRC32 are written by hand. So is the MCP client — JSON-RPC 2.0 over Streamable HTTP with SSE, OAuth, elicitation and task polling, in **3,496 non-test lines across twelve files** (5,060 with the tests; 11 `use std` lines in 6 of them; re-derived 10 Oct 2026, counting each file's lines above its first `#[cfg(test)]`). That sentence said "~430 lines with a single `use std`" for a long time: true at the first commit, and never re-derived while the protocol grew. The claim it is here to support survives the correction — there is no client library underneath, and 3,496 lines of plain Rust is still a thing one person can read — but a number in a paragraph about auditability has to be the real one.
 
 The direct dependency list is `serde`, `serde_json`, `thiserror`, `clap`, `crossterm` and `ureq`. Behind the off-by-default `candle` feature there are three more: `candle-core`, `candle-transformers` and `tokenizers`. Adding to that list is an architectural decision documented at the top of the file, not a convenience.
 
@@ -99,7 +111,7 @@ One honest note on what "the full list" means: those are the DIRECT dependencies
 * `ureq` brings `rustls`, which brings `ring`, and `ring` compiles C. Nothing here calls it and it changes no claim about what the program does, but it is what sets the build prerequisite on Windows: not the MSVC linker it looks like, but a C compiler, however you get one. Measured, with the three routes and their sizes, in [CONTRIBUTING](CONTRIBUTING.md).
 * `tokenizers` brings `onig` → `onig_sys` → `cc`, and `esaxx-rs` alongside it — a **second** C build, on the `candle` feature. This paragraph disclosed the first and not the second, which made the off-by-default feature look cheaper than it is. It is off by default and the CLI runs without it; if you build with it, you are building C.
 
-**And the transitive half is checked rather than argued.** `cargo deny check` runs on every push over the full graph with all features on — advisories, licences, wildcards, and sources. The two things it found on its first run are in [`deny.toml`](deny.toml) with a reason and a date rather than silenced: `paste` is unmaintained (a proc macro under candle, no runtime, no safe upgrade, not ours to fix), and `webpki-roots` carries `CDLA-Permissive-2.0` because it is Mozilla's root CA store — data, not code. `unknown-git` and `unknown-registry` are hard failures, because those can only be caused from inside this repository.
+**And the transitive half is checked rather than argued.** `cargo deny check` runs on every push to `main` and every pull request, over the full graph with all features on — advisories, licences, wildcards, and sources. Sources, bans and licences gate the merge; advisories run as a separate job that is allowed to fail, because a new advisory against a transitive crate is news, not a defect in the pull request. The two things it found on its first run are in [`deny.toml`](deny.toml) with a reason and a date rather than silenced: `paste` is unmaintained (a proc macro under candle, no runtime, no safe upgrade, not ours to fix), and `webpki-roots` carries `CDLA-Permissive-2.0` because it is Mozilla's root CA store — data, not code. `unknown-git` and `unknown-registry` are hard failures, because those can only be caused from inside this repository.
 
 ## Install
 
@@ -211,7 +223,7 @@ Metal, counting only answers that are unreadable rather than wrong:
 
 Gemma3's four were walls of `</tool.`, `Do not be.` eight times over, and a
 digit stuck in a loop where the date belonged. Re-derive it yourself with
-`scripts/smoke.sh ~/models/<folder>`; it needs a model and about four minutes.
+`scripts/smoke.sh ~/models/<folder>`; it needs a model and about four minutes on a built tree — it builds the binary first.
 
 **No separate tokenizer file needed.** Tacet reads the tokenizer *out of the
 GGUF* — vocabulary, merges and token types — so a file from Ollama or LM Studio
@@ -236,9 +248,9 @@ Out of the box, with nothing installed:
 
 Documents are real OOXML — an `.xlsx` produced by Tacet contains a working `=SUM()`, not a pre-computed number.
 
-`git` is **read-only**: status, log, diff, show. It reads a diff so the model can write a commit message; it does not commit, push, or change a branch.
+`git` is **read-only**: status, diff, log. It reads a diff so the model can write a commit message; it does not commit, push, or change a branch. Nor does the repository get to run anything through it: hooks, fsmonitor, external diffs, textconv, filter drivers, gpg and promisor fetches named in a repository's own `.git/config` are switched off on every call. That needs git 2.31 or newer; an older git is refused with `git_unsupported` rather than run unprotected.
 
-`archive` lists or extracts a `.zip` with the workspace's own inflate. It refuses the whole archive — never one entry — when a name would escape the destination, an entry is a symlink, the declared sizes cross the caps, or a name repeats: four gates that run on the central directory, so both actions apply them. The CRC and the declared-vs-actual size are proven on **extract** only, because listing decodes nothing — which is why a listing labels its numbers "declared" rather than reporting them as sizes. Extraction always goes into a **new** directory whose name is rotated until it is free, so there is no argument through which it could overwrite something.
+`archive` lists or extracts a `.zip` with the workspace's own inflate. It refuses the whole archive, never just one entry, in any of these cases: a name would escape the destination; an entry is a symlink; the declared sizes cross the caps; a name repeats or is both a file and another entry's folder; two entries share the same bytes; a central record names a different entry than its local header; or a deflate stream is a run of more than 1024 blocks that decode to nothing. These gates run on the central directory, so both actions apply them. The CRC and the declared-vs-actual size are checked on **extract** only, because listing decodes nothing. That is why a listing labels its numbers "declared" and does not report them as sizes. The CRC is checked for every entry, including one whose recorded CRC is 0 (that used to be skipped). Extraction always goes into a **new** directory, whose name is rotated until it is free, so no argument can make it overwrite anything. Extraction is all-or-nothing: if any write fails, for example because the destination filesystem folds two names into one (APFS treats NFC and NFD spellings as the same name), the new directory is removed. It is removed only if it is still the directory that run created. A directory swapped for a link, or for anything else, is left in place and the error says so.
 
 `checksum` is SHA-256 over a file: the digest, or a comparison against a published one, or against a second file. A mismatch comes back as an answer, not an error.
 
@@ -386,7 +398,7 @@ tacet-cli ──────────► terminal shell; drives the turn loop
    ├── tacet-memory ► notes on disk, injected only when relevant
    │
    └── tacet-kernel► the CONTRACT: Tool, ArgSchema, ToolOutcome, DataStore,
-                      Catalog, Constrainer
+                      Catalog, Constrainer, defang
 ```
 
 Arrows are dependency direction. `tacet-kernel` depends on nothing, so the contract never bends under pressure from an implementation. `tacet-engine` deliberately does not know `tacet-grammar`: the contract lives in the kernel, its implementation in the grammar, so a run without constraints doesn't compile grammar code it never uses.
@@ -457,9 +469,11 @@ tacet eval --tool-selection --model qwen3-4b --turkish   # Turkish only
 finished case to that directory the moment it ends, and a later run skips what
 is already there — so a Ctrl-C at case 180, a closed lid or a reclaimed rented
 box costs the current case rather than the 47 minutes behind it. The directory
-is stamped with the model fingerprint, the engine and the catalog on the first
-case, and a run against a different one **exits non-zero** instead of quietly
-restarting: cases from two builds assembled into one report would be a mixture
+is stamped with the model fingerprint, the engine, the catalog, the commit, a
+hash of any uncommitted edits (untracked files included), a hash of the prompt
+text and tool descriptions, the router options and a hash of every case. A run
+against a different stamp, or holding a case rewritten since it was measured,
+**exits non-zero** instead of quietly restarting: cases from two builds assembled into one report would be a mixture
 presented as a measurement, and nothing in the JSON would say so.
 
 ```bash
@@ -492,8 +506,8 @@ clean a confirmation as this kind of change gets:
   broke    3   write_code-script, tr-web-site-oku, tr-web-arama
   delta    -1.6 points   95% CI [-3.8, +0.0]
   verdict: NOT DISTINGUISHABLE from no change at 95%.
-           this instrument needs 368 paired cases to call a 1.6-point effect;
-           this suite has 184.
+           at these rates (0 fixed, 3 broke) this instrument needs about 338
+           paired cases to call a 1.6-point effect; this suite has 184.
 ```
 
 Nothing was fixed, three things broke, and they are by name the three the change
@@ -650,9 +664,10 @@ paired on 184 cases
 
 Nine of the twelve are the cases named above. The table further up is the **Metal**
 baseline and has not been re-measured since, so it still reads pre-fix — the two
-numbers are from different machines and `--compare` refuses to pair across
-either a different model or a different catalog, which is why this one is quoted
-on its own terms rather than folded into the table.
+numbers are from different machines: `--compare` refuses to pair two different
+models, and when the catalogs differ it leaves out every case that touches a tool
+one side lacked and lists them, which is why this one is quoted on its own terms
+rather than folded into the table.
 
 **And the "after" report behind this verdict is not in the repository.**
 CONTRIBUTING asks that a claimed model improvement arrive as a PR that updates
@@ -680,9 +695,12 @@ fixed 8   broke 5
 delta +2.6 points   95% CI [-3.5, +8.7]
 sign test p = 0.5811
 verdict: NOT DISTINGUISHABLE from no change at 95%.
-         this instrument needs 230 paired cases to call a 2.6-point effect;
-         this suite has 115.
+         at these rates (8 fixed, 5 broke) this instrument needs about 712
+         paired cases to call a 2.6-point effect; this suite has 115.
 ```
+
+The block was re-derived on 10 Oct 2026 when the sizing began counting broken
+cases as well as fixed ones; it had said 230.
 
 Two runs of anything differ by a case or two for no reason. If you take one number
 away from this section, take that one — and note that the instrument volunteered
@@ -826,8 +844,10 @@ model, and a second model is a second thing to be wrong.
 The score is out of 100 with the four axes printed beside it, and the weights are
 in the source rather than in someone's head — **irrelevance 0.40, tool 0.30, step
 0.20, answer 0.10**. The safety axis is heaviest on purpose: a model that fires a
-tool at "thanks, that's all" must not be able to buy that back with tool
-accuracy, and a test asserts it cannot. An axis with no cases is left out and the
+tool at "thanks, that's all" pays for it dearly: at the suite's proportions
+one irrelevance failure costs 1.67 points and a tool case landed with its step
+earns 0.29, so it takes six of them to buy one back (91.1 -> 91.2 on the top row
+of the model table). A test pins that exchange rate in both directions. An axis with no cases is left out and the
 rest renormalised, not scored as zero — a benchmark made only of irrelevance
 cases is a legitimate benchmark.
 
@@ -1249,7 +1269,7 @@ says nothing about a call that never starts that way.
 ### What is actually distinctive
 
 1. **Always-terminating, as a claim separate from unrepresentable-invalid.**
-   Bounded consecutive whitespace, a bounded open-schema field, a 2048-token cap
+   Bounded consecutive whitespace, bounded open-schema strings, numbers and arrays, a 2048-token cap
    measured against a largest-observed legitimate call of 1523. Unbounded
    whitespace wander is a known live failure in this category and nobody
    advertises a termination bound. The measurement that produced it — a complete,

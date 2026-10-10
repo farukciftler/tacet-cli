@@ -121,6 +121,19 @@ pub const DENIED_SUBSTRINGS: &[&str] = &[
 /// path.
 pub const DENIED_DIRS: &[&str] = &[".ssh", ".gnupg", ".aws", "keychains"];
 
+/// `(directory, stem)`: a stem that is a credential only in that directory,
+/// copies included (the `DENIED_STEMS` rule, scoped to one parent).
+///
+/// Claude Code's `settings.json` / `settings.local.json` — under `~/.claude/`
+/// and under a project's `.claude/` — commonly hold `env.ANTHROPIC_API_KEY`,
+/// `ANTHROPIC_AUTH_TOKEN` or an `apiKeyHelper` command. No reader needs them
+/// (transcripts, live sessions and titles live elsewhere); the RG-21 hook
+/// installer writes there and has its own path. Scoped to `.claude` because
+/// `settings.json` elsewhere is an ordinary editor file. The RG-16 third review
+/// found the test asserting `~/.claude/settings.json` as the READABLE
+/// neighbour of a credential.
+pub const DENIED_IN_DIR: &[(&str, &str)] = &[(".claude", "settings")];
+
 /// The only extensions a reader needs. `.zst` is refused with its own message
 /// (see `Refusal::Compressed`), not lumped in here, because the fix for it is
 /// different: the user can decompress it.
@@ -243,7 +256,24 @@ pub fn denied_by_name(path: &Path) -> Option<String> {
     // followed by a separator covers the suffixes (`auth.json.md`,
     // `auth copy.json`); a denied name preceded by one covers the prefixes
     // (`Copy of auth.json`, `old-auth.json`).
-    let separated = |rest: &str| rest.chars().next().is_none_or(|c| !c.is_alphanumeric());
+    // A DIGIT IS A COPY TOO: `auth2.json`, `id_rsa2.json` are what a person
+    // types for a second copy, and the old rule (anything but a letter OR
+    // DIGIT) returned the key for both (RG-16 third review). A letter is
+    // still a different word: `author.md`.
+    let separated = |rest: &str| {
+        rest.chars()
+            .next()
+            .is_none_or(|c| !c.is_alphanumeric() || c.is_ascii_digit())
+    };
+    let parent = path
+        .parent()
+        .and_then(Path::file_name)
+        .map(|p| p.to_string_lossy().to_lowercase());
+    if let Some((dir, stem)) = DENIED_IN_DIR.iter().find(|(dir, stem)| {
+        parent.as_deref() == Some(*dir) && name.strip_prefix(*stem).is_some_and(separated)
+    }) {
+        return Some(format!("{stem} inside {dir}"));
+    }
     if let Some(stem) = DENIED_STEMS
         .iter()
         .find(|stem| name.strip_prefix(*stem).is_some_and(separated))
@@ -579,7 +609,15 @@ mod tests {
     fn every_known_credential_is_refused_and_its_neighbour_is_read() {
         let root = scratch("named");
         let cases = [
-            (".claude/.credentials.json", ".claude/settings.json"),
+            (".claude/.credentials.json", ".claude/history.jsonl"),
+            // Claude Code's settings may carry `env.ANTHROPIC_API_KEY`; only
+            // under `.claude` (RG-16 third review).
+            (".claude/settings.json", ".claude/projects/p/a035ad6e.jsonl"),
+            (".claude/settings.local.json", "proj/settings.json"),
+            ("proj/.claude/settings.local.json", "proj/.claude/agents.md"),
+            // A digit after a stem is a copy (RG-16 third review).
+            (".codex/auth2.json", ".codex/author2.md"),
+            ("home/id_rsa2.json", "home/idea2.md"),
             (".claude/sessions/4242.key", ".claude/sessions/4242.json"),
             (".codex/auth.json", ".codex/session_index.jsonl"),
             (

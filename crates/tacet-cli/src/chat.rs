@@ -31,7 +31,7 @@ use crate::ui::{
 use crate::{
     CANCEL, EXTERNAL_TOOLS, EngineChoice, STDIN_CONTEXT_LIMIT, TerminalApproval, TerminalAsk,
     VERIFYING_TOOLS, announce_transcript, byte_text, print_grammar, read_piped_stdin,
-    refresh_session, session_catalog, sessions, setup_engine, stdin_fence, thinking_switch,
+    refresh_session, session_catalog, sessions, setup_engine, stdin_fence, thinking_switch_for,
     to_engine_turns, tool_record,
 };
 use crate::{addon, config, filter, format, receipt, session, update};
@@ -802,9 +802,12 @@ pub fn chat(run: ChatRun) -> ExitCode {
             Some(p) => format!("{}\n\n{message}", stdin_fence(p)),
             None => message.clone(),
         };
-        // Selective thinking (Qwen soft switch) — see `thinking_switch`.
+        // Selective thinking (Qwen soft switch) — see `thinking_switch_for`.
         if engine.template() == tacet_engine::Template::ChatML {
-            asked.push_str(thinking_switch(&message));
+            asked.push_str(thinking_switch_for(
+                config::get_str("thinking").as_deref(),
+                &message,
+            ));
         }
 
         // The tool budget derives ONLY from the user message.
@@ -977,10 +980,18 @@ pub fn chat(run: ChatRun) -> ExitCode {
                     break;
                 }
             };
-            turn_prompt += report.final_estimate;
+            // THE SIZE OF WHAT IS SENT, in the engine's own template. The
+            // truncation report's `final_estimate` is the LARGEST of every
+            // template's rendering (`prompt_estimate`, conservative on purpose
+            // so a budget holds whichever template loads), and reporting that
+            // made `tokens.context` disagree with the wire `--show-prompt`
+            // prints: 3177 against 3160 on the scripted engine, measured 10 Oct
+            // 2026 when the two fixes met (`the_shell_budgets_its_tools`).
+            let sent = TokenCounter::estimate(&prompt.text_with_template(engine.template()));
+            turn_prompt += sent;
             // The context-fullness measure is the size of the LAST prompt: that
             // is the room left in the window, not a cumulative total.
-            last_context = report.final_estimate;
+            last_context = sent;
             // ONCE PER USER TURN. The prompt is rebuilt for every tool round,
             // so this used to print two or three times inside a single answer
             // (measured: "(2 turns dropped)" then "(4 turns dropped)" twice) —
@@ -2428,6 +2439,34 @@ mod window_refusal_tests {
             !shared_body.contains("counter.truncate(&mut prompt)"),
             "the shared prompt builder truncates without refusing what still does \
              not fit"
+        );
+    }
+
+    /// AUDIT M23, THE CALL SITE — the same hole M22 had. The test of the
+    /// shell's switch (`the_shells_switch_is_the_engines`) holds
+    /// `thinking_switch_for`; the turn loop called a wrapper around it, and a
+    /// private rule put into the wrapper left every tacet-cli test green
+    /// (review of 10 Oct 2026). The wrapper is gone; this keeps the loop on the
+    /// tested function and keeps a second `fn thinking_switch` from coming back
+    /// in main.rs.
+    #[test]
+    fn the_turn_loop_calls_the_tested_switch() {
+        let body = include_str!("chat.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the file has a body");
+        let squeezed: String = body.split_whitespace().collect();
+        assert!(
+            squeezed.contains(
+                "asked.push_str(thinking_switch_for(config::get_str(\"thinking\").as_deref(),&message"
+            ),
+            "the turn loop no longer appends the switch `the_shells_switch_is_the_engines` tests"
+        );
+        let main = include_str!("main.rs");
+        assert_eq!(
+            main.matches("fn thinking_switch").count(),
+            1,
+            "main.rs has a second thinking-switch function; the loop must call the tested one"
         );
     }
 

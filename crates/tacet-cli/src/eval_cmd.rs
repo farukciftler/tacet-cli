@@ -1420,6 +1420,28 @@ mod compare_identity {
         );
         assert!(resolution_sentence(0, 0, 100).contains("no evidence"));
     }
+
+    /// THE README QUOTES TWO `--compare` OUTPUTS, and each one's resolution
+    /// line must be what this function prints for its numbers. The first
+    /// version of this check lived in tacet-eval, hard-coded 338 and 712, and
+    /// never opened the page, while the page still said 368 and 230 (review of
+    /// 10 Oct 2026). Whitespace is folded, because the page wraps the line.
+    #[test]
+    fn the_resolution_lines_the_readme_quotes_are_what_compare_prints() {
+        let readme = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../README.md"),
+        )
+        .expect("the repository README is readable");
+        let folded: String = readme.split_whitespace().collect::<Vec<_>>().join(" ");
+        for (fixed, broken, n) in [(0, 3, 184), (8, 5, 115)] {
+            let line = resolution_sentence(fixed, broken, n);
+            assert!(
+                folded.contains(&line),
+                "README.md does not quote what `eval --compare` prints for {fixed} fixed, \
+                 {broken} broke, {n} cases:\n  {line}"
+            );
+        }
+    }
 }
 
 /// THE TWO RUNS MUST HAVE HAD THE SAME TOOLS.

@@ -360,6 +360,141 @@ fn the_journal_directory_survives_midnight_and_tells_edits_apart() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// M29, THE BEHAVIOURAL HALF. `the_eval_runs_the_binary_cargo_reports_building`
+/// reads the text, and the review of 10 Oct 2026 walked two shapes past it: a
+/// second `BIN=` after the jq one (`BIN=./tar""get/release/tacet`), and the
+/// natural `BIN="${CARGO_TARGET_DIR:-target}/release/tacet"`, neither of which
+/// spells the banned literal. So the script is RUN, the way smoke.sh's half
+/// is: `cargo` on PATH is a stub that reports building a stub `tacet` in a
+/// directory of its own, `jq` is a stub that reads that report, and a decoy
+/// `target/release/tacet` records it if it is ever started. The binary cargo
+/// reported is the one that must be asked to `eval`.
+#[cfg(unix)]
+#[test]
+fn the_eval_runs_the_executable_cargo_reported_when_the_script_is_run() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+
+    let code: String = script()
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        code.lines()
+            .filter(|l| l.trim_start().starts_with("BIN="))
+            .count(),
+        1,
+        "BIN is assigned more than once; only the assignment from cargo's report may stand"
+    );
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let root =
+        std::env::temp_dir().join(format!("tacet-nightly-bin-{}-{nanos}", std::process::id()));
+    let repo = root.join("repo");
+    let home = root.join("home");
+    let shims = root.join("shims");
+    let built = root.join("built");
+    for dir in [
+        repo.join("scripts"),
+        repo.join("target/release"),
+        home.clone(),
+        shims.clone(),
+        built.clone(),
+    ] {
+        std::fs::create_dir_all(&dir).expect("temp dir");
+    }
+    let record = root.join("ran.txt");
+    let write_exe = |path: &Path, body: &str| {
+        std::fs::write(path, body).expect("stub");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    };
+    std::fs::write(repo.join("scripts/nightly-eval.sh"), script()).expect("copy the script");
+    std::fs::write(repo.join(".gitignore"), "target/\n").expect("ignore");
+    let real_bin = built.join("tacet");
+    write_exe(
+        &real_bin,
+        &format!(
+            "#!/bin/sh\necho \"BUILT $*\" >> '{}'\necho '{{}}'\n",
+            record.display()
+        ),
+    );
+    write_exe(
+        &repo.join("target/release/tacet"),
+        &format!(
+            "#!/bin/sh\necho \"STALE $*\" >> '{}'\necho '{{}}'\n",
+            record.display()
+        ),
+    );
+    write_exe(
+        &shims.join("cargo"),
+        &format!(
+            "#!/bin/sh\necho '{{\"reason\":\"compiler-artifact\",\"target\":{{\"name\":\"tacet\",\"kind\":[\"bin\"]}},\"executable\":\"{}\"}}'\n",
+            real_bin.display()
+        ),
+    );
+    write_exe(
+        &shims.join("jq"),
+        "#!/bin/sh\nsed -n 's/.*\"executable\":\"\\([^\"]*\\)\".*/\\1/p'\n",
+    );
+
+    let path = format!(
+        "{}:{}",
+        shims.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let command = |program: &str| {
+        let mut c = Command::new(program);
+        c.current_dir(&repo)
+            .env("HOME", &home)
+            .env("PATH", &path)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env_remove("CARGO_TARGET_DIR")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE");
+        c
+    };
+    for args in [
+        &["init", "-q"][..],
+        &["add", "-A"],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "init",
+        ],
+    ] {
+        let out = command("git").args(args).output().expect("git runs");
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    }
+    let out = command("bash")
+        .arg(repo.join("scripts/nightly-eval.sh"))
+        .output()
+        .expect("bash runs");
+    let ran = std::fs::read_to_string(&record).unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(out.status.success(), "the script failed: {out:?}");
+    assert!(
+        !ran.contains("STALE"),
+        "the script ran target/release/tacet, not what cargo reported building:\n{ran}"
+    );
+    assert!(
+        ran.lines().any(|l| l.starts_with("BUILT eval ")),
+        "the binary cargo reported was never asked to eval:\n{ran}"
+    );
+}
+
 /// THE SCRIPT'S OWN ACCOUNT OF WHAT KEEPS TWO BUILDS APART MUST BE TRUE.
 ///
 /// It said "the journal's own stamp would refuse them anyway" of two commits.

@@ -88,6 +88,17 @@ mod tests {
                     }
                 }
             } else if c[i] == 'r'
+                && c.get(i + 1) == Some(&'#')
+                && c.get(i + 2).is_some_and(|n| n.is_alphabetic() || *n == '_')
+                && (i == 0 || !(c[i - 1].is_alphanumeric() || c[i - 1] == '_'))
+            {
+                // `r#open` IS `open`. Read as a raw string's start, it became
+                // the tokens `r`, `#`, `open`, and `std::fs::File::r#open(p)`
+                // and `std::fs::r#read(p)` compiled past the guard (RG-16 third
+                // review, rustc 1.98.1).
+                out.push_str("  ");
+                i += 2;
+            } else if c[i] == 'r'
                 && (c.get(i + 1) == Some(&'"') || c.get(i + 1) == Some(&'#'))
                 && (i == 0 || !(c[i - 1].is_alphanumeric() || c[i - 1] == '_'))
             {
@@ -351,6 +362,16 @@ mod tests {
     /// entry per finding: (line, what).
     fn openers_in(toks: &[Tok]) -> Vec<(usize, String)> {
         let mut found = Vec::new();
+        // THE TYPES THEMSELVES, wherever they are named. Matching call paths
+        // was patched one spelling at a time — `File::open`, then
+        // `<std::fs::File>::open` — and `type F = std::fs::File; F::open(p)`
+        // walked past both (RG-16 third review). Nothing outside the door has
+        // a reason to name either type, so naming one is the finding.
+        for t in toks {
+            if t.text == "File" || t.text == "OpenOptions" {
+                found.push((t.line, format!("names {}", t.text)));
+            }
+        }
         for (k, head) in toks.iter().enumerate() {
             // `<std::fs::File>::open(p)` is the same call as `File::open(p)`
             // with a `>` between the type and the `::`; a plain three-token
@@ -520,6 +541,22 @@ mod tests {
                 "fn f() { let _ = < std :: fs :: OpenOptions >::new(); }".into(),
                 Some("qualified_new.rs:1: OpenOptions::new"),
             ),
+            // RG-16 third review: a raw identifier, and a type alias.
+            (
+                "raw_ident.rs",
+                "fn f(p: &str) { let _ = std::fs::r#read(p); }".into(),
+                Some("raw_ident.rs:1: fs::read"),
+            ),
+            (
+                "raw_ident_open.rs",
+                "fn f(p: &str) { let _ = std::fs::File::r#open(p); }".into(),
+                Some("raw_ident_open.rs:1: File::open"),
+            ),
+            (
+                "type_alias.rs",
+                "type ZzF = std::fs::File;\nfn f(p: &str) { let _ = ZzF::open(p); }".into(),
+                Some("type_alias.rs:1: names File"),
+            ),
             // A copy reads its source whole; `auth.json` copied to `x.jsonl`
             // then passes every name rule.
             (
@@ -664,6 +701,11 @@ mod tests {
         for dir in super::secrets::DENIED_DIRS {
             if !adr.contains(&format!("`{dir}`")) {
                 missing.push(format!("denied directory `{dir}`"));
+            }
+        }
+        for (dir, stem) in super::secrets::DENIED_IN_DIR {
+            if !adr.contains(&format!("`{dir}/{stem}*`")) {
+                missing.push(format!("denied in a directory `{dir}/{stem}*`"));
             }
         }
         for k in super::version::KNOWN {

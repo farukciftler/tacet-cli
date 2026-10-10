@@ -276,14 +276,16 @@ const BWRAP_PATHS: &[&str] = &["/usr/bin/bwrap", "/bin/bwrap", "/usr/local/bin/b
 ///     a socket file is legal (both are non-directories) and `connect` on the
 ///     result fails.
 ///
-/// WHAT IS STILL OPEN, STATED AS A LIMIT: only KNOWN places are covered — the
-/// runtime directories, the daemon sockets in `DAEMON_SOCKETS`, and a
+/// WHAT IS COVERED: the runtime directories, the daemon sockets in
+/// `DAEMON_SOCKETS`, every socket `/proc/net/unix` lists as bound in this
+/// network namespace (`bound_sockets_from` — any directory, any depth), and a
 /// two-level scan of `/tmp`, `$TMPDIR` and the working folder (see
-/// `socket_scan_roots`). A socket anywhere else on the read-only root — a
-/// daemon this list does not name, a service socket under `/srv` beside a
-/// working folder in `$HOME` — stays reachable. Closing that for good means
-/// not binding `/` at all, which the interpreters' libraries make a
-/// measurement this machine cannot run (there is no Linux here).
+/// `socket_scan_roots`). WHAT IS STILL OPEN, STATED AS A LIMIT: a socket bound
+/// in ANOTHER network namespace (a container's, visible on the host's
+/// filesystem) is not in this namespace's list, and is shadowed only if one of
+/// the other rules names it. None of this has been run on Linux by the person
+/// who wrote it (there is no Linux here); the ubuntu CI leg is where
+/// `verify_shield` measures it.
 ///
 /// They go AFTER the home tmpfs and BEFORE the sandbox bind, for the same
 /// reason the home tmpfs does.
@@ -374,13 +376,55 @@ fn socket_dirs(xdg_runtime: Option<&std::ffi::OsStr>) -> Vec<PathBuf> {
 /// They are shadowed one by one, never by a tmpfs over the directory:
 /// `/var/lib/incus` also holds the containers' storage, and a missing entry is
 /// dropped by `plan_shadows`, so listing a daemon this host lacks costs a stat.
+///
+/// Multipass (sudo-group access on Ubuntu: VM launch and host mounts) and
+/// MicroK8s's containerd were found missing by the second review of the same
+/// day, from their documentation too. The list is the floor, not the coverage:
+/// `bound_sockets` reads every socket the kernel has bound, wherever it is.
 const DAEMON_SOCKETS: &[&str] = &[
     "/var/snap/lxd/common/lxd/unix.socket",
     "/var/snap/lxd/common/lxd-user/unix.socket",
     "/var/lib/lxd/unix.socket",
     "/var/lib/incus/unix.socket",
     "/var/lib/incus/unix.socket.user",
+    "/var/snap/multipass/common/multipass_socket",
+    "/var/snap/microk8s/common/run/containerd.sock",
 ];
+
+/// The filesystem paths of the unix sockets bound in this network namespace,
+/// read from the text of `/proc/net/unix`.
+///
+/// WHY THE KERNEL'S LIST AND NOT A LONGER HAND-KEPT ONE (review of 10 Oct
+/// 2026): `DAEMON_SOCKETS` and the two-level scan cover the places someone
+/// thought of, and every review found another daemon outside them. The kernel
+/// lists every bound socket — its `Path` column — whatever directory it is in
+/// and however deep. Abstract sockets (`@name`) are skipped: they live in the
+/// network namespace, which `--unshare-net` already replaces. Only absolute
+/// paths are kept; a relative one names nothing the child can resolve.
+///
+/// Format (`net/unix/af_unix.c`): a header line, then `Num RefCount Protocol
+/// Flags Type St Inode Path`, the path last and optional, and it may contain
+/// spaces — so it is the rest of the line after the seventh field.
+fn bound_sockets_from(proc_net_unix: &str) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for line in proc_net_unix.lines().skip(1) {
+        let mut rest = line.trim_start();
+        for _ in 0..7 {
+            let Some(end) = rest.find(char::is_whitespace) else {
+                rest = "";
+                break;
+            };
+            rest = rest[end..].trim_start();
+        }
+        if rest.starts_with('/') {
+            let path = PathBuf::from(rest.trim_end());
+            if !out.contains(&path) {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
 
 /// What the shield plan reads from the host, gathered in one place so the plan
 /// itself (`shadows_for`) is a pure function a test can feed fixtures: the
@@ -392,6 +436,9 @@ struct ShadowHost {
     tmpdir: Option<OsString>,
     ssh_auth_sock: Option<OsString>,
     daemon_sockets: Vec<PathBuf>,
+    /// Every socket the kernel lists as bound (`bound_sockets_from`), on
+    /// Linux; empty where there is no `/proc/net/unix`.
+    bound_sockets: Vec<PathBuf>,
 }
 
 impl ShadowHost {
@@ -401,7 +448,31 @@ impl ShadowHost {
             tmpdir: std::env::var_os("TMPDIR"),
             ssh_auth_sock: std::env::var_os("SSH_AUTH_SOCK"),
             daemon_sockets: DAEMON_SOCKETS.iter().map(PathBuf::from).collect(),
+            // Only what IS a socket now: a path the kernel still lists after
+            // it was unlinked and replaced by a directory would make bwrap's
+            // file-over-directory bind fail, and with it the whole shield.
+            bound_sockets: std::fs::read_to_string("/proc/net/unix")
+                .map(|t| bound_sockets_from(&t))
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|p| is_socket_now(p))
+                .collect(),
         }
+    }
+}
+
+/// Whether `path` is a unix socket right now, without following a link.
+fn is_socket_now(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        path.symlink_metadata()
+            .is_ok_and(|m| m.file_type().is_socket())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        false
     }
 }
 
@@ -412,6 +483,7 @@ impl ShadowHost {
 fn shadows_for(sandbox: &Path, home: Option<&Path>, host: &ShadowHost) -> Vec<Shadow> {
     let roots = socket_scan_roots(host.tmpdir.as_deref(), sandbox.parent(), home);
     let mut sockets = host.daemon_sockets.clone();
+    sockets.extend(host.bound_sockets.iter().cloned());
     sockets.extend(scan_sockets(&roots, home));
     plan_shadows(
         socket_dirs(host.xdg_runtime.as_deref()),
@@ -454,8 +526,17 @@ fn socket_scan_roots(
 /// `/tmp/dotnet-diagnostic-…-socket` — and the entry budget keeps a /tmp with a
 /// million files from turning every call into a directory walk.
 ///
+/// THE BUDGET IS PER ROOT. It was one budget shared by every root, and the
+/// working folder was pushed last onto a stack and so walked FIRST: a folder
+/// outside $HOME with more than ~4,096 entries in two levels (any project with
+/// a `node_modules`) spent the whole budget before /tmp was opened, and every
+/// tmux, ssh-agent and `.s.PGSQL` socket there dropped out of the plan (review
+/// of 10 Oct 2026, measured on macOS with 5,000 files: the /tmp socket was
+/// shadowed beside a small folder and not beside the big one).
+///
 /// THE LIMIT IS A GAP AND IS STATED AS ONE: a socket deeper than two levels, or
-/// past the first 4,096 entries, is not shadowed. Covering all of `/tmp` with a
+/// past the first 4,096 entries of its root, is not shadowed — unless the
+/// kernel lists it as bound (`bound_sockets`), which reaches every depth. Covering all of `/tmp` with a
 /// tmpfs instead would close it, but would also turn the child's view of a
 /// write outside the sandbox from "refused" into "accepted and discarded" —
 /// a different guarantee from the one `the_sandbox_cannot_be_escaped` holds
@@ -477,31 +558,29 @@ fn scan_sockets(roots: &[PathBuf], home: Option<&Path>) -> Vec<PathBuf> {
     {
         use std::os::unix::fs::FileTypeExt;
         let mut found = Vec::new();
-        let mut budget = SOCKET_SCAN_BUDGET;
-        let mut queue: Vec<(PathBuf, usize)> = roots
-            .iter()
-            .filter_map(|r| r.canonicalize().ok())
-            .map(|r| (r, 0))
-            .collect();
-        while let Some((dir, depth)) = queue.pop() {
-            if home.is_some_and(|h| dir.starts_with(h)) {
-                continue;
-            }
-            let Ok(entries) = std::fs::read_dir(&dir) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                if budget == 0 {
-                    return found;
+        for root in roots.iter().filter_map(|r| r.canonicalize().ok()) {
+            let mut budget = SOCKET_SCAN_BUDGET;
+            let mut queue: Vec<(PathBuf, usize)> = vec![(root, 0)];
+            'root: while let Some((dir, depth)) = queue.pop() {
+                if home.is_some_and(|h| dir.starts_with(h)) {
+                    continue;
                 }
-                budget -= 1;
-                let Ok(kind) = entry.file_type() else {
+                let Ok(entries) = std::fs::read_dir(&dir) else {
                     continue;
                 };
-                if kind.is_socket() {
-                    found.push(entry.path());
-                } else if kind.is_dir() && depth + 1 < SOCKET_SCAN_DEPTH {
-                    queue.push((entry.path(), depth + 1));
+                for entry in entries.flatten() {
+                    if budget == 0 {
+                        break 'root;
+                    }
+                    budget -= 1;
+                    let Ok(kind) = entry.file_type() else {
+                        continue;
+                    };
+                    if kind.is_socket() {
+                        found.push(entry.path());
+                    } else if kind.is_dir() && depth + 1 < SOCKET_SCAN_DEPTH {
+                        queue.push((entry.path(), depth + 1));
+                    }
                 }
             }
         }
@@ -938,21 +1017,6 @@ pub(crate) fn nonce() -> String {
     format!("{}-{now:x}-{step:x}", std::process::id())
 }
 
-/// `O_NOFOLLOW` — the value differs per platform and there is no libc crate here
-/// (zero-dependency identity). `0` on an unknown platform means "no extra flag";
-/// `create_new` alone still refuses an existing path, so the gate never opens.
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-const O_NOFOLLOW: i32 = 0x0100;
-#[cfg(any(target_os = "linux", target_os = "android"))]
-const O_NOFOLLOW: i32 = 0x20000;
-#[cfg(not(any(
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "linux",
-    target_os = "android"
-)))]
-const O_NOFOLLOW: i32 = 0;
-
 /// Writes the script WITHOUT EVER FOLLOWING an existing path.
 ///
 /// THE ATTACK THIS CLOSES: a script running under the shield may create a
@@ -970,7 +1034,7 @@ const O_NOFOLLOW: i32 = 0;
 ///
 /// WINDOWS HAS ONLY THE FIRST BELT, AND IT HOLDS — measured rather than assumed.
 /// `custom_flags` is `#[cfg(unix)]`, so `O_NOFOLLOW` is never applied there (it
-/// is the `dead_code` warning a Windows build prints and no CI job fails on,
+/// used to be a `dead_code` constant on Windows that no CI job failed on,
 /// because `clippy -D warnings` runs only on ubuntu). The paragraph above rested
 /// the whole guarantee on what POSIX requires, and Windows is not POSIX — so the
 /// claim covered the one platform it did not apply to.
@@ -989,10 +1053,17 @@ pub(crate) fn create_script(script: &Path, code: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
+    // THE BIT IS PER ARCHITECTURE, from the table `create_document` keeps. This
+    // file had its own `0x20000` for every Linux, which on aarch64 — a published
+    // target — is `O_LARGEFILE`, so the second belt was silently absent there
+    // (audit L15 review; the first belt, `create_new`, still held).
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(O_NOFOLLOW);
+        options.custom_flags(crate::create_document::o_nofollow_for(
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        ));
     }
     let mut file = options.open(script)?;
     file.write_all(code)
@@ -1639,10 +1710,11 @@ impl ProbeTargets {
             }
         }
         let home_sentinel = home.last().and_then(|real| home_sentinel(real, sandbox));
+        let sockets = probe_sockets(sandbox, home.last().map(PathBuf::as_path));
         ProbeTargets {
             home,
             home_sentinel,
-            sockets: probe_sockets(),
+            sockets,
             outside_pid: std::process::id(),
         }
     }
@@ -1677,15 +1749,21 @@ const PROBE_SOCKET_CAP: usize = 12;
 /// `is_socket`: a stat, no connection is made from this process). A host with
 /// none of them measures nothing here, and that is stated rather than hidden:
 /// there is then nothing for the gate to protect.
-fn probe_sockets() -> Vec<PathBuf> {
+///
+/// THE SAME ROOTS AS THE PLAN. It scanned `/tmp` and `$TMPDIR` with no working
+/// folder while every call's plan scanned the working folder too, so a hole in
+/// the plan's handling of that third root (the shared budget it starved, review
+/// of 10 Oct 2026) could not show here. `sandbox` is the measurement's own
+/// folder, and its parent is scanned as a call's would be.
+fn probe_sockets(sandbox: &Path, home: Option<&Path>) -> Vec<PathBuf> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::FileTypeExt;
         let host = ShadowHost::from_env();
         let mut candidates = probe_socket_candidates(&host);
         candidates.extend(scan_sockets(
-            &socket_scan_roots(host.tmpdir.as_deref(), None, None),
-            None,
+            &socket_scan_roots(host.tmpdir.as_deref(), sandbox.parent(), home),
+            home,
         ));
         let mut found: Vec<PathBuf> = Vec::new();
         for candidate in candidates {
@@ -1703,6 +1781,7 @@ fn probe_sockets() -> Vec<PathBuf> {
     }
     #[cfg(not(unix))]
     {
+        let _ = (sandbox, home);
         Vec::new()
     }
 }
@@ -1727,6 +1806,7 @@ fn probe_socket_candidates(host: &ShadowHost) -> Vec<PathBuf> {
     .map(PathBuf::from)
     .collect();
     candidates.extend(host.daemon_sockets.iter().cloned());
+    candidates.extend(host.bound_sockets.iter().cloned());
     if let Some(xdg) = host.xdg_runtime.as_ref().filter(|x| !x.is_empty()) {
         candidates.push(Path::new(xdg).join("bus"));
     }
@@ -1976,9 +2056,14 @@ macro_rules! run_code_usage {
 /// access to ANY file on this device" while the profile let the script read
 /// everything outside the home directory — temp folders, /Users/Shared,
 /// db_write's temporary copies (audit L20). Reading is now an allowlist, and
-/// what the allowlist still opens — the interpreter's own system libraries — is
-/// NAMED rather than denied. "A new, empty folder" is true since M5: the folder
-/// is created for the call and deleted after it.
+/// what the allowlist still opens is NAMED rather than denied. That is "system
+/// files", not "system libraries": the review of 10 Oct 2026 read /etc/hosts
+/// from inside, listed /usr/local and /opt/homebrew/share, and stat'ed files in
+/// $HOME (`file-read-metadata` is unfiltered, so names and sizes show, never
+/// contents); every probe at user data — $HOME and its case and `..` aliases,
+/// /Users/Shared, $TMPDIR, /private/tmp, /Volumes, Homebrew's var and etc —
+/// was refused. "A new, empty folder" is true since M5: the folder is created
+/// for the call and deleted after it.
 ///
 /// It is also SHORT on purpose: `catalog.rs` caps every description at ~420
 /// tokens because the block is re-sent on every turn of the tool loop.
@@ -1991,7 +2076,7 @@ macro_rules! run_code_usage {
 /// out of the nine. Hence "except" and "can still read".
 const DESCRIPTION_SANDBOX_EXEC: &str = concat!(
     "Runs a short script in an isolated sandbox with NO network and NO access to your files: \
-     it starts in a new, empty folder and can read nothing except system libraries - not \
+     it starts in a new, empty folder and can read nothing except system files - not \
      even a file just saved with write_code, so open('file') always fails. ",
     run_code_usage!()
 );
@@ -3151,6 +3236,111 @@ mod tests {
         }
     }
 
+    /// 4d-iv-d) A BIG WORKING FOLDER DOES NOT STARVE /tmp (audit H7, review
+    ///          of 10 Oct 2026). The scan budget was shared and the working
+    ///          folder walked first, so 5,000 files beside the sandbox spent it
+    ///          and a socket in /tmp left the plan. The comparison is against
+    ///          the same socket beside a SMALL folder, so a /tmp that is itself
+    ///          over budget on some machine reads as "skipped", not as a pass.
+    #[cfg(unix)]
+    #[test]
+    fn a_big_working_folder_does_not_starve_the_tmp_scan() {
+        let tmp_dir = PathBuf::from("/tmp").join(format!("tcr-{}", nonce()));
+        std::fs::create_dir_all(&tmp_dir).expect("fixture");
+        let tmp_dir = tmp_dir.canonicalize().expect("resolved");
+        let tmp_socket = tmp_dir.join("s.sock");
+        drop(std::os::unix::net::UnixListener::bind(&tmp_socket).expect("a socket file"));
+
+        let base = temp_dir("big-workdir");
+        let small = base.join("small");
+        let big = base.join("big");
+        for dir in [
+            &small.join("run-1"),
+            &big.join("run-1"),
+            &big.join("node_modules"),
+        ] {
+            std::fs::create_dir_all(dir).expect("fixture");
+        }
+        for i in 0..5_000 {
+            std::fs::write(big.join("node_modules").join(format!("f{i}")), b"").expect("fixture");
+        }
+        let shadowed = |work: &Path| {
+            shadows_for(&work.join("run-1"), None, &ShadowHost::default())
+                .contains(&Shadow::Socket(tmp_socket.clone()))
+        };
+        let beside_small = shadowed(&small);
+        let beside_big = shadowed(&big);
+        std::fs::remove_dir_all(&base).ok();
+        std::fs::remove_dir_all(&tmp_dir).ok();
+        if !beside_small {
+            eprintln!("skipped: /tmp on this machine is over the scan budget on its own");
+            return;
+        }
+        assert!(
+            beside_big,
+            "a /tmp socket is shadowed beside a small working folder and NOT beside one \
+             with 5,000 entries — the folder spent the scan budget"
+        );
+    }
+
+    /// 4d-iv-e) EVERY SOCKET THE KERNEL LISTS IS IN THE PLAN, wherever it is
+    ///          (review of 10 Oct 2026: Multipass and MicroK8s sockets were
+    ///          outside every hand-kept rule). The parser reads the fixture's
+    ///          format — header, abstract names, a path with a space, a row
+    ///          with no path — and a real socket three levels below a folder
+    ///          no rule scans is planned once the host lists it.
+    #[test]
+    fn every_bound_socket_the_kernel_lists_is_shadowed() {
+        let fixture = "\
+Num       RefCount Protocol Flags    Type St Inode Path
+0000000000000000: 00000002 00000000 00010000 0001 01 23456 /run/systemd/private
+0000000000000000: 00000002 00000000 00010000 0001 01 23457 @/tmp/.X11-unix/X0
+0000000000000000: 00000002 00000000 00010000 0001 01 23458 /var/snap/multipass/common/multipass_socket
+0000000000000000: 00000003 00000000 00000000 0001 03 23459
+0000000000000000: 00000002 00000000 00010000 0001 01 23460 /srv/my app/run/x.sock
+0000000000000000: 00000002 00000000 00010000 0001 01 23456 /run/systemd/private
+";
+        assert_eq!(
+            bound_sockets_from(fixture),
+            [
+                PathBuf::from("/run/systemd/private"),
+                PathBuf::from("/var/snap/multipass/common/multipass_socket"),
+                PathBuf::from("/srv/my app/run/x.sock"),
+            ]
+        );
+        assert!(bound_sockets_from("").is_empty());
+
+        #[cfg(unix)]
+        {
+            let root = PathBuf::from("/tmp").join(format!("tcb-{}", nonce()));
+            let deep = root.join("a").join("b").join("c");
+            std::fs::create_dir_all(&deep).expect("fixture");
+            let deep = deep.canonicalize().expect("resolved");
+            let socket = deep.join("d.sock");
+            drop(std::os::unix::net::UnixListener::bind(&socket).expect("a socket file"));
+            let sandbox = root.join("work").join("run-1");
+            std::fs::create_dir_all(&sandbox).expect("fixture");
+            let without = shadows_for(&sandbox, None, &ShadowHost::default());
+            let with = shadows_for(
+                &sandbox,
+                None,
+                &ShadowHost {
+                    bound_sockets: vec![socket.clone()],
+                    ..ShadowHost::default()
+                },
+            );
+            std::fs::remove_dir_all(&root).ok();
+            assert!(
+                !without.contains(&Shadow::Socket(socket.clone())),
+                "the fixture must be out of the scan's reach, or it measures the scan"
+            );
+            assert!(
+                with.contains(&Shadow::Socket(socket.clone())),
+                "a socket the kernel lists is not in the plan: {with:?}"
+            );
+        }
+    }
+
     /// 4d-v) THE HOME RULE NAMES THE RESOLVED DIRECTORY (audit M2).
     ///
     /// `sandbox-exec` matches rules against the RESOLVED path of an access, so a
@@ -3503,6 +3693,35 @@ mod tests {
         }
         assert!(!DESCRIPTION_BWRAP.contains("NO access to your files"));
         assert!(DESCRIPTION_BWRAP.contains("can still read other system files"));
+        // L20, the macOS half: /etc is readable under the profile, so "system
+        // libraries" was narrower than what the script can read.
+        assert!(
+            DESCRIPTION_SANDBOX_EXEC.contains("can read nothing except system files"),
+            "{DESCRIPTION_SANDBOX_EXEC}"
+        );
+        assert!(!DESCRIPTION_SANDBOX_EXEC.contains("system libraries"));
+    }
+
+    /// 4e-bis) THE SCRIPT'S `O_NOFOLLOW` IS THE PER-ARCHITECTURE BIT (audit
+    ///         L15 review). A source guard, because the defect is a constant
+    ///         that is right on the machine running the test: on macOS and
+    ///         x86_64 Linux the old `0x20000`-for-every-Linux table gives the
+    ///         right bit, and only an aarch64 Linux run would show it wrong.
+    #[test]
+    fn the_script_belt_uses_the_per_architecture_table() {
+        let body = include_str!("run_code.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the file has a body");
+        assert!(
+            !body.contains("const O_NOFOLLOW"),
+            "run_code.rs keeps its own O_NOFOLLOW again; on aarch64 Linux 0x20000 is \
+             O_LARGEFILE"
+        );
+        assert!(
+            body.contains("crate::create_document::o_nofollow_for("),
+            "create_script no longer takes its bit from the per-architecture table"
+        );
     }
 
     /// 4f) THE SCRIPT NAME IS NOT PREDICTABLE. The old name was

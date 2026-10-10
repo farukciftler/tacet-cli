@@ -21,8 +21,11 @@
 //!    resolves (`cargo metadata`), so a client that arrives one crate removed
 //!    counts as much as one declared by name.
 //! 2. No crate reaches a socket some other way — no raw `std::net` connector,
-//!    no name resolution (`to_socket_addrs`), and no libc socket call declared
-//!    in an `extern` block or reached through `libc::`/`nix::`, in any file a
+//!    no name resolution (`to_socket_addrs`), no socket-layer crate (`libc`,
+//!    `nix`, `rustix`, the Windows bindings) declared under any name or
+//!    reached with its socket feature on, no libc socket call reached through
+//!    one of them under any name the file gives it, and no foreign function
+//!    outside a three-name allow-list (`EXTERN_FNS`), in any file a
 //!    crate COMPILES (its whole directory, `build.rs`, and whatever `#[path]`,
 //!    `include!` and the manifest's target paths point rustc at), read by a
 //!    lexer that decodes string literals the way rustc does; every crate cargo
@@ -53,7 +56,10 @@
 //! rewrite (multi-line strings, `#[path]`, `include!`, a `Command` alias, `npx`
 //! and `sh -c` launchers, a spawn inside `tacet-mcp`), and each of the five
 //! its second pass found after that (a program name written with a Rust escape,
-//! a TOML `\x` escape, an `extern "C"` socket, DNS, a crate outside `crates/`).
+//! a TOML `\x` escape, an `extern "C"` socket, DNS, a crate outside `crates/`),
+//! and each of the six its third pass found after that (`use libc as c`,
+//! `rustix::net`, a `link_name` built by `concat!`, an extern block written by
+//! a macro, `Command::new("cla".to_owned() + "ude")`, a `type` alias).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -145,6 +151,38 @@ const SOCKET_FFI: &[&str] = &[
     "dlopen",
 ];
 
+/// The crates that put a socket call within reach of a crate's own code without
+/// any HTTP client: the C library's bindings (`libc`, `nix`, `rustix`) and the
+/// Windows ones (`windows-sys`, `winapi`, `windows`, which carry Winsock).
+///
+/// WHY A DECLARATION CHECK AND NOT A PATH CHECK. `raw_network` used to count a
+/// `SOCKET_FFI` name only behind a path whose root was literally `libc` or
+/// `nix`. The review of 10 Oct 2026 compiled three ways past that into
+/// tacet-tools and kept the suite green: `use libc as c; c::socket(2, 1, 0)`, a
+/// manifest rename, and `rustix::net::connect`, rustix being a crate the
+/// scan did not know at all although it is already in Cargo.lock. A second
+/// name for the same crate is the T4 bypass again, one layer down. No crate
+/// outside the monopoly declares any of these today (10 Oct 2026), so the
+/// declaration is the line: declaring one is red unless `SOCKET_LAYER_ROWS`
+/// says why, and `dependencies()` already sees through `package =` renames.
+const SOCKET_LAYER_CRATES: &[&str] = &["libc", "nix", "rustix", "windows-sys", "winapi", "windows"];
+
+/// `(crate directory, socket-layer package, why it is safe there)`. Empty.
+const SOCKET_LAYER_ROWS: &[(&str, &str, &str)] = &[];
+
+/// The functions a crate outside the monopoly may declare in an `extern` block.
+///
+/// AN ALLOW-LIST, BECAUSE A DENY-LIST OF NAMES CAN BE WALKED AROUND WITHOUT
+/// WRITING THE NAME. The review of 10 Oct 2026 compiled two such shapes with
+/// rustc on macOS and got a socket fd and a `connect` from each, while
+/// `raw_network` returned nothing: `#[link_name = concat!("soc", "ket")] fn
+/// tidy(..)`, and an extern block written by `macro_rules!` with the name as
+/// `$n`. So every foreign function is named here or is red, a `link_name` must
+/// be one string literal, and an extern block a macro fills in is red.
+/// `setsid`/`killpg` are tacet-tools' process-group calls (shell.rs,
+/// run_code.rs); `poll` is tacet-cli's piped-stdin check (main.rs).
+const EXTERN_FNS: &[&str] = &["setsid", "killpg", "poll"];
+
 /// Other agents' CLIs. Each one, spawned, sends the conversation to a hosted
 /// model — an outbound call that happens to go through `fork` instead of
 /// `connect`. The agent-session R&D (RG-33) plans readers for all three; the
@@ -187,6 +225,27 @@ const NAMED_NOT_RUN: &[(&str, &str)] = &[
     (
         "tacet-eval/src/routing.rs",
         "Docker compose yiginini yonetir.",
+    ),
+    // The agent-session ground (RG-01..05): `AgentKind`'s slug, the name its
+    // handoff files are written under, and its display name. Labels for a
+    // source, read by nothing that starts a process; the readers open local
+    // files only (`sessions::secrets`), and a write-back path would need a row
+    // in AGENT_CLI_SPAWNERS, not here.
+    ("tacet-tools/src/sessions/model.rs", "claude"),
+    ("tacet-tools/src/sessions/model.rs", "codex"),
+    ("tacet-tools/src/sessions/model.rs", "antigravity"),
+    ("tacet-tools/src/sessions/model.rs", "Claude Code"),
+    ("tacet-tools/src/sessions/model.rs", "Codex CLI"),
+    ("tacet-tools/src/sessions/model.rs", "Antigravity"),
+    // The write gate's refusal text, and a version string `claude --version`
+    // prints, fed to the parser in a test as a thing it must refuse.
+    (
+        "tacet-tools/src/sessions/version.rs",
+        "Antigravity storage is read-only to Tacet; only task.md may be written, behind the experimental flag",
+    ),
+    (
+        "tacet-tools/src/sessions/version.rs",
+        "2.1.285 (Claude Code)",
     ),
 ];
 
@@ -273,6 +332,23 @@ const RUNTIME_SPAWN_SITES: &[(&str, &str)] = &[
         "tacet-cli/src/addon.rs",
         "the compose command `compose_command` built from the literals `docker`/`docker-compose`",
     ),
+    (
+        "tacet-tools/src/write_code.rs",
+        "the python interpreter `discover` resolved, asked `find_spec` for a name (audit M3); \
+         its tests use a stand-in from a temp dir and fixed python paths",
+    ),
+    (
+        "tacet-tools/src/calendar.rs",
+        "a macOS-only test: the fixed path `/usr/bin/osascript`, pure date arithmetic",
+    ),
+    (
+        "tacet-cli/tests/the_nightly_script_names_real_flags.rs",
+        "a test helper called with the literals `git` and `bash`, inside a temp repository",
+    ),
+    (
+        "tacet-cli/tests/the_shell_budgets_its_tools.rs",
+        "`env!(\"CARGO_BIN_EXE_tacet\")`, the binary under test, on the scripted engine",
+    ),
 ];
 
 fn workspace_root() -> PathBuf {
@@ -333,6 +409,59 @@ fn exactly_two_crates_declare_an_http_client() {
          decision that belongs in the manifest's own rationale comment, not in \
          this list."
     );
+}
+
+/// See `SOCKET_LAYER_CRATES`. Read the same way as the HTTP clients: as TOML,
+/// renames and workspace inheritance included.
+#[test]
+fn no_crate_outside_the_monopoly_declares_a_socket_layer() {
+    let root = std::fs::read_to_string(workspace_root().join("Cargo.toml"))
+        .expect("the workspace manifest is readable");
+    let found = socket_layer_declarers(&root, &manifests());
+    assert!(
+        found.is_empty(),
+        "a crate outside the network monopoly declares a crate that binds the C or \
+         Windows socket calls; add a SOCKET_LAYER_ROWS entry that says why, or use \
+         tacet-web / tacet-mcp:\n  {}",
+        found.join("\n  ")
+    );
+}
+
+/// `crate: package` for every socket-layer crate a manifest outside `ALLOWED`
+/// declares (under any name) and no `SOCKET_LAYER_ROWS` entry covers.
+fn socket_layer_declarers(root: &str, manifests: &[(String, String)]) -> Vec<String> {
+    let root_deps = dependencies(root).unwrap_or_else(|e| panic!("<workspace>/Cargo.toml: {e}"));
+    let inherited: BTreeMap<String, String> = root_deps
+        .iter()
+        .filter(|d| d.table == DepTable::Workspace)
+        .map(|d| (d.alias.clone(), d.package()))
+        .collect();
+    let mut out = Vec::new();
+    for (name, text) in manifests {
+        if ALLOWED.contains(&name.as_str()) {
+            continue;
+        }
+        let deps = dependencies(text).unwrap_or_else(|e| panic!("{name}/Cargo.toml: {e}"));
+        for d in deps {
+            let package = if d.workspace {
+                inherited
+                    .get(&d.alias)
+                    .cloned()
+                    .unwrap_or_else(|| d.package())
+            } else {
+                d.package()
+            };
+            let reviewed = SOCKET_LAYER_ROWS
+                .iter()
+                .any(|(c, p, _)| *c == name && *p == package);
+            if SOCKET_LAYER_CRATES.contains(&package.as_str()) && !reviewed {
+                out.push(format!("{name}: {package} (as `{}`)", d.alias));
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// The manifests that declare an HTTP client, by crate, with what they declare.
@@ -896,6 +1025,100 @@ fn no_crate_outside_the_monopoly_reaches_an_http_client_through_the_graph() {
     );
 }
 
+/// A SOCKET LAYER CAN ARRIVE ONE CRATE REMOVED, as an HTTP client can, and
+/// then it is the FEATURE that opens the socket API: rustix's `net`, nix's
+/// `socket`/`net`. rustix is already in the graph (crossterm's terminal code),
+/// resolved 10 Oct 2026 with `alloc, default, fs, std, stdio, termios` and no
+/// `net`; a crate that switches `net` on hands every crate reaching rustix a
+/// socket without a declaration this file would read.
+///
+/// `windows-sys` IS NOT CHECKED THIS WAY, and that was measured: mio's `net`
+/// (see `HTTP_CRATES`) turns on `Win32_Networking_WinSock` for the same
+/// self-pipe, so the feature is on in today's graph for a reason everyone knows
+/// to ignore. The declaration check still covers it.
+#[test]
+fn no_crate_outside_the_monopoly_reaches_a_socket_layer_with_its_socket_feature_on() {
+    let offenders = socket_feature_offenders(&metadata());
+    assert!(
+        offenders.is_empty(),
+        "a crate outside the network monopoly reaches a socket layer with its \
+         socket API switched on:\n  {}",
+        offenders.join("\n  ")
+    );
+}
+
+/// `member -> package[feature]` for every socket-layer package resolved with
+/// its socket feature on and reachable from a member outside `ALLOWED`
+/// without passing through `ALLOWED`.
+fn socket_feature_offenders(meta: &serde_json::Value) -> Vec<String> {
+    const SOCKET_FEATURES: &[(&str, &[&str])] =
+        &[("rustix", &["net"]), ("nix", &["socket", "net"])];
+    let names: BTreeMap<&str, &str> = meta["packages"]
+        .as_array()
+        .expect("metadata has packages")
+        .iter()
+        .filter_map(|p| Some((p["id"].as_str()?, p["name"].as_str()?)))
+        .collect();
+    let nodes = meta["resolve"]["nodes"]
+        .as_array()
+        .expect("metadata has a resolved graph");
+    let edges: BTreeMap<&str, Vec<&str>> = nodes
+        .iter()
+        .filter_map(|n| {
+            let deps = n["deps"]
+                .as_array()?
+                .iter()
+                .filter_map(|d| d["pkg"].as_str())
+                .collect();
+            Some((n["id"].as_str()?, deps))
+        })
+        .collect();
+    let features: BTreeMap<&str, Vec<&str>> = nodes
+        .iter()
+        .filter_map(|n| {
+            let f = n["features"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                .unwrap_or_default();
+            Some((n["id"].as_str()?, f))
+        })
+        .collect();
+    let members: Vec<&str> = meta["workspace_members"]
+        .as_array()
+        .expect("metadata has workspace members")
+        .iter()
+        .filter_map(|m| m.as_str())
+        .collect();
+    let name = |id: &str| names.get(id).copied().unwrap_or("?").to_string();
+    let mut out = Vec::new();
+    for &start in &members {
+        if ALLOWED.contains(&name(start).as_str()) {
+            continue;
+        }
+        let mut queue = VecDeque::from([start]);
+        let mut seen = BTreeSet::from([start]);
+        while let Some(id) = queue.pop_front() {
+            if id != start && members.contains(&id) && ALLOWED.contains(&name(id).as_str()) {
+                continue;
+            }
+            let n = name(id);
+            if let Some((_, wanted)) = SOCKET_FEATURES.iter().find(|(p, _)| *p == n) {
+                for f in features.get(id).map(Vec::as_slice).unwrap_or_default() {
+                    if wanted.contains(f) {
+                        out.push(format!("{} -> {n}[{f}]", name(start)));
+                    }
+                }
+            }
+            for &next in edges.get(id).map(Vec::as_slice).unwrap_or_default() {
+                if seen.insert(next) {
+                    queue.push_back(next);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// EVERY SCAN IN THIS FILE STARTS FROM `crates/*/Cargo.toml`, and nothing
 /// made that the whole workspace. The review of 10 Oct 2026 named two ways
 /// out, both green: a path dependency outside `crates/` (`vendor/helper` with a
@@ -1088,16 +1311,68 @@ fn socket_offenders(crates: &Path) -> Vec<String> {
 }
 
 /// `(line, name)` for each way `toks` reaches the network without a client
-/// crate: a `std::net` connector, a resolver, or a `SOCKET_FFI` name declared in
-/// an `extern` block or called through `libc::`/`nix::`.
+/// crate: a `std::net` connector, a resolver, a `SOCKET_FFI` name declared in
+/// an `extern` block or called through a socket-layer crate under any name this
+/// file gives it, and any foreign function `EXTERN_FNS` does not list.
 fn raw_network(toks: &[rust_lex::Token]) -> Vec<(usize, String)> {
     use rust_lex::Kind;
     let mut out = Vec::new();
+    // THE ROOTS A SOCKET CALL IS REACHED THROUGH: the socket-layer crates by
+    // their own names, and every name this file gives one — `use libc as c`,
+    // `use libc::{self as c}`, `extern crate libc as sys`, `use rustix::net as
+    // n`, and an alias of an alias. See `SOCKET_LAYER_CRATES` for the review
+    // that compiled `use libc as c; c::socket(2, 1, 0)` past the spelling check.
+    let mut roots: BTreeSet<String> = ["libc", "nix", "rustix"].map(String::from).into();
+    loop {
+        let before = roots.len();
+        for (i, t) in toks.iter().enumerate() {
+            let from = match (t.kind, t.text.as_str()) {
+                (Kind::Ident, "use") => i + 1,
+                (Kind::Ident, "crate") if i >= 1 && toks[i - 1].text == "extern" => i + 1,
+                _ => continue,
+            };
+            let stmt: Vec<&rust_lex::Token> =
+                toks[from..].iter().take_while(|n| n.text != ";").collect();
+            let root = stmt.iter().find(|n| n.kind == Kind::Ident);
+            if !root.is_some_and(|r| roots.contains(&r.text)) {
+                continue;
+            }
+            for w in stmt.windows(2) {
+                if w[0].text == "as" && w[1].kind == Kind::Ident && w[1].text != "_" {
+                    roots.insert(w[1].text.clone());
+                }
+            }
+        }
+        if roots.len() == before {
+            break;
+        }
+    }
     let mut depth = 0usize;
     // The brace depth inside the innermost open `extern … {` block.
     let mut extern_at: Option<usize> = None;
+    // A `#[link_name = "…"]` waiting for the `fn` it renames.
+    let mut pending_link: Option<String> = None;
+    let mut macro_reported = false;
     let path_sep = |i: usize| {
         toks.get(i).is_some_and(|t| t.text == ":") && toks.get(i + 1).is_some_and(|t| t.text == ":")
+    };
+    // The first identifier of the path that ends at `toks[i]`, when `toks[i]`
+    // is reached through `::` (`libc::connect` → `libc`).
+    let path_root = |i: usize| -> Option<&str> {
+        if !(i >= 2 && path_sep(i - 2)) {
+            return None;
+        }
+        let mut k = i - 2;
+        let mut root = None;
+        while k >= 1 && toks[k - 1].kind == Kind::Ident {
+            root = Some(toks[k - 1].text.as_str());
+            if k >= 3 && path_sep(k - 3) {
+                k -= 3;
+            } else {
+                break;
+            }
+        }
+        root
     };
     for (i, t) in toks.iter().enumerate() {
         match (t.kind, t.text.as_str()) {
@@ -1105,12 +1380,22 @@ fn raw_network(toks: &[rust_lex::Token]) -> Vec<(usize, String)> {
             (Kind::Punct, "}") => {
                 if extern_at == Some(depth) {
                     extern_at = None;
+                    pending_link = None;
+                    macro_reported = false;
                 }
                 depth = depth.saturating_sub(1);
             }
             // `extern {`, `extern "C" {`, `unsafe extern "system" {` — not
-            // `extern crate` or `extern "C" fn` (a definition, not an import).
+            // `extern "C" fn` (a definition, not an import). `extern crate` of a
+            // socket layer is red on its own: the crate is the socket API.
             (Kind::Ident, "extern") => {
+                if toks.get(i + 1).is_some_and(|n| n.text == "crate")
+                    && toks.get(i + 2).is_some_and(|n| {
+                        SOCKET_LAYER_CRATES.contains(&n.text.replace('_', "-").as_str())
+                    })
+                {
+                    out.push((t.line, format!("extern crate {}", toks[i + 2].text)));
+                }
                 let mut j = i + 1;
                 if toks.get(j).is_some_and(|n| n.kind == Kind::Str) {
                     j += 1;
@@ -1119,40 +1404,64 @@ fn raw_network(toks: &[rust_lex::Token]) -> Vec<(usize, String)> {
                     extern_at = Some(depth + 1);
                 }
             }
+            // A `$` inside a foreign block: the block is a macro's template, and
+            // the names it declares are whatever the macro is called with.
+            (Kind::Punct, "$") if extern_at.is_some() && !macro_reported => {
+                macro_reported = true;
+                out.push((t.line, "extern block filled in by a macro".to_string()));
+            }
+            // `#[link_name = "connect"]` names the symbol; anything but one
+            // string literal there (`concat!(…)`, a `$x`) hides it.
+            (Kind::Ident, "link_name") if toks.get(i + 1).is_some_and(|n| n.text == "=") => {
+                let literal = toks.get(i + 2).is_some_and(|n| n.kind == Kind::Str)
+                    && toks.get(i + 3).is_some_and(|n| n.text == "]");
+                if literal {
+                    pending_link = Some(toks[i + 2].text.clone());
+                } else {
+                    out.push((t.line, "link_name that is not one literal".to_string()));
+                }
+            }
+            (Kind::Ident, "fn") if extern_at.is_some() => {
+                let link = pending_link.take();
+                if let Some(n) = toks.get(i + 1).filter(|n| n.kind == Kind::Ident) {
+                    let symbol = link.unwrap_or_else(|| n.text.clone());
+                    // A SOCKET_FFI symbol is reported by its own arm, once.
+                    if !SOCKET_FFI.contains(&symbol.as_str())
+                        && !EXTERN_FNS.contains(&symbol.as_str())
+                    {
+                        out.push((n.line, format!("extern fn {symbol} (not in EXTERN_FNS)")));
+                    }
+                }
+            }
             (Kind::Ident, name) if CONNECTORS.contains(&name) || RESOLVERS.contains(&name) => {
                 out.push((t.line, name.to_string()));
             }
             // `use libc::{socket, connect};` and `use libc::*;` leave the call
-            // site bare, so the import is where the name is: a glob, or a
-            // socket name anywhere in the braces.
+            // site bare, so the import is where the name is: a glob, a socket
+            // name, or rustix's whole `net` module anywhere in the braces.
             (Kind::Ident, "use") => {
                 let stmt: Vec<&rust_lex::Token> =
                     toks[i + 1..].iter().take_while(|n| n.text != ";").collect();
                 let root = stmt.iter().find(|n| n.kind == Kind::Ident);
-                if root.is_some_and(|r| r.text == "libc" || r.text == "nix")
-                    && stmt
-                        .iter()
-                        .any(|n| n.text == "*" || SOCKET_FFI.contains(&n.text.as_str()))
+                if root.is_some_and(|r| roots.contains(&r.text))
+                    && stmt.iter().any(|n| {
+                        n.text == "*" || n.text == "net" || SOCKET_FFI.contains(&n.text.as_str())
+                    })
                 {
                     out.push((t.line, format!("use {}", root.map_or("", |r| &r.text))));
                 }
             }
+            // `rustix::net::connect_v4`, `rustix::net::socket_with`: rustix
+            // spells its calls with suffixes no fixed name list keeps up with,
+            // and they all live under `net`.
+            (Kind::Ident, "net") if path_root(i).is_some_and(|r| roots.contains(r)) => {
+                out.push((t.line, format!("{}::net", path_root(i).unwrap_or_default())));
+            }
             (Kind::Ident | Kind::Str, name) if SOCKET_FFI.contains(&name) => {
                 let declared = extern_at.is_some();
-                // `libc::connect`, `nix::sys::socket::connect`, `nix::…::socket`.
-                let via_crate = i >= 2 && path_sep(i - 2) && {
-                    let mut k = i - 2;
-                    let mut root = None;
-                    while k >= 1 && toks[k - 1].kind == Kind::Ident {
-                        root = Some(toks[k - 1].text.as_str());
-                        if k >= 3 && path_sep(k - 3) {
-                            k -= 3;
-                        } else {
-                            break;
-                        }
-                    }
-                    matches!(root, Some("libc" | "nix"))
-                };
+                // `libc::connect`, `nix::sys::socket::connect`, `c::socket`
+                // after `use libc as c`.
+                let via_crate = path_root(i).is_some_and(|r| roots.contains(r));
                 if t.kind == Kind::Ident && (declared || via_crate)
                     || t.kind == Kind::Str && declared
                 {
@@ -1972,7 +2281,28 @@ fn runtime_spawn_sites(crates: &Path, listed: &[(&str, &str)]) -> Vec<String> {
                     names.insert(w[2].text.clone());
                 }
             }
-            for w in toks.windows(6) {
+            // `type Run = std::process::Command;` is the same alias as `use …
+            // as Run`, written another way.
+            for (i, t) in toks.iter().enumerate() {
+                if t.kind == Kind::Ident
+                    && t.text == "type"
+                    && toks.get(i + 2).is_some_and(|e| e.text == "=")
+                    && toks.get(i + 1).is_some_and(|n| n.kind == Kind::Ident)
+                {
+                    let rhs: Vec<&rust_lex::Token> =
+                        toks[i + 3..].iter().take_while(|n| n.text != ";").collect();
+                    if rhs.last().is_some_and(|l| l.text == "Command") {
+                        names.insert(toks[i + 1].text.clone());
+                    }
+                }
+            }
+            // A LITERAL IS ONE STRING AND THE CLOSING PARENTHESIS. The check
+            // used to stop at the first token, so `Command::new("cla".to_owned()
+            // + "ude")` — a `claude` spawn assembled at run time in a new,
+            // unlisted file — counted as a literal, and neither half names an
+            // agent CLI (review of 10 Oct 2026, confirmed in the real tree with
+            // the suite green). Anything after the string is run-time work.
+            for w in toks.windows(7) {
                 let call = w[0].kind == Kind::Ident
                     && names.contains(&w[0].text)
                     && w[1].text == ":"
@@ -1981,7 +2311,7 @@ fn runtime_spawn_sites(crates: &Path, listed: &[(&str, &str)]) -> Vec<String> {
                 if !call {
                     continue;
                 }
-                let literal = w[4].text == "(" && w[5].kind == Kind::Str;
+                let literal = w[4].text == "(" && w[5].kind == Kind::Str && w[6].text == ")";
                 if !literal {
                     out.push(format!("{}:{}", file.display(), w[0].line));
                 }
@@ -2277,6 +2607,96 @@ pub fn f() { unsafe { let fd = socket(2, 1, 0); connect(fd, std::ptr::null(), 16
     ws.write("tacet-x/src/lib.rs", ffi);
     let offenders = socket_offenders(&ws.0);
     assert_eq!(offenders.len(), 2, "{offenders:#?}");
+}
+
+/// The review of 10 Oct 2026, third pass: each of these compiled into
+/// tacet-tools (or, for the two extern shapes, under rustc on macOS with a
+/// socket fd to show for it) while the suite stayed green.
+#[test]
+fn a_socket_layer_under_another_name_or_behind_a_macro_is_a_socket() {
+    let lines = |src: &str| -> Vec<(usize, String)> { raw_network(&rust_lex::tokens(src)) };
+    // A second name for libc, three ways.
+    assert!(!lines("use libc as c;\nfn f() { unsafe { c::connect(3, p, 16) }; }").is_empty());
+    assert!(!lines("use libc::{self as c};\nfn f() { unsafe { c::socket(2, 1, 0) }; }").is_empty());
+    assert!(
+        !lines("extern crate libc as sys;\nfn f() { unsafe { sys::connect(3, p, 16) }; }")
+            .is_empty()
+    );
+    // An alias of the alias.
+    assert!(
+        lines("use libc as c;\nuse c as d;\nfn f() { unsafe { d::socket(2, 1, 0) }; }")
+            .iter()
+            .any(|(l, _)| *l == 3)
+    );
+    // rustix, whose calls carry suffixes no list keeps up with.
+    assert!(!lines("fn f() { rustix::net::connect(&fd, &a); }").is_empty());
+    assert!(!lines("fn f() { let s = rustix::net::socket_with(a, b, c, d); }").is_empty());
+    assert!(!lines("use rustix::net as n;\nfn f() { n::connect_v4(&fd, &a); }").is_empty());
+    // A name the scan cannot read in a foreign block.
+    assert!(!lines(
+        "extern \"C\" { #[link_name = concat!(\"soc\", \"ket\")] fn tidy(a: i32, b: i32, c: i32) -> i32; }"
+    )
+    .is_empty());
+    assert!(!lines(
+        "macro_rules! imp { ($n:ident) => { extern \"C\" { fn $n(a: i32) -> i32; } } }\nimp!(connect);"
+    )
+    .is_empty());
+    // And any foreign function nobody listed, whatever it is called.
+    assert_eq!(
+        lines("unsafe extern \"C\" { fn tidy(a: i32) -> i32; }"),
+        [(1, "extern fn tidy (not in EXTERN_FNS)".to_string())]
+    );
+    // NOT EVERYTHING: the tree's own three foreign functions, a libc-free
+    // `std::net` address type, and an unrelated alias.
+    assert!(lines("unsafe extern \"C\" { fn setsid() -> i32; fn killpg(g: i32, s: i32) -> i32; fn poll(f: *mut u8, n: u64, t: i32) -> i32; }").is_empty());
+    assert!(
+        lines(
+            "use std::net::IpAddr; use std::process::Command as Run; fn f() { Run::new(\"ls\"); }"
+        )
+        .is_empty()
+    );
+
+    // The manifest side: a socket layer declared under any name, inherited or
+    // not, is red outside the monopoly and not inside it.
+    let found = socket_layer_declarers(
+        "[workspace.dependencies]\nsys = { package = \"libc\", version = \"0.2\" }\n",
+        &[
+            ("tacet-tools".into(), "[dependencies]\nc = { package = \"libc\", version = \"0.2\" }\n".into()),
+            ("tacet-eval".into(), "[target.'cfg(unix)'.dependencies]\nrustix = { version = \"1\", features = [\"net\"] }\n".into()),
+            ("tacet-zip".into(), "[dependencies]\nsys.workspace = true\n".into()),
+            ("tacet-web".into(), "[dependencies]\nlibc = \"0.2\"\n".into()),
+        ],
+    );
+    assert_eq!(
+        found,
+        [
+            "tacet-eval: rustix (as `rustix`)",
+            "tacet-tools: libc (as `c`)",
+            "tacet-zip: libc (as `sys`)",
+        ]
+    );
+
+    // The graph side: rustix one crate removed, with and without `net`.
+    let meta = |features: serde_json::Value| {
+        serde_json::json!({
+            "packages": [
+                {"id": "cli", "name": "tacet-cli"},
+                {"id": "term", "name": "crossterm"},
+                {"id": "rx", "name": "rustix"},
+            ],
+            "workspace_members": ["cli"],
+            "resolve": {"nodes": [
+                {"id": "cli", "deps": [{"pkg": "term"}], "features": []},
+                {"id": "term", "deps": [{"pkg": "rx"}], "features": []},
+                {"id": "rx", "deps": [], "features": features},
+            ]},
+        })
+    };
+    assert!(socket_feature_offenders(&meta(serde_json::json!(["std", "termios"]))).is_empty());
+    assert_eq!(
+        socket_feature_offenders(&meta(serde_json::json!(["std", "net"]))),
+        ["tacet-cli -> rustix[net]"]
+    );
 }
 
 #[test]
@@ -2601,8 +3021,26 @@ fn a_spawn_from_a_variable_is_red_until_it_is_listed() {
         "tacet-x/src/literal.rs",
         "fn f() { Command::new(\"ls\"); Command::new(r\"ps\"); }\n",
     );
+    // The review of 10 Oct 2026: a literal first token is not a literal
+    // argument, and a `type` alias is an alias.
+    ws.write(
+        "tacet-x/src/assembled.rs",
+        "fn f() { std::process::Command::new(\"cla\".to_owned() + \"ude\").arg(\"-p\"); }\n",
+    );
+    ws.write(
+        "tacet-x/src/typealias.rs",
+        "type Run = std::process::Command;\nfn f(p: &str) { Run::new(p); }\n",
+    );
     let sites = runtime_spawn_sites(&ws.0, &[]);
-    assert_eq!(sites.len(), 2, "{sites:#?}");
+    assert_eq!(sites.len(), 4, "{sites:#?}");
+    assert!(
+        sites.iter().any(|s| s.ends_with("assembled.rs:1")),
+        "{sites:#?}"
+    );
+    assert!(
+        sites.iter().any(|s| s.ends_with("typealias.rs:2")),
+        "{sites:#?}"
+    );
     assert!(
         sites.iter().any(|s| s.ends_with("alias.rs:2")),
         "{sites:#?}"
@@ -2611,7 +3049,12 @@ fn a_spawn_from_a_variable_is_red_until_it_is_listed() {
         sites.iter().any(|s| s.ends_with("concat.rs:1")),
         "{sites:#?}"
     );
-    let listed = [("src/alias.rs", "a test"), ("src/concat.rs", "a test")];
+    let listed = [
+        ("src/alias.rs", "a test"),
+        ("src/concat.rs", "a test"),
+        ("src/assembled.rs", "a test"),
+        ("src/typealias.rs", "a test"),
+    ];
     assert!(runtime_spawn_sites(&ws.0, &listed).is_empty());
 }
 

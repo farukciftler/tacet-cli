@@ -300,8 +300,11 @@ fn create_exclusive(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// `linux/gnu/b32/{x86,arm,powerpc}`, `android/b64/*`). An architecture not
 /// listed gets `0` — no extra flag — because a guessed bit can be some other
 /// flag; `create_new` still refuses an existing path there.
+///
+/// `pub(crate)` because `run_code::create_script` takes its bit from here too:
+/// one table, so an architecture added once is right in both.
 #[cfg(any(unix, test))]
-fn o_nofollow_for(os: &str, arch: &str) -> i32 {
+pub(crate) fn o_nofollow_for(os: &str, arch: &str) -> i32 {
     match (os, arch) {
         ("macos" | "ios", _) => 0x0100,
         ("linux" | "android", "x86" | "x86_64" | "riscv64" | "s390x" | "loongarch64") => 0x20000,
@@ -1965,6 +1968,24 @@ mod tests {
         // The date is text: nothing here does date arithmetic.
         assert!(sheet.contains(">2027-03-14<"), "{sheet}");
         fs::remove_dir_all(&root).ok();
+    }
+
+    /// AUDIT M21: both READMEs quote the countdown demo, and the formula they
+    /// name has to be the one `the_countdown_demo_writes_a_sum_and_nothing_else`
+    /// shows the tool writing. The page once said `=DATEDIF()`, which no line of
+    /// this crate produces.
+    #[test]
+    fn the_readme_demo_names_the_formula_the_tool_writes() {
+        let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for page in ["../../README.md", "../tacet-cli/README.md"] {
+            let text = fs::read_to_string(crate_dir.join(page)).unwrap();
+            let line = text
+                .lines()
+                .find(|l| l.contains("countdown.xlsx, one row"))
+                .unwrap_or_else(|| panic!("{page}: the countdown demo line is gone"));
+            assert!(!line.contains("DATEDIF"), "{page}: {line}");
+            assert!(line.contains("=SUM()"), "{page}: {line}");
+        }
     }
 
     /// Without XML escaping the produced sheet becomes unopenable.

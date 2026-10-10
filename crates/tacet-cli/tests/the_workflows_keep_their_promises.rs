@@ -422,6 +422,26 @@ fn a_release_is_published_only_after_its_tests_pass() {
          it whatever the tests did, and no condition here is needed",
         publish.key("if").join(" ")
     );
+
+    // AND THE COMMIT TESTED IS THE COMMIT TAGGED. A checkout with `ref: main`
+    // in `verify` kept every check above green while the tests ran on main and
+    // the tag on another commit was published (review of 10 Oct 2026) — half
+    // of M26 was "nothing checked CI on the tagged commit". No checkout in a
+    // job that tests or builds what ships may name another ref or repository.
+    for name in testers.iter().map(|t| t.name.as_str()).chain(["build"]) {
+        for step in job(&all, name).steps() {
+            if !step.iter().any(|l| l.contains("actions/checkout@")) {
+                continue;
+            }
+            for key in ["ref", "repository"] {
+                assert!(
+                    step_key(&step, key).is_none(),
+                    "job {name:?} checks out `{key}: {}`, not the tagged commit",
+                    step_key(&step, key).unwrap_or_default()
+                );
+            }
+        }
+    }
 }
 
 /// M27 — THE CHECKS ONLY THIS REPOSITORY CAN BREAK ARE A HARD GATE.
@@ -554,12 +574,19 @@ fn every_gate_contributing_lists_runs_on_a_pull_request() {
     );
 
     let ci = read(".github/workflows/ci.yml");
+    let on = top_level(&ci, "on").unwrap_or_default();
+    let pr = on
+        .iter()
+        .position(|l| l.trim().trim_end_matches(':') == "pull_request")
+        .expect("ci.yml no longer runs on pull requests");
+    // EVERY pull request, not some. `paths: ["docs/**"]` under `pull_request:`
+    // kept this green while CI skipped every code change (review of 10 Oct
+    // 2026); `branches`, `paths-ignore` and `types` narrow it the same way.
+    // Nothing nested under it is the only shape that is "every".
+    let filters = nested(&on, pr);
     assert!(
-        top_level(&ci, "on")
-            .unwrap_or_default()
-            .iter()
-            .any(|l| l.trim().trim_end_matches(':') == "pull_request"),
-        "ci.yml no longer runs on pull requests"
+        filters.is_empty(),
+        "ci.yml runs only on some pull requests: {filters:?}"
     );
     // RUNNING IT IS NOT GATING ON IT. This first checked only that the command
     // text appeared in some `run:`; review put `continue-on-error: true` and,
@@ -651,16 +678,27 @@ fn the_sbom_is_covered_by_the_checksums_and_the_attestation() {
 #[test]
 fn every_release_binary_is_asked_for_its_features() {
     let text = read(".github/workflows/release.yml");
-    let steps = job(&jobs(&text), "build").steps();
+    let all = jobs(&text);
+    let build = job(&all, "build");
+    let steps = build.steps();
     let check = steps
         .iter()
         .find(|s| s.join("\n").contains("--print-features"))
         .expect("the build job no longer asks the binary for its features");
+    // ASKED IS NOT ENOUGH; THE ANSWER HAS TO STOP THE UPLOAD. This first
+    // rejected only an `if:` on the step, and the review of 10 Oct 2026 put
+    // `continue-on-error: true` on it and stayed green: a binary built without
+    // `candle` failed its check, uploaded anyway, and `publish` shipped it. The
+    // same helpers M26-M28 use, on the step and on its job.
     assert!(
-        !check
-            .iter()
-            .any(|l| l.trim().trim_start_matches("- ").starts_with("if:")),
-        "the feature check is conditional again, so some target ships unasked: {check:?}"
+        step_loopholes(check).is_empty(),
+        "the feature check can fail without stopping the build: {:?}",
+        step_loopholes(check)
+    );
+    assert!(
+        build.loopholes().is_empty(),
+        "the build job can fail without stopping the release: {:?}",
+        build.loopholes()
     );
     assert!(
         check.iter().any(|l| l.trim() == "shell: pwsh"),
@@ -680,9 +718,28 @@ fn the_release_builds_from_nothing() {
     // `~/.cargo` is the same poisoning with a different spelling, and this
     // guard read only the first one. Any action with `cache` in its name, and
     // any `cache…:` input switching one on inside another action.
+    // AN ALLOW-LIST, NOT A NAME CHECK. `actions-rust-lang/setup-rust-toolchain`
+    // restores rust-cache by DEFAULT, with no input and no `cache` in its name,
+    // and swapping it in for dtolnay's kept the old check green (review of 10
+    // Oct 2026). Adding an action to a release is a decision to read it first.
+    const RELEASE_ACTIONS: &[&str] = &[
+        "actions/checkout",
+        "dtolnay/rust-toolchain",
+        "actions/upload-artifact",
+        "actions/download-artifact",
+        "anchore/sbom-action",
+        "actions/attest-build-provenance",
+        "softprops/action-gh-release",
+    ];
     for line in text.lines() {
         let setting = line.trim().trim_start_matches("- ");
         if let Some(action) = setting.strip_prefix("uses:") {
+            let name = action.trim().split('@').next().unwrap_or("");
+            assert!(
+                RELEASE_ACTIONS.contains(&name),
+                "release.yml uses `{name}`, which is not on the list of actions read for \
+                 caching; read it and add it to RELEASE_ACTIONS if it restores nothing"
+            );
             assert!(
                 !action.to_ascii_lowercase().contains("cache"),
                 "release.yml uses `{}`, a cache another branch's run may have written",

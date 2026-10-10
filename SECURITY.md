@@ -26,7 +26,14 @@ not send their data anywhere. Anything that breaks one of those is in scope:
 * **Sandbox escape.** `run_code` and `write_code` execute model-written code
   behind `bwrap` (Linux) or `sandbox-exec` (macOS) with no network. Reading a
   file outside the sandbox, opening a socket from inside it, or outliving the
-  timeout is a vulnerability.
+  timeout is a vulnerability. On Linux one limit is known and stated, not
+  hidden: `bwrap` shadows the runtime socket directories (`/run`,
+  `$XDG_RUNTIME_DIR`, `/tmp/.X11-unix`), the LXD, Incus, Multipass and MicroK8s
+  API sockets, `$SSH_AUTH_SOCK`, every socket `/proc/net/unix` lists as bound
+  in the host's network namespace, and sockets up to two levels deep in
+  `/tmp`, `$TMPDIR` and a working folder outside `$HOME`. A socket bound in
+  another network namespace (a container's) in a place none of those names is
+  still reachable; a report naming one that matters is in scope.
 * **Path escape.** Every tool that touches the filesystem resolves through
   `sandbox_path`. Reaching a file outside the working directory and the
   registered workspace roots — through a symlink, a `..`, a device path, a

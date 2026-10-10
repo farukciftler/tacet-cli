@@ -99,7 +99,8 @@ fn the_router_selected_prompt_fits_a_4096_window_with_a_full_directory_block() {
         };
         // The user's words reach the model whole.
         assert_eq!(
-            prompt.question, message,
+            prompt.question(),
+            message,
             "{message:?}: the question was cut ({before} tokens)"
         );
         assert!(!report.question_truncated && !report.fixed_part_too_large);

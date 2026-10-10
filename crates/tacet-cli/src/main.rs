@@ -969,23 +969,24 @@ fn apply_workspace_roots(color: &Color) {
     }
 }
 
-/// The thinking switch for Qwen3-family (ChatML) engines: `tacet config set
-/// thinking on|off|auto` read here, the rule itself in
+/// The thinking switch for Qwen3-family (ChatML) engines, with `tacet config
+/// set thinking on|off|auto` passed in, the rule itself in
 /// `tacet_engine::thinking_switch`. The caller has already checked the
 /// template is ChatML.
 ///
-/// NO COPY OF THE RULE LIVES HERE ANY MORE (audit M23). This function used to
-/// carry its own keyword list and its own 220-character threshold while the
-/// eval called the engine's; nothing linked the two, and a reviewer changed this
-/// threshold to 20 with every test in the workspace staying green. The shell and
-/// the eval now call one function, and `the_shells_switch_is_the_engines` fails
-/// if a private rule is ever put back.
-fn thinking_switch(message: &str) -> &'static str {
-    thinking_switch_for(config::get_str("thinking").as_deref(), message)
-}
-
-/// `thinking_switch` with the config value passed in, so a test can run the
-/// shell's path without reading the user's config file.
+/// NO COPY OF THE RULE LIVES HERE ANY MORE (audit M23). The shell's function
+/// used to carry its own keyword list and its own 220-character threshold
+/// while the eval called the engine's; nothing linked the two, and a reviewer
+/// changed this threshold to 20 with every test in the workspace staying green.
+/// `the_shells_switch_is_the_engines` fails if a private rule is put back HERE.
+///
+/// AND THIS IS THE FUNCTION THE TURN LOOP CALLS, with no wrapper between. A
+/// one-line `thinking_switch(message)` that read the config and called this
+/// used to sit in between, and the review of 10 Oct 2026 put `if
+/// message.chars().count() > 20 { return " /think"; }` at its top with every
+/// tacet-cli test green: the test held the helper, the loop called the
+/// wrapper. `chat::window_refusal_tests::the_turn_loop_calls_the_tested_switch`
+/// holds the call site to this name.
 fn thinking_switch_for(setting: Option<&str>, message: &str) -> &'static str {
     tacet_engine::thinking_switch::soft_switch(
         tacet_engine::Template::ChatML,

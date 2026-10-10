@@ -60,10 +60,11 @@ cd "$REPO" || exit 1
 # different code starts a new one, because the cases are not comparable across
 # a code change.
 #
-# TWO THINGS KEEP TWO BUILDS APART, and either alone would do. This directory
-# is the first. The journal's own stamp (`JournalStamp`) is the second: it
-# hashes the commit, the uncommitted edits (untracked files included), the
-# prompt text and every case, and refuses a journal stamped for anything else.
+# THIS DIRECTORY IS WHAT KEEPS TWO BUILDS APART. The journal's own stamp
+# (`JournalStamp`) now also hashes the commit, the uncommitted edits (untracked
+# files included), the prompt text and every case, and refuses a journal
+# stamped for anything else — a second lock, not the one this key leans on: a
+# stamp that once held no commit at all is how two builds were mixed before.
 #
 # NO DATE IN IT. It used to be `<yyyymmdd>-<commit>`, so a run interrupted at
 # 02:00 and re-run after midnight — the common case for a job that starts at
