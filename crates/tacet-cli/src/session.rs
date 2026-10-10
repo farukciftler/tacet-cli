@@ -107,13 +107,24 @@ const PREVIEW_CHARS: usize = 60;
 /// KEPT HERE, NEXT TO THE CODE THAT DOES IT. A privacy claim that lives in the
 /// UI layer drifts from the behaviour it describes the first time this file
 /// changes; the sentence and the write are in the same file on purpose.
+///
+/// IT NO LONGER SAYS "THE FOLDER IS THE ONLY COPY" (audit L29/L27, found in
+/// review). Since `--continue` carries the conversation it resumes into the
+/// new file, one conversation can live in several files, and deleting the one
+/// a user remembers does not forget it. And the receipt log sits beside the
+/// folder, not in it: until receipt format 2 it held each tool chip's words.
+/// The sentence a user acts on has to name both, and the one command that
+/// takes everything.
 pub const PRIVACY_NOTICE: &str = "\
 Your conversation is written to disk: role, message text, the tools that ran, \
 and the time. ANYTHING YOU PIPE IN IS PART OF THE MESSAGE and is stored with \
 it, so `cat secrets.env | tacet -m ...` puts that file in the transcript. It \
 stays on this machine and is never sent anywhere. It is kept \
 in the 'sessions' folder of your config directory, readable only by you \
-(0700/0600). Delete it any time — the folder is the only copy.";
+(0700/0600). A conversation resumed with --continue or --session is copied \
+into each new file, so deleting one file does not forget it. \
+`tacet sessions --purge` deletes every conversation, and the log of tool runs \
+that `tacet log` shows with them.";
 
 // ── The record ──────────────────────────────────────────────────────────────
 
@@ -665,6 +676,24 @@ mod tests {
 
     fn user(text: &str) -> Turn {
         Turn::new(Role::User, text)
+    }
+
+    /// The notice is the sentence a user acts on. It used to end "the folder
+    /// is the only copy", which stopped being true when `--continue` began
+    /// copying the conversation it resumes, and it never named the receipt
+    /// log that sits outside the folder.
+    #[test]
+    fn the_notice_tells_how_to_forget_a_continued_conversation() {
+        assert!(
+            !PRIVACY_NOTICE.contains("only copy"),
+            "the notice still promises one copy: {PRIVACY_NOTICE}"
+        );
+        for needed in ["--continue", "copied", "sessions --purge", "tacet log"] {
+            assert!(
+                PRIVACY_NOTICE.contains(needed),
+                "the notice does not say {needed:?}: {PRIVACY_NOTICE}"
+            );
+        }
     }
 
     /// THE POINT OF THE WHOLE MODULE: what was said is still there after the

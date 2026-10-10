@@ -82,7 +82,23 @@ pub fn purge_in(dir: &Path) -> Result<usize, String> {
     let count = std::fs::read_to_string(dir.join(FILE))
         .map(|raw| raw.lines().filter(|l| !l.trim().is_empty()).count())
         .unwrap_or(0);
-    for path in files_in(dir) {
+    // Then what a crash can leave beside them: a take-over guard
+    // (`receipts.lock.break.*`) or a head that never got renamed into place
+    // (`receipts.head.<pid>.<n>`). Neither holds a word, but a purge that
+    // leaves files named "receipts" behind does not look like one.
+    let leftovers: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                        n.starts_with(&format!("{LOCK}.")) || n.starts_with(&format!("{HEAD}."))
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    for path in files_in(dir).into_iter().chain(leftovers) {
         match std::fs::remove_file(&path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -151,7 +167,28 @@ fn append_in(dir: &Path, at: u64, kind: &str, chars: u64, state: &str) -> std::i
     let _lock = DirLock::acquire(&dir.join(LOCK))?;
     let path = dir.join(FILE);
 
-    let (count, prev) = tail(&path);
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let (count, prev) = tail(&lines);
+    // THE HEAD ON DISK IS EVIDENCE, NOT A CACHE (audit L26, found in review).
+    // Rebuilding it from the log alone meant the first append after a cut
+    // rewrote the head to fit the shortened log: five receipts, two cut off
+    // the end, one more tool run, and `tacet log` answered "chain intact, tail
+    // matches its head". So the head moves forward only from a log that still
+    // reaches it. Otherwise the receipt is still written and the head is left
+    // where it was. From then on the log is either shorter than the head
+    // (TailCut) or holds a different entry where the head points (Diverged),
+    // and that stays true however many receipts follow, until
+    // `sessions --purge` starts a new log. A head file that exists but cannot
+    // be parsed is kept for the same reason: overwriting it would turn
+    // "something is wrong here" into "intact".
+    let head_path = dir.join(HEAD);
+    let advance = match read_head(dir) {
+        Some(head) => {
+            judge(lines.len() as u64, |i| line_hash(lines[i]), &head) == HeadVerdict::Reached
+        }
+        None => !head_path.exists(),
+    };
     let payload = canonical(at, kind, chars, state);
     let hash = tacet_web::download::sha256_hex(format!("{prev}{payload}").as_bytes());
     let line = serde_json::json!({
@@ -175,23 +212,31 @@ fn append_in(dir: &Path, at: u64, kind: &str, chars: u64, state: &str) -> std::i
     // entry behind the log, which `check_head` reads as "the head lags" — the
     // log still reaches it. The other order would leave a head pointing past
     // the end, which is exactly what a cut tail looks like.
-    write_head(dir, count + 1, &hash)
+    if advance {
+        write_head(dir, count + 1, &hash)?;
+    }
+    Ok(())
 }
 
 /// How many entries the log has and the hash of the last one. A log that does
 /// not end in a readable line counts what it can and chains from what it last
 /// read; the verifier will name the break, and that is its job, not this one's.
-fn tail(path: &Path) -> (u64, String) {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return (0, GENESIS.to_string());
-    };
-    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+fn tail(lines: &[&str]) -> (u64, String) {
     let last = lines
         .last()
-        .and_then(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-        .and_then(|v| v.get("hash").and_then(|h| h.as_str()).map(str::to_string))
+        .and_then(|l| line_hash(l))
         .unwrap_or_else(|| GENESIS.to_string());
     (lines.len() as u64, last)
+}
+
+/// The `hash` a line claims. Unverified: `append_in` only needs to know where
+/// the head points, and `verify` is what checks that the claim is true.
+fn line_hash(line: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(line)
+        .ok()?
+        .get("hash")?
+        .as_str()
+        .map(str::to_string)
 }
 
 /// Written to a temp name and renamed, so a reader never sees half a head.
@@ -220,37 +265,61 @@ fn read_head(dir: &Path) -> Option<(u64, String)> {
     ))
 }
 
-/// The append lock: a file created with `create_new`, removed on drop.
+/// The append lock: a file created with `create_new`, holding a token that is
+/// unique to this acquisition, removed on drop.
+///
+/// TAKING OVER A STALE LOCK IS WHERE THE RACE WAS (audit L28, found in review).
+/// The first version removed any lock older than `LOCK_STALE`. Two waiters
+/// could both see a crashed writer's lock as stale; A removed it and created
+/// its own, and B, still acting on what it had seen, removed A's fresh lock and
+/// created a third. Both then held "the" lock and the chain could fork, for
+/// good. Renaming the stale lock away does not close this: B's rename moves A's
+/// fresh lock just as easily as its remove did.
+///
+/// What closes it: the token. A waiter that judges the lock stale remembers
+/// the token it read, and before removing anything it takes a second
+/// `create_new` file named after THAT token (`take_over`). Under that guard it
+/// removes the lock only if the lock still carries the token. Tokens are never
+/// reused, so a lock that still carries it is the stale one, and only the
+/// guard holder can remove it in the meantime. A waiter that arrives late finds
+/// the guard taken, or finds a different token, and leaves the new lock alone.
+/// Release goes through the same guard (`Drop`), so a holder that outlived
+/// `LOCK_STALE` (stopped, swapped out) does not remove the lock of the session
+/// that took over from it.
+///
+/// WHAT IS LEFT: a guard can go stale too, if a process dies in the
+/// microseconds between taking it and removing it. A stale guard is removed
+/// plainly, and two waiters racing over THAT is the old race again, one level
+/// down. It needs a crash inside a take-over that itself followed a crash.
 struct DirLock {
     path: PathBuf,
+    token: String,
 }
 
 impl DirLock {
     fn acquire(path: &Path) -> std::io::Result<Self> {
+        let token = fresh_token();
         let deadline = Instant::now() + LOCK_WAIT;
         loop {
-            let mut options = std::fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            match options.open(path) {
-                Ok(_) => {
+            match create_exclusive(path) {
+                Ok(mut f) => {
+                    // A fresh lock cannot be judged stale for LOCK_STALE, so
+                    // nobody else can have removed it before this cleanup.
+                    if let Err(e) = f.write_all(token.as_bytes()) {
+                        drop(f);
+                        let _ = std::fs::remove_file(path);
+                        return Err(e);
+                    }
                     return Ok(Self {
                         path: path.to_path_buf(),
+                        token,
                     });
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let stale = std::fs::metadata(path)
-                        .and_then(|m| m.modified())
-                        .ok()
-                        .and_then(|t| t.elapsed().ok())
-                        .is_some_and(|age| age > LOCK_STALE);
-                    if stale {
-                        let _ = std::fs::remove_file(path);
-                        continue;
+                    if let Some(seen) = stale_token(path) {
+                        if take_over(path, &seen) {
+                            continue;
+                        }
                     }
                     if Instant::now() >= deadline {
                         return Err(std::io::Error::new(
@@ -268,8 +337,94 @@ impl DirLock {
 
 impl Drop for DirLock {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        // No guard means a waiter is taking this lock over as stale: the lock
+        // file is the waiter's to remove now, and it may already be its own.
+        let guard = guard_for(&self.path, &self.token);
+        if create_exclusive(&guard).is_ok() {
+            if std::fs::read_to_string(&self.path).is_ok_and(|t| t == self.token) {
+                let _ = std::fs::remove_file(&self.path);
+            }
+            let _ = std::fs::remove_file(&guard);
+        }
     }
+}
+
+fn create_exclusive(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
+/// Unique per acquisition, not per process: threads of one process take the
+/// lock too, and a token two holders share would let each release the other.
+fn fresh_token() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!(
+        "{}-{nanos}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn is_stale(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age > LOCK_STALE)
+}
+
+/// The token of a lock old enough to be a crashed writer's. A lock left by a
+/// version before the token, or by a crash between create and write, is empty,
+/// and the empty string is as good a token as any.
+fn stale_token(path: &Path) -> Option<String> {
+    if !is_stale(path) {
+        return None;
+    }
+    std::fs::read_to_string(path).ok()
+}
+
+/// The guard for one token. Named by a hash so that whatever is in a lock file
+/// cannot steer the name outside the directory.
+fn guard_for(lock: &Path, token: &str) -> PathBuf {
+    let mut name = lock.as_os_str().to_owned();
+    name.push(".break.");
+    name.push(&tacet_web::download::sha256_hex(token.as_bytes())[..16]);
+    PathBuf::from(name)
+}
+
+/// Removes the lock if, and only if, it still carries `seen`. Returns whether
+/// it was removed. See `DirLock` for why the guard is what makes this safe.
+fn take_over(lock: &Path, seen: &str) -> bool {
+    let guard = guard_for(lock, seen);
+    match create_exclusive(&guard) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            if is_stale(&guard) {
+                let _ = std::fs::remove_file(&guard);
+            }
+            return false;
+        }
+        Err(_) => return false,
+    }
+    // BOTH, not just the token: the empty token is not unique. A lock is empty
+    // for the instant between its create and its write, and a waiter that saw
+    // an old empty lock would otherwise take that instant for the stale one.
+    let still_stale = std::fs::read_to_string(lock).is_ok_and(|t| t == seen) && is_stale(lock);
+    if still_stale {
+        let _ = std::fs::remove_file(lock);
+    }
+    let _ = std::fs::remove_file(&guard);
+    still_stale
 }
 
 /// One verified entry, parsed for display.
@@ -349,10 +504,27 @@ enum HeadVerdict {
 }
 
 fn check_head(entries: &[Entry], head: Option<&(u64, String)>) -> HeadVerdict {
-    let Some((count, hash)) = head else {
+    let Some(head) = head else {
         return HeadVerdict::Unrecorded;
     };
-    let found = entries.len() as u64;
+    judge(
+        entries.len() as u64,
+        |i| Some(entries[i].hash.clone()),
+        head,
+    )
+}
+
+/// The one rule for "does this log reach this head", shared by `tacet log`
+/// and by `append_in` deciding whether it may move the head. Two copies of it
+/// would drift, and the drift would be a log that the writer calls fine and
+/// the reader calls cut. `hash_at(i)` is the hash of 0-based entry `i`, asked
+/// only for `i < found`.
+fn judge(
+    found: u64,
+    hash_at: impl Fn(usize) -> Option<String>,
+    head: &(u64, String),
+) -> HeadVerdict {
+    let (count, hash) = head;
     if found < *count {
         return HeadVerdict::TailCut {
             expected: *count,
@@ -367,8 +539,8 @@ fn check_head(entries: &[Entry], head: Option<&(u64, String)>) -> HeadVerdict {
     if found > count + 1 {
         return HeadVerdict::Diverged { at: *count };
     }
-    match entries.get(*count as usize - 1) {
-        Some(e) if &e.hash == hash => HeadVerdict::Reached,
+    match hash_at(*count as usize - 1) {
+        Some(h) if &h == hash => HeadVerdict::Reached,
         _ => HeadVerdict::Diverged { at: *count },
     }
 }
@@ -612,6 +784,156 @@ mod tests {
         record_in(&dir, 2, &trace("calc", "b")).unwrap();
         write_head(&dir, head.0, &head.1).unwrap();
         assert_eq!(verdict(&dir), Ok(HeadVerdict::Reached));
+        // And the next append catches the head up: the crash window is not
+        // evidence to keep, it is the one lag the head is allowed.
+        record_in(&dir, 3, &trace("calc", "c")).unwrap();
+        assert_eq!(read_head(&dir).map(|h| h.0), Some(3));
+        assert_eq!(verdict(&dir), Ok(HeadVerdict::Reached));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// AUDIT L26, the hole a review found: the next append used to rebuild the
+    /// head from the log, so one normal tool run after a cut rewrote the head
+    /// to fit and `tacet log` said "chain intact, tail matches its head". The
+    /// cut has to stay visible however many receipts follow it.
+    #[test]
+    fn a_cut_tail_stays_caught_after_more_receipts() {
+        let dir = temp_dir("cut-then-append");
+        for i in 0..5 {
+            record_in(&dir, i, &trace("calc", "1+1 = 2")).unwrap();
+        }
+        let path = dir.join(FILE);
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let kept: Vec<&str> = raw.lines().take(3).collect();
+        std::fs::write(&path, kept.join("\n") + "\n").unwrap();
+
+        record_in(&dir, 10, &trace("calc", "one more turn")).unwrap();
+        assert_eq!(
+            verdict(&dir),
+            Ok(HeadVerdict::TailCut {
+                expected: 5,
+                found: 4
+            }),
+            "one append after the cut wiped the evidence of it"
+        );
+        for i in 11..14 {
+            record_in(&dir, i, &trace("calc", "and more")).unwrap();
+        }
+        assert_eq!(
+            verdict(&dir),
+            Ok(HeadVerdict::Diverged { at: 5 }),
+            "the cut was forgotten once the log grew back past the head"
+        );
+        assert_eq!(log_in(&dir, true, 5, &Color::plain()), ExitCode::FAILURE);
+        // The receipts themselves were still written: the head is frozen, the
+        // log is not.
+        let entries = verify(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(entries.len(), 7);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The same for a head that is there but cannot be read: rewriting it
+    /// would turn "something is wrong" into "intact".
+    #[test]
+    fn a_head_that_cannot_be_read_is_not_overwritten() {
+        let dir = temp_dir("garbled-head");
+        record_in(&dir, 1, &trace("calc", "a")).unwrap();
+        std::fs::write(dir.join(HEAD), "not a head").unwrap();
+        record_in(&dir, 2, &trace("calc", "b")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join(HEAD)).unwrap(),
+            "not a head",
+            "an unreadable head was replaced by one the log agrees with"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn age(path: &Path) {
+        let old = std::time::SystemTime::now() - Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+    }
+
+    /// AUDIT L28, the take-over race a review found. Two waiters both saw the
+    /// crashed writer's lock as stale; the first removed it and took the lock.
+    /// The second, acting on what it saw before, must not remove the FIRST
+    /// one's lock — that is two holders and a forked chain.
+    #[test]
+    fn a_late_taker_leaves_the_new_lock_alone() {
+        let dir = temp_dir("takeover");
+        std::fs::create_dir_all(&dir).unwrap();
+        let lock = dir.join(LOCK);
+        std::fs::write(&lock, "a crashed writer").unwrap();
+        age(&lock);
+
+        // Both waiters look before either acts.
+        let seen_by_a = stale_token(&lock).expect("the premise: the lock is stale");
+        let seen_by_b = stale_token(&lock).expect("the premise: the lock is stale");
+
+        assert!(
+            take_over(&lock, &seen_by_a),
+            "A could not take a stale lock"
+        );
+        let held_by_a = DirLock::acquire(&lock).unwrap();
+
+        assert!(!take_over(&lock, &seen_by_b), "B took over a lock A holds");
+        assert_eq!(
+            std::fs::read_to_string(&lock).ok().as_deref(),
+            Some(held_by_a.token.as_str()),
+            "B removed the lock A had just taken"
+        );
+        drop(held_by_a);
+        assert!(!lock.exists(), "A's release left its lock behind");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A lock is empty for the instant between its create and its write, and
+    /// an old empty lock (a crash in that instant, or a version before tokens)
+    /// has the same empty token. A waiter that saw the old one must not take
+    /// the new one's instant for it.
+    #[test]
+    fn an_old_empty_lock_does_not_license_removing_a_fresh_empty_one() {
+        let dir = temp_dir("empty-token");
+        std::fs::create_dir_all(&dir).unwrap();
+        let lock = dir.join(LOCK);
+        std::fs::write(&lock, "").unwrap();
+        age(&lock);
+        let seen = stale_token(&lock).unwrap();
+        assert_eq!(seen, "");
+
+        // Someone else took it over and is between create and write.
+        std::fs::remove_file(&lock).unwrap();
+        std::fs::write(&lock, "").unwrap();
+
+        assert!(!take_over(&lock, &seen), "a fresh lock was taken as stale");
+        assert!(lock.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A holder that outlived LOCK_STALE (stopped, swapped out) has been taken
+    /// over; when it finally lets go it must not remove its successor's lock.
+    #[test]
+    fn a_holder_that_outlived_its_lock_leaves_the_successor_alone() {
+        let dir = temp_dir("outlived");
+        std::fs::create_dir_all(&dir).unwrap();
+        let lock = dir.join(LOCK);
+        let slow = DirLock::acquire(&lock).unwrap();
+        age(&lock);
+        let successor = DirLock::acquire(&lock).expect("a stale lock is taken over");
+        assert_ne!(slow.token, successor.token);
+
+        drop(slow);
+        assert_eq!(
+            std::fs::read_to_string(&lock).ok().as_deref(),
+            Some(successor.token.as_str()),
+            "the slow holder's release removed the successor's lock"
+        );
+        drop(successor);
+        assert!(!lock.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -708,8 +1030,13 @@ mod tests {
         record_in(&dir, 1, &trace("calc", "x")).unwrap();
         record_in(&dir, 2, &trace("calc", "y")).unwrap();
         std::fs::write(dir.join(LOCK), "").unwrap();
+        // What a crash inside a take-over or a head write leaves behind.
+        let guard = guard_for(&dir.join(LOCK), "dead");
+        let half_head = dir.join(format!("{HEAD}.1.0"));
+        std::fs::write(&guard, "").unwrap();
+        std::fs::write(&half_head, "{}").unwrap();
         assert_eq!(purge_in(&dir), Ok(2));
-        for f in files_in(&dir) {
+        for f in files_in(&dir).iter().chain([&guard, &half_head]) {
             assert!(!f.exists(), "{} survived the purge", f.display());
         }
         record_in(&dir, 3, &trace("calc", "z")).unwrap();
