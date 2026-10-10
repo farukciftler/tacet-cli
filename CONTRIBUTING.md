@@ -67,16 +67,23 @@ cargo build --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo test --workspace --features candle --no-run   # SEE BELOW — this one is not optional
-cargo fmt --all
+cargo fmt --all -- --check                  # what CI runs; `cargo fmt --all` fixes it
 cargo run -p tacet-cli -- eval              # behavioural cases, deterministic, no model needed
 cargo run -p tacet-cli -- eval --routing    # the router's own choice, no model needed
+cargo run -p tacet-cli -- eval --routing --routing-pressure 20   # the same, with 20 extra tools competing
 ```
 
-CI runs every line of it on each pull request, but not every line everywhere:
-`cargo build` and `cargo test` run on macOS, Linux and Windows; clippy, fmt, the
-candle `--no-run` compile and both evals run on Linux only. A clippy lint that
+CI runs every line of it on each pull request, and nothing else that can fail
+one — except `cargo deny check` (see *The supply chain* below), which runs
+through its own action. Not every line runs everywhere: `cargo build` and
+`cargo test` run on macOS, Linux and Windows; clippy, fmt, the candle
+`--no-run` compile and the three evals run on Linux only. A clippy lint that
 fires only under `cfg(windows)` is therefore yours to find. None of it loads
-weights or opens a socket.
+weights or opens a socket. The list and `ci.yml` are held together in both
+directions: `the_workflows_keep_their_promises` fails if a line here is not a
+gate there, and `the_docs_match_the_tree` fails if a `cargo` step there is
+missing here. (Until 10 Oct 2026 this list left out the pressure run and
+spelled the fmt check as the command that rewrites files.)
 
 **The fourth line is the one people skip, and it is the one that bites.**
 `tacet-engine`'s whole `candle_engine` module — the decode loop, the loop
@@ -101,7 +108,7 @@ that need no weights: every test in `candle_engine` and the fixture half of
 | `eval` | Tacet's LOGIC, on a mock engine | milliseconds | yes |
 | `eval --routing` | which tools the ROUTER puts in the prompt | milliseconds | yes |
 | `scripts/smoke.sh [model-dir]` | whether the answer is READABLE, on real weights | ~4 min on a built tree (it builds first) | no |
-| `eval --tool-selection --model <name>` | the MODEL's choice, on real weights | ~48 min on Metal (~6 min on a 3090) | no |
+| `eval --tool-selection --model <name>` | the MODEL's choice, on real weights | ~48 min on Metal (~7 min on a 3090) | no |
 
 Reach for `--routing` first when a tool "stops being called". The router shows the
 model at most nine tools out of the catalog, and **a tool that is not in those
@@ -270,6 +277,19 @@ public. `cargo test -p tacet-eval --test baselines` refuses a baseline that
 carries one, and refuses one whose case names no longer match the suite — a
 baseline nobody can pair against still prints a verdict, which is worse than
 having none.
+
+### Widening an agent's version range is a measurement too
+
+The session readers and `tacet handoff` trust a version of Claude Code, Codex or
+Antigravity only inside a range somebody measured (`version::KNOWN` in
+`crates/tacet-tools/src/sessions/version.rs`, the same table as
+`docs/adr/0001-agent-sessions.md`, and a test fails if the two disagree). A
+read range widens when the fixture corpus under
+`crates/tacet-tools/tests/fixtures/sessions/corpus/` parses that version with no
+unparsed line; a write range widens only when `scripts/session-roundtrip.sh`
+passes on it. That script runs real `claude -p` turns, costs about a dollar,
+and is run by a person — never in CI, for the same reasons as the model
+measurement above. Paste its output into the PR that moves the range.
 
 ### Writing benchmark cases, and the two ways they go wrong silently
 

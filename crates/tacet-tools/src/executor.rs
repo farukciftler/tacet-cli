@@ -3813,6 +3813,74 @@ mod guarded {
         assert_eq!(out.to_model, CANCEL_MODEL_TEXT);
     }
 
+    /// Ignores "stop" — the shape of a tool stuck in a call that cannot be
+    /// interrupted (a blocking read, a parser in a loop). Its own deadline is
+    /// far away, so only the user's stop can end the wait.
+    struct Deaf;
+    impl Tool for Deaf {
+        fn name(&self) -> &str {
+            "deaf"
+        }
+        fn description(&self) -> &str {
+            "Never listens."
+        }
+        fn schema(&self) -> ArgSchema {
+            ArgSchema::object(vec![])
+        }
+        fn deadline(&self) -> Duration {
+            Duration::from_secs(60)
+        }
+        fn run<'a>(&'a self, _a: Value, _c: &'a mut ToolContext) -> ToolFuture<'a> {
+            boxed(async move {
+                std::thread::sleep(Duration::from_secs(20));
+                ToolOutcome::read_ok("late", "late")
+            })
+        }
+    }
+
+    /// A STOPPED TOOL THAT WILL NOT STOP IS LEFT BEHIND AFTER `ABANDON_GRACE`.
+    ///
+    /// The README's Cancel row says so, and the deadline test above only shows
+    /// the grace after a DEADLINE; the user's stop goes through the same timer
+    /// with `cancelled` set, and nothing pinned that branch (audit D21). The
+    /// lower bound is the point as much as the upper: a grace that is skipped
+    /// would abandon a `shell` that was about to end its process group.
+    ///
+    /// RED with the grace applied to deadlines only: the turn waited the full
+    /// 20 s for a tool that was never coming back.
+    #[test]
+    fn a_cancelled_tool_that_will_not_stop_is_abandoned_after_the_grace() {
+        let catalog: ToolCatalog = [Arc::new(Deaf) as Arc<dyn Tool>].into_iter().collect();
+        let executor = Arc::new(ToolExecutor::new(catalog));
+        let mut ctx = context();
+        let ticket = executor.active_turn();
+        let canceller = {
+            let executor = Arc::clone(&executor);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(200));
+                executor.cancel();
+            })
+        };
+        let started = Instant::now();
+        let out = run(executor.execute(&call("deaf", serde_json::json!({})), ticket, &mut ctx));
+        canceller.join().expect("canceller");
+        let took = started.elapsed();
+        assert!(
+            took >= Duration::from_millis(200) + ABANDON_GRACE,
+            "abandoned after {took:?}, before the tool had its grace"
+        );
+        assert!(
+            took < Duration::from_millis(200) + ABANDON_GRACE + Duration::from_secs(1),
+            "the turn waited {took:?} for a stopped tool that was not coming back"
+        );
+        assert_eq!(out.reason, ExecutionReason::Cancelled);
+        assert!(
+            matches!(&out.state, ToolState::Failed(why) if why.ends_with("· stopped")),
+            "{:?}",
+            out.state
+        );
+    }
+
     /// The shell's Ctrl-C is a `static` flag the key watcher sets; a context
     /// built `watching` it is the whole of the wiring.
     #[test]

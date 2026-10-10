@@ -19,6 +19,98 @@ releases to follow.
 
 ---
 
+## Unreleased — the audit of 9 Oct 2026, wave 6: the documents
+
+No change to what the program does and no API changes: the README, its
+crates.io mirror, SECURITY, CONTRIBUTING, this file, one comment in the
+workspace manifest, two tests that hold the documents to the tree, and three
+tests that measure what the page already said: `db_write`'s question answered
+through a pseudo-terminal, both ways, and a stopped tool that will not stop
+abandoned after its 3 s grace.
+
+**Fixed:**
+
+* The 3090 wall time is the committed report's, 7m 07s and 6.7×, not the
+  replaced run's 7m 34s and 6.3×; the comparator block under it is re-derived
+  from the two committed files (23 cases excluded, 161 paired, +2.5 points,
+  not distinguishable) (D1).
+* `baselines/` holds seven files, two of them 3090 runs, and neither is the
+  "after" report of the +4.9 verdict, which is still not committed; the runs
+  are dated 6 Sep 2026, the day after the verdict, by the corpus report's own
+  date (D2).
+* The Turkish corpus is compared with the 184-case suite on the same kind of
+  card the same day — not provably the same machine, since the suite's catalog
+  has the web tools and the corpus box had none — not with the Metal run: 72.4% against 78.1%, or 89.3% with the twenty cases
+  whose tool that box lacked skipped the way the corpus skipped them — a 16.9
+  point gap, not "thirteen" (D3).
+* The model table is one table again (a blank line split it), and it says
+  that its four rows are hand-recorded on 5–6 Sep 2026 and cannot be
+  re-measured here (D4). The seven-language table's `en` column quotes the file
+  it cites, 136/160, not 133/160 (D5).
+* The journal example writes under `~/.tacet`, not `/tmp` (D10); the version
+  example is 0.1.29 (D11); "`cargo install tacet-cli` is this page" now says
+  what is unreleased and how to install from a checkout (D12).
+* SECURITY names the real config directory — `$TACET_HOME`, else
+  `$XDG_CONFIG_HOME/tacet`, else `~/.tacet` — not `~/.config/tacet` (D13). The
+  workspace manifest's version comment names `tacet-zip` alone as inheriting
+  the workspace version; `tacet-skills` left it on 7 Sep 2026 (D14).
+* The headline claims re-checked against the fixes that made them true: what
+  runs is the call the grammar validated, a grammar call carrying both thinking
+  tags runs as written and only a recovered one is refused, each half citing
+  the test that pins it (D19, after H5 and L25); the summary of
+  an imported session is on the list of defanged inputs (D20, after H3 and H4);
+  the Cancel gate says what an abandoned tool still does, which of its two
+  paths — the signal and the key — each test shows, that the key path and the
+  3 s abandonment are unit tests only, and that the signal path is run on
+  macOS only and not wired on Windows (D21, after M4); the `db_write` question
+  says when it became answerable at a terminal, and a pty test now answers it
+  — the earlier citation drove only the outbound approval (D22, after H1). The test count is re-measured and
+  dated (D23).
+* CONTRIBUTING's gate list is the list CI runs, the pressure run and the fmt
+  `--check` included, and a test now holds that direction too.
+
+**Added:**
+
+* README *Other agents' sessions*: what the `agent-sessions` addon reads and
+  refuses, what reaches the model, that nothing opens a socket or starts the
+  other agent, how `tacet handoff` reports back, the 9 Oct 2026 Claude Code
+  experiment with its machine and version, what was not measured, and
+  Antigravity's terms. SECURITY scopes the readers and `tacet handoff`;
+  CONTRIBUTING says how a version range is widened (RG-36).
+* `crates/tacet-cli/tests/the_readme_quotes_the_baselines.rs`: every number the
+  README quotes from `crates/tacet-eval/baselines/` is read back from the file,
+  the comparator block is re-run on the two committed reports, and the model
+  table's scores are recomputed from their own counts. It starts the binary
+  under test as `eval --compare`, so it is a reviewed row in
+  `network_monopoly`'s `RUNTIME_SPAWN_SITES`.
+* `crates/tacet-cli/tests/the_docs_match_the_tree.rs`: the version example,
+  the journal path, the config directory, the manifest comment, an undated test
+  count, a table split by a blank line, CI steps missing from CONTRIBUTING's
+  list, a cited test path that selects no test (cargo's filter is a substring,
+  so a wrong path runs zero tests green), a quoted `[y/N]` question its cited
+  test never waits for, a refusal claim that does not cite the executor, and a
+  "last publish" that is not CHANGELOG's newest each fail the build.
+* `consent_reaches_the_person` answers `db_write`'s `Apply it? [y/N]` under a
+  pty with `y` and with `n` and counts the rows the file holds after;
+  `executor::guarded` abandons a cancelled tool that ignores the stop after
+  `ABANDON_GRACE`, and not before.
+
+**The audit's IDs, all six waves.** Every ID below is named by a commit on this
+branch (re-counted from the log on 10 Oct 2026), and that commit's message
+carries its test and the proof that the test fails without the fix; what could
+not be run on the machine that wrote it (a Linux box, a Windows box,
+real weights, Codex, the Antigravity GUI) is said in that commit and, for the
+session work, in `docs/agent-handoff.md`.
+
+* H1–H7 (with H2-a/b/c and H4-a/b/c); M1–M30; L1–L38; T1–T5.
+* D1–D23: D6, D7, D15 in wave 3; D8, D9, D16, D17, D18 alongside the code they
+  describe; the rest here.
+* RG-01 to RG-37: the readers and the shared layer in waves 2 and 4, the
+  write-back in wave 5, the documents (RG-36) here; RG-05, RG-06, RG-07, RG-16,
+  RG-30, RG-35 and RG-37 are recorded in `docs/adr/0001-agent-sessions.md`.
+
+---
+
 ## Unreleased — the audit of 9 Oct 2026, wave 5
 
 Not published, and kept apart from waves 1 to 4 so a reader can tell which
