@@ -746,11 +746,21 @@ impl IntentProfile {
                 // WHAT A PERSON SAYS WHEN THEY WANT TO GO ON. Bare "session"
                 // and bare "continue" are NOT here: "continue the list" and
                 // "the session is at 3pm" are not about another agent, and both
-                // words appear in requests for every other profile. The
-                // phrases below carry the possessive or the resumption.
-                "my session",
-                "that session",
-                "last session",
+                // words appear in requests for every other profile.
+                //
+                // NOR IS A BARE POSSESSIVE. "my session" and "that session"
+                // were here and the RG-19 review measured them firing on "remind
+                // me of my session with the dentist" (10) and "that session of
+                // parliament was long" (12): an appointment and a sitting are
+                // owned and pointed at as easily as a transcript. What is left
+                // carries the resumption, the plural listing, or the other
+                // agent.
+                "continue my session",
+                "resume my session",
+                "my sessions",
+                "my last session",
+                "my previous session",
+                "other agent",
                 "agent session",
                 "coding session",
                 "left off",
@@ -891,11 +901,21 @@ impl IntentProfile {
                 // reading in this catalog.
             ],
             IntentProfile::Sessions => &[
-                // "oturum" IS A STEM: it reaches "oturumum", "oturumuma",
-                // "oturumda". Unlike English "session" it has no second
-                // everyday sense in a request to an assistant — a meeting is
-                // "toplanti", a sitting of court is not asked about here.
-                "oturum",
+                // "oturum" ALONE IS NOT HERE. It was, on the claim that it had
+                // no second everyday sense, and the RG-19 review measured the
+                // claim false: "oturum aç" / "oturum kapat" is signing in and
+                // out, "mahkeme oturumu" is a sitting of court, and each scored
+                // 6. Every possessive inflection is a sign-out too ("tüm
+                // oturumlarımı kapat"), so no stem of the bare word is safe.
+                // What is left pins the word to the day it was left, or to a
+                // continuation; a request that names the agent fires on the
+                // name above.
+                "dunku oturum",
+                "onceki oturum",
+                "oturumuma devam",
+                "oturumumdan devam",
+                // The Turkish "other agent", reaching "diğer ajanlardaki".
+                "diger ajan",
                 // "kaldigim" ALONE IS NOT HERE, and a benchmark is why:
                 // "bodrumda kaldigimiz otel" (the hotel we stayed at) folds to
                 // the same stem. The place-I-left-off sense always carries
@@ -2523,6 +2543,16 @@ mod tests {
             "geçen sene bodrumda kaldığımız otel çok güzeldi",
             "devam et",
             "read notes.md",
+            // RG-19 second review: "oturum" is also signing in and out, and a
+            // sitting of court; "my session" is also an appointment. Each of
+            // these scored 6 to 12 before the triggers were narrowed.
+            "Gmail'e oturum açamıyorum, şifremi sıfırla",
+            "oturum kapatma süresini hesapla",
+            "tüm oturumlarımı kapat",
+            "mahkeme oturumu saat kaçta",
+            "remind me of my session with the dentist",
+            "that session of parliament was long",
+            "the last session of the conference ran late",
         ] {
             assert_eq!(
                 score_intent(message).score(IntentProfile::Sessions),

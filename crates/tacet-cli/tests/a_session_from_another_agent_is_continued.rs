@@ -117,6 +117,19 @@ fn the_summary_is_sent_with_the_first_question_and_the_handoff_is_started() {
         !prompt.contains("The month does not carry."),
         "the transcript's reasoning reached the prompt"
     );
+    // ...and the prompt points at it (RG-18 second review): `--from` stores
+    // the full transcript and sends its reference, the way `session_read`
+    // does, after the fence closes.
+    let reference = prompt
+        .find("source_ref=agent-session#")
+        .unwrap_or_else(|| panic!("the prompt points at no stored transcript:\n{prompt}"));
+    let close = prompt
+        .find("</imported_session>")
+        .expect("the fence closes");
+    assert!(
+        close < reference && reference < question,
+        "the reference must sit after the fence and above the question"
+    );
 
     let record = std::fs::read_to_string(scratch.handoff()).expect("the handoff record");
     assert!(record.contains("Fix the date rollover"), "{record}");

@@ -287,9 +287,17 @@ pub struct Digest {
 /// reaches the user's terminal (`--from`'s warnings go to stderr) and the
 /// handoff file, and a transcript's `version` or `cli_version` is copied into
 /// the version-gate warning verbatim: `ESC]0;…BEL ESC[2J` in it retitled and
-/// cleared the terminal (RG-20 review). A space, not nothing — an ESC dropped
-/// from the middle of `</imported_sess␛ion>` would join a fence the defang
-/// never saw.
+/// cleared the terminal (RG-20 review).
+///
+/// A SPACE, NOT NOTHING, because `\n`, `\r` and `\t` are control characters
+/// too: deleted, every line break in a multi-line request would glue the last
+/// word of one line to the first of the next ("fix the tests" over "then
+/// push" read "teststhen"). The space is folded away below with the rest of
+/// the whitespace. It is NOT what keeps a joined tag out of the seed: the map
+/// runs before the defang, and `seed_text` runs `neutralise_fence` over the
+/// whole rendered body afterwards, so `</imported_sess␛ion>` is neutralised
+/// either way — the RG-18 review swapped the map for a deletion and every
+/// test on the seed stayed green.
 pub fn one_line(text: &str, max: usize) -> String {
     let printable: String = text
         .chars()
@@ -610,8 +618,35 @@ fn neutralise_fence(text: &str) -> String {
 #[derive(Debug, Clone)]
 pub struct Imported {
     pub digest: Digest,
-    /// The digest, fenced, ready to sit above the user's first question.
+    /// The digest, fenced. What the shell sends is `seed_storing`'s, which
+    /// adds the reference to the full transcript under it.
     pub seed: String,
+    /// The full transcript, reasoning kept — what `session_read` stores.
+    transcript: String,
+}
+
+impl Imported {
+    /// The seed the shell sends: the fenced summary, then — OUTSIDE the
+    /// fence, because the line is Tacet's and not the other program's — the
+    /// `source_ref` of the full transcript, stored in the session's store.
+    ///
+    /// THE SAME SHAPE AS `session_read`'s answer (RG-18: the whole transcript
+    /// to the DataStore, a reference to the model). Without it a continued
+    /// session held a summary with nothing pointing past it, and the model's
+    /// only way to the rest was to read the same session a second time.
+    pub fn seed_storing(&self, store: &dyn tacet_kernel::DataStore) -> String {
+        let source_ref = store.put(
+            "agent-session",
+            &format!("{} entries", self.digest.entries),
+            self.transcript.clone(),
+        );
+        format!(
+            "{}\nThe full transcript ({} entries) is stored; the summary above is of it.{}",
+            self.seed,
+            self.digest.entries,
+            source_ref_suffix(source_ref.as_str())
+        )
+    }
 }
 
 /// Reads `agent:id` and builds what the shell seeds a turn with.
@@ -628,7 +663,12 @@ pub fn import(roots: &SessionRoots, agent: AgentKind, id: &str) -> Result<Import
     .map_err(|e| e.to_string())?;
     let digest = Digest::of(&read);
     let seed = seed_text(&digest);
-    Ok(Imported { digest, seed })
+    let transcript = transcript_text(&read.session);
+    Ok(Imported {
+        digest,
+        seed,
+        transcript,
+    })
 }
 
 /// The fenced summary. The line inside the fence says whose text it is: the
@@ -1255,16 +1295,24 @@ mod tests {
             !seed.chars().any(|c| c.is_control() && c != '\n'),
             "a control character reached the seed: {seed:?}"
         );
-        assert_eq!(
-            seed.matches(&format!("</{SEED_FENCE}>")).count(),
-            1,
-            "a stripped ESC joined a closing tag: {seed}"
-        );
         let record = handoff_record(&d);
         assert!(
             !record.summary.chars().any(|c| c.is_control() && c != '\n'),
             "a control character reached the handoff: {:?}",
             record.summary
+        );
+    }
+
+    /// RG-18 second review: a control character becomes a word break, not a
+    /// deletion, and this is the output where the two differ — a line break
+    /// in a request is a control character, and deleting it fuses two words.
+    /// (The old guard here counted closing tags in the seed, which
+    /// `neutralise_fence` keeps at one whichever way the map goes.)
+    #[test]
+    fn a_line_break_in_a_request_stays_a_word_break() {
+        assert_eq!(
+            one_line("fix the tests\nthen push\r\nand\ttag it\u{1b}now", 80),
+            "fix the tests then push and tag it now"
         );
     }
 
@@ -1385,6 +1433,45 @@ mod tests {
             out.to_model.chars().count() < SUMMARY_BUDGET + 200,
             "{}",
             out.to_model
+        );
+    }
+
+    /// RG-18 second review: a continuation (`--from`, `/resume-from`) stores
+    /// the full transcript the way `session_read` does and hands the model a
+    /// reference to it, outside the fence — not a summary with nothing past
+    /// it.
+    #[test]
+    fn a_continuation_stores_the_transcript_and_sends_its_reference() {
+        let store = Arc::new(SharedStore::new());
+        let imported = import(
+            &SessionRoots::Only(vec![fixtures(AgentKind::ClaudeCode)]),
+            AgentKind::ClaudeCode,
+            "11111111-0000-4000-8000-111111111111",
+        )
+        .expect("the fixture reads");
+        let seed = imported.seed_storing(&*store as &dyn tacet_kernel::DataStore);
+        let close = seed
+            .find(&format!("</{SEED_FENCE}>"))
+            .expect("the seed is fenced");
+        let at = seed
+            .find("source_ref=")
+            .unwrap_or_else(|| panic!("the seed points at no stored transcript:\n{seed}"));
+        assert!(
+            at > close,
+            "the reference must be Tacet's line, outside the fence"
+        );
+        let source_ref = seed[at + "source_ref=".len()..]
+            .trim_end_matches(')')
+            .to_string();
+        let Some(crate::data_store::Value::Text(body)) =
+            store.value(&tacet_kernel::SourceRef(source_ref.clone()))
+        else {
+            panic!("{source_ref} is not a stored transcript");
+        };
+        assert!(body.contains("The month does not carry."), "{body}");
+        assert!(
+            !seed.contains("The month does not carry."),
+            "the seed carried the transcript, not a reference to it"
         );
     }
 

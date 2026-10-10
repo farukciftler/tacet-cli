@@ -295,6 +295,11 @@ fn resume_from_in_the_shell_taints_the_turns_after_it() {
         all.contains("Goal (first request): Fix the date rollover"),
         "the summary never reached the next question's prompt:\n{all}"
     );
+    // RG-18 second review: the in-shell verb stores the transcript too.
+    assert!(
+        all.contains("source_ref=agent-session#"),
+        "/resume-from sent a summary with no reference to the transcript:\n{all}"
+    );
     assert_refused(&all, "/resume-from");
 }
 

@@ -363,7 +363,7 @@ pub fn chat(run: ChatRun) -> ExitCode {
             Ok(imported) => {
                 dir = settle_dir(&imported, &dir, can_ask && screen.tty(), &color, human);
                 announce_continuation(&imported, &color, human);
-                seed = Some(imported.seed);
+                seed = Some(imported.seed_storing(&*store as &dyn CoreDataStore));
             }
             Err(e) => {
                 eprintln!("{}", color.paint(YELLOW, &format!("(--from: {e})")));
@@ -697,7 +697,7 @@ pub fn chat(run: ChatRun) -> ExitCode {
                             }
                             mark_imported(&executor, &mut ctx);
                             announce_continuation(&imported, &color, true);
-                            seed = Some(imported.seed);
+                            seed = Some(imported.seed_storing(&*store as &dyn CoreDataStore));
                         }
                         Err(e) => {
                             println!("{}", color.paint(YELLOW, &format!("({e})")));
@@ -2096,16 +2096,38 @@ fn dir_choice(
     {
         return DirChoice::Stay;
     }
-    let shown = real.display().to_string();
+    let real = real.display().to_string();
+    // THE QUESTION SHOWS THE NAMES THROUGH `visible`, the move takes the real
+    // one. Git on macOS checks out a directory whose name holds ESC, and the
+    // other agent records it as its cwd: printed raw, `ESC[2K ESC[1G` erases
+    // the line and the user approves a folder they never saw named.
+    let (shown, here) = (visible(&real), visible(current));
     if can_ask
         && ask(&format!(
-            "that session worked in {shown} — work there instead of {current}?"
+            "that session worked in {shown} — work there instead of {here}?"
         ))
     {
-        DirChoice::Move(shown)
+        DirChoice::Move(real)
     } else {
         DirChoice::Stay
     }
+}
+
+/// What the terminal is given in place of a name read from a transcript: each
+/// control character becomes U+FFFD. A PLACEHOLDER RATHER THAN A DELETION in a
+/// question about a folder, so the user sees that the name holds something
+/// the screen cannot show instead of reading a tidier name that is not the
+/// one on disk.
+fn visible(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
+        .collect()
+}
+
+/// The line `settle_dir` prints after a move, through `visible` for the same
+/// reason as the question.
+fn working_in(to: &str) -> String {
+    format!("(working in {})", visible(to))
 }
 
 /// `dir_choice` against the terminal, with what was decided said out loud.
@@ -2121,7 +2143,7 @@ fn settle_dir(
     }) {
         DirChoice::Move(to) => {
             if human {
-                println!("{}", color.paint(DIM, &format!("(working in {to})")));
+                println!("{}", color.paint(DIM, &working_in(&to)));
             }
             to
         }
@@ -2145,8 +2167,7 @@ fn announce_continuation(
 
 /// The lines `announce_continuation` prints, with their colour.
 ///
-/// EVERY LINE IS STRIPPED OF CONTROL CHARACTERS HERE TOO, not only in
-/// `one_line`. The warnings are the reader's, and a reader copies the
+/// EVERY LINE GOES THROUGH `visible` HERE TOO, not only through `one_line`. The warnings are the reader's, and a reader copies the
 /// transcript's own `version` into them: the review's probe put
 /// `ESC]0;pwned BEL ESC[2J` there and it reached stderr byte for byte. The
 /// digest is clean today; this is the line that keeps a future field that
@@ -2156,7 +2177,7 @@ fn continuation_notice(
     d: &tacet_tools::sessions_tool::Digest,
     human: bool,
 ) -> Vec<(&'static str, String)> {
-    let printable = |s: String| -> String { s.chars().filter(|c| !c.is_control()).collect() };
+    let printable = |s: String| visible(&s);
     let mut lines = Vec::new();
     if human {
         lines.push((
@@ -3392,6 +3413,44 @@ mod continuation_tests {
         );
         let _ = std::fs::remove_dir_all(&here);
         let _ = std::fs::remove_dir_all(&there);
+    }
+
+    /// RG-20 second review: the yes/no that decides whether every file tool's
+    /// reach moves holds no control character, though the folder it names
+    /// does — a real directory, the kind a cloned repository can carry — and
+    /// the line after the move holds none either. The move itself still goes
+    /// to the folder on disk, not to the cleaned-up name.
+    #[test]
+    fn the_folder_question_cannot_drive_the_terminal() {
+        let base = std::env::temp_dir().join(format!("tacet-cont-esc-{}", std::process::id()));
+        let there = base.join("repo\u{1b}[2J\u{1b}[1Gsub");
+        let here = base.join("here\u{7}");
+        std::fs::create_dir_all(&there).unwrap();
+        std::fs::create_dir_all(&here).unwrap();
+        let real_there = there.canonicalize().unwrap().display().to_string();
+
+        let mut asked = String::new();
+        let choice = dir_choice(Some(&there), here.to_str().unwrap(), true, |q| {
+            asked = q.to_string();
+            true
+        });
+        assert!(!asked.is_empty(), "nobody was asked");
+        assert!(
+            !asked.chars().any(char::is_control),
+            "a control character reaches the folder question: {asked:?}"
+        );
+        assert!(
+            asked.contains("repo\u{FFFD}[2J"),
+            "the question must show that the name holds something: {asked:?}"
+        );
+        assert_eq!(choice, DirChoice::Move(real_there.clone()));
+
+        let line = working_in(&real_there);
+        assert!(
+            !line.chars().any(char::is_control),
+            "a control character reaches the moved line: {line:?}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// RG-20 review: `/resume-from` that moves the folder builds a new
