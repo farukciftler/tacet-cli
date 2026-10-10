@@ -450,7 +450,11 @@ mod tests {
     }
 
     /// RG-31: an open conversation, a running Antigravity, or a process list
-    /// that could not be taken — each stops the write.
+    /// that could not be taken — each stops the write, BEFORE the question.
+    /// Asking about a write the check after the yes will refuse wastes the
+    /// user's yes; the Claude and Codex tests assert nothing was asked, and
+    /// this one did not until the review of 10 Oct 2026 deleted the first
+    /// check and watched it stay green (mutation m9b).
     #[test]
     fn an_open_conversation_or_a_running_antigravity_stops_the_write() {
         let root = root();
@@ -464,14 +468,26 @@ mod tests {
         let cli = || Some(vec![format!("/Users/u/.local/bin/{CLI_NAME}")]);
         let unknown = || None;
         for probe in [&running as &dyn Fn() -> Option<Vec<String>>, &cli, &unknown] {
-            let r = update_impl(&root, ID, &one, true, probe, &yes(), false);
+            let answer = yes();
+            let r = update_impl(&root, ID, &one, true, probe, &answer, false);
             assert!(matches!(r, Err(WriteError::Live(_))), "{r:?}");
+            assert_eq!(
+                answer.1.borrow().len(),
+                0,
+                "asked about a write that cannot happen"
+            );
         }
         std::fs::create_dir_all(root.join("conversations")).unwrap();
         std::fs::write(root.join(format!("conversations/{ID}.db")), "x").unwrap();
         std::fs::write(root.join(format!("conversations/{ID}.db-wal")), "x").unwrap();
-        let r = update_impl(&root, ID, &one, true, &quiet, &yes(), false);
+        let answer = yes();
+        let r = update_impl(&root, ID, &one, true, &quiet, &answer, false);
         assert!(matches!(r, Err(WriteError::Live(_))), "{r:?}");
+        assert_eq!(
+            answer.1.borrow().len(),
+            0,
+            "asked about a write that cannot happen"
+        );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), TASK_MD);
         let _ = std::fs::remove_dir_all(root.parent().unwrap());
     }

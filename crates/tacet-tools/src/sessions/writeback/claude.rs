@@ -770,4 +770,40 @@ mod tests {
         assert_eq!(texts.last(), Some(&note().as_str()));
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// Claude Code appending to the original while the user reads the
+    /// question: the second hash is the only thing that notices. The test
+    /// above cannot see that check — nothing else writes there, so the
+    /// original is unchanged whether the check runs or not (review of 10 Oct
+    /// 2026, mutation m4b stayed green).
+    struct AppendsWhileAsking {
+        path: PathBuf,
+    }
+
+    impl Confirm for AppendsWhileAsking {
+        fn confirm(&self, _: &Question) -> bool {
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&self.path)
+                .unwrap();
+            std::io::Write::write_all(&mut f, b"{\"type\":\"summary\",\"summary\":\"later\"}\n")
+                .unwrap();
+            true
+        }
+    }
+
+    #[test]
+    fn a_fork_whose_original_changes_while_asking_says_so() {
+        let (root, path) = root_with("2.1.285");
+        let src = ClaudeSource::with_probe(dead);
+        let writer = AppendsWhileAsking { path: path.clone() };
+        let r = fork_with_note(&src, &root, ID, &note(), &writer);
+        match r {
+            Err(WriteError::Refused(why)) => {
+                assert!(why.contains("the original changed"), "{why}");
+            }
+            other => panic!("a changed original was not reported: {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

@@ -189,6 +189,15 @@ nobody measured a write (`version::KNOWN` in
 | `tacet handoff note codex <id> --append-rollout` | a `response_item` (what the model sees) and an `event_msg` (what you see) in one write; in `paginated` mode the next two ordinals and an `item_completed` event | writer lock, archived thread, `.jsonl.zst`, a damaged line, a missing fork prefix, a paginated last line without an ordinal; read back after the write, truncated if wrong | **refused for every version** until one is measured |
 | `tacet handoff tasks antigravity <id> --set "Title=completed" --experimental-write-task-md` | the checkbox character of the named `task.md` items, and `updatedAt` in `task.md.metadata.json` | the flag; an open conversation (database `-wal`, a running step) or a running Antigravity process; only `[ ]`, `[/]`, `[x]`; a title that matches no item or several is refused; when the conversation's folder is a git repository (the CLI root's are), the question says Antigravity's automatic "jetski Snapshot" commits will record the change in that folder's history, where it stays after the box is changed back | **refused for every version** until the GUI is verified by hand to re-read the file; Antigravity's terms (§6) forbid third-party access, and the command prints that warning |
 
+`note codex --program` is the one place Tacet starts another agent's CLI. It
+is a command you type, not a tool the model has: the model cannot reach it,
+and `cargo test -p tacet-cli --test network_monopoly` fails if anything but
+`tacet handoff` calls the function that starts the app-server
+(`AGENT_CLI_USER_COMMANDS` there). That is why it is not one of the external
+tools behind the approval gate — that gate asks about a model's tool call,
+and here there is none; the y/N above, which names the binary and says it
+can reach the network, is the consent.
+
 What was measured, and why the guards exist: on Claude Code 2.1.285 an
 assistant-role entry made the model believe it had written the text itself
 (E2 — so only the user role is written), and an entry with the wrong
