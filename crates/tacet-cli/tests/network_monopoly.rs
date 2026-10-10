@@ -472,6 +472,11 @@ const RUNTIME_SPAWN_SITES: &[(&str, &str)] = &[
         "`env!(\"CARGO_BIN_EXE_tacet\")`, the binary under test, as `tacet handoff hook` \
          with a hook event on stdin (RG-21/23/25); no agent program is run",
     ),
+    (
+        "tacet-cli/tests/the_readme_quotes_the_baselines.rs",
+        "`env!(\"CARGO_BIN_EXE_tacet\")`, the binary under test, as `eval --compare` over \
+         two committed baselines (audit D1); no model is loaded and no socket opened",
+    ),
 ];
 
 fn workspace_root() -> PathBuf {

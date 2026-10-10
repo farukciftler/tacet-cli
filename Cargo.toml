@@ -25,11 +25,14 @@ members = [
 # rather than a version message. 1.85 is the edition-2024 floor this workspace
 # cannot go below; CI pins the exact toolchain that proves it.
 rust-version = "1.85"
-# THE VERSION `tacet-skills` AND `tacet-zip` INHERIT. Bumped from 0.1.0 because
-# both had CHANGED SOURCE UNDER AN UNCHANGED PUBLISHED VERSION — a strictly worse
-# state than a version gap, because the next publish of that number is rejected
-# and no consumer can tell they are missing the fixes. Verified by diffing the
-# published tarballs against this tree, not by reading the log.
+# THE VERSION `tacet-zip` INHERITS, and only it. Bumped from 0.1.0 because it and
+# `tacet-skills` had CHANGED SOURCE UNDER AN UNCHANGED PUBLISHED VERSION — a
+# strictly worse state than a version gap, because the next publish of that
+# number is rejected and no consumer can tell they are missing the fixes.
+# Verified by diffing the published tarballs against this tree, not by reading
+# the log. `tacet-skills` left this number on 7 Sep 2026 and carries its own
+# (CHANGELOG, "a marker is not text"); this comment kept naming it for a month.
+# `the_workspace_version_comment_names_who_inherits_it` reads this line.
 version = "0.1.2"
 edition = "2024"
 license = "MIT"

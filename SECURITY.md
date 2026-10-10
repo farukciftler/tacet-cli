@@ -41,14 +41,33 @@ not send their data anywhere. Anything that breaks one of those is in scope:
 * **Data leaving the device.** Only `tacet-web` and `tacet-mcp` may open a
   socket, and that is enforced by both crates being the only ones that declare
   `ureq`. A path that gets user data onto the network through any other route is
-  a vulnerability, and so is one that bypasses the approval gate in front of an
-  outbound tool once the session has touched personal data.
+  a vulnerability — with one stated exception: `tacet handoff note codex
+  <id> --program <path>`, a command you type, starts the Codex binary you named
+  as `codex app-server` after a y/N that says it runs with your Codex login and
+  can reach the network. That one is in scope only if a model can reach it or
+  it runs without the question. So is a path that bypasses the approval gate
+  in front of an outbound tool once the session has touched personal data.
 * **Prompt-boundary attacks with a real effect.** A remote MCP server, a fetched
   page or a file's contents causing a tool call the user did not ask for — for
   example a description that carries terminal escapes, or content that
   impersonates a `<tool_response>` fence.
 * **Supply chain.** A release asset that does not match its source, or a way to
   make `tacet update` install something the GitHub API did not vouch for.
+* **Other agents' sessions.** The `agent-sessions` addon reads Claude Code,
+  Codex and Antigravity transcripts, and those folders sit next to the agents'
+  credentials. In scope: getting a session reader to return a credential
+  (`auth.json`, `.credentials.json`, `state.vscdb`, a `*.key` file, a
+  `.claude/settings*` file, or a copy, symlink or hard link of one) or any file
+  outside the folders the install named; an imported transcript causing an
+  outbound, `shell` or `db_write` call that did not ask first; text in a
+  transcript forging a turn in Tacet's prompt. And for `tacet handoff`: a write
+  into another agent's files without a y/N, into a session that agent has
+  open, on a version outside the measured write range, or one that leaves the
+  session's earlier history unloadable; a handoff record or session id that
+  writes outside `<config>/handoff/`; and `tacet handoff note codex --program`
+  starting anything but the file it named, or being reachable from a model
+  tool. The design and the threat table are in
+  [docs/adr/0001-agent-sessions.md](docs/adr/0001-agent-sessions.md).
 
 ## What is not in scope
 
@@ -61,7 +80,17 @@ not send their data anywhere. Anything that breaks one of those is in scope:
   reach before it is turned on. "The shell addon can run shell commands" is the
   feature.
 * **Anything requiring an attacker who already has your user account.** If they
-  can write `~/.config/tacet`, they can write `~/.bashrc`.
+  can write Tacet's config directory — `$TACET_HOME` if set, else
+  `$XDG_CONFIG_HOME/tacet`, else `~/.tacet` (`%APPDATA%\Tacet` on Windows) —
+  they can write `~/.bashrc`. The same goes for the other agents' folders: an
+  attacker who can write `~/.claude` can already change what Claude Code runs.
+* **Whether reading your own Antigravity history is within Antigravity's
+  terms.** Its terms (§6) forbid third-party access; Tacet reads files you own
+  on your disk and writes nothing of Antigravity's by default. That is your
+  decision about your agreement, not a vulnerability in Tacet.
+* **What another agent does with a note it was given.** A note is written in
+  the user role and says it is from Tacet; if the other agent's model then acts
+  on it, that is that agent's behaviour.
 
 ## Supported versions
 
