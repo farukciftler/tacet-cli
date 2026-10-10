@@ -48,8 +48,9 @@ use tacet_kernel::{
 
 use crate::run_code::{
     CODE_CAP, CodeOutcome, CodeState, Interpreter, MAX_ATTEMPTS, MODEL_OUTPUT_CAP, NetworkShield,
-    error_text, language_from_source, looks_like_python, run_program, truncate,
+    error_text, language_from_source, looks_like_python, run_program_until, truncate,
 };
+use tacet_kernel::context::CancelToken;
 
 /// The timeout of the execution verification. The same base as `run_code`'s
 /// default; the model CANNOT CHOOSE a duration here — a script to be delivered
@@ -787,6 +788,7 @@ impl WriteCodeTool {
                 &sandbox,
                 &script,
                 last_attempt,
+                ctx.cancel_token(),
             ),
             Err(h) => ToolOutcome::failed(&ToolError::Io(h)),
         };
@@ -795,8 +797,18 @@ impl WriteCodeTool {
         outcome
     }
 
-    /// Two-stage verification + delivery. The SINGLE write point is at the end
-    /// of this function: none of its error branches can leave a file behind.
+    /// Two-stage verification + delivery. The SINGLE write point is `deliver`,
+    /// called at the end of this function: none of its error branches can
+    /// leave a file behind.
+    ///
+    /// BOTH STAGES LISTEN TO THE TURN'S STOP (audit M4). They used to go through
+    /// `run_program`, which hands its child a token nobody holds: a Ctrl-C while
+    /// the model's script looped reached the executor, which abandoned the call
+    /// after its 3 s grace, while the sandboxed process ran on to its own 10 s
+    /// timeout with nobody waiting for it. A stopped stage is an error, so the
+    /// write at the end is never reached; a stop that lands between the stages'
+    /// polls is caught by `deliver` itself.
+    #[allow(clippy::too_many_arguments)]
     fn validate_and_deliver(
         &self,
         code: &str,
@@ -805,17 +817,19 @@ impl WriteCodeTool {
         sandbox: &Path,
         script: &Path,
         last_attempt: bool,
+        cancel: &CancelToken,
     ) -> ToolOutcome {
         let verification = script.parent().unwrap_or(sandbox);
 
         // STAGE 1 — syntax.
         let args = syntax_check_args(interpreter, script);
-        match run_program(
+        match run_program_until(
             &self.shield,
             verification,
             &interpreter.path,
             &args,
             SYNTAX_CHECK_TIMEOUT,
+            cancel,
         ) {
             Ok(CodeOutcome::Succeeded { .. }) => {}
             Ok(CodeOutcome::Error(message)) => {
@@ -861,12 +875,13 @@ impl WriteCodeTool {
 
         // STAGE 2 — execution. Output IS NOT REQUIRED: what is delivered is the
         // file, the output is only evidence. But it must finish without an error.
-        let run = run_program(
+        let run = run_program_until(
             &self.shield,
             verification,
             &interpreter.path,
             &[script.into()],
             EXECUTION_TIMEOUT,
+            cancel,
         );
         let (output, ms) = match run {
             Ok(CodeOutcome::Succeeded { output, ms, .. }) => (output, ms),
@@ -907,52 +922,83 @@ impl WriteCodeTool {
             Err(h) => return ToolOutcome::failed(&h),
         };
 
-        // STAGE 3 — delivery. The verified SOURCE is written (not the script
-        // itself, the same content): the file name is the name the user asked
-        // for, the permissions are 0600 (the document layer's rule — privacy on device starts with the file permission).
-        let body = safe_stem(file_name);
-        let target = match empty_target(sandbox, &body, interpreter.extension) {
-            Ok(h) => h,
-            Err(h) => return ToolOutcome::failed(&h),
-        };
-        if let Err(h) = std::fs::write(&target, code.as_bytes()) {
-            return ToolOutcome::failed(&ToolError::Io(h));
-        }
-        // PLATFORM RECORD — THE 0600 STAMP EXISTS ONLY ON UNIX (the same
-        // as `create_document::finish_up` and `tacet_memory::store::narrow_permissions`
-        // rationale as written at the top of the document layer): on Windows
-        // `set_permissions` only flips the read-only flag, it does not restrict
-        // access; faking it would produce the illusion of "stamped" without
-        // providing privacy. Touching the ACL on Windows would need a new
-        // dependency; the gap is left DELIBERATELY and IS NOT MEASURED ON THIS MACHINE.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).ok();
-        }
-
-        let name = target
-            .file_name()
-            .map(|a| a.to_string_lossy().into_owned())
-            .unwrap_or(body);
-        let short = truncate(&output, MODEL_OUTPUT_CAP);
-        let output_note = if output.trim().is_empty() {
-            "(the run printed nothing — mention the file, do not invent output)".to_string()
-        } else if short.len() < output.len() {
-            format!("output:\n{short}\n(output truncated)")
-        } else {
-            format!("output:\n{short}")
-        };
-        ToolOutcome::written(
-            format!("Code verified · {name} · {ms} ms"),
-            format!(
-                "ok: {name} written to the working folder and verified by running it ({ms} ms).\n\
-                 {output_note}\n\
-                 Tell the user the file name and what it does; show the demo output if any."
-            ),
+        deliver(
+            code,
+            file_name,
+            interpreter.extension,
+            sandbox,
+            output,
+            ms,
+            cancel,
         )
-        .raw_output(output)
     }
+}
+
+/// STAGE 3 — delivery. The verified SOURCE is written (not the script
+/// itself, the same content): the file name is the name the user asked
+/// for, the permissions are 0600 (the document layer's rule — privacy on device starts with the file permission).
+///
+/// THE STOP IS READ ONCE MORE HERE, before anything is written (audit M4,
+/// review of f7001e9). The two stages only see it on a poll tick while a child
+/// runs, so a stop that lands after stage 2's process has exited — or before
+/// its first tick, when the script ends at once — reached this write anyway:
+/// the executor reported the turn stopped while a new file sat in the user's
+/// folder. A separate function so the test can hand it a stop that has
+/// already landed; no real process can place one between stage 2 and here.
+fn deliver(
+    code: &str,
+    file_name: &str,
+    extension: &str,
+    sandbox: &Path,
+    output: String,
+    ms: u128,
+    cancel: &CancelToken,
+) -> ToolOutcome {
+    if cancel.is_cancelled() {
+        return ToolOutcome::failed(&ToolError::Other(crate::run_code::STOPPED.into()));
+    }
+    let body = safe_stem(file_name);
+    let target = match empty_target(sandbox, &body, extension) {
+        Ok(h) => h,
+        Err(h) => return ToolOutcome::failed(&h),
+    };
+    if let Err(h) = std::fs::write(&target, code.as_bytes()) {
+        return ToolOutcome::failed(&ToolError::Io(h));
+    }
+    // PLATFORM RECORD — THE 0600 STAMP EXISTS ONLY ON UNIX (the same
+    // as `create_document::finish_up` and `tacet_memory::store::narrow_permissions`
+    // rationale as written at the top of the document layer): on Windows
+    // `set_permissions` only flips the read-only flag, it does not restrict
+    // access; faking it would produce the illusion of "stamped" without
+    // providing privacy. Touching the ACL on Windows would need a new
+    // dependency; the gap is left DELIBERATELY and IS NOT MEASURED ON THIS MACHINE.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).ok();
+    }
+
+    let name = target
+        .file_name()
+        .map(|a| a.to_string_lossy().into_owned())
+        .unwrap_or(body);
+    let short = truncate(&output, MODEL_OUTPUT_CAP);
+    let output_note = if output.trim().is_empty() {
+        "(the run printed nothing — mention the file, do not invent output)".to_string()
+    } else if short.len() < output.len() {
+        format!("output:\n{short}\n(output truncated)")
+    } else {
+        format!("output:\n{short}")
+    };
+    ToolOutcome::written(
+        format!("Code verified · {name} · {ms} ms"),
+        format!(
+            "ok: {name} written to the working folder and verified by running it ({ms} ms).\n\
+             {output_note}\n\
+             Tell the user the file name and what it does; show the demo output if any."
+        ),
+    )
+    .raw_output(output)
 }
 
 // ---------------------------------------------------------------------------
@@ -1012,7 +1058,7 @@ mod tests {
     /// panic carrying `diagnose()`. The gate is defined once, in
     /// `run_code::sandbox_must_run`, because the tests it silences are skipped
     /// by the same absent shield and must be re-enabled by the same switch:
-    /// 8 here and 16 in run_code.rs on Linux. Those two figures are DERIVED from
+    /// 10 here and 16 in run_code.rs on Linux. Those two figures are DERIVED from
     /// the source and checked against this sentence by
     /// `the_skip_count_the_documents_quote_is_the_count_in_the_source`; written
     /// out by hand they were "eight and sixteen", and sixteen was wrong. The syntax-check path
@@ -1633,6 +1679,156 @@ mod tests {
             outcome.to_model
         );
         assert!(!root.join("crashing.py").exists() && !root.join("crashing.js").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 5b) A STOP ENDS THE VERIFICATION RUN (audit M4). The model's code loops;
+    ///     the turn is stopped 300 ms in. Before the fix the stop never reached
+    ///     the child — both stages ran under a token nobody held — so the call
+    ///     sat out the full 10 s `EXECUTION_TIMEOUT` and came back "timed out",
+    ///     the executor having long since abandoned it. `run_code`'s twin of
+    ///     this is `an_infinite_loop_is_killed_on_timeout_or_on_a_stop`, and the
+    ///     bound is the same one.
+    #[test]
+    fn a_stop_ends_the_verification_run_and_delivers_nothing() {
+        let Some(tool) = tool_or_skip() else { return };
+        tool.state.new_turn();
+        let root = temp_dir("stop");
+        let token = CancelToken::new();
+        let mut ctx = context(&root).with_cancel_token(token.clone());
+        let lines = match tool.interpreters[0].key {
+            "python" => json!(["while True:", "    pass"]),
+            _ => json!(["while (true) {}"]),
+        };
+        let stopper = {
+            let token = token.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(300));
+                token.cancel();
+            })
+        };
+        let started = std::time::Instant::now();
+        let outcome = hold(tool.run(json!({"file_name": "spinning", "lines": lines}), &mut ctx));
+        let elapsed = started.elapsed();
+        stopper.join().expect("stopper");
+
+        assert!(
+            elapsed < Duration::from_millis(300) + Duration::from_millis(1500),
+            "the stop took {elapsed:?}; the looping script ran on to its own timeout"
+        );
+        assert_eq!(
+            outcome.state,
+            ToolState::Failed(crate::run_code::STOPPED.into()),
+            "{}",
+            outcome.to_model
+        );
+        assert!(!root.join("spinning.py").exists() && !root.join("spinning.js").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 5c) A STOP ENDS THE SYNTAX CHECK TOO (audit M4, stage 1). 5b cannot see
+    ///     this half: real code clears `node --check` / `py_compile` in
+    ///     milliseconds, so a check that ignored the stop would still pass it.
+    ///     A check that never ends is needed, and no interpreter offers one, so
+    ///     the interpreter is swapped for `yes`: handed `--check <script>` or
+    ///     `-m py_compile <script>` it prints them forever, never forks (the
+    ///     macOS profile denies `process-fork`), and lives where both shields
+    ///     let a program be read. Measured with stage 1 back on a token nobody
+    ///     holds: the call ran out the 10 s `SYNTAX_CHECK_TIMEOUT` (10.01 s on
+    ///     macOS, 10 Oct 2026); with the turn's token it ends on the stop.
+    #[cfg(unix)]
+    #[test]
+    fn a_stop_ends_the_syntax_check_and_delivers_nothing() {
+        let Some(mut tool) = tool_or_skip() else {
+            return;
+        };
+        let yes = Path::new("/usr/bin/yes");
+        assert!(yes.exists(), "the stand-in for a check that never ends");
+        let key = tool.interpreters[0].key;
+        tool.interpreters = vec![Interpreter {
+            key,
+            path: yes.to_path_buf(),
+            extension: tool.interpreters[0].extension,
+        }];
+        tool.state.new_turn();
+        let root = temp_dir("stop-check");
+        let token = CancelToken::new();
+        let mut ctx = context(&root).with_cancel_token(token.clone());
+        let stopper = {
+            let token = token.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(300));
+                token.cancel();
+            })
+        };
+        let started = std::time::Instant::now();
+        let outcome = hold(tool.run(
+            json!({"file_name": "checked", "lines": ["x = 1"]}),
+            &mut ctx,
+        ));
+        let elapsed = started.elapsed();
+        stopper.join().expect("stopper");
+
+        assert!(
+            elapsed < Duration::from_millis(300) + Duration::from_millis(1500),
+            "the stop took {elapsed:?}; the syntax check ran on to its own timeout"
+        );
+        assert_eq!(
+            outcome.state,
+            ToolState::Failed(crate::run_code::STOPPED.into()),
+            "{}",
+            outcome.to_model
+        );
+        assert!(!root.join("checked.py").exists() && !root.join("checked.js").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 5d) A STOP THAT LANDS AFTER THE LAST STAGE DELIVERS NOTHING (audit M4,
+    ///     review of f7001e9). 5b and 5c stop a child that is still running;
+    ///     the stages read the stop only on a poll tick, so one that lands once
+    ///     stage 2's process has exited — or a script that ends before the
+    ///     first tick — went straight on to the write. `deliver` is handed the
+    ///     verified code and a stop that has already landed: nothing may be
+    ///     written. The same call on a live token writes the file, so an empty
+    ///     folder here means the stop was obeyed, not that delivery is broken.
+    ///     No interpreter is involved, so this does not skip.
+    #[test]
+    fn a_stop_after_the_last_stage_delivers_nothing() {
+        let root = temp_dir("stop-late");
+        let stopped = CancelToken::new();
+        stopped.cancel();
+        let outcome = deliver("print(1)\n", "late", "py", &root, "1".into(), 5, &stopped);
+        assert_eq!(
+            outcome.state,
+            ToolState::Failed(crate::run_code::STOPPED.into()),
+            "{}",
+            outcome.to_model
+        );
+        let left: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name())
+            .collect();
+        assert!(left.is_empty(), "a stopped turn delivered {left:?}");
+
+        let live = deliver(
+            "print(1)\n",
+            "late",
+            "py",
+            &root,
+            "1".into(),
+            5,
+            &CancelToken::new(),
+        );
+        assert!(
+            !matches!(live.state, ToolState::Failed(_)),
+            "{}",
+            live.to_model
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("late.py")).unwrap(),
+            "print(1)\n"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
