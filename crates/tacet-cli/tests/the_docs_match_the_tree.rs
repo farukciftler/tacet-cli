@@ -574,7 +574,7 @@ fn the_sessions_section_quotes_the_version_table() {
     let cli = row(AgentKind::Antigravity, Some("cli"));
     require(
         format!(
-            "measured — {} {}, {} IDE {}, `",
+            "measured — {} {}, and {} IDE {} on macOS only,",
             AgentKind::ClaudeCode.display_name(),
             range(claude.read),
             AgentKind::Antigravity.display_name(),
@@ -582,8 +582,11 @@ fn the_sessions_section_quotes_the_version_table() {
         ),
         "the read ranges in version::KNOWN",
     );
+    // The CLI's range is quoted as measured but unreachable (RG-30): no
+    // version can be read for an `agy` session without running the binary,
+    // so the page must not list it among the ranges reads are trusted in.
     require(
-        format!("` {} — and reads any other version", range(cli.read)),
+        format!("` {} was measured too", range(cli.read)),
         "the read range of the Antigravity CLI in version::KNOWN",
     );
     let (lo, hi) = claude
@@ -609,9 +612,17 @@ fn the_sessions_section_quotes_the_version_table() {
         !KNOWN.iter().any(|k| k.agent == AgentKind::Codex),
         "version::KNOWN now has a Codex row — the page says every Codex path is unmeasured"
     );
-    require(
-        "every Codex version, with a warning".to_string(),
-        "there is no read range for Codex",
+    // The program name between the backticks is skipped, not spelled: see
+    // the note above on `network_monopoly`.
+    let unmeasured = folded
+        .split_once("every Codex version and every `")
+        .and_then(|(_, rest)| rest.split_once('`'))
+        .map(|(_, rest)| rest);
+    assert!(
+        unmeasured.is_some_and(|rest| rest.starts_with(" session with a warning")),
+        "the sessions section must say every Codex version and every CLI session \
+         read with a warning — there is no read range for Codex, and none reachable \
+         for the Antigravity CLI"
     );
     require(
         "**Not measured:** every Codex path".to_string(),

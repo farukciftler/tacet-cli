@@ -314,7 +314,10 @@ pub fn read_session_with(
             // asked about the installed app's (`antigravity::session_version`)
             // — and, where none can be attributed, about no version, which
             // warns. Skipping the gate here read every Antigravity session
-            // silently while the README promised a warning (RG-30 review).
+            // silently while the README promised a warning (RG-30, RG-36
+            // review). The reader's own notices go first — they are about
+            // THIS read (a log trailing its database), and the summary the
+            // model gets keeps only the first `WARNINGS` lines.
             AgentKind::Antigravity => AntigravitySource.read_full(&root, id).map(|r| {
                 let mut session = r.session;
                 session.version = antigravity::session_version(&root, session.updated, app_dirs);
@@ -323,12 +326,8 @@ pub fn read_session_with(
                     antigravity::flavor(&root),
                     session.version.as_deref(),
                 );
-                let warnings = gate
-                    .warning()
-                    .map(str::to_string)
-                    .into_iter()
-                    .chain(r.notices)
-                    .collect();
+                let mut warnings = r.notices;
+                warnings.extend(gate.warning().map(str::to_string));
                 (session, warnings)
             }),
         };
@@ -1625,6 +1624,48 @@ mod tests {
             read_session(&roots, AgentKind::ClaudeCode, "00000000-dead"),
             Err(SessionError::NotFound { .. })
         ));
+    }
+
+    /// RG-36 / RG-30: an Antigravity read through the path every caller uses
+    /// carries the version gate's warning, citing the IDE range. The reader
+    /// test `every_root_reads_with_a_version_warning_under_its_own_flavor`
+    /// asked `check_read` itself and was green while nothing called it.
+    /// RED BEFORE THE FIX: `read.warnings` was the reader's notices alone and
+    /// held no "has not been read by this Tacet before".
+    #[test]
+    fn an_antigravity_read_carries_the_version_warning() {
+        let root = fixtures(AgentKind::Antigravity).join(antigravity::ROOTS[0].0);
+        // No app folders: on a Mac with the IDE installed at the measured
+        // 2.5.5 the real `read_session` attributes that version and is quiet
+        // (RG-30), which is right and is not what this test asks.
+        let read = read_session_with(
+            &SessionRoots::Only(vec![root]),
+            AgentKind::Antigravity,
+            "7f3c2a10-5b6e-4c1d-9a8f-0e1d2c3b4a01",
+            &[],
+        )
+        .unwrap();
+        let gate: Vec<&String> = read
+            .warnings
+            .iter()
+            .filter(|w| w.contains("has not been read by this Tacet before"))
+            .collect();
+        assert_eq!(gate.len(), 1, "{:?}", read.warnings);
+        assert!(
+            gate[0].contains("(ide) of unrecorded version")
+                && gate[0].contains("versions 2.5.5–2.5.5 were measured"),
+            "{}",
+            gate[0]
+        );
+        // And it reaches what `--from` prints and the model reads.
+        let d = Digest::of(&read);
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.contains("has not been read by this Tacet before")),
+            "{:?}",
+            d.warnings
+        );
     }
 
     /// RG-17: both tools say yes to both questions, so a read taints the

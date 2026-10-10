@@ -440,9 +440,14 @@ Codex rollout compressed to `.jsonl.zst` is listed and refused with the advice
 to run `zstd -d`, because reading it would need a new dependency. These roots
 are handed to the two session tools and to nothing else: `read_document` cannot
 reach `~/.codex/auth.json` because you installed this addon. Reading trusts
-the versions somebody measured — Claude Code 2.1.263–2.1.293, Antigravity IDE
-2.5.5, `agy` 1.1.10 — and reads any other version, and every Codex version,
-with a warning you see.
+the versions somebody measured — Claude Code 2.1.263–2.1.293, and Antigravity
+IDE 2.5.5 on macOS only, where the version is read from the installed app's
+`product.json` and trusted only for a session written after that file — and
+reads any other version, every Codex version and every `agy` session with a
+warning you see. Antigravity's own files record no version, so a read the
+installed IDE cannot vouch for carries that warning, naming the version that
+was measured. `agy` 1.1.10 was measured too, but its version cannot be read
+without running the binary, so no `agy` read reaches that range.
 
 **What reaches the model.** A summary capped at 1,200 characters (goal, last
 request, open plan, files touched, last steps), with every chat-template marker
@@ -464,15 +469,19 @@ above.
 the other agents update through `tacet handoff update`. It starts with the
 session as Tacet found it, labelled as the other agent's own work, and no
 tasks: what it reports as progress is only what `tacet handoff update` has
-written since. Getting it to the other
+written since. It holds a summary of the other agent's transcript, so `tacet
+sessions --purge` deletes it along with your conversations, the receipt log
+and the transcript backups `handoff note` keeps. Getting it to the other
 agent has two paths, and the first is the one to use:
 
 * **The agent's own hook** (`tacet handoff install claude|codex|antigravity`).
-  Claude Code and Codex run `tacet handoff hook <agent>` when a session starts
-  and get the record as context; Antigravity gets it as a PreInvocation
-  `ephemeralMessage`. No session file is touched; the only thing of the
-  agent's ever written is its settings file, by `install --path <file>`, after
-  showing the change and asking, with the old file kept beside it.
+  Claude Code and Codex are documented to run `tacet handoff hook <agent>`
+  when a session starts and to get the record as context, and Antigravity to
+  get it as a PreInvocation `ephemeralMessage`; no agent has been seen doing
+  it yet (**Not measured** below). No session file is touched; the only
+  thing of the agent's ever written is its settings file, by `install --path
+  <file>`, after showing the change and asking, with the old file kept beside
+  it.
 * **A note in the agent's own files**, opt-in and fail-closed. `tacet handoff
   note claude <id>` appends one user-role entry, `[Note from Tacet, a local
   assistant, not from the user] …`, chained to the session's last entry; `--fork`
@@ -502,7 +511,9 @@ The experiment cost about one dollar in model turns, which is why it is run by a
 person and never in CI; `scripts/session-roundtrip.sh` repeats it. The Claude
 Code write range is that one version, 2.1.285. **Not measured:** every Codex
 path, its hook included (Codex was not installed on that machine; its reader is
-built from Codex's source and tested on fixtures), the Antigravity hook, and any
+built from Codex's source and tested on fixtures), the Claude Code SessionStart
+hook (`tacet handoff hook claude` is tested on the event its documentation
+describes; no real Claude Code has run it), the Antigravity hook, and any
 write into Antigravity's files (the GUI was not driven).
 
 **Whose terms apply.** Claude Code's documentation says its transcript format

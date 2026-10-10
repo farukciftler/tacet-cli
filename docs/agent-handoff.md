@@ -110,7 +110,11 @@ The hook prints
 the context goes to the model (as a system reminder in the transcript), the
 message to you. The context says it comes from Tacet and is not an
 instruction from the user, and is cut at 9,000 characters (with a line saying
-so), under the cap Claude Code's documentation gives for hook context.
+so), under the cap Claude Code's documentation gives for hook context. That
+shape is checked against the documentation by
+`cargo test -p tacet-cli --test the_handoff_hook_answers_its_agent`; no real
+Claude Code has yet started a session with the hook installed, so whether it
+shows the message and the context is still to be measured.
 
 ### Codex — SessionStart in `~/.codex/hooks.json` (NOT MEASURED)
 

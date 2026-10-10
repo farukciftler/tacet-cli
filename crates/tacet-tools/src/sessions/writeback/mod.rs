@@ -587,8 +587,19 @@ mod tests {
     /// said NOT MEASURED — the reader could only conclude it had been run.
     #[test]
     fn every_hook_no_agent_has_run_is_listed_as_not_measured() {
+        // The README says it too, and is the page more people read: the
+        // first fix corrected only the protocol page and left the README
+        // naming Codex and Antigravity but not Claude Code.
+        for doc in ["docs/agent-handoff.md", "README.md"] {
+            hook_not_measured_in(doc);
+        }
+    }
+
+    fn hook_not_measured_in(doc: &str) {
         let page = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/agent-handoff.md"),
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join(doc),
         )
         .unwrap();
         let folded = page.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -613,7 +624,7 @@ mod tests {
             }
             assert!(
                 sentence.contains(&named(agent)),
-                "docs/agent-handoff.md's Not measured sentence does not name {:?}, \
+                "{doc}'s Not measured sentence does not name {:?}, \
                  and no run of that hook is recorded: {sentence:?}",
                 named(agent)
             );
