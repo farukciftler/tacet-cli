@@ -39,13 +39,25 @@
 //! text going into the model's window. One pass means the sizes `list` reports
 //! are the sizes `extract` writes, or neither happens.
 //!
-//! WITH ONE EXCEPTION, AND IT IS THE FILESYSTEM'S, NOT THIS FILE'S: two entry
-//! names that the DESTINATION considers equal while the duplicate gate does not
-//! — macOS folds Unicode normalisation as well as case (measured; see
-//! `extract`) — are listed as two entries and refused during the write, by name.
-//! Everything a gate here can decide is still decided in the one pass, and a
-//! write that fails after the destination exists removes the destination, so
-//! that refusal, too, leaves nothing behind (audit L14).
+//! WITH TWO EXCEPTIONS, both of them things the central directory cannot show.
+//!
+//! The first is the filesystem's, not this file's: two entry names that the
+//! DESTINATION considers equal while the duplicate gate does not — macOS folds
+//! Unicode normalisation as well as case (measured; see `extract`) — are listed
+//! as two entries and refused during the write, by name.
+//!
+//! The second is the decoder's: what an entry's bytes DECODE to is only known
+//! by decoding them, and `list` decodes nothing. So the CRC, the declared-vs-
+//! actual size and the empty-block limit (a run of more than 1024 deflate
+//! blocks that decode to nothing, audit M8) are checked by `extract` alone; the
+//! M8 flood archive lists as one 0-byte entry and is refused on extract. The
+//! shared-bytes and central-vs-local name checks are NOT in this group — the
+//! central-directory walk reads every local header, so `list` applies them too.
+//!
+//! Everything a gate here can decide from the directory is still decided in the
+//! one pass, and a write that fails after the destination exists removes the
+//! destination, so a refusal at write time, too, leaves nothing behind (audit
+//! L14).
 //!
 //! BULK OUTPUT GOES TO THE STORE. A listing of 400 entries is bulk data; it goes
 //! in as a `Table` and the model gets a count plus a `source_ref`. Entry CONTENT
@@ -1603,13 +1615,20 @@ mod tests {
     /// on, because by every declared number it is an empty file. Before the fix
     /// it was unpacked as one, after the CPU had been spent (3.87 s per 4 MiB in
     /// release). Now `inflate` refuses the run of empty blocks.
+    ///
+    /// AND ONLY `inflate` DOES, so `list` shows this archive and `extract`
+    /// refuses it — the second exception to "one validation pass" in this
+    /// file's header. The listing half is asserted so that the header and the
+    /// README cannot again claim the empty-block limit runs on the central
+    /// directory: if someone moves it there, this test fails and the docs move
+    /// with it.
     #[test]
     fn a_flood_of_empty_deflate_blocks_is_refused_not_unpacked() {
         let _guard = isolated();
         let root = temp_root("flood");
         let store = Arc::new(SharedStore::new());
         let ctx = context(&root, &store);
-        let tool = ArchiveTool::new();
+        let tool = ArchiveTool::with_store(Arc::clone(&store));
         // 256 KiB is ~210,000 blocks — far past the run limit, and small enough
         // that the unfixed decoder finishes inside a debug test run.
         let blocks: usize = 256 * 1024 * 8 / 10;
@@ -1631,6 +1650,16 @@ mod tests {
             external_attributes: 0o100_644 << 16,
         };
         write_zip(&root, "flood.zip", &[flood]);
+
+        let listed = tool
+            .work(&json!({"path": "flood.zip", "action": "list"}), &ctx)
+            .expect("a listing decodes nothing, so it cannot see the empty blocks");
+        assert!(
+            listed.to_model.contains("0 bytes declared"),
+            "the listing should show the entry's own (empty) figure: {}",
+            listed.to_model
+        );
+
         let error = refusal(&tool, &ctx, extract_args("flood.zip")).short_error();
         assert!(
             error.contains("decode to nothing"),
