@@ -4,11 +4,13 @@
 //! `tacet-cli`'s `main.rs`, and the eval — which exists to measure the program a
 //! user runs — had no way to reach it. So every ChatML model in the model table
 //! was measured WITHOUT the suffix the shell appends to every turn: a hybrid
-//! Qwen3 build ran in its default thinking mode in the eval and in `/no_think`
-//! mode for the user on the same message. The size of that difference is on
-//! record in `tacet-eval`'s `tool_selection.rs`: the hybrid model spent a median
-//! of 237 tokens per turn against 19 for the instruct build. One rule, in the
-//! crate both sides already depend on, is the only way the two stop drifting.
+//! Qwen3 build ran in its default thinking mode in the eval, and under the
+//! default `thinking = auto` the shell gives it `/no_think` on every turn the
+//! rule does not call heavy. The cost of that difference has NOT been measured:
+//! the 237-against-19 token medians in `tacet-eval`'s `tool_selection.rs`
+//! compare the hybrid build with the instruct build — two different models —
+//! not one model in its two modes. One rule, in the crate both sides already
+//! depend on, is the only way the two stop drifting.
 //!
 //! WHAT IS NOT HERE: reading the user's setting. `thinking = on|off|auto` is a
 //! CLI config key, and this crate has no business opening a config file; the

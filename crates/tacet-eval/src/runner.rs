@@ -185,6 +185,22 @@ pub fn run_case(case: &EvalCase, selector: &dyn EngineSelector) -> CaseOutcome {
     // A DUPLICATE CALL ENDS THE TOOL PHASE — see the shell's loop for the
     // measurement. Set here, read by `final_turn` below.
     let mut must_answer = false;
+    // WHAT THE MODEL IS ASKED, as opposed to what the case says — the same
+    // split `tool_selection.rs` makes, for the same reason (audit M23): the
+    // shell appends the Qwen soft switch to every ChatML turn, and this loop
+    // sent the bare input, so a hybrid Qwen3 build was measured here in a
+    // thinking mode a default install never runs it in. The selection loop was
+    // fixed first and this one was missed. `case.input` stays the router's
+    // input, as `message` does in the shell.
+    let asked = format!(
+        "{}{}",
+        case.input,
+        tacet_engine::thinking_switch::soft_switch(
+            engine.template(),
+            tacet_engine::thinking_switch::ThinkingSetting::Auto,
+            &case.input,
+        )
+    );
 
     for turn in 0..MAX_TURNS {
         // THE LAST PASS CARRIES NO TOOLS AND NO CONSTRAINT — the shell does the
@@ -220,11 +236,11 @@ pub fn run_case(case: &EvalCase, selector: &dyn EngineSelector) -> CaseOutcome {
         // already been fixed; this file was measuring a prompt the product does
         // not build, and reporting the difference as the model's fault.
         let first_pass = history.is_empty();
-        let question = if first_pass { case.input.as_str() } else { "" };
+        let question = if first_pass { asked.as_str() } else { "" };
         let previous: Vec<Turn> = if first_pass {
             Vec::new()
         } else {
-            std::iter::once(Turn::user(&case.input))
+            std::iter::once(Turn::user(&asked))
                 .chain(history.iter().cloned())
                 .collect()
         };
