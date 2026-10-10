@@ -262,9 +262,7 @@ pub fn install(color: &Color, no_approval: bool) -> Result<Outcome, String> {
     // touching the network — which would silently swap in bytes nobody in this
     // run approved (a failed or interrupted earlier update, or a file another
     // local account dropped next to the binary). Its half-file goes too — see
-    // `clear_staging`.
-    clear_staging(&staged);
-
+    // `clear_staging`, and `download_fresh` for why the two are one call.
     let approval = crate::models::TerminalDownloadApproval {
         color: Color::setup(),
         no_approval,
@@ -275,7 +273,7 @@ pub fn install(color: &Color, no_approval: bool) -> Result<Outcome, String> {
     let progress = crate::models::TerminalDownloadProgress {
         color: Color::setup(),
     };
-    let outcome = tacet_web::download(&plan, &approval, &progress)
+    let outcome = download_fresh(&staged, || tacet_web::download(&plan, &approval, &progress))
         .map_err(|e| format!("download failed: {e}"))?;
 
     make_executable(&staged)?;
@@ -356,6 +354,20 @@ fn clear_staging(staged: &Path) {
     for leftover in [staged.to_path_buf(), partial, PathBuf::from(record)] {
         let _ = std::fs::remove_file(leftover);
     }
+}
+
+/// Clears an earlier update's leftovers beside `staged`, then runs `fetch`.
+///
+/// ONE FUNCTION, SO THE ORDER IS TESTABLE (audit L3). The clear used to be a
+/// bare statement in `install`, and deleting it left every test green: the
+/// only test called `clear_staging` itself, and `install` cannot run under
+/// `cargo test` without the network. `the_download_starts_with_no_leftover`
+/// holds this function to clearing first, and
+/// `install_downloads_only_through_download_fresh` holds `install` to having
+/// no other way to the downloader.
+fn download_fresh<T>(staged: &Path, fetch: impl FnOnce() -> T) -> T {
+    clear_staging(staged);
+    fetch()
 }
 
 /// How long the downloaded binary gets to say what it was built with.
@@ -807,6 +819,54 @@ mod tests {
             assert!(!f.exists(), "{} survived into the next update", f.display());
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// AUDIT L3: by the time the downloader runs, nothing an earlier update
+    /// left is there for it to call "already present" or resume into.
+    #[test]
+    fn the_download_starts_with_no_leftover() {
+        let dir = temp_dir("fresh");
+        let staged = staging_path(&dir.join("tacet"));
+        let partial = tacet_web::download::temp_path(&staged);
+        let record = PathBuf::from(format!("{}.resume", partial.display()));
+        for f in [&staged, &partial, &record] {
+            std::fs::write(f, b"OLD-RELEASE-PREFIX").unwrap();
+        }
+        let seen = download_fresh(&staged, || {
+            [&staged, &partial, &record]
+                .into_iter()
+                .filter(|f| f.exists())
+                .map(|f| f.display().to_string())
+                .collect::<Vec<_>>()
+        });
+        assert!(
+            seen.is_empty(),
+            "the download began with an earlier update's files in place: {seen:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// AUDIT L3: `install` reaches the downloader only through `download_fresh`.
+    /// `install` needs the network, so this reads its source: a second path to
+    /// `tacet_web::download`, or a call that bypasses the wrapper, fails here.
+    #[test]
+    fn install_downloads_only_through_download_fresh() {
+        let source = include_str!("update.rs");
+        let start = source.find("pub fn install(").expect("install exists");
+        let body = &source[start..];
+        let end = body.find("\n}\n").expect("install ends");
+        let flat: String = body[..end].split_whitespace().collect();
+        assert_eq!(
+            flat.matches("tacet_web::download(").count(),
+            1,
+            "install calls the downloader once"
+        );
+        assert!(
+            flat.contains("download_fresh(&staged,||{tacet_web::download(")
+                || flat.contains("download_fresh(&staged,||tacet_web::download("),
+            "install calls the downloader outside download_fresh, so an earlier \
+             update's leftovers may be installed or resumed into"
+        );
     }
 
     /// AUDIT L7: a downloaded binary that never answers does not hold the

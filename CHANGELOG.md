@@ -59,6 +59,11 @@ releases to follow.
   RG-23, RG-25). `a_marker_is_not_text.rs` no longer says ci.yml does not
   build `candle`: PR CI compiles those tests and only the nightly runs them,
   and a workflow test reads the doc against both files (T1).
+* `tacet update` clears an earlier update's `.new`, `.new.downloading` and
+  `.resume` through one call that then downloads, and a test holds the
+  updater to that order: deleting the clear used to leave every test green,
+  because the only test called the helper on its own. A second test reads
+  `install` and fails if it reaches the downloader any other way (L3).
 
 ---
 
