@@ -133,6 +133,13 @@ const SOCKET_FFI: &[&str] = &[
     "gethostbyname",
     "gethostbyname2",
     "res_query",
+    // Winsock, under `extern "system"`; `socket`/`connect` above are its
+    // BSD-named entry points too.
+    "WSAStartup",
+    "WSASocketA",
+    "WSASocketW",
+    "WSAConnect",
+    "GetAddrInfoW",
     "syscall",
     "dlsym",
     "dlopen",
@@ -2227,6 +2234,13 @@ pub fn f() { unsafe { let fd = socket(2, 1, 0); connect(fd, std::ptr::null(), 16
         lines("extern \"C\" { fn syscall(n: i64, ...) -> i64; fn dlsym(h: *mut u8, s: *const u8) -> *mut u8; }")
             .len(),
         2
+    );
+    // Winsock, the Windows spelling of the same calls.
+    assert_eq!(
+        lines(
+            "#[link(name = \"ws2_32\")]\nunsafe extern \"system\" {\n    fn WSAConnect(s: usize) -> i32;\n}\n"
+        ),
+        [(3, "extern WSAConnect".to_string())]
     );
     // Through a crate path, or imported bare.
     assert_eq!(
