@@ -50,9 +50,18 @@ pub enum Command {
         /// Working directory (the sandbox root).
         #[arg(long, default_value = ".")]
         dir: String,
-        /// Run a single message and exit (for scripted diagnostics). In this
-        /// mode the approval gate stays SilentDeny: there is nobody to ask, NO
-        /// DATA LEAVES.
+        /// Run a single message and exit (for scripted diagnostics). Nobody
+        /// can be asked here, so every approval question is answered no: once
+        /// the session holds personal data — piped input, a resumed session,
+        /// or a tool that read this machine — no outbound tool runs. Before
+        /// that, an installed web addon can still send your message out.
+        //
+        // THE OLD TEXT SAID "NO DATA LEAVES" (audit D15), and the audit
+        // measured the opposite: `printf 'AWS_SECRET…' | tacet chat --message …`
+        // sent the piped secret to web_search without a question, because the
+        // pipe never tainted the session (H2-b). The taint is fixed; the
+        // sentence still says only what the gate does, because a clean session
+        // with web search installed does send the message itself.
         #[arg(long)]
         message: Option<String>,
         /// The local model folder to use (`~/models/<name>`). When omitted,
@@ -105,9 +114,9 @@ pub enum Command {
         /// JSON instead of a human table — same pattern as every other list.
         #[arg(long)]
         json: bool,
-        /// Deletes EVERY stored session and the folder itself. On a terminal it
-        /// asks first; piped it does not (a script that typed this flag meant
-        /// it, and there is nobody to ask).
+        /// Deletes EVERY stored session, the folder itself and the receipt log
+        /// (`tacet log`). On a terminal it asks first; piped it does not (a
+        /// script that typed this flag meant it, and there is nobody to ask).
         #[arg(long)]
         purge: bool,
     },
@@ -297,11 +306,14 @@ pub enum Command {
     /// Health check: hardware, engine features, models, config — and what
     /// this machine can comfortably run.
     Doctor,
-    /// The receipt chain: what ran, when, verified against tampering.
+    /// The receipt chain: which kind of tool ran, when, and how it ended.
     ///
     /// The receipts are written by PURE CODE as tools execute (the model is
-    /// never in that loop) into an append-only, hash-chained file; this
-    /// command prints the tail and re-verifies the whole chain every run.
+    /// never in that loop) into an append-only, hash-chained file with a head
+    /// that records its length; this command prints the tail and re-checks
+    /// the chain and the head every run. That catches damage, an edited or
+    /// deleted line and a cut tail — not someone who can rewrite your config
+    /// directory, because the hash is not keyed. A receipt holds no chip text.
     Log {
         #[arg(long)]
         json: bool,
@@ -597,6 +609,36 @@ mod command_line {
             .collect();
         assert!(flags.contains(&"temperature".to_string()), "{flags:?}");
         assert!(flags.contains(&"seed".to_string()), "{flags:?}");
+    }
+
+    /// AUDIT D15: `--message`'s help said "NO DATA LEAVES", and a piped secret
+    /// went to web_search unasked. The help now names the condition under
+    /// which the silent "no" holds — the session holding personal data — and
+    /// the three ways in that `chat::PersonalInput` taints on. The second half
+    /// is what keeps the sentence from drifting from the code: a source taken
+    /// off that list has to come off this help too.
+    #[test]
+    fn the_message_help_promises_only_what_the_gate_does() {
+        let help = Shell::command()
+            .find_subcommand("chat")
+            .expect("chat subcommand")
+            .get_arguments()
+            .find(|a| a.get_id() == "message")
+            .and_then(|a| a.get_long_help().or(a.get_help()))
+            .map(|h| h.to_string())
+            .expect("--message has help");
+        let flat = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            !flat.to_uppercase().contains("NO DATA LEAVES"),
+            "the help promises nothing leaves, and a clean session's message can: {flat}"
+        );
+        for source in crate::chat::PersonalInput::ALL {
+            assert!(
+                flat.contains(source.help_phrase()),
+                "the help does not name `{}` as a taint source: {flat}",
+                source.help_phrase()
+            );
+        }
     }
 
     /// `tacet update` INSTALLS, and the older spelling still parses.

@@ -1398,22 +1398,28 @@ fn sessions(json: bool, purge: bool) -> ExitCode {
             && std::io::stdout().is_terminal()
             && !ui::ask_yes_no(
                 &color,
-                "delete EVERY stored conversation? this cannot be undone",
+                "delete EVERY stored conversation and the receipt log? this cannot be undone",
             )
         {
             println!("{}", color.paint(DIM, "(nothing was deleted)"));
             return ExitCode::SUCCESS;
         }
-        return match session::Session::purge_all() {
-            Ok(n) => {
+        // THE RECEIPT LOG GOES TOO (audit L27). It sits beside the sessions
+        // folder, and until format 2 every receipt carried its chip's words —
+        // "Note taken · The user passport number is …" — so a purge that left
+        // it behind was a purge that kept the most personal line of the
+        // conversation. New receipts hold no words; old logs still do.
+        let receipts = receipt::purge();
+        return match (session::Session::purge_all(), receipts) {
+            (Ok(n), Ok(r)) => {
                 if json {
-                    println!("{}", serde_json::json!({ "purged": n }));
+                    println!("{}", serde_json::json!({ "purged": n, "receipts": r }));
                 } else {
-                    println!("{n} conversations deleted");
+                    println!("{n} conversations deleted · {r} receipts deleted");
                 }
                 ExitCode::SUCCESS
             }
-            Err(e) => {
+            (Err(e), _) | (_, Err(e)) => {
                 eprintln!("{}", color.paint(YELLOW, &format!("could not delete: {e}")));
                 ExitCode::FAILURE
             }
