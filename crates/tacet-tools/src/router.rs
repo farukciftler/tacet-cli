@@ -128,6 +128,16 @@ pub enum IntentProfile {
     /// that instruction never reached the model, because the tool never reached
     /// the prompt.
     Clipboard,
+    /// WORK STARTED IN ANOTHER CODING AGENT — a Claude Code, Codex or
+    /// Antigravity session the user wants found or continued (RG-19).
+    ///
+    /// ITS OWN PROFILE FOR THE SAME REASON AS `Data`: both tools are addon
+    /// tools, and with no profile they score only on overlap, so "continue my
+    /// claude code session" put `find_file` and `read_document` — which share
+    /// "session" and "continue" with nothing — ahead of the one tool that can
+    /// answer it. Nothing in the other profiles wants these words: a user who
+    /// says where they LEFT OFF in an agent is not asking for a file.
+    Sessions,
 }
 
 impl IntentProfile {
@@ -170,7 +180,7 @@ impl IntentProfile {
     /// The STANDING guarantees are `every_expected_tool_reaches_the_model` and
     /// `a_connected_server_does_not_push_the_expected_tool_out_of_the_budget`
     /// over in `tacet_eval::routing`.
-    pub const ALL: [IntentProfile; 14] = [
+    pub const ALL: [IntentProfile; 15] = [
         IntentProfile::Document,
         IntentProfile::DocEdit,
         IntentProfile::Clock,
@@ -186,10 +196,13 @@ impl IntentProfile {
         // APPENDED, per the rule at the top of this array: both lose their ties.
         IntentProfile::Data,
         IntentProfile::Clipboard,
+        // APPENDED, and it loses its ties too (RG-19).
+        IntentProfile::Sessions,
     ];
 
     pub fn name(&self) -> &'static str {
         match self {
+            IntentProfile::Sessions => "sessions",
             IntentProfile::Extract => "extract",
             IntentProfile::Data => "data",
             IntentProfile::Clipboard => "clipboard",
@@ -722,6 +735,29 @@ impl IntentProfile {
                 // "the table of contents". The database sense is carried by the
                 // company it keeps ("rows in the users table" fires on "rows").
             ],
+            IntentProfile::Sessions => &[
+                // THE AGENTS BY NAME. "claude code" and not bare "claude": the
+                // company's name is also a person's, and only the product is a
+                // place work was left. Matched as written in any language — a
+                // product name is not translated.
+                "claude code",
+                "codex",
+                "antigravity",
+                // WHAT A PERSON SAYS WHEN THEY WANT TO GO ON. Bare "session"
+                // and bare "continue" are NOT here: "continue the list" and
+                // "the session is at 3pm" are not about another agent, and both
+                // words appear in requests for every other profile. The
+                // phrases below carry the possessive or the resumption.
+                "my session",
+                "that session",
+                "last session",
+                "agent session",
+                "coding session",
+                "left off",
+                "leave off",
+                "where i stopped",
+                "pick up where",
+            ],
             IntentProfile::Clipboard => &[
                 "clipboard",
                 "copied",
@@ -853,6 +889,21 @@ impl IntentProfile {
                 // satiri" — read the first ten lines of a file — scored as a
                 // database question. "kayit" (record) has no such second
                 // reading in this catalog.
+            ],
+            IntentProfile::Sessions => &[
+                // "oturum" IS A STEM: it reaches "oturumum", "oturumuma",
+                // "oturumda". Unlike English "session" it has no second
+                // everyday sense in a request to an assistant — a meeting is
+                // "toplanti", a sitting of court is not asked about here.
+                "oturum",
+                // "kaldigim" ALONE IS NOT HERE, and a benchmark is why:
+                // "bodrumda kaldigimiz otel" (the hotel we stayed at) folds to
+                // the same stem. The place-I-left-off sense always carries
+                // "yer".
+                "kaldigim yer",
+                "kaldigimiz yer",
+                "gorevine devam",
+                "gorevime devam",
             ],
             IntentProfile::Clipboard => &[
                 "pano",
@@ -1440,6 +1491,15 @@ impl IntentProfile {
                 "db", "sql", "sqlite", "database", "rows", "records", "query",
             ],
             IntentProfile::Clipboard => &["clipboard", "paste", "copy"],
+            // "session" IS IN BOTH TOOLS' NAMES, so a fired profile lifts the
+            // pair by `NAME_WEIGHT` and nothing else by more than the capped
+            // description share. "sessions" is in ONE of them, and that is on
+            // purpose: `sessions_list` is the call a model without an id needs
+            // first. With "session" alone the two tied and both lost to the
+            // learned Extract boost on "where did I leave off in codex?"
+            // (`message_intent` first, `sessions_list` fourth — measured by
+            // `the_session_tools_are_reachable_by_the_plainest_phrasings`).
+            IntentProfile::Sessions => &["session", "sessions", "agent", "transcript"],
             IntentProfile::Document => &[
                 // "spreadsheet" WAS ADDED HERE AND THEN TAKEN BACK OUT, and the
                 // measurement is worth more than the line would have been.
@@ -2412,6 +2472,62 @@ mod tests {
                 "`clipboard` is not among the {} tools shown for {message:?}: {:?}",
                 shown.len(),
                 shown.iter().map(|t| t.name()).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// RG-19: the phrasings a user who worked in another agent actually types —
+    /// the ones the R&D brief lists, in both languages — reach BOTH session
+    /// tools, and `sessions_list` (the call a model without an id needs) heads
+    /// the list.
+    #[test]
+    fn the_session_tools_are_reachable_by_the_plainest_phrasings() {
+        let catalog = catalog_with_addons();
+        let router = Router::new();
+        for message in [
+            "continue my claude code session",
+            "where did I leave off in codex?",
+            "show my antigravity conversations",
+            "pick up where I left off yesterday",
+            "list my sessions from the other agents",
+            "dünkü claude code oturumumda ne yapıyordum",
+            "codex'te kaldığım yerden devam et",
+            "şu antigravity görevine devam edelim",
+            "dünkü oturumuma bakar mısın",
+        ] {
+            let shown: Vec<String> = router
+                .select(message, &catalog)
+                .iter()
+                .map(|t| t.name().to_string())
+                .collect();
+            assert_eq!(
+                shown.first().map(String::as_str),
+                Some("sessions_list"),
+                "`sessions_list` does not head the tools shown for {message:?}: {shown:?}"
+            );
+            assert!(
+                shown.iter().any(|n| n == "session_read"),
+                "`session_read` is not among the tools shown for {message:?}: {shown:?}"
+            );
+        }
+    }
+
+    /// The other direction: the words the Sessions triggers were chosen to
+    /// avoid do not fire the profile. Each of these is a request for some
+    /// other tool, or for none.
+    #[test]
+    fn everyday_words_do_not_score_as_another_agent() {
+        for message in [
+            "continue the list",
+            "the session starts at 3pm",
+            "geçen sene bodrumda kaldığımız otel çok güzeldi",
+            "devam et",
+            "read notes.md",
+        ] {
+            assert_eq!(
+                score_intent(message).score(IntentProfile::Sessions),
+                0,
+                "{message:?} scored as a question about another agent's session"
             );
         }
     }

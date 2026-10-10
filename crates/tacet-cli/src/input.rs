@@ -77,6 +77,10 @@ pub const COMMANDS: &[Command] = &[
         description: "the conversations kept on disk, and where they live",
     },
     Command {
+        name: crate::chat::RESUME_FROM,
+        description: "continue a Claude Code, Codex or Antigravity session: /resume-from codex:<id>",
+    },
+    Command {
         name: "/preview",
         description: "show the last file Tacet saved (ctrl-o)",
     },

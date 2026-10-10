@@ -253,6 +253,13 @@ const NAMED_NOT_RUN: &[(&str, &str)] = &[
         "tacet-tools/tests/an_antigravity_session_is_read_from_its_log.rs",
         "tests/fixtures/sessions/antigravity",
     ),
+    // The router's Sessions profile (RG-19): the agents' product names as
+    // words a user types ("continue my claude code session", "codex'te
+    // kaldığım yer"), matched against the message and run by nothing — the
+    // router scores text; the tools it lifts read local files.
+    ("tacet-tools/src/router.rs", "claude code"),
+    ("tacet-tools/src/router.rs", "codex"),
+    ("tacet-tools/src/router.rs", "antigravity"),
     // The write gate's refusal text, and a version string `claude --version`
     // prints, fed to the parser in a test as a thing it must refuse.
     (
@@ -364,6 +371,11 @@ const RUNTIME_SPAWN_SITES: &[(&str, &str)] = &[
     (
         "tacet-cli/tests/the_shell_budgets_its_tools.rs",
         "`env!(\"CARGO_BIN_EXE_tacet\")`, the binary under test, on the scripted engine",
+    ),
+    (
+        "tacet-cli/tests/a_session_from_another_agent_is_continued.rs",
+        "`env!(\"CARGO_BIN_EXE_tacet\")`, the binary under test, on the scripted engine \
+         (RG-20 `--from`); no agent program is run, the fixtures are files",
     ),
     (
         "tacet-cli/tests/consent_reaches_the_person.rs",

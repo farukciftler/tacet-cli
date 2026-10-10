@@ -73,6 +73,9 @@ pub struct ChatRun {
     pub json: bool,
     pub continue_session: bool,
     pub session_id: Option<String>,
+    /// `--from <agent>:<id>`: another coding agent's session to continue
+    /// (RG-20). Validated by `model::parse_ref` when it is used.
+    pub from: Option<String>,
     /// How generation samples. Already RESOLVED here (flag > config > default) —
     /// `chat` does not read the config file itself, the same way it does not
     /// resolve the model name itself.
@@ -188,9 +191,12 @@ pub fn chat(run: ChatRun) -> ExitCode {
         json,
         continue_session,
         session_id,
+        from,
         sampling,
     } = run;
-    let dir = dir.as_str();
+    // OWNED AND MUTABLE: a continuation may move the session into the folder
+    // the other agent worked in (RG-20), and only after the user says yes.
+    let mut dir: String = dir;
     let model_name = model_name.as_str();
     let color = Color::setup();
     let screen = Screen::setup();
@@ -346,6 +352,26 @@ pub fn chat(run: ChatRun) -> ExitCode {
     // here as well is what keeps the catalog honest about it.
     let can_ask = somebody_to_ask(interactive, &ui::Terminal);
 
+    // ANOTHER AGENT'S SESSION TO CONTINUE (RG-20). Read BEFORE the context is
+    // built, because continuing may move the working folder, and every tool
+    // resolves paths against that folder from its first call. A reference
+    // that cannot be read ends the run: the user asked for THAT session, and
+    // a shell that quietly opened without it would answer as if it had it.
+    let mut seed: Option<String> = None;
+    if let Some(reference) = &from {
+        match continuation(reference) {
+            Ok(imported) => {
+                dir = settle_dir(&imported, &dir, can_ask && screen.tty(), &color, human);
+                announce_continuation(&imported, &color, human);
+                seed = Some(imported.seed);
+            }
+            Err(e) => {
+                eprintln!("{}", color.paint(YELLOW, &format!("(--from: {e})")));
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
     let (mut catalog, mut code_state) = session_catalog(&store, &memory, &color, can_ask);
 
     // THE ADDON GATE'S VALUE IS READ AT SESSION START — AT THE SAME MOMENT as
@@ -391,7 +417,7 @@ pub fn chat(run: ChatRun) -> ExitCode {
     ));
     let mut ctx = session_context(
         Arc::clone(&store) as Arc<dyn CoreDataStore>,
-        dir,
+        dir.as_str(),
         Arc::clone(&traces) as Arc<dyn Reporter>,
     );
     // PERSONAL DATA THAT CAME IN WITHOUT A TOOL TAINTS FROM THE START (audit
@@ -399,6 +425,13 @@ pub fn chat(run: ChatRun) -> ExitCode {
     // turn, below, where the notes are chosen.
     if let Some(why) = starting_taint(piped.is_some(), !resumed.is_empty()) {
         taint_session(&executor, &mut ctx, why);
+    }
+    // An imported session is BOTH halves of RG-01: the user's own work
+    // (taint) and text another program wrote (outside text). Marked here,
+    // before the first tool of the first turn can run, the same as the tools
+    // that read one mark it after their call.
+    if seed.is_some() {
+        mark_imported(&executor, &mut ctx);
     }
 
     // The remote tools get a floor in the budget: a catalog the model is never
@@ -426,8 +459,8 @@ pub fn chat(run: ChatRun) -> ExitCode {
     // the prompt would change shape mid-conversation for reasons the user never
     // did, which is precisely the kind of drift that makes a measurement
     // meaningless. See `dir_context` for the measured token cost.
-    let dir_block = dir_context(dir);
-    let system = system_text(dir_block.as_ref());
+    let mut dir_block = dir_context(&dir);
+    let mut system = system_text(dir_block.as_ref());
     // TOKEN ACCOUNTING. No new counter WAS INVENTED: the prompt side comes from
     // `TokenCounter`'s truncation report (`final_estimate` — the real prompt size
     // AFTER truncation), the generation side from the engine's reported
@@ -638,6 +671,53 @@ pub fn chat(run: ChatRun) -> ExitCode {
                 );
                 return ExitCode::FAILURE;
             }
+            // `/resume-from` CHANGES THE SESSION ITSELF — the working folder,
+            // the taint, the next turn's question — so it is handled here,
+            // where those live, and not in `slash`, which is handed only what
+            // a command may read or print (RG-20).
+            if message.split_whitespace().next() == Some(RESUME_FROM) {
+                match message.split_whitespace().nth(1) {
+                    None => print_continuable(&color),
+                    Some(reference) => match continuation(reference) {
+                        Ok(imported) => {
+                            let moved =
+                                settle_dir(&imported, &dir, can_ask && screen.tty(), &color, true);
+                            if moved != dir {
+                                dir = moved;
+                                // The folder is part of the context and of the
+                                // system text; both are rebuilt, and the flags
+                                // the old context carried are put back on the
+                                // new one before anything can run.
+                                let tainted = ctx.session_tainted();
+                                let outside = ctx.saw_external_content();
+                                ctx = session_context(
+                                    Arc::clone(&store) as Arc<dyn CoreDataStore>,
+                                    dir.as_str(),
+                                    Arc::clone(&traces) as Arc<dyn Reporter>,
+                                );
+                                if tainted {
+                                    ctx.taint();
+                                }
+                                if outside {
+                                    ctx.mark_external_content();
+                                }
+                                dir_block = dir_context(&dir);
+                                system = system_text(dir_block.as_ref());
+                            }
+                            mark_imported(&executor, &mut ctx);
+                            announce_continuation(&imported, &color, true);
+                            seed = Some(imported.seed);
+                        }
+                        Err(e) => {
+                            println!("{}", color.paint(YELLOW, &format!("({e})")));
+                        }
+                    },
+                }
+                if single_message.is_some() {
+                    break;
+                }
+                continue;
+            }
             // Menus REPLAY commands (see SlashResult::Replay): the loop feeds
             // the produced command back through the same gate, so a menu pick
             // and a typed command are literally the same code path. The depth
@@ -835,6 +915,11 @@ pub fn chat(run: ChatRun) -> ExitCode {
             Some(p) => format!("{}\n\n{message}", stdin_fence(p)),
             None => message.clone(),
         };
+        // THE CONTINUED SESSION'S SUMMARY, ONCE, above the first real question
+        // (RG-20) — data first, instruction last, as with the pipe. It then
+        // lives in the history with that question, so later turns keep it
+        // until the window has to drop it, like any other early turn.
+        asked = seed_question(&mut seed, asked);
         // Selective thinking (Qwen soft switch) — see `thinking_switch_for`.
         if engine.template() == tacet_engine::Template::ChatML {
             asked.push_str(thinking_switch_for(
@@ -1859,18 +1944,26 @@ mod interrupt {
 ///   whatever the earlier session was given;
 /// * `Memory` — a note remembered in one session ("passport U1234567") was
 ///   injected in the next, and web_search went out unasked.
+/// * `Imported` — `--from` / `/resume-from` put a summary of ANOTHER agent's
+///   session in front of the model (RG-20): the user's code and commands,
+///   arriving with no tool call to taint on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PersonalInput {
     Piped,
     Resumed,
     Memory,
+    Imported,
 }
 
 impl PersonalInput {
     /// The doors a `--message` run can open. Memory is not one: a one-shot run
     /// keeps its memory in RAM and starts it empty (see `chat`).
     #[cfg(test)]
-    pub const ALL: [PersonalInput; 2] = [PersonalInput::Piped, PersonalInput::Resumed];
+    pub const ALL: [PersonalInput; 3] = [
+        PersonalInput::Piped,
+        PersonalInput::Resumed,
+        PersonalInput::Imported,
+    ];
 
     /// How `--message`'s help names this door — held to it by
     /// `the_message_help_promises_only_what_the_gate_does`.
@@ -1880,7 +1973,227 @@ impl PersonalInput {
             PersonalInput::Piped => "piped input",
             PersonalInput::Resumed => "a resumed session",
             PersonalInput::Memory => "a remembered note",
+            PersonalInput::Imported => "an imported agent session",
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Continuing another agent's session (RG-20)
+// ---------------------------------------------------------------------------
+
+/// The in-shell verb. A constant because the turn loop matches it and
+/// `input::COMMANDS` lists it, and the two must not drift.
+pub const RESUME_FROM: &str = "/resume-from";
+
+/// Reads `<agent>:<id>` for a continuation.
+///
+/// THE ADDON GATE IS ASKED HERE TOO, not only by the catalog. `--from` is the
+/// user's own flag and needs no model to call a tool — but the folders the
+/// readers may open are the ones the user approved when installing
+/// `agent-sessions`, and with the addon closed there is no such approval.
+fn continuation(reference: &str) -> Result<tacet_tools::sessions_tool::Imported, String> {
+    use tacet_web::addon;
+    if !addon::is_open(addon::AGENT_SESSIONS) {
+        return Err(format!(
+            "reading another agent's session needs the {} addon: `tacet addon install {}` \
+             (inside the shell: `/addon install {}`), or `/addon on {}` if it is installed",
+            addon::AGENT_SESSIONS,
+            addon::AGENT_SESSIONS,
+            addon::AGENT_SESSIONS,
+            addon::AGENT_SESSIONS
+        ));
+    }
+    let (agent, id) =
+        tacet_tools::sessions::model::parse_ref(reference).map_err(|e| e.to_string())?;
+    let imported = tacet_tools::sessions_tool::import(
+        &tacet_tools::sessions_tool::SessionRoots::Registry,
+        agent,
+        &id,
+    )?;
+    // THE HANDOFF STARTS WITH THE CONTINUATION, so the other agent's hook has
+    // a record to show when the user goes back. A failure here is said and
+    // does not stop the continuation: the work can go on without the record,
+    // and a record that already holds the other agent's progress is never
+    // overwritten (`start_handoff`).
+    match tacet_tools::sessions::handoff::default_dir() {
+        Some(dir) => {
+            if let Err(e) = tacet_tools::sessions_tool::start_handoff(&dir, &imported.digest) {
+                eprintln!("(the handoff record was not started: {e})");
+            }
+        }
+        None => eprintln!(
+            "(the handoff record was not started: the config directory could not be resolved)"
+        ),
+    }
+    Ok(imported)
+}
+
+/// Taints the session AND marks it as holding outside text — the two flags a
+/// session read through `session_read` gets from the executor, given here to
+/// a session that was seeded without a tool.
+fn mark_imported(executor: &ToolExecutor, ctx: &mut ToolContext) {
+    taint_session(executor, ctx, PersonalInput::Imported);
+    executor.inherit_external_content(true);
+    ctx.mark_external_content();
+}
+
+/// The question with the continued session's summary above it, the first time
+/// only: the seed is taken, so the next question goes as typed.
+fn seed_question(seed: &mut Option<String>, asked: String) -> String {
+    match seed.take() {
+        Some(s) => format!("{s}\n\n{asked}"),
+        None => asked,
+    }
+}
+
+/// Where the session should work after a continuation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DirChoice {
+    Stay,
+    Move(String),
+}
+
+/// Whether to move into the folder the other agent worked in.
+///
+/// THE FOLDER CAME OUT OF A TRANSCRIPT, so it is a suggestion from a file
+/// another program wrote, and moving there widens what every file tool can
+/// reach. So: only when somebody can be asked, only when they say yes, and
+/// only to a folder that exists and is not the one already open. A `--message`
+/// run or a piped shell never moves.
+fn dir_choice(
+    target: Option<&std::path::Path>,
+    current: &str,
+    can_ask: bool,
+    ask: impl FnOnce(&str) -> bool,
+) -> DirChoice {
+    let Some(target) = target else {
+        return DirChoice::Stay;
+    };
+    let Ok(real) = target.canonicalize() else {
+        return DirChoice::Stay;
+    };
+    if !real.is_dir()
+        || std::path::Path::new(current)
+            .canonicalize()
+            .is_ok_and(|c| c == real)
+    {
+        return DirChoice::Stay;
+    }
+    let shown = real.display().to_string();
+    if can_ask
+        && ask(&format!(
+            "that session worked in {shown} — work there instead of {current}?"
+        ))
+    {
+        DirChoice::Move(shown)
+    } else {
+        DirChoice::Stay
+    }
+}
+
+/// `dir_choice` against the terminal, with what was decided said out loud.
+fn settle_dir(
+    imported: &tacet_tools::sessions_tool::Imported,
+    current: &str,
+    can_ask: bool,
+    color: &Color,
+    human: bool,
+) -> String {
+    match dir_choice(imported.digest.cwd.as_deref(), current, can_ask, |q| {
+        ui::ask_yes_no(color, q)
+    }) {
+        DirChoice::Move(to) => {
+            if human {
+                println!("{}", color.paint(DIM, &format!("(working in {to})")));
+            }
+            to
+        }
+        DirChoice::Stay => current.to_string(),
+    }
+}
+
+/// What the user is told when a continuation starts: which session, how much
+/// of it the model sees, and every warning the reader raised — a cut chain or
+/// an unmeasured version must not be news to them at the third wrong answer.
+/// On stderr, so `--json` keeps stdout to itself.
+fn announce_continuation(
+    imported: &tacet_tools::sessions_tool::Imported,
+    color: &Color,
+    human: bool,
+) {
+    let d = &imported.digest;
+    if human {
+        eprintln!(
+            "{}",
+            color.paint(
+                DIM,
+                &format!(
+                    "(continuing {} session {} — a summary of its {} entries goes in front of \
+                     your next message; it counts as personal data and outside text, so \
+                     outbound and host-acting tools will ask first)",
+                    d.agent.display_name(),
+                    d.id,
+                    d.entries
+                )
+            )
+        );
+    }
+    for w in &d.warnings {
+        eprintln!("{}", color.paint(YELLOW, &format!("({w})")));
+    }
+    if d.live {
+        eprintln!(
+            "{}",
+            color.paint(
+                YELLOW,
+                &format!(
+                    "({} still has this session open; what is read may already be behind it)",
+                    d.agent.display_name()
+                )
+            )
+        );
+    }
+}
+
+/// `/resume-from` with no argument: the sessions that could be continued, as
+/// the references to type.
+fn print_continuable(color: &Color) {
+    if !tacet_web::addon::is_open(tacet_web::addon::AGENT_SESSIONS) {
+        if let Err(e) = continuation("") {
+            println!("{}", color.paint(YELLOW, &format!("({e})")));
+        }
+        return;
+    }
+    let list = tacet_tools::sessions_tool::list_sessions(
+        &tacet_tools::sessions_tool::SessionRoots::Registry,
+        &tacet_tools::sessions::AgentKind::ALL,
+    );
+    if list.is_empty() {
+        println!(
+            "{}",
+            color.paint(DIM, "(no Claude Code, Codex or Antigravity session found)")
+        );
+        return;
+    }
+    println!(
+        "{}",
+        color.paint(DIM, &format!("usage: {RESUME_FROM} <agent>:<id>"))
+    );
+    for s in list.iter().take(10) {
+        // A title is a transcript's first request: folded, defanged and
+        // stripped of control characters, so a title cannot move the cursor
+        // or recolour the terminal it is printed on.
+        let title: String = tacet_tools::sessions_tool::one_line(&s.title, 60)
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect();
+        println!(
+            "  {}:{}  {}",
+            s.agent.slug(),
+            s.id,
+            color.paint(DIM, &title)
+        );
     }
 }
 
@@ -2963,5 +3276,99 @@ mod cancel_wiring_tests {
             1,
             "a second `ToolContext::new` in chat.rs builds a context that does not hear Ctrl-C"
         );
+    }
+}
+
+#[cfg(test)]
+mod continuation_tests {
+    use super::*;
+
+    fn context() -> ToolContext {
+        session_context(
+            Arc::new(SharedStore::new()) as Arc<dyn CoreDataStore>,
+            std::env::temp_dir(),
+            Arc::new(tacet_kernel::SilentReporter) as Arc<dyn Reporter>,
+        )
+    }
+
+    /// RG-20 / RG-01: a session seeded from another agent starts BOTH tainted
+    /// and marked as holding outside text, in the executor the gate reads and
+    /// in the context a rebuilt executor inherits from — before any tool has
+    /// run, so the first `shell` or `web_search` of the first turn already
+    /// asks.
+    #[test]
+    fn an_imported_session_starts_tainted_and_outside() {
+        let executor = ToolExecutor::new(ToolCatalog::new());
+        let mut ctx = context();
+        assert!(!executor.session_tainted() && !executor.saw_external_content());
+        mark_imported(&executor, &mut ctx);
+        assert!(executor.session_tainted(), "the import did not taint");
+        assert!(
+            executor.saw_external_content(),
+            "the import did not mark outside text, so host-acting tools would not ask"
+        );
+        assert!(ctx.session_tainted() && ctx.saw_external_content());
+    }
+
+    /// RG-20: the summary goes above the FIRST question and only that one.
+    #[test]
+    fn the_seed_goes_in_front_of_the_first_question_only() {
+        let mut seed = Some("<imported_session>S</imported_session>".to_string());
+        let first = seed_question(&mut seed, "what next?".into());
+        assert!(first.starts_with("<imported_session>S</imported_session>"));
+        assert!(first.ends_with("what next?"), "the question must stay last");
+        assert_eq!(seed, None, "the seed was not consumed");
+        assert_eq!(seed_question(&mut seed, "and then?".into()), "and then?");
+    }
+
+    /// RG-20: the folder a transcript names is only ever a suggestion — taken
+    /// on a yes from somebody who can be asked, never otherwise, and never
+    /// asked about at all when there is nothing to move to.
+    #[test]
+    fn the_session_folder_is_entered_only_on_a_yes() {
+        let here = std::env::temp_dir().join(format!("tacet-cont-here-{}", std::process::id()));
+        let there = std::env::temp_dir().join(format!("tacet-cont-there-{}", std::process::id()));
+        std::fs::create_dir_all(&here).unwrap();
+        std::fs::create_dir_all(&there).unwrap();
+        let current = here.to_str().unwrap();
+        let real_there = there.canonicalize().unwrap().display().to_string();
+
+        assert_eq!(
+            dir_choice(Some(&there), current, true, |_| true),
+            DirChoice::Move(real_there)
+        );
+        assert_eq!(
+            dir_choice(Some(&there), current, true, |_| false),
+            DirChoice::Stay
+        );
+        // Nobody to ask: no question, no move.
+        assert_eq!(
+            dir_choice(Some(&there), current, false, |_| panic!("asked a pipe")),
+            DirChoice::Stay
+        );
+        // Nothing to move to: no question either.
+        for target in [
+            here.as_path(),
+            std::path::Path::new("/no/such/folder/tacet"),
+        ] {
+            assert_eq!(
+                dir_choice(Some(target), current, true, |_| panic!("asked for nothing")),
+                DirChoice::Stay
+            );
+        }
+        assert_eq!(
+            dir_choice(None, current, true, |_| panic!("asked for nothing")),
+            DirChoice::Stay
+        );
+        let _ = std::fs::remove_dir_all(&here);
+        let _ = std::fs::remove_dir_all(&there);
+    }
+
+    /// The in-shell verb is in the command list the `/` popup and `/help`
+    /// read, under the same constant the turn loop matches.
+    #[test]
+    fn resume_from_is_a_listed_command() {
+        assert!(input::COMMANDS.iter().any(|c| c.name == RESUME_FROM));
+        assert!(input::is_command(&format!("{RESUME_FROM} codex:abc")));
     }
 }

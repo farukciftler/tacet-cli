@@ -522,6 +522,20 @@ fn install_generic(
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
             .collect();
+        // AN EMPTY ANSWER MAY HAVE A MACHINE DEFAULT, and if it does it is
+        // RECORDED rather than left implicit: the approval screen below then
+        // names the folders that will be read, not a rule about where they
+        // might be. Only one setting has such a default today, and it is a
+        // READ list — nothing here may default a list that grants a write.
+        if values.is_empty() {
+            values = found_on_this_machine(def.name, spec.key);
+            if !values.is_empty() {
+                println!(
+                    "{}",
+                    color.paint(DIM, "  none given — the ones found on this machine:")
+                );
+            }
+        }
         if values.is_empty() {
             if spec.required {
                 eprintln!(
@@ -595,6 +609,26 @@ fn install_generic(
     }
 
     save(color, def, collected)
+}
+
+/// What an empty answer to a setting means on THIS machine, if anything.
+///
+/// `agent-sessions`' folders: each agent's own (`$CLAUDE_CONFIG_DIR` or
+/// `~/.claude`, `$CODEX_HOME` or `~/.codex`, the three `~/.gemini/antigravity*`)
+/// that exist. Asked through the readers' own `default_roots`, so the install
+/// and the readers cannot disagree about where an agent keeps its files. A
+/// folder that does not exist is left out: registering it would put a path on
+/// the approval screen that nothing will be read from.
+fn found_on_this_machine(addon: &str, key: &str) -> Vec<String> {
+    use tacet_web::addon::{AGENT_SESSIONS, ROOTS_KEY};
+    if addon == AGENT_SESSIONS && key == ROOTS_KEY {
+        tacet_tools::sessions_tool::existing_default_roots()
+            .into_iter()
+            .map(|p| p.display().to_string())
+            .collect()
+    } else {
+        Vec::new()
+    }
 }
 
 /// Asks ONE setting. `None` = the user cancelled or the input ended (EOF): the
@@ -1674,7 +1708,9 @@ pub fn try_addon(name: &str, json: bool) -> ExitCode {
 /// is the thing itself, and doing the thing to find out whether it can be done
 /// is how a "try" becomes an unapproved use of the addon.
 fn try_local(color: &Color, a: &tacet_web::addon::Addon, json: bool) -> ExitCode {
-    use tacet_web::addon::{COMMANDS_KEY, DIRECTORIES_KEY, SHELL, WORKSPACE};
+    use tacet_web::addon::{
+        AGENT_SESSIONS, COMMANDS_KEY, DIRECTORIES_KEY, ROOTS_KEY, SHELL, WORKSPACE,
+    };
 
     // (what was checked, is it there, why)
     let mut findings: Vec<(String, bool, String)> = Vec::new();
@@ -1705,6 +1741,25 @@ fn try_local(color: &Color, a: &tacet_web::addon::Addon, json: bool) -> ExitCode
                         "missing"
                     }
                     .to_string(),
+                ));
+            }
+            true
+        }
+        // THE FOLDERS ARE THERE OR NOT; nothing under them is opened. Listing
+        // the sessions would be using the addon, and the Claude Code reader's
+        // liveness check starts `ps` — a try starts no process.
+        AGENT_SESSIONS => {
+            let mut roots: Vec<String> =
+                a.values(ROOTS_KEY).into_iter().map(String::from).collect();
+            if roots.is_empty() {
+                roots = found_on_this_machine(AGENT_SESSIONS, ROOTS_KEY);
+            }
+            for root in roots {
+                let there = Path::new(&root).is_dir();
+                findings.push((
+                    root,
+                    there,
+                    if there { "a folder" } else { "missing" }.to_string(),
                 ));
             }
             true
@@ -2000,6 +2055,34 @@ mod tests {
     /// `install`, because installing writes to the machine's real registry — a
     /// test that did that would change the user's configuration and would make
     /// every other test in this file depend on the order it ran in.
+    #[test]
+    fn only_the_session_folders_have_a_machine_default() {
+        use tacet_web::addon::{
+            AGENT_SESSIONS, COMMANDS_KEY, DB, DIRECTORIES_KEY, HOSTS_KEY, HTTP, ROOTS_KEY, SHELL,
+            Shape, WORKSPACE, WRITABLE_KEY,
+        };
+        // A list that GRANTS something — a write, a program, a host, a reach
+        // for the file tools — never fills itself in.
+        for (addon, key) in [
+            (DB, WRITABLE_KEY),
+            (SHELL, COMMANDS_KEY),
+            (HTTP, HOSTS_KEY),
+            (WORKSPACE, DIRECTORIES_KEY),
+        ] {
+            assert!(
+                found_on_this_machine(addon, key).is_empty(),
+                "{addon}/{key} would be filled in without being asked"
+            );
+        }
+        // The session folders do, and only with folders that exist and that
+        // the install's own shape check accepts.
+        for root in found_on_this_machine(AGENT_SESSIONS, ROOTS_KEY) {
+            assert!(Path::new(&root).is_dir(), "{root} is offered and missing");
+            assert!(Shape::Directory.check(&root).is_ok(), "{root}");
+        }
+        assert!(tacet_web::addon::definition(AGENT_SESSIONS).is_some());
+    }
+
     #[test]
     fn five_more_addons_can_be_installed_not_just_web_search() {
         for name in [

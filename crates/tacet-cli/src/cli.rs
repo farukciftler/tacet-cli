@@ -53,8 +53,9 @@ pub enum Command {
         /// Run a single message and exit (for scripted diagnostics). Nobody
         /// can be asked here, so every approval question is answered no: once
         /// the session holds personal data — piped input, a resumed session,
-        /// or a tool that read this machine — no outbound tool runs. Before
-        /// that, an installed web addon can still send your message out.
+        /// an imported agent session, or a tool that read this machine — no
+        /// outbound tool runs. Before that, an installed web addon can still
+        /// send your message out.
         //
         // THE OLD TEXT SAID "NO DATA LEAVES" (audit D15), and the audit
         // measured the opposite: `printf 'AWS_SECRET…' | tacet chat --message …`
@@ -90,6 +91,20 @@ pub enum Command {
         /// Loads ONE named session (`tacet sessions` prints the names).
         #[arg(long = "session", value_name = "ID")]
         session_id: Option<String>,
+        /// Continues work started in ANOTHER coding agent:
+        /// `claude:<id>`, `codex:<id>` or `antigravity:<id>`. Needs the
+        /// `agent-sessions` addon. A short summary of that session is put in
+        /// front of your first message, the session counts as personal data
+        /// and outside text from the start, Tacet offers to work in the
+        /// session's folder (and asks), and a handoff record is started.
+        /// Nothing is sent anywhere and the other agent is not run.
+        //
+        // NOT `--continue`'s sibling in mechanism: that replays Tacet's own
+        // transcript turn by turn; this reads another program's files and
+        // hands the model a summary of them (RG-18 — the transcript itself
+        // may be tens of megabytes).
+        #[arg(long = "from", value_name = "AGENT:ID")]
+        from: Option<String>,
         /// Sampling temperature. 0 (the default) is GREEDY and reproducible;
         /// raise it to get a different path through the model on a retry.
         ///
@@ -591,6 +606,32 @@ mod command_line {
             }
             other => panic!("expected a chat command, got {}", other.is_some()),
         }
+    }
+
+    /// RG-20: `--from <agent>:<id>` is a chat flag, and the reference arrives
+    /// as typed — it is validated where it is used (`model::parse_ref`), once,
+    /// so no second parser can disagree with it.
+    #[test]
+    fn the_from_flag_reaches_the_chat_command() {
+        let parsed = Shell::try_parse_from([
+            "tacet",
+            "chat",
+            "--from",
+            "codex:0199d3a1-7c2e-7a10-9b55-3f2c1d0e4a01",
+        ])
+        .expect("parses");
+        match parsed.command {
+            Some(Command::Chat { from, .. }) => assert_eq!(
+                from.as_deref(),
+                Some("codex:0199d3a1-7c2e-7a10-9b55-3f2c1d0e4a01")
+            ),
+            other => panic!("expected a chat command, got {}", other.is_some()),
+        }
+        let bare = Shell::try_parse_from(["tacet", "chat"]).expect("parses");
+        assert!(matches!(
+            bare.command,
+            Some(Command::Chat { from: None, .. })
+        ));
     }
 
     /// EVERY CONFIG KEY IS A FLAG. `config.rs` opens with that rule and the two
