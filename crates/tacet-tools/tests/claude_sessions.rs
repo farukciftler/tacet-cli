@@ -249,6 +249,15 @@ fn a_session_is_live_only_while_its_process_runs() {
 
 /// The real probe: this process is running; a child that has been waited for
 /// is not.
+///
+/// UNIX ONLY, because only there can the probe say "not running": elsewhere
+/// `probe_pid` answers "alive" for every pid by design (liveness only stops a
+/// write, so not knowing must not permit one), and this test, unconditional,
+/// failed by construction on the windows-latest CI job — which also has no
+/// `true` to spawn. The Windows expectation is the next test. On Linux this is
+/// the run of the `/proc/<pid>` branch; it was written on macOS, where the
+/// `/bin/ps` branch is what runs.
+#[cfg(unix)]
 #[test]
 fn the_pid_probe_tells_a_running_process_from_a_reaped_one() {
     assert!(pid_alive(std::process::id()));
@@ -261,6 +270,75 @@ fn the_pid_probe_tells_a_running_process_from_a_reaped_one() {
     );
     assert!(!pid_alive(0));
     assert!(!pid_alive(u32::MAX));
+}
+
+/// Where no probe exists the answer is "alive" for any pid that could exist —
+/// a session there always reads as open and is never written to — and still
+/// "not alive" for the two that cannot. NOT MEASURED on Windows: this states
+/// what the code promises there, so a change to the fallback is a decision
+/// someone makes, not a drift.
+#[cfg(not(unix))]
+#[test]
+fn without_a_probe_every_possible_pid_reads_as_alive() {
+    assert!(pid_alive(std::process::id()));
+    let mut child = std::process::Command::new("cmd")
+        .args(["/C", "exit 0"])
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    child.wait().unwrap();
+    assert!(
+        pid_alive(pid),
+        "pid {pid} was reaped and the fallback said so"
+    );
+    assert!(!pid_alive(0));
+    assert!(!pid_alive(u32::MAX));
+}
+
+/// The two tests above are split by platform, and the split is only visible
+/// on the platform it protects: dropping `#[cfg(unix)]` stays green on every
+/// Mac and Linux box and fails only on the Windows CI job (RG-08 review — the
+/// test shipped unconditional). So the attributes are checked here, where any
+/// machine runs them, against the probe they mirror.
+#[test]
+fn the_pid_probe_tests_are_split_where_the_probe_is() {
+    let tests = include_str!("claude_sessions.rs");
+    let probe = include_str!("../src/sessions/claude.rs");
+    let attrs_of = |text: &str, item: &str| -> Vec<String> {
+        let lines: Vec<&str> = text.lines().collect();
+        let at = lines
+            .iter()
+            .position(|l| l.trim_start().starts_with(item))
+            .unwrap_or_else(|| panic!("no `{item}`"));
+        lines[..at]
+            .iter()
+            .rev()
+            .map(|l| l.trim())
+            .take_while(|l| l.starts_with("#[") || l.starts_with("///"))
+            .filter(|l| l.starts_with("#["))
+            .map(str::to_string)
+            .collect()
+    };
+    assert!(
+        attrs_of(
+            tests,
+            "fn the_pid_probe_tells_a_running_process_from_a_reaped_one("
+        )
+        .contains(&"#[cfg(unix)]".to_string()),
+        "the reaped-pid test runs where the probe answers \"alive\" for every pid"
+    );
+    assert!(
+        attrs_of(
+            tests,
+            "fn without_a_probe_every_possible_pid_reads_as_alive("
+        )
+        .contains(&"#[cfg(not(unix))]".to_string())
+    );
+    // The fallback the Windows test expects is the one the code has.
+    assert!(
+        attrs_of(probe, "fn probe_pid(_pid: u32) -> bool")
+            .contains(&"#[cfg(not(unix))]".to_string())
+    );
 }
 
 #[test]

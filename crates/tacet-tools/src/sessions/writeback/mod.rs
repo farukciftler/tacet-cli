@@ -548,6 +548,53 @@ mod tests {
         dir
     }
 
+    /// Hooks a real agent has been seen to run, each with the date, machine
+    /// and agent version of that run. EMPTY: the Claude Code hook's output is
+    /// tested against its documented shape, but no Claude Code has run it (a
+    /// paid model turn), and neither Codex nor Antigravity was driven.
+    const HOOKS_RUN_BY_THEIR_AGENT: &[(AgentKind, &str)] = &[];
+
+    /// RG-21: the protocol page must not let a hook that was only tested
+    /// against documentation read as measured. Every agent `hook_group` gives
+    /// a hook is named in its **Not measured** sentence until a run is
+    /// recorded above. The Claude Code hook was missing from that sentence
+    /// while the page's heading said "used as documented" and its siblings
+    /// said NOT MEASURED — the reader could only conclude it had been run.
+    #[test]
+    fn every_hook_no_agent_has_run_is_listed_as_not_measured() {
+        let page = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/agent-handoff.md"),
+        )
+        .unwrap();
+        let folded = page.split_whitespace().collect::<Vec<_>>().join(" ");
+        let sentence = folded
+            .split_once("**Not measured:**")
+            .expect("the page has a Not measured sentence")
+            .1
+            .split(". ")
+            .next()
+            .unwrap();
+        // How the sentence names each agent's hook. Built from
+        // `display_name`: a literal that starts with an agent's program name
+        // reads to `network_monopoly` as that program being started.
+        let named = |agent: AgentKind| match agent {
+            AgentKind::ClaudeCode => format!("the {} SessionStart hook", agent.display_name()),
+            AgentKind::Codex => "every Codex path".to_string(),
+            AgentKind::Antigravity => format!("the {} hook", agent.display_name()),
+        };
+        for agent in AgentKind::ALL {
+            if HOOKS_RUN_BY_THEIR_AGENT.iter().any(|(a, _)| *a == agent) {
+                continue;
+            }
+            assert!(
+                sentence.contains(&named(agent)),
+                "docs/agent-handoff.md's Not measured sentence does not name {:?}, \
+                 and no run of that hook is recorded: {sentence:?}",
+                named(agent)
+            );
+        }
+    }
+
     fn record(agent: AgentKind, id: &str) -> HandoffRecord {
         let mut r = HandoffRecord::new(agent, id);
         r.summary = "Fixed the month rollover.".into();

@@ -4,10 +4,12 @@
   ([docs/adr/0001-agent-sessions.md](adr/0001-agent-sessions.md)).
 * **Date:** 10 Oct 2026.
 * **Measured:** the Claude Code note format and its failure modes, on Claude
-  Code 2.1.285 (9 Oct 2026, experiments E1–E5). **Not measured:** every Codex
-  path (Codex was not installed), the Antigravity hook and `task.md` write (the
-  GUI was not driven), and the Codex/Antigravity hook-file shapes. Each section
-  below says which is which.
+  Code 2.1.285 (9 Oct 2026, experiments E1–E5). **Not measured:** the Claude
+  Code SessionStart hook in a real session (its output is tested against the
+  shape Claude Code's documentation gives; no Claude Code has run it, which
+  would be a paid model turn), every Codex path (Codex was not installed), the
+  Antigravity hook and `task.md` write (the GUI was not driven), and the
+  Codex/Antigravity hook-file shapes. Each section below says which is which.
 
 When you continue another agent's session in Tacet (`tacet chat --from
 claude:<id>`), Tacet starts a **handoff record** for it. This page is the
@@ -91,7 +93,7 @@ what it adds and asking; the old file is kept beside it as
 `<file>.tacet-backup-<time>`. The rest of the file is kept; its keys are
 written back in sorted order.
 
-### Claude Code — SessionStart (documented, used as documented)
+### Claude Code — SessionStart (documented, used as documented; NOT RUN by Claude Code)
 
 Add to `~/.claude/settings.json` (all projects) or `.claude/settings.json`:
 
@@ -211,6 +213,11 @@ Claude Code is `scripts/session-roundtrip.sh`, run by a person, never in CI.
 
 ## What is not done on this machine
 
+* Claude Code: the SessionStart hook has not been run by a real Claude Code.
+  `tacet handoff hook claude` is tested end to end as a program (event on
+  stdin, the documented JSON on stdout, exit 0 on every failure), but whether
+  Claude Code puts `additionalContext` in front of the model and shows
+  `systemMessage` is its documentation's word, not a measurement here.
 * Codex: the app-server exchange and the hook shape are untested against a
   real `codex`; the rollout append stays refused by the version table until
   the round trip is run on an install.

@@ -49,7 +49,7 @@ use tacet_kernel::{
 };
 
 use crate::data_store::Table;
-use crate::sessions::antigravity::AntigravitySource;
+use crate::sessions::antigravity::{self, AntigravitySource};
 use crate::sessions::claude::ClaudeSource;
 use crate::sessions::codex::CodexSource;
 use crate::sessions::handoff::{self, HandoffError, HandoffRecord, HandoffTask};
@@ -216,6 +216,19 @@ pub fn read_session(
     agent: AgentKind,
     id: &str,
 ) -> Result<SessionRead, SessionError> {
+    read_session_with(roots, agent, id, &antigravity::app_dirs())
+}
+
+/// `read_session` with the folders an Antigravity app is looked for in passed
+/// in, so a test decides what is installed rather than the machine it runs on
+/// (the Mac this was written on has the IDE at the measured 2.5.5, which would
+/// silence the very warning a test must see).
+pub fn read_session_with(
+    roots: &SessionRoots,
+    agent: AgentKind,
+    id: &str,
+    app_dirs: &[PathBuf],
+) -> Result<SessionRead, SessionError> {
     validate_id(id)?;
     let mut refused: Option<SessionError> = None;
     for root in roots.for_agent(agent) {
@@ -232,11 +245,27 @@ pub fn read_session(
                     .map(str::to_string);
                 (s, warning.into_iter().collect())
             }),
-            // Antigravity records no version in its files, so there is no gate
-            // to ask; what the user must know is in the reader's notices.
-            AgentKind::Antigravity => AntigravitySource
-                .read_full(&root, id)
-                .map(|r| (r.session, r.notices)),
+            // Antigravity records no version in its files, so the gate is
+            // asked about the installed app's (`antigravity::session_version`)
+            // — and, where none can be attributed, about no version, which
+            // warns. Skipping the gate here read every Antigravity session
+            // silently while the README promised a warning (RG-30 review).
+            AgentKind::Antigravity => AntigravitySource.read_full(&root, id).map(|r| {
+                let mut session = r.session;
+                session.version = antigravity::session_version(&root, session.updated, app_dirs);
+                let gate = version::check_read(
+                    AgentKind::Antigravity,
+                    antigravity::flavor(&root),
+                    session.version.as_deref(),
+                );
+                let warnings = gate
+                    .warning()
+                    .map(str::to_string)
+                    .into_iter()
+                    .chain(r.notices)
+                    .collect();
+                (session, warnings)
+            }),
         };
         match got {
             Ok((session, warnings)) => return Ok(SessionRead { session, warnings }),
@@ -1597,6 +1626,150 @@ mod tests {
             "Command"
         );
         assert!(!spawns_in(&planted).is_empty());
+    }
+
+    /// One Antigravity conversation under `<dir>/<root_name>`, its log last
+    /// written at `at` (Unix seconds) — the time the read dates it by.
+    fn antigravity_session(dir: &Path, root_name: &str, at: i64) -> PathBuf {
+        let root = dir.join(root_name);
+        let logs = root.join(format!("brain/{AG_ID}/.system_generated/logs"));
+        std::fs::create_dir_all(&logs).unwrap();
+        let log = logs.join("transcript_full.jsonl");
+        std::fs::write(
+            &log,
+            r#"{"step_index":0,"type":"USER_INPUT","source":"USER_EXPLICIT","status":"DONE","created_at":"2026-10-08T14:00:00Z","content":"<USER_REQUEST>Add retry</USER_REQUEST>"}"#,
+        )
+        .unwrap();
+        set_mtime(&log, at);
+        root
+    }
+
+    /// An installed IDE as its `product.json` describes it, written at `at`.
+    fn installed_ide(apps: &Path, application: &str, version: &str, at: i64) {
+        let product = antigravity::product_json(apps, "IDE");
+        std::fs::create_dir_all(product.parent().unwrap()).unwrap();
+        std::fs::write(
+            &product,
+            serde_json::json!({
+                "applicationName": application,
+                "ideVersion": version,
+                // The editor it forked from: a version, but not the product's.
+                "version": "1.107.0",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        set_mtime(&product, at);
+    }
+
+    fn set_mtime(path: &Path, at: i64) {
+        let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(at as u64);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+    }
+
+    const AG_ID: &str = "a0000255-0000-4000-8000-0000000000aa";
+    const SESSION_AT: i64 = 1_791_000_000;
+
+    fn version_warnings(read: &SessionRead) -> Vec<&String> {
+        read.warnings
+            .iter()
+            .filter(|w| w.contains("has not been read by this Tacet before"))
+            .collect()
+    }
+
+    /// RG-30: an Antigravity read goes through the version gate like the
+    /// other two. With no app to say a version — CI, Linux, a Mac without the
+    /// IDE — every root warns under its own flavor; before this, `read_session`
+    /// returned the reader's notices only and no Antigravity read ever warned.
+    #[test]
+    fn an_antigravity_read_without_an_installed_version_warns() {
+        let dir = scratch("ag-gate-none");
+        let no_apps = dir.join("no-apps");
+        // Names from `ROOTS` and `display_name`: a literal starting with the
+        // product's name reads to `network_monopoly` as the program run.
+        let product = AgentKind::Antigravity.display_name();
+        for (name, flavor) in antigravity::ROOTS {
+            let label = match flavor {
+                Some(f) => format!("{product} ({f}) of unrecorded version"),
+                None => format!("{product} of unrecorded version"),
+            };
+            let root = antigravity_session(&dir, name, SESSION_AT);
+            let read = read_session_with(
+                &SessionRoots::Only(vec![root]),
+                AgentKind::Antigravity,
+                AG_ID,
+                std::slice::from_ref(&no_apps),
+            )
+            .unwrap();
+            let gate = version_warnings(&read);
+            assert_eq!(gate.len(), 1, "{name}: {:?}", read.warnings);
+            assert!(gate[0].starts_with(&label), "{name}: {gate:?}");
+            assert_eq!(read.session.version, None);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// RG-30: the IDE's installed version is the measured 2.5.5 and its build
+    /// is older than the session, so the read is quiet and carries the
+    /// version. Each way that attribution must fail warns instead: a session
+    /// last written before the build, a `product.json` of another product,
+    /// an unmeasured or malformed version, and the `agy` root, which no app
+    /// describes.
+    #[test]
+    fn the_installed_ide_version_gates_an_ide_read() {
+        let read = |tag: &str, application: &str, version: &str, built: i64, root: &str| {
+            let dir = scratch(tag);
+            let apps = dir.join("Applications");
+            installed_ide(&apps, application, version, built);
+            let root = antigravity_session(&dir, root, SESSION_AT);
+            let got = read_session_with(
+                &SessionRoots::Only(vec![root]),
+                AgentKind::Antigravity,
+                AG_ID,
+                &[dir.join("elsewhere"), apps],
+            )
+            .unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+            got
+        };
+        let [(ide, _), (cli_root, _), (app_root, _)] = antigravity::ROOTS;
+        let before = SESSION_AT - 3600;
+
+        let known = read("ag-gate-known", ide, "2.5.5", before, ide);
+        assert_eq!(version_warnings(&known), Vec::<&String>::new());
+        assert_eq!(known.session.version.as_deref(), Some("2.5.5"));
+
+        let newer_build = read("ag-gate-later", ide, "2.5.5", SESSION_AT + 3600, ide);
+        assert_eq!(version_warnings(&newer_build).len(), 1);
+        assert_eq!(newer_build.session.version, None);
+
+        let other_app = read("ag-gate-other", app_root, "2.5.5", before, ide);
+        assert_eq!(version_warnings(&other_app).len(), 1);
+        assert_eq!(other_app.session.version, None);
+
+        let unmeasured = read("ag-gate-new", ide, "2.6.0", before, ide);
+        let gate = version_warnings(&unmeasured);
+        assert_eq!(gate.len(), 1);
+        assert!(
+            gate[0].starts_with(&format!(
+                "{} (ide) 2.6.0 has not been read",
+                AgentKind::Antigravity.display_name()
+            )),
+            "{gate:?}"
+        );
+
+        let garbage = read("ag-gate-garbage", ide, "2.5.5\u{1b}]0;x\u{7}", before, ide);
+        assert_eq!(garbage.session.version, None);
+        assert_eq!(version_warnings(&garbage).len(), 1);
+
+        let cli = read("ag-gate-cli", ide, "2.5.5", before, cli_root);
+        assert_eq!(version_warnings(&cli).len(), 1);
+        assert_eq!(cli.session.version, None);
     }
 
     fn spawns_in(text: &str) -> Vec<&'static str> {

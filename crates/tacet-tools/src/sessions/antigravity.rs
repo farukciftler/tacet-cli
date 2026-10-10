@@ -97,6 +97,101 @@ pub fn flavor(root: &Path) -> Option<&'static str> {
         .and_then(|(_, flavor)| *flavor)
 }
 
+/// Where an installed Antigravity product states its version, by the root it
+/// writes. RG-30 asks for the application version because nothing this reader
+/// opens under a root records one: the eleven top-level step keys measured
+/// above hold no version, and neither do the artifacts' metadata fields.
+///
+/// ONLY THE IDE, ONLY ON macOS, BECAUSE ONLY THAT WAS SEEN. MEASURED on one Mac
+/// (macOS 26.5.2), 10 Oct 2026: `/Applications/Antigravity IDE.app/Contents/
+/// Resources/app/product.json` holds `"ideVersion": "2.5.5"` — the version the
+/// read range was measured on — and `"applicationName": "antigravity-ide"`,
+/// the root's own directory name, which is what ties this file to this root.
+/// Its `"version"` is `1.107.0`, the editor it was forked from, NOT the
+/// product: reading that key would have gated 2.5.5 sessions as an unknown
+/// version. Antigravity.app (2.2.1) keeps its metadata in `Info.plist` and an
+/// asar archive, neither a file the gate opens, and its root has no table row
+/// to admit it anyway. `agy` is a single 165 MB binary; its version would mean
+/// running it, and a read starts no program. A Linux install's layout was not
+/// seen, so nothing there is looked for and every read warns.
+///
+/// Each row is (root directory, the word after the product name in the
+/// bundle's name): the IDE root's bundle is `<display name> IDE.app`. The
+/// product name is not spelled out here because `network_monopoly` reads a
+/// string literal that starts with an agent's name as that program being run.
+const APP_PRODUCTS: [(&str, &str); 1] = [("antigravity-ide", "IDE")];
+
+/// Where `product.json` sits inside a bundle.
+const PRODUCT_JSON: &str = "Contents/Resources/app/product.json";
+
+/// The path of `root`'s installed `product.json` under one apps folder.
+pub fn product_json(apps: &Path, bundle_word: &str) -> PathBuf {
+    apps.join(format!(
+        "{} {bundle_word}.app",
+        AgentKind::Antigravity.display_name()
+    ))
+    .join(PRODUCT_JSON)
+}
+
+/// `product.json` was 41,871 bytes on the measured install.
+const PRODUCT_CAP: u64 = 1 << 20;
+
+/// Folders an Antigravity app is installed in. macOS only (see `APP_PRODUCTS`).
+pub fn app_dirs() -> Vec<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return Vec::new();
+    }
+    let mut dirs = vec![PathBuf::from("/Applications")];
+    if let Some(home) = tacet_kernel::env::absolute_env("HOME") {
+        dirs.push(home.join("Applications"));
+    }
+    dirs
+}
+
+/// The installed version of the product that writes `root`, from the first of
+/// `app_dirs` that has it, and when that file was written.
+///
+/// Through the secrets gate like every other read here: `product.json` is a
+/// `.json` the gate admits, and a planted link in its place is refused the
+/// same way. A version that is not plain dotted numbers is no version — it
+/// would otherwise reach the user's terminal inside the gate's warning.
+pub fn installed_version(root: &Path, app_dirs: &[PathBuf]) -> Option<(String, Option<i64>)> {
+    let name = root.file_name()?.to_str()?;
+    let (_, bundle_word) = APP_PRODUCTS.iter().find(|(dir, _)| *dir == name)?;
+    app_dirs.iter().find_map(|dir| {
+        let path = product_json(dir, bundle_word);
+        if std::fs::symlink_metadata(&path).is_err() {
+            return None;
+        }
+        let text = secrets::read_text(&path, PRODUCT_CAP).ok()?;
+        let v: Value = serde_json::from_str(&text).ok()?;
+        if str_field(&v, "applicationName") != Some(name) {
+            return None;
+        }
+        let version = str_field(&v, "ideVersion")?;
+        super::version::Version::parse(version)?;
+        Some((version.to_string(), mtime(&path)))
+    })
+}
+
+/// The version a read of a session last written at `updated` is gated on.
+///
+/// THE INSTALLED APP IS TODAY'S, THE SESSION MAY NOT BE. A conversation last
+/// written before the installed build's files were cannot have been written by
+/// that build, so it gets no version and reads with the warning. The converse
+/// is not proven: a session written after the build may still predate the
+/// install (`product.json` kept its build time, 13 Aug 2026, on the measured
+/// install — a copied bundle keeps its files' times). It is the best this
+/// machine can tell, and it errs only towards a version that is at least as
+/// new as the build.
+pub fn session_version(root: &Path, updated: Option<i64>, app_dirs: &[PathBuf]) -> Option<String> {
+    let (version, built) = installed_version(root, app_dirs)?;
+    match (updated, built) {
+        (Some(updated), Some(built)) if updated >= built => Some(version),
+        _ => None,
+    }
+}
+
 /// The three roots under one home directory. Separate from `default_roots` so
 /// a test never has to point a reader at the user's real `~/.gemini`.
 pub fn roots_under(home: &Path) -> Vec<PathBuf> {

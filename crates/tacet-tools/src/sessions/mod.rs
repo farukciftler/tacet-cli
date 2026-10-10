@@ -15,6 +15,7 @@
 //! reasons, and what was measured to reach them, are in
 //! docs/adr/0001-agent-sessions.md.
 
+pub mod anonymise;
 pub mod antigravity;
 pub mod claude;
 pub mod codex;
