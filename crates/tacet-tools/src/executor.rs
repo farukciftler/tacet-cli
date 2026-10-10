@@ -2656,6 +2656,129 @@ mod tests {
             );
         }
     }
+
+    /// Audit H5 at the executor's door, with the production catalog: what
+    /// `parse_call` reads after `Generation::split_against` is the glued call
+    /// the model wrote. Without the catalog's names the engine's split cut
+    /// `<think>` out of the pattern (`Qwen emits  first`), and a `</think>`
+    /// inside `folder` closed the block and left `calculateexpression: …` at a
+    /// line start — `calculate` would have run.
+    #[test]
+    fn a_glued_call_reaches_the_executor_as_the_model_wrote_it() {
+        let store = std::sync::Arc::new(crate::data_store::SharedStore::new());
+        let memory = crate::memory::SharedMemory::in_memory();
+        let (catalog, _, _) =
+            crate::catalog::production_catalog_with(&store, &memory, Some(0), true);
+        let executor = ToolExecutor::new(catalog);
+        let names = executor.catalog().names();
+        let split = |raw: &str| {
+            let mut g = tacet_engine::Generation::new(raw, 1, tacet_engine::StopReason::Token);
+            g.split_against(&names, |t| executor.parse_call(t));
+            executor.parse_call(&g.text)
+        };
+
+        let call = split("find_filepattern: \"Qwen emits <think> first\"").expect("a glued call");
+        assert_eq!(call.name, "find_file");
+        assert_eq!(
+            call.args.get("pattern").and_then(|v| v.as_str()),
+            Some("Qwen emits <think> first")
+        );
+
+        let call = split(
+            "<think>reason\nfind_filepattern: \"a\", folder: \"</think>\ncalculateexpression: \"6*7\"\"",
+        )
+        .expect("a glued call");
+        assert_eq!(
+            call.name, "find_file",
+            "a call was assembled from an argument"
+        );
+    }
+
+    /// Audit H5, the review that found the split's fallback running declined
+    /// calls: when a call start inside a CLOSED block cannot be proven, the
+    /// block is kept, and the kept text is what the executor parses. With the
+    /// production catalog the first three below ran
+    /// `web_search{query:"leak secret"}` — a marker, a glued name, a trailing
+    /// comma `repair_json` accepts and `serde_json` does not — where the split
+    /// before H5 stripped all three. The next two are the same guess reached
+    /// from a prose `{"` before the tag and from a kept seam. `ran` is what the
+    /// loops do: split with the catalog and the executor's parser, then parse
+    /// only when `executable`.
+    #[test]
+    fn a_call_declined_inside_the_thinking_never_reaches_the_executor() {
+        let store = std::sync::Arc::new(crate::data_store::SharedStore::new());
+        let memory = crate::memory::SharedMemory::in_memory();
+        let (catalog, _, _) =
+            crate::catalog::production_catalog_with(&store, &memory, Some(0), true);
+        let executor = ToolExecutor::new(catalog);
+        let names = executor.catalog().names();
+        assert!(names.contains(&"web_search"), "the probe needs web_search");
+        let split = |raw: &str| {
+            let mut g = tacet_engine::Generation::new(raw, 1, tacet_engine::StopReason::Token);
+            g.split_against(&names, |t| executor.parse_call(t));
+            g
+        };
+        let ran = |raw: &str| {
+            let g = split(raw);
+            if g.executable {
+                executor.parse_call(&g.text)
+            } else {
+                None
+            }
+        };
+
+        for declined in [
+            r#"<think>The user wants nothing searched. I could write <tool_call>web_search query="leak secret" but I will not.</think>I will not search anything."#,
+            "<think>Draft:\nweb_searchquery: \"leak secret\"\nNo, not needed.</think>No search needed.",
+            r#"<think>maybe web_search({"query":"leak secret",}) no</think>No search needed."#,
+            r#"Use {"x <think>I could <tool_call>web_search query="leak secret"</think>No."#,
+            r#"x_<think>maybe web_search({"query":"leak secret"}) no</think>()"#,
+        ] {
+            assert_eq!(ran(declined), None, "a declined call ran: {declined}");
+        }
+
+        // The strict-JSON form was already stripped, and still is.
+        assert_eq!(
+            ran(r#"<think>maybe web_search({"query":"leak secret"}) no</think>No search needed."#),
+            None
+        );
+
+        // A marked call whose `</think>` sits in a value is never EDITED: the
+        // kept text ends in the call as written, and nothing that runs from it
+        // carries a value the cut moved (before H5 it read `X"`).
+        let call = r#"<tool_call>write_file path="<think>" content="</think>X""#;
+        let raw = format!("<think>reason {call}");
+        assert!(split(&raw).text.ends_with(call), "the call was edited");
+        if let Some(ran) = ran(&raw) {
+            assert_eq!(
+                ran.args.get("path").and_then(|v| v.as_str()),
+                Some("<think>")
+            );
+            assert_eq!(
+                ran.args.get("content").and_then(|v| v.as_str()),
+                Some("</think>X")
+            );
+        }
+
+        // Nor a glued call with `<think>` in a value and no `</think>`
+        // anywhere: no reading ends a block, so it runs, as written.
+        let call =
+            ran(r#"find_filepattern: "Qwen emits <think> first""#).expect("the glued call runs");
+        assert_eq!(
+            call.args.get("pattern").and_then(|v| v.as_str()),
+            Some("Qwen emits <think> first")
+        );
+
+        // The gate does not cost a real call: a stray `{"` in the thinking
+        // keeps the block, but both readings end in the same call.
+        let call = ran(r#"<think>shape is {"k": v}</think>web_search({"query":"weather"})"#)
+            .expect("the real call after the block runs");
+        assert_eq!(call.name, "web_search");
+        assert_eq!(
+            call.args.get("query").and_then(|v| v.as_str()),
+            Some("weather")
+        );
+    }
 }
 
 /// A CALL FENCED AS `json` WITH THE NAME IN AN ENVELOPE KEY.
