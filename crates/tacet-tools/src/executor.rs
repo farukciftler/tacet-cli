@@ -2733,6 +2733,10 @@ mod tests {
             r#"<think>maybe web_search({"query":"leak secret",}) no</think>No search needed."#,
             r#"Use {"x <think>I could <tool_call>web_search query="leak secret"</think>No."#,
             r#"x_<think>maybe web_search({"query":"leak secret"}) no</think>()"#,
+            // Never closed, and the only `</think>` is inside the call: the
+            // close search steps over it and found no other, which read as
+            // proven and ran the search the model turned down.
+            r#"<think>I might call web_search({"query":"</think>"}) but no"#,
         ] {
             assert_eq!(ran(declined), None, "a declined call ran: {declined}");
         }
@@ -2743,21 +2747,27 @@ mod tests {
             None
         );
 
-        // A marked call whose `</think>` sits in a value is never EDITED: the
-        // kept text ends in the call as written, and nothing that runs from it
-        // carries a value the cut moved (before H5 it read `X"`).
-        let call = r#"<tool_call>write_file path="<think>" content="</think>X""#;
-        let raw = format!("<think>reason {call}");
-        assert!(split(&raw).text.ends_with(call), "the call was edited");
-        if let Some(ran) = ran(&raw) {
-            assert_eq!(
-                ran.args.get("path").and_then(|v| v.as_str()),
-                Some("<think>")
-            );
-            assert_eq!(
-                ran.args.get("content").and_then(|v| v.as_str()),
-                Some("</think>X")
-            );
+        // A marked or glued call carrying BOTH tags in its values is never
+        // EDITED — the kept text ends in the call as written (before H5 it read
+        // `X"`) — but it is not run either: cut at its `</think>` it is no call,
+        // so the readings disagree and the turn ends as an answer. That refusal
+        // is the price of the gate, pinned so a change to it is a decision.
+        // Only the `name(` and nameless-JSON shapes, which parse, run with both.
+        // The probes name a catalog tool and are checked to parse on their own:
+        // an unknown name would return `None` with the gate off too, and this
+        // block passed on nothing once, with `write_file`, which this catalog
+        // does not hold.
+        for call in [
+            r#"<tool_call>find_file pattern="<think>" folder="</think>X""#,
+            r#"find_filepattern: "<think>", folder: "</think>X""#,
+        ] {
+            assert!(executor.parse_call(call).is_some(), "not a call: {call}");
+            // A newline before the call: the glued shape is only a call at a
+            // line start.
+            for raw in [call.to_string(), format!("<think>reason\n{call}")] {
+                assert!(split(&raw).text.ends_with(call), "edited: {raw}");
+                assert_eq!(ran(&raw), None, "a call held as a guess ran: {raw}");
+            }
         }
 
         // Nor a glued call with `<think>` in a value and no `</think>`
