@@ -3238,7 +3238,8 @@ mod guarded {
     }
 
     /// Another agent's transcript, the shape the session readers will have
-    /// (RG-01): personal AND outside text. It parses its input the way a reader
+    /// (RG-01): personal AND outside text — both answers taken from the
+    /// `sessions` constants, so flipping either one turns the test below red. It parses its input the way a reader
     /// parses a line it did not write — and panics on one it cannot (RG-04).
     struct TranscriptReader;
     impl Tool for TranscriptReader {
@@ -3255,7 +3256,7 @@ mod guarded {
             crate::sessions::TAINTS_SESSION
         }
         fn external_content(&self) -> bool {
-            true
+            crate::sessions::EXTERNAL_CONTENT
         }
         fn run<'a>(&'a self, args: Value, _c: &'a mut ToolContext) -> ToolFuture<'a> {
             boxed(async move {
