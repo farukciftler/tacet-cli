@@ -7,11 +7,15 @@
   Code 2.1.285 (9 Oct 2026, experiments E1–E5), and the Claude Code
   SessionStart hook measured on 11 Oct 2026 with Claude Code 2.1.285 (it runs
   on a start and a resume and the model sees the record; a `--fork-session`
-  resume runs no hook — see its section). **Not measured:** whether Claude
+  resume runs no hook — see its section); and that the Antigravity CLI reads
+  the workspace hook file — Antigravity CLI 1.1.10 loaded Tacet's hook entry
+  on 11 Oct 2026 and never ran it, because every call stopped at sign-in
+  before a model call (see its section). **Not measured:** whether Claude
   Code's interactive screen shows the hook's `systemMessage` (only `-p` was
-  run), every Codex path (Codex was not installed), the Antigravity hook and
-  `task.md` write (the GUI was not driven), and the Codex/Antigravity
-  hook-file shapes. Each section below says which is which.
+  run), every Codex path (Codex was not installed), the Antigravity hook
+  running and its `ephemeralMessage` reaching the model, the `task.md` write
+  (the GUI was not driven), and the Codex/Antigravity hook-file shapes. Each
+  section below says which is which.
 
 When you continue another agent's session in Tacet (`tacet chat --from
 claude:<id>`), Tacet starts a **handoff record** for it. This page is the
@@ -142,7 +146,7 @@ The same entry shape and the same output, with `hook claude` replaced by
 `hook codex`. Codex was not installed where this was written; check the shape
 against Codex's hook documentation before relying on it.
 
-### Antigravity — PreInvocation (NOT MEASURED)
+### Antigravity — PreInvocation (LOADED, NOT RUN — 11 Oct 2026, CLI 1.1.10)
 
 In `.agents/hooks.json` or `~/.gemini/config/hooks.json`:
 
@@ -165,8 +169,34 @@ is taken from the event's conversation id, or from `transcriptPath`
 (`brain/<id>/…`). PreInvocation runs before every model call, so the record
 (at most 9,000 characters) is sent again each time; it is not limited to
 `invocationNum` 0 because the documentation does not say whether an
-ephemeral message outlives the call it came with. No Antigravity hook was
-run; the shape is the documentation's, not a measurement.
+ephemeral message outlives the call it came with.
+
+What a real Antigravity did with it — Antigravity CLI 1.1.10 loaded Tacet's
+hook entry on 11 Oct 2026 and never ran it. On the measuring Mac (Apple M4
+Pro, macOS 26.5.2), `agy -p … --output-format json` was started three times
+in a throwaway workspace whose `.agents/hooks.json` was exactly what `tacet
+handoff install antigravity --path .agents/hooks.json` wrote, with
+`TACET_HOME` pointing at a scratch directory:
+
+| Run | `.agents/hooks.json` | What the CLI's log said |
+|---|---|---|
+| 1 | Tacet's entry | "Using file-based token storage because SSH session detected"; not signed in |
+| 2 | Tacet's entry | "loaded 1 named hooks from 1 hooks.json file(s)"; the keychain refused the stored sign-in ("exit status 36": user interaction is not allowed); not signed in |
+| 3 | moved aside (control) | "loaded 0 named hooks from 0 hooks.json file(s)"; not signed in |
+
+So the CLI reads the workspace file and takes `tacet-handoff` as one named
+hook. That is all it shows: the count is of top-level names, which the old
+nested shape would have passed too. Every run stopped at Google sign-in
+(`"status":"ERROR","error":"authentication failed or timed out"`) before
+any model call, so PreInvocation never fired, no conversation was created,
+and nothing says whether the `ephemeralMessage` reaches the model. The
+session that ran it reached the Mac over SSH, where the CLI cannot use the
+sign-in the person's own terminal has. **What is left:** one `agy -p` run
+from a signed-in local terminal, the record written first under the
+conversation id a first run prints (`tacet handoff update antigravity <id>
+--by tacet --task 1=pending=<a title only the record holds>`), then `agy
+--conversation <id> -p "<a question only that title answers>"`. The GUI is
+not needed for it.
 
 ## Rule text to paste
 
@@ -262,5 +292,7 @@ Claude Code is `scripts/session-roundtrip.sh`, run by a person, never in CI.
 * Codex: the app-server exchange and the hook shape are untested against a
   real `codex`; the rollout append stays refused by the version table until
   the round trip is run on an install.
-* Antigravity: the PreInvocation hook was not run; the `task.md` write stays
-  refused until someone confirms by hand that the IDE re-reads the file.
+* Antigravity: the CLI loaded the PreInvocation hook entry (11 Oct 2026,
+  1.1.10) but never ran it — sign-in stopped every call first (above); the
+  `task.md` write stays refused until someone confirms by hand that the IDE
+  re-reads the file.

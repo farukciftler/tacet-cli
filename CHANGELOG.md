@@ -35,6 +35,13 @@ releases to follow.
   `hooks` key, which Antigravity reads as a hook named `hooks` that runs
   nothing; an entry of that old shape is not counted as installed.
   `docs/agent-handoff.md` shows the new snippet (RG-25).
+* The Antigravity hook's pages say what a real Antigravity did with it:
+  Antigravity CLI 1.1.10 loaded Tacet's hook entry on 11 Oct 2026 (one named
+  hook from the workspace `.agents/hooks.json`, zero with the file moved
+  aside) and never ran it — every call stopped at Google sign-in before a
+  model call. Whether the `ephemeralMessage` reaches the model stays **Not
+  measured**; a test holds every hook page to the dated load and keeps it out
+  of the list of hooks run by their agent (RG-25).
 * `tacet update --help` no longer says nothing checks by itself and there is
   no timer: it names the opt-in daily check (`update.check on`, once every 24
   hours, only at the end of an interactive session on a terminal), as the

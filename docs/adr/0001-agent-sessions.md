@@ -248,7 +248,12 @@ Preferred to fallback, for every agent:
    no SessionStart hook at all, so a fork sees only the copy an earlier resume
    left in its history. Whether the interactive screen shows `systemMessage`
    was not seen (`-p` has none). docs/agent-handoff.md has the table. The
-   Codex and Antigravity hooks have not been run by their agents.
+   Codex and Antigravity hooks have not been run by their agents: Antigravity
+   CLI 1.1.10 loaded Tacet's hook entry on 11 Oct 2026 and never ran it (its
+   log counted the workspace `.agents/hooks.json` as one named hook, zero
+   with the file moved aside; every call then stopped at Google sign-in,
+   before a model call, so PreInvocation never fired and nothing shows
+   whether the `ephemeralMessage` reaches the model).
 3. **A file append** — Claude Code only, inside the measured write range, the
    user-role note format, never into a live session, chain verified after.
    Codex appends additionally refuse when `thread-writer-locks/<id>.lock`

@@ -388,8 +388,12 @@ pub fn hook_location(agent: AgentKind) -> String {
 /// [{"type": "command", "command": "./scripts/reminder.sh"}]}`, no matcher,
 /// no nested list. Read that way, the old entry was a hook NAMED `hooks`
 /// whose one handler had no command: nothing would ever have run. So the
-/// entry is the handler itself, under `ANTIGRAVITY_HOOK_NAME`. Still NOT
-/// MEASURED: no Antigravity has run it.
+/// entry is the handler itself, under `ANTIGRAVITY_HOOK_NAME`. LOADED, NOT
+/// RUN: on 11 Oct 2026 Antigravity CLI 1.1.10 logged "loaded 1 named hooks
+/// from 1 hooks.json file(s)" for a workspace holding this entry (0 without
+/// it), then stopped at sign-in before any model call, so PreInvocation
+/// never fired. The count is of names; it does not check the handler, and
+/// the old nested shape would have counted too.
 ///
 /// EVERY INVOCATION, NOT ONLY THE FIRST. PreInvocation fires before every
 /// model call and the input carries `invocationNum`; answering only at 0
@@ -699,6 +703,49 @@ mod tests {
                 assert!(
                     !folded.contains(stale),
                     "{doc} still says {stale:?}, and a run is recorded"
+                );
+            }
+        }
+    }
+
+    /// Hooks a real agent has been seen to LOAD but not to run, with the
+    /// phrase (after the agent's name) every hook page must carry.
+    ///
+    /// Antigravity, RG-25: 11 Oct 2026 on the measuring Mac (Apple M4 Pro,
+    /// macOS 26.5.2), its CLI 1.1.10 started in a scratch workspace whose
+    /// `.agents/hooks.json` was exactly what `tacet handoff install
+    /// antigravity --path` wrote. Its log said "loaded 1 named hooks from 1
+    /// hooks.json file(s)"; the same run with the file moved aside said 0.
+    /// Every run then stopped at Google sign-in before any model call — the
+    /// agent session reached the Mac over SSH, where the CLI keeps its token
+    /// in a file (empty) and the keychain refuses it ("User interaction is
+    /// not allowed", exit 36) — so PreInvocation never fired and no
+    /// conversation was created. A loaded hook is NOT a run hook: the count
+    /// is of top-level names, which the old nested shape would have passed
+    /// too. So this list is separate from `HOOKS_RUN_BY_THEIR_AGENT`, and
+    /// the agent stays in every Not measured sentence.
+    const HOOKS_LOADED_NOT_RUN: &[(AgentKind, &str)] = &[(
+        AgentKind::Antigravity,
+        "CLI 1.1.10 loaded Tacet's hook entry on 11 Oct 2026 and never ran it",
+    )];
+
+    /// RG-25: a load is recorded on every page that describes the hook,
+    /// dated, and is never recorded as a run. Until this measurement the
+    /// pages said only that no Antigravity hook was run, which hid that the
+    /// CLI does read the workspace file — and an entry here and in
+    /// `HOOKS_RUN_BY_THEIR_AGENT` at once would let a load pass for a run.
+    #[test]
+    fn every_hook_loaded_but_not_run_is_dated_on_every_page() {
+        for (agent, claim) in HOOKS_LOADED_NOT_RUN {
+            assert!(
+                !HOOKS_RUN_BY_THEIR_AGENT.iter().any(|(a, _)| a == agent),
+                "{agent:?} is recorded both as loaded-not-run and as run"
+            );
+            let phrase = format!("{} {claim}", agent.display_name());
+            for doc in HOOK_PAGES {
+                assert!(
+                    page(doc).contains(&phrase),
+                    "{doc} does not say {phrase:?}, which was measured"
                 );
             }
         }

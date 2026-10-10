@@ -481,10 +481,13 @@ agent has two paths, and the first is the one to use:
   a `--fork-session` resume, which runs no hook). Codex is documented to do the
   same, and Antigravity to get it as a PreInvocation `ephemeralMessage` from a
   hook named `tacet-handoff`, in the shape its own documentation gives;
-  neither has been seen doing it (**Not measured** below). No session file is
-  touched; the only thing of the agent's ever written is its settings file, by
-  `install --path <file>`, after showing the change and asking, with the old
-  file kept beside it.
+  neither has been seen doing it (**Not measured** below). Antigravity CLI
+  1.1.10 loaded Tacet's hook entry on 11 Oct 2026 and never ran it: it read
+  the workspace `.agents/hooks.json` as one named hook, then stopped at Google
+  sign-in before any model call. No session file is touched; the only thing
+  of the agent's ever written is its settings file, by `install --path
+  <file>`, after showing the change and asking, with the old file kept beside
+  it.
 * **A note in the agent's own files**, opt-in and fail-closed. `tacet handoff
   note claude <id>` appends one user-role entry, `[Note from Tacet, a local
   assistant, not from the user] …`, chained to the session's last entry; `--fork`
@@ -536,8 +539,16 @@ task added since. Resume the original session, not a fork, to hand it the
 current record. **Not measured:** every Codex
 path, its hook included (Codex was not installed on that machine; its reader is
 built from Codex's source and tested on fixtures), whether Claude Code's
-interactive screen shows the hook's `systemMessage`, the Antigravity hook, and
-any write into Antigravity's files (the GUI was not driven).
+interactive screen shows the hook's `systemMessage`, the Antigravity hook
+running and its `ephemeralMessage` reaching the model, and any write into
+Antigravity's files (the GUI was not driven). The Antigravity hook got as far
+as being loaded, on the same Mac on 11 Oct 2026: three `agy -p` starts in a
+throwaway workspace holding exactly what `tacet handoff install antigravity
+--path` writes, the CLI logging "loaded 1 named hooks" (0 with the file moved
+aside), and each stopping at Google sign-in before a model call, because the
+session running it reached the Mac over SSH, where the CLI could not use the
+stored sign-in. docs/agent-handoff.md has the table and the one signed-in run
+that is left.
 
 **Whose terms apply.** Claude Code's documentation says its transcript format
 "is internal to Claude Code and changes between versions", which is why reading
@@ -1594,7 +1605,7 @@ of distributional distortion it is not — the +20.5 points of *started* calls a
 |---|---|
 | macOS (arm64) | **Verified.** Full suite runs here: build, clippy `-D warnings`, tests, eval. |
 | Linux (arm64) | **Published, not yet run on a board.** Release binaries are built natively on an ARM runner and `tacet update` has always known this triple — the release simply did not carry it until v0.1.27, so a Raspberry Pi could download nothing and was told the platform was unpublished. A guard now fails the build if the updater asks for a target the release workflow does not build. What is still unmeasured is everything after the download: nobody has run the shell, the sandbox or a model on ARM64 Linux. This is the platform the work in [esp32/](https://github.com/farukciftler/tacet-cli/blob/main/esp32/) is heading towards, so it will be measured rather than assumed. |
-| Linux | **The sandbox is measured, and on a default install it is OFF.** Measured on a stock Ubuntu 24.04 (4 Sep 2026), not only in CI: as an ordinary user `bwrap --unshare-net` fails with `loopback: Failed RTM_NEWADDR: Operation not permitted`, because the distro ships `kernel.apparmor_restrict_unprivileged_userns=1`. So `run_code` and `write_code` are **absent from the catalog** — the honest-refusal path, working as designed, but it is the DEFAULT on the most common Linux rather than an edge case. The shell says so on startup — the line that reports `run_code` as off now names the sysctl and the one-line remedy, rather than leaving "no sandbox" as the whole explanation. As **root** on the same machine the shield verifies and both tools appear, which is why testing with sudo hides the problem. What the shield itself does is measured: with the restriction lifted, `the_network_is_really_cut`, `the_sandbox_cannot_be_escaped` and the timeout kill all pass against a real `bwrap` 0.9.0 — **1069 tests, 0 failures** (33 binaries, 4 Sep 2026) — the record of a sandbox measurement on that machine on that date, not the current size of the suite, which is 1988 tests in 104 test binaries (doc-tests included; 10 more ignored) on macOS as of 11 Oct 2026, re-counted from `cargo test --workspace` on an Apple M4 Pro (it was 1241 in 64 on 7 Sep 2026). Run under `TACET_SANDBOX_MUST_RUN=1`, the flag that makes the 26 tests that used to skip execute or fail the build (22 at that measurement; `nothing_survives_the_call`, `a_loose_socket_in_tmp_is_shadowed_under_bwrap`, `a_stop_ends_the_verification_run_and_delivers_nothing` and `a_stop_ends_the_syntax_check_and_delivers_nothing` have joined them since, and the count is asserted against this page by `the_skip_count_the_documents_quote_is_the_count_in_the_source`). Still unmeasured: nobody has held a conversation with the interactive shell on Linux. |
+| Linux | **The sandbox is measured, and on a default install it is OFF.** Measured on a stock Ubuntu 24.04 (4 Sep 2026), not only in CI: as an ordinary user `bwrap --unshare-net` fails with `loopback: Failed RTM_NEWADDR: Operation not permitted`, because the distro ships `kernel.apparmor_restrict_unprivileged_userns=1`. So `run_code` and `write_code` are **absent from the catalog** — the honest-refusal path, working as designed, but it is the DEFAULT on the most common Linux rather than an edge case. The shell says so on startup — the line that reports `run_code` as off now names the sysctl and the one-line remedy, rather than leaving "no sandbox" as the whole explanation. As **root** on the same machine the shield verifies and both tools appear, which is why testing with sudo hides the problem. What the shield itself does is measured: with the restriction lifted, `the_network_is_really_cut`, `the_sandbox_cannot_be_escaped` and the timeout kill all pass against a real `bwrap` 0.9.0 — **1069 tests, 0 failures** (33 binaries, 4 Sep 2026) — the record of a sandbox measurement on that machine on that date, not the current size of the suite, which is 1990 tests in 104 test binaries (doc-tests included; 10 more ignored) on macOS as of 11 Oct 2026, re-counted from `cargo test --workspace` on an Apple M4 Pro (it was 1241 in 64 on 7 Sep 2026). Run under `TACET_SANDBOX_MUST_RUN=1`, the flag that makes the 26 tests that used to skip execute or fail the build (22 at that measurement; `nothing_survives_the_call`, `a_loose_socket_in_tmp_is_shadowed_under_bwrap`, `a_stop_ends_the_verification_run_and_delivers_nothing` and `a_stop_ends_the_syntax_check_and_delivers_nothing` have joined them since, and the count is asserted against this page by `the_skip_count_the_documents_quote_is_the_count_in_the_source`). Still unmeasured: nobody has held a conversation with the interactive shell on Linux. |
 | Windows | **Measured for the first time, on a real machine.** Windows Server 2019 (Kamatera, 4 Sep 2026), Rust 1.98.1: the workspace builds and **1037 tests pass, 0 failures** (31 binaries; the suite has grown to 104 binaries since, and that machine has not been re-run). Two things that CI cannot see, because GitHub's runner is not a user's machine: (1) a clean Windows has no MSVC linker, so `cargo build` stops at ``error: linker `link.exe` not found`` until ~2 GB of Visual Studio Build Tools is installed — see CONTRIBUTING; (2) a Windows build prints a `dead_code` warning for `O_NOFOLLOW`, which no job fails on because `clippy -D warnings` runs only on ubuntu. That warning is real: the symlink second belt is Unix-only. The FIRST belt was measured there and holds — `create_new` on an existing symlink gives `os error 80` and leaves the target untouched. Still unmeasured: the interactive shell, and `0600` stamping is deliberately not applied here (`set_permissions` only flips a read-only flag, which would give the appearance of protection without the substance). |
 
 Where a guarantee holds on one platform and not another, the code says so at the point where it matters. `0600` permission stamping, for example, is deliberately not applied on Windows — there `set_permissions` only flips a read-only flag, which would produce the *appearance* of protection without the substance.
