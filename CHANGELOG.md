@@ -62,12 +62,21 @@ that fails without the fix.
 * `write_code` stops when the turn is stopped: its syntax check and the run
   of the model's code end on Ctrl-C instead of running on to their 10 s
   timeout, and a stop that lands after the last stage delivers nothing (M4).
+* Every path that asks a model a measured question appends the Qwen soft
+  switch the shell would under `thinking = auto`: the `tacet eval` runner, on
+  the first pass and in the history it replays, `tacet bench gap`, and
+  `tacet eval --format-gate`. Each sent the bare message, so a hybrid Qwen3
+  build was measured in a thinking mode a default install does not run it in
+  (M23).
 
 **Documents:** the README says Claude Code's SessionStart hook has never run in
 a real Claude Code (RG-21, guarded in the README as in
 `docs/agent-handoff.md`), that `git` is read-only with the actions the tool
-has (L38), what `eval --compare` leaves out of its verdict (D8), and one
-suite size in both platform rows (D23).
+has (L38), what `eval --compare` leaves out of its verdict (D8), one
+suite size in both platform rows (D23), and that the Qwen3-8B, Qwen3-0.6B and
+53.7-minute `Qwen/Qwen3-4B` figures were taken with no soft switch, in the
+hybrid build's default thinking mode, with the cost of that mode unmeasured
+(M23, guarded by `the_hybrid_rows_say_how_they_were_asked`).
 
 ---
 

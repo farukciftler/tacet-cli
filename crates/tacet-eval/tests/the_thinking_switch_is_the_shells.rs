@@ -153,6 +153,24 @@ fn the_eval_runner_asks_a_chatml_model_with_the_switch() {
     }
 }
 
+/// THE RUNNER DECIDES PER MESSAGE, AS `thinking = auto` DOES. The light case
+/// above cannot tell `Auto` from `Off` — a review swapped the runner to `Off`
+/// and the whole crate stayed green — so a planning turn must reach the model
+/// with ` /think` on every pass, history included.
+#[test]
+fn the_eval_runner_asks_a_heavy_turn_with_think() {
+    let case = tacet_eval::EvalCase::new("switch-heavy", "Summarise the quarterly budget")
+        .script(&["The budget is balanced."]);
+    let prompts = runner_prompts(&case);
+    assert!(!prompts.is_empty(), "the runner asked nothing");
+    for (pass, prompt) in prompts.iter().enumerate() {
+        assert!(
+            prompt.contains("Summarise the quarterly budget /think"),
+            "pass {pass} of the runner did not give a planning turn the shell's /think:\n{prompt}"
+        );
+    }
+}
+
 /// THE TWO FOLDS MUST AGREE. `thinking_switch::fold` is a copy of
 /// `tacet_tools::router::simplify` because the engine crate sits below the tools
 /// crate; if they ever differ, the shell and the eval would pick different

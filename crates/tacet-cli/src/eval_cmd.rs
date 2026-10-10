@@ -155,7 +155,22 @@ pub fn eval_format_gate(engine: &Arc<dyn EngineProvider>) -> ExitCode {
     for (msg, expected) in &cases {
         let selected: tacet_kernel::ToolCatalog =
             router.select(msg, &catalog).into_iter().collect();
-        let prompt = Prompt::new(SYSTEM_INSTRUCTIONS, *msg).with_tools(&selected);
+        // AUDIT M23'S THIRD PATH. The selection eval, the `tacet eval` runner
+        // and `bench gap` were fixed to append the Qwen soft switch; this gate
+        // still sent the bare message, so on a hybrid Qwen3 build it judged the
+        // format of a model in a thinking mode a default install never runs it
+        // in — the same "prompt the app never builds" the catalog note above
+        // was written against. The router keeps reading `msg`, as the shell's
+        // router reads the user's own words.
+        let asked = format!(
+            "{msg}{}",
+            tacet_engine::thinking_switch::soft_switch(
+                engine.template(),
+                tacet_engine::thinking_switch::ThinkingSetting::Auto,
+                msg,
+            )
+        );
+        let prompt = Prompt::new(SYSTEM_INSTRUCTIONS, &asked).with_tools(&selected);
         let Ok(generation) = wait(engine.generate(&prompt, None, SamplingSetting::default()))
         else {
             continue;
@@ -1614,6 +1629,101 @@ mod the_commands_stamp {
             before.build(),
             "the journal's own files changed the build the command stamps, so it \
              can never be resumed"
+        );
+    }
+}
+
+#[cfg(test)]
+mod format_gate_switch {
+    use super::*;
+    use tacet_engine::fake::FakeEngine;
+    use tacet_engine::{Constrainer, GenerationFuture, Template};
+
+    /// `FakeEngine` declaring ChatML — the only thing the switch keys on — and
+    /// keeping the fake's record of every prompt it was sent.
+    struct ChatMlFake(Arc<FakeEngine>);
+
+    impl EngineProvider for ChatMlFake {
+        fn name(&self) -> &str {
+            "fake-chatml"
+        }
+        fn template(&self) -> Template {
+            Template::ChatML
+        }
+        fn generate<'a>(
+            &'a self,
+            prompt: &'a Prompt,
+            constraint: Option<&'a dyn Constrainer>,
+            setting: SamplingSetting,
+        ) -> GenerationFuture<'a> {
+            self.0.generate(prompt, constraint, setting)
+        }
+    }
+
+    /// AUDIT M23 ON THE `--format-gate` PATH: on a ChatML engine every case is
+    /// asked with the switch the shell would append under `thinking = auto`.
+    /// The gate's eight messages are all light, so each must end ` /no_think`
+    /// — and none may carry ` /think` (NOT VACUOUS: the bare message, the old
+    /// behaviour, fails the first assertion on the first case).
+    #[test]
+    fn the_format_gate_asks_a_chatml_model_what_the_shell_asks() {
+        let fake = Arc::new(FakeEngine::script(Vec::<String>::new()).with_default("time()"));
+        let engine: Arc<dyn EngineProvider> = Arc::new(ChatMlFake(fake.clone()));
+        let _ = eval_format_gate(&engine);
+        let prompts = fake.seen_prompts();
+        assert_eq!(prompts.len(), 8, "one generation per gate case");
+        for (msg, prompt) in [
+            "What is 125 times 8?",
+            "What time is it right now?",
+            "İstanbul'da yarın hava nasıl olacak?",
+        ]
+        .iter()
+        .zip([&prompts[0], &prompts[1], &prompts[6]])
+        {
+            assert!(
+                prompt.contains(&format!("{msg} /no_think")),
+                "the format gate asks without the shell's switch:\n{prompt}"
+            );
+        }
+    }
+
+    /// A MODEL WITHOUT THE CONVENTION GETS THE BARE MESSAGE — a gate that
+    /// suffixed every prompt would pass the test above and fail this one.
+    #[test]
+    fn the_format_gate_leaves_a_non_chatml_prompt_alone() {
+        let fake = Arc::new(FakeEngine::script(Vec::<String>::new()).with_default("time()"));
+        let engine: Arc<dyn EngineProvider> = fake.clone();
+        let _ = eval_format_gate(&engine);
+        let prompts = fake.seen_prompts();
+        assert!(!prompts.is_empty());
+        assert!(
+            prompts
+                .iter()
+                .all(|p| !p.contains("/no_think") && !p.contains("/think")),
+            "a non-ChatML model was sent the Qwen switch"
+        );
+    }
+
+    /// AND THE GATE BUILDS ITS PROMPT FROM THE SWITCHED QUESTION — the hole
+    /// M22 and M23 both had: a tested path beside a loop that builds its prompt
+    /// some other way. Same body scan as `bench_gap`'s.
+    #[test]
+    fn the_format_gate_builds_its_prompt_from_the_switched_question() {
+        let body: String = include_str!("eval_cmd.rs")
+            .split("pub fn eval_format_gate(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("eval_format_gate's body")
+            .split_whitespace()
+            .collect();
+        assert!(
+            body.contains("Prompt::new(SYSTEM_INSTRUCTIONS,&asked)"),
+            "the format gate no longer asks the model the switched question"
+        );
+        assert!(
+            !body.contains("Prompt::new(SYSTEM_INSTRUCTIONS,*msg)")
+                && !body.contains("Prompt::new(SYSTEM_INSTRUCTIONS,msg)"),
+            "the format gate sends the bare message again"
         );
     }
 }
