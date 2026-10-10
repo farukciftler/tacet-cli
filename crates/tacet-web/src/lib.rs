@@ -31,7 +31,9 @@
 //! - `download`  — downloading a large file (a model package): the approval
 //!   gate, resuming with Range, atomic completion, SHA-256. A SEPARATE file from
 //!   search because the timeout regimes are opposite (see the rationale there).
-//!   Within this crate `ureq` occurs only in those two files.
+//! - `net`       — where every `ureq` agent configuration starts: the
+//!   environment proxy (`ALL_PROXY` / `HTTPS_PROXY` / `HTTP_PROXY`) is switched
+//!   OFF there, once, for all of them (audit M12).
 //! - `outcome`   — the interpretation of SearXNG's JSON. NO NETWORK, its input
 //!   is a `&str`, all of it testable.
 //! - `text`      — HTML → plain text. Deliberately simple; not a DOM parser.
@@ -51,6 +53,7 @@ pub mod client;
 pub mod download;
 pub mod error;
 pub mod http;
+pub mod net;
 pub mod outcome;
 pub mod release;
 pub mod relevance;

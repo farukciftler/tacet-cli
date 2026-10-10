@@ -204,6 +204,12 @@ impl HttpClient {
                 .into_iter()
                 .map(|h| h.into().trim().to_ascii_lowercase())
                 .filter(|h| !h.is_empty())
+                // The same normal form `check` compares against. An entry that
+                // does not parse is kept as typed: it can never match, and
+                // dropping it could turn a non-empty list into an empty one —
+                // which reads as "closed" in the diagnosis while the user
+                // believes they configured something.
+                .map(|h| endpoint_of(&h).unwrap_or(h))
                 .collect(),
             timeout: DEFAULT_TIMEOUT,
         }
@@ -236,8 +242,10 @@ impl HttpClient {
                 "the address must start with https:// — {url}"
             )));
         }
-        let Some(host) = host_of(url) else {
-            return Err(WebError::InvalidAddress(format!("no host name: {url}")));
+        let Some(endpoint) = endpoint_of(url) else {
+            return Err(WebError::InvalidAddress(format!(
+                "no host name, or a port that is not a number: {url}"
+            )));
         };
         if self.hosts.is_empty() {
             return Err(WebError::InvalidAddress(
@@ -246,10 +254,25 @@ impl HttpClient {
         }
         // THE CLOSED SET. `contains`, i.e. whole-string equality — NOT
         // `starts_with`, NOT `ends_with`. See gate 2 at the top of the file.
-        if !self.hosts.contains(&host) {
+        // The PORT is part of what is compared: see `endpoint_of`.
+        if !self.hosts.contains(&endpoint) {
             return Err(WebError::InvalidAddress(format!(
-                "{host} is not in the allowed API host list"
+                "{endpoint} is not in the allowed API host list"
             )));
+        }
+        // THE TRANSPORT GETS A SAY. `endpoint_of` is this file's own reading of
+        // the address; `ureq` dials what `http::Uri` reads. The two disagreed
+        // once (`[v6]x:22`, see `host_of`), and a second disagreement nobody
+        // has found yet would be the same hole — so the endpoint the request
+        // will really go to must be the one that was just allowed.
+        match dialed_endpoint(url) {
+            Some(dialed) if dialed == endpoint => {}
+            dialed => {
+                return Err(WebError::InvalidAddress(format!(
+                    "the address reads as {endpoint} here but would be dialled as {}: {url}",
+                    dialed.as_deref().unwrap_or("nothing")
+                )));
+            }
         }
         target_is_public(url)
     }
@@ -291,17 +314,7 @@ impl HttpClient {
         }
         self.check(url)?;
 
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(self.timeout))
-            // See the redirect note above.
-            .max_redirects(0)
-            // Belt to the `check` braces: even if a gate were reordered one day,
-            // ureq refuses a non-https address by itself.
-            .https_only(true)
-            // See the 4xx/5xx note above.
-            .http_status_as_error(false)
-            .build()
-            .into();
+        let agent = call_agent(self.timeout);
 
         let sent = match (method, body) {
             (Method::Get, _) => agent.get(url).call(),
@@ -355,6 +368,23 @@ impl HttpClient {
     }
 }
 
+/// The agent `call` uses. Split out so the proxy rule can be asserted on it
+/// (`net::every_agent`): this path refuses every loopback target, so no local
+/// listener can play its far end in a test.
+pub(crate) fn call_agent(timeout: Duration) -> ureq::Agent {
+    crate::net::builder()
+        .timeout_global(Some(timeout))
+        // See the redirect note on `call`.
+        .max_redirects(0)
+        // Belt to the `check` braces: even if a gate were reordered one day,
+        // ureq refuses a non-https address by itself.
+        .https_only(true)
+        // See the 4xx/5xx note on `call`.
+        .http_status_as_error(false)
+        .build()
+        .into()
+}
+
 // ---------------------------------------------------------------------------
 // The registry — NO NETWORK below this line
 // ---------------------------------------------------------------------------
@@ -403,9 +433,72 @@ pub fn parse_hosts(raw: &str) -> Vec<String> {
         .map(|h| h.trim().to_ascii_lowercase())
         .filter(|h| !h.is_empty())
         // A user who writes `https://api.example.com/v1` means the host; taking
-        // the setting literally would silently allow nothing at all.
-        .map(|h| host_of(&h).unwrap_or(h))
+        // the setting literally would silently allow nothing at all. A port the
+        // user wrote is KEPT — it used to be dropped here, which turned
+        // `api.example.com:8443` into "api.example.com on any port".
+        .map(|h| endpoint_of(&h).unwrap_or(h))
         .collect()
+}
+
+/// What the allow-list compares: the host AND the port, as one string.
+///
+/// WHY THE PORT (audit L8): the closed set used to compare host names only, so
+/// an allow-list holding `api.allowed.test` let the model send the user's
+/// request body to `https://api.allowed.test:22/` — and to any other port on
+/// that machine, where whatever listens is not the API the user approved. The
+/// port is now part of the identity: an entry with no port means 443, the
+/// https default and the only port the install screen lets a user write
+/// today; an entry that names a port (`api.example.com:8443`, set by hand or
+/// through `with_hosts`) allows that port and no other.
+///
+/// THE DEFAULT IS 443 FOR EVERY SCHEME, `http://` included: `check` refuses
+/// plain http before this is consulted, so 80 could never be the port a
+/// request goes to, and a pasted `http://api.example.com` entry still means
+/// the host the user had in mind.
+///
+/// The normal form is the host alone when the port is 443 — the same string
+/// `host_of` returns, so every allow-list written before this change keeps its
+/// meaning — and `host:port` (`[v6]:port`) otherwise. `None` = no host, or a
+/// port that is not a number: `https://a.test:abc/` is refused, not read as
+/// 443.
+pub fn endpoint_of(url: &str) -> Option<String> {
+    let host = host_of(url)?;
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let authority = authority.rsplit('@').next().unwrap_or(authority);
+    let port_text = match authority.strip_prefix('[') {
+        Some(bracketed) => bracketed.split_once(']')?.1.strip_prefix(':'),
+        None => authority.rsplit_once(':').map(|(_, p)| p),
+    };
+    let port: u16 = match port_text {
+        None => 443,
+        // DIGITS ONLY: `str::parse::<u16>` also takes a leading `+`, and a
+        // port the transport reads differently is a port the list never saw.
+        Some(p) if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) => p.parse().ok()?,
+        Some(_) => return None,
+    };
+    Some(match port {
+        443 => host,
+        p if host.contains(':') => format!("[{host}]:{p}"),
+        p => format!("{host}:{p}"),
+    })
+}
+
+/// The endpoint the TRANSPORT will connect to, in `endpoint_of`'s normal
+/// form: read by the same `http::Uri` parser `ureq` dials with. `None` when
+/// that parser refuses the text or finds no host.
+fn dialed_endpoint(url: &str) -> Option<String> {
+    let uri: ureq::http::Uri = url.parse().ok()?;
+    let host = uri.host()?.to_ascii_lowercase();
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .map_or(host.clone(), str::to_string);
+    Some(match uri.port_u16().unwrap_or(443) {
+        443 => host,
+        p if host.contains(':') => format!("[{host}]:{p}"),
+        p => format!("{host}:{p}"),
+    })
 }
 
 /// The host of an address, lowercased and without the port.
@@ -438,8 +531,21 @@ pub fn host_of(url: &str) -> Option<String> {
         return None;
     }
     // An IPv6 literal is bracketed and the brackets are not part of the host.
+    //
+    // WHAT FOLLOWS `]` IS NOTHING OR `:<digits>` — anything else is not an
+    // address (audit L8, review of 10 Oct 2026). `https://[2606:2800:220:1::]x:22/`
+    // used to read here as "that host, no port" (443), while the transport's
+    // URI parser reads the same text as port 22: an allow-list entry for the
+    // v6 host let the request body go to any port on it.
     if let Some(bracketed) = authority.strip_prefix('[') {
-        let (host, _) = bracketed.split_once(']')?;
+        let (host, tail) = bracketed.split_once(']')?;
+        let tail_is_a_port = match tail.strip_prefix(':') {
+            Some(port) => !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()),
+            None => tail.is_empty(),
+        };
+        if !tail_is_a_port {
+            return None;
+        }
         return Some(host.to_ascii_lowercase());
     }
     let host = match authority.rsplit_once(':') {
@@ -550,19 +656,124 @@ mod tests {
     /// allowlist and IS off limits. Without the `target_is_public` call the
     /// closed set alone would happily let a user allow `127.0.0.1` and turn the
     /// tool into a port scanner for whoever poisons the model next.
+    ///
+    /// The entries carry the ports the URLs use. They have to since the port
+    /// joined the closed set (audit L8) — and that exposed that this test had
+    /// been passing for the wrong reason on `[::1]` all along: the entry was
+    /// stored WITH its brackets and never matched, so the ALLOWLIST refused it
+    /// and the SSRF gate was never reached. The message is asserted now, so
+    /// "refused by the list" can no longer stand in for "refused by the gate".
     #[test]
     fn an_allowed_but_unroutable_host_is_still_refused() {
-        let c = HttpClient::with_hosts(["127.0.0.1", "169.254.169.254", "[::1]"]);
+        let c = HttpClient::with_hosts(["127.0.0.1:11434", "169.254.169.254", "[::1]:8080"]);
         for url in [
             "https://127.0.0.1:11434/api/tags",
             "https://169.254.169.254/latest/meta-data/iam/security-credentials/",
             "https://[::1]:8080/x",
         ] {
+            match c.check(url) {
+                Err(WebError::InvalidAddress(m)) => assert!(
+                    !m.contains("not in the allowed"),
+                    "the allowlist, not the SSRF gate, refused {url}: {m}"
+                ),
+                other => panic!("the SSRF gate did not run for {url}: {other:?}"),
+            }
+        }
+    }
+
+    /// THE PORT IS PART OF THE CLOSED SET (audit L8). Before the fix the
+    /// audit's harness took `https://api.allowed.test:22/` past the list and
+    /// all the way to name resolution: the user allowed an API, and the model
+    /// could aim the request body at the SSH daemon on the same machine.
+    ///
+    /// THE HOST IS A PUBLIC LITERAL, so `target_is_public` decides without a
+    /// resolver: what passes here passes `check` outright (`Ok`), and what is
+    /// refused can only have been refused by the closed set. No DNS query
+    /// leaves the machine from this test.
+    #[test]
+    fn an_allowed_host_on_another_port_is_not_allowed() {
+        let c = HttpClient::with_hosts(["93.184.216.34"]);
+        for url in [
+            "https://93.184.216.34:22/",
+            "https://93.184.216.34:8443/v1",
+            "https://93.184.216.34:80/",
+            "https://user@93.184.216.34:6379/",
+            // A port that is not a number is not "the default".
+            "https://93.184.216.34:abc/",
+            "https://93.184.216.34:+22/",
+        ] {
+            let e = c.check(url).unwrap_err();
             assert!(
-                matches!(c.check(url), Err(WebError::InvalidAddress(_))),
-                "the SSRF gate did not run for {url}"
+                matches!(&e, WebError::InvalidAddress(m)
+                    if m.contains("not in the allowed") || m.contains("not a number")),
+                "{url} got past the closed set: {e:?}"
             );
         }
+        // The implicit and the explicit 443 are the same endpoint.
+        for url in ["https://93.184.216.34/v1", "https://93.184.216.34:443/v1"] {
+            assert!(c.check(url).is_ok(), "{url}: {:?}", c.check(url));
+        }
+
+        // A v6 LITERAL with junk between `]` and the port (review of 10 Oct
+        // 2026): `http::Uri`, which ureq dials with, reads port 22 here.
+        let v6 = HttpClient::with_hosts(["[2606:2800:220:1::]"]);
+        for url in [
+            "https://[2606:2800:220:1::]x:22/",
+            "https://[2606:2800:220:1::]:22/",
+            "https://[2606:2800:220:1::]:/",
+            "https://[2606:2800:220:1::]x/",
+        ] {
+            assert!(v6.check(url).is_err(), "{url} got past the closed set");
+        }
+        assert!(v6.check("https://[2606:2800:220:1::]/v1").is_ok());
+        assert!(v6.check("https://[2606:2800:220:1::]:443/v1").is_ok());
+
+        // An entry that NAMES a port allows that port — and not 443.
+        let c = HttpClient::with_hosts(["93.184.216.34:8443"]);
+        assert!(c.check("https://93.184.216.34:8443/x").is_ok());
+        assert!(c.check("https://93.184.216.34/x").is_err());
+        assert!(c.check("https://93.184.216.34:22/x").is_err());
+    }
+
+    #[test]
+    fn a_port_written_in_the_setting_is_kept_not_dropped() {
+        assert_eq!(
+            parse_hosts("api.a.test:8443, https://api.b.test:443/v1, [2001:db8::1]:9000"),
+            vec!["api.a.test:8443", "api.b.test", "[2001:db8::1]:9000"]
+        );
+        assert_eq!(endpoint_of("https://A.test/x").as_deref(), Some("a.test"));
+        assert_eq!(endpoint_of("https://[::1]/x").as_deref(), Some("::1"));
+        assert_eq!(endpoint_of("https://a.test:99999/x"), None);
+        // What follows `]` is nothing or `:<digits>`; `+22` is not digits.
+        assert_eq!(endpoint_of("https://[::1]x:22/"), None);
+        assert_eq!(host_of("https://[::1]x:22/"), None);
+        assert_eq!(endpoint_of("https://a.test:+22/"), None);
+        assert_eq!(
+            endpoint_of("https://[::1]:22/").as_deref(),
+            Some("[::1]:22")
+        );
+    }
+
+    /// The gate and the transport read every address the same way. The
+    /// hostile half is the list a reviewer tried by hand; `dialed_endpoint`
+    /// is what `ureq` will connect to.
+    #[test]
+    fn the_gate_reads_an_address_the_way_the_transport_dials_it() {
+        for url in [
+            "https://a.test/x",
+            "https://A.Test:8443/x?y#z",
+            "https://user@a.test:22/",
+            "https://[2606:2800:220:1::]/",
+            "https://[2606:2800:220:1::]:9000/v1",
+            "https://93.184.216.34:443/",
+        ] {
+            assert_eq!(endpoint_of(url), dialed_endpoint(url), "{url}");
+        }
+        assert_eq!(
+            dialed_endpoint("https://[2606:2800:220:1::]x:22/").as_deref(),
+            Some("[2606:2800:220:1::]:22"),
+            "the transport's reading changed; re-measure the L8 bypass"
+        );
     }
 
     #[test]

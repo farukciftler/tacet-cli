@@ -108,9 +108,9 @@ pub fn latest(repo: &str, timeout: Duration) -> WebResult<Release> {
 }
 
 /// The agent the release check uses. SPLIT OUT SO IT CAN BE ASSERTED ON — see
-/// the test at the bottom of this file.
-fn release_agent(timeout: Duration) -> ureq::Agent {
-    ureq::Agent::config_builder()
+/// the test at the bottom of this file, and `net::every_agent` for the proxy.
+pub(crate) fn release_agent(timeout: Duration) -> ureq::Agent {
+    crate::net::builder()
         .timeout_global(Some(timeout))
         .max_redirects(5)
         // THE SCHEME GATE MUST HOLD ON EVERY HOP. `API` is https, but that
