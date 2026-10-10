@@ -294,7 +294,9 @@ fn every_fixture_reads_the_same_after_a_capture() {
 /// tool_result, a tool call's input, a top-level `source` naming the user
 /// with a capital letter. Before keeping looked at the value's shape and at
 /// whether it sat inside a tool's data, every one of them came out verbatim,
-/// the e-mail address included.
+/// the e-mail address included. The two lines after them are the second
+/// review's: the same answer as object keys and numbers, which the version
+/// that masked only values let through byte for byte.
 #[test]
 fn a_planted_capture_loses_what_identifies_it_and_keeps_its_reading() {
     let dir = scratch("planted");
@@ -324,6 +326,21 @@ fn a_planted_capture_loses_what_identifies_it_and_keeps_its_reading() {
             "sourceToolAssistantUUID":"a2","source":"Alice's laptop",
             "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":
                 r#"{"id":"jane.doe@clientbank.com","status":"overdue: Jane Doe owes 40k","source":"Clientbank CRM","version":"Q3 board deck"}"#}]}}),
+        // The second review's shapes: the same answer moved into object
+        // KEYS and NUMBERS — a call's input keyed by a client, a result
+        // keyed by a person and an address, an MCP result's
+        // `structuredContent` keyed by a name.
+        serde_json::json!({"type":"assistant","uuid":"a3","parentUuid":"u3","sessionId":id,
+            "cwd":cwd,"version":"2.1.285","timestamp":"2026-10-09T10:00:09.000Z","isSidechain":false,
+            "message":{"id":"msg_3","role":"assistant","model":"claude-x","content":[
+                {"type":"tool_use","id":"t3","name":"mcp__crm__lookup","input":
+                    {"customers":{"AcmeCorp Holdings":{"owed":40000}}}}]}}),
+        serde_json::json!({"type":"user","uuid":"u4","parentUuid":"a3","sessionId":id,
+            "cwd":cwd,"version":"2.1.285","timestamp":"2026-10-09T10:00:10.000Z","isSidechain":false,
+            "sourceToolAssistantUUID":"a3",
+            "toolUseResult":{"structuredContent":{"Bob Smith":1}},
+            "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t3","content":
+                r#"{"Jane Doe":{"iban_no":4012888888881881,"salary":185000},"jdoe@clientbank.com":true}"#}]}}),
     ];
     let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
     let project = tacet_tools::sessions::claude::project_dir_name(cwd);
@@ -361,6 +378,17 @@ fn a_planted_capture_loses_what_identifies_it_and_keeps_its_reading() {
         "contract",
         "confidential",
         "laptop",
+        "customers",
+        "Holdings",
+        "owed",
+        "40000",
+        "Bob",
+        "Smith",
+        "iban",
+        "salary",
+        "4012888888881881",
+        "185000",
+        "jdoe",
     ] {
         assert!(!out.contains(leak), "{leak:?} survived:\n{out}");
     }

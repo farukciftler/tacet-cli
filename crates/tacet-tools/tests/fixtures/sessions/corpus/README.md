@@ -43,14 +43,18 @@ The steps, for whoever does:
    ```
 
    It keeps what the readers depend on (line types, ids and parent links,
-   timestamps, versions, tool names, task ids and statuses, markup tags), and
-   only in that shape: a kept key holding prose, an address or a path is
-   masked like any other text, and inside a tool's data (a call's input or
-   arguments, a result's content, JSON carried in a string) only the statuses
-   the readers know, numeric task ids and content-block types survive. Every
-   other string is masked word by word; home directories become `dev`, the
-   capturing user's name becomes `dev` in any case, and e-mail addresses are
-   removed. An identifier-shaped value under a kept key outside a tool's data
+   timestamps, versions, tool names, task ids and statuses, the markup tags
+   the readers split on), and only in that shape: a kept key holding prose,
+   an address or a path is masked like any other text, and inside a tool's
+   data (a call's input or arguments, a result's content, JSON carried in a
+   string) only the statuses the readers know, numeric task ids and
+   content-block types survive. Object keys are masked too — inside a tool's
+   data every key but the few the readers look up there, outside it every
+   key that is not one identifier-shaped token — and so is every number in
+   a tool's data but a task id, to one of the same digit count. Any other
+   tag keeps its brackets and loses its name. Every other string is masked
+   word by word; home directories become `dev`, the capturing user's name
+   becomes `dev` in any case, and e-mail addresses are removed. An identifier-shaped value under a kept key outside a tool's data
    (`"source":"AcmeCorp"`) is kept, which is one reason for step 2. The first run prints a salt: pass it with
    `--salt` to the other files of the same session so a path is masked the
    same way in all of them, and commit it nowhere. For a Claude Code

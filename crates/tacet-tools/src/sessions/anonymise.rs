@@ -22,7 +22,15 @@
 //! (a status they know, a numeric task id, a content block's type). The first
 //! version kept by key name alone, at every depth; a review put a CRM answer
 //! in a tool_result (`{"id":"jane.doe@…","status":"overdue: Jane Doe owes
-//! 40k",…}`) and every value came out verbatim. Every other string value is
+//! 40k",…}`) and every value came out verbatim. The second kept every object
+//! KEY and every number, so the next review put the CRM answer in the keys
+//! (`{"Jane Doe":{"iban_no":4012…},"jdoe@clientbank.com":true}`) and it came
+//! out whole, address included. Now a key inside a tool's data survives only
+//! when a reader looks it up there (`DATA_KEYS`), a number there only when it
+//! is a task id, and a key outside data only when it is one identifier-shaped
+//! token; a masked number keeps its digit count. A markup tag keeps its
+//! brackets, and its name only when a reader splits on it (`TAG_NAMES`).
+//! Every other string value is
 //! MASKED: each word becomes a pseudo-word of the same length and
 //! case pattern, the same word always the same pseudo-word within one capture
 //! (so a path in a `cwd` field and the same path inside a tool call still
@@ -126,9 +134,52 @@ fn is_data(object_type: Option<&str>, in_call: bool, key: &str) -> bool {
         "output" => object_type.is_some_and(|t| t.ends_with("_output")),
         // Claude Code's structured copy of a result, beside the message.
         "toolUseResult" => true,
+        // Codex's shell and search calls carry what they were given in
+        // `action`, not `arguments`: the command, and an `env` map keyed by
+        // whatever variable names the user's shell had (a review's
+        // `ACME_SECRET_TOKEN_NAME` came out verbatim as an envelope key).
+        "action" => matches!(object_type, Some("local_shell_call" | "web_search_call")),
         _ => false,
     }
 }
+
+/// Object KEYS a reader looks up inside a tool's data. Every other key in
+/// data is masked like text: a tool's JSON is keyed by its own content as
+/// often as by a schema (`{"Jane Doe":{…}}`, `{"jdoe@clientbank.com":true}`,
+/// an MCP server's `structuredContent`), and the first two versions kept
+/// every key, so a review's CRM answer moved from values to keys and came
+/// out whole. Masking a key the readers need does not leak — it changes the
+/// reading, which `a_captured_session_keeps_its_shape` catches.
+const DATA_KEYS: &[&str] = &[
+    // Claude Code's task and todo tools (`claude::replay_plan`) and
+    // `toolUseResult.task.id`.
+    "taskId",
+    "subject",
+    "status",
+    "addBlockedBy",
+    "blockedBy",
+    "todos",
+    "content",
+    "activeForm",
+    "task",
+    "id",
+    // Codex `update_plan`: `codex::plan_from_update` refuses a call with a
+    // key it does not know, so a masked key is a plan Codex would refuse.
+    "plan",
+    "step",
+    "explanation",
+    // Content blocks (`claude::content_text`, `codex::content_text`).
+    "type",
+    "text",
+    // Antigravity's working directory, PascalCase (`antigravity::CWD_ARG`).
+    "Cwd",
+];
+
+/// Keys whose NUMBERS inside data are task ids, kept: Claude Code writes a
+/// task id as a string or a number, and a masked number would no longer
+/// match the same id written the other way. Every other number in data is a
+/// value somebody's tool returned (a balance, a card number) and is masked.
+const DATA_NUMBER_KEYS: &[&str] = &["taskId", "addBlockedBy", "blockedBy", "id"];
 
 /// Content block types a reader branches on inside a result's content
 /// (`claude.rs` takes the text of a `text` block only). Any other `type`
@@ -324,7 +375,19 @@ impl Scrub {
                 // file path (Claude Code's `trackedFileBackups`).
                 let path_keyed = key.is_some_and(|k| PATH_KEYED_MAPS.contains(&k));
                 let entries: Vec<(String, Value)> = std::mem::take(map).into_iter().collect();
-                for (k, mut child) in entries {
+                // Kept keys go in first, and a masked key that comes out
+                // spelling one already there gets a `_` until it does not:
+                // a collision must neither push a key the readers need aside
+                // nor drop a value.
+                let (mut kept_keys, mut masked) = (Vec::new(), Vec::new());
+                for (k, child) in entries {
+                    match self.key(&k, data, path_keyed) {
+                        Some(new) => masked.push((k, new, child)),
+                        None => kept_keys.push((k.clone(), k, child)),
+                    }
+                }
+                let entries = kept_keys.into_iter().chain(masked);
+                for (k, mut new_key, mut child) in entries {
                     let child_data = data || is_data(object_type.as_deref(), is_call, &k);
                     match &mut child {
                         // A tool's name, in the agent's own call: what the
@@ -340,16 +403,73 @@ impl Scrub {
                         }
                         _ => self.value(&mut child, Some(&k), child_data),
                     }
-                    let k = if path_keyed || k.contains('/') || k.contains('\\') {
-                        self.text(&k)
-                    } else {
-                        k
-                    };
-                    map.insert(k, child);
+                    while map.contains_key(&new_key) {
+                        new_key.push('_');
+                    }
+                    map.insert(new_key, child);
                 }
             }
-            Value::Number(_) | Value::Bool(_) | Value::Null => {}
+            Value::Number(n) => {
+                if data && !key.is_some_and(|k| DATA_NUMBER_KEYS.contains(&k) && n.is_u64()) {
+                    *n = self.number(n);
+                }
+            }
+            Value::Bool(_) | Value::Null => {}
         }
+    }
+
+    /// What an object key becomes, or `None` to keep it. Inside data only
+    /// `DATA_KEYS` survive. Outside it a key is the agent's format and is
+    /// kept when it is one identifier-shaped token, after the same rules as
+    /// a kept value (no home, no address, not the capturer's name); a key
+    /// with a space, an `@` or a path in it is somebody's text. Claude Code's
+    /// `trackedFileBackups` keys by a bare file name (`acme_payroll.xlsx`),
+    /// token-shaped, so it is masked by its map's name.
+    fn key(&self, k: &str, data: bool, path_keyed: bool) -> Option<String> {
+        let masked = if path_keyed {
+            self.text(k)
+        } else if data {
+            if DATA_KEYS.contains(&k) {
+                return None;
+            }
+            self.text(k)
+        } else if structural("", k) {
+            self.kept(k)
+        } else {
+            self.text(k)
+        };
+        (masked != k).then_some(masked)
+    }
+
+    /// A number of the same shape — the same digit count in each run, the
+    /// integer part not starting with a zero — so a masked card number is
+    /// still sixteen digits and a masked salary still six. The same digits
+    /// mask the same way within one capture, as words do.
+    fn number(&self, n: &serde_json::Number) -> serde_json::Number {
+        let text = n.to_string();
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text.as_str();
+        let mut first = true;
+        while let Some(c) = rest.chars().next() {
+            if c.is_ascii_digit() {
+                let len = rest
+                    .find(|c: char| !c.is_ascii_digit())
+                    .unwrap_or(rest.len());
+                let mut run = self.word(&rest[..len]);
+                if first && run.len() > 1 && run.starts_with('0') {
+                    run.replace_range(..1, "1");
+                }
+                first = false;
+                out.push_str(&run);
+                rest = &rest[len..];
+            } else {
+                out.push(c);
+                rest = &rest[c.len_utf8()..];
+            }
+        }
+        // An exponent masked past f64's range does not parse; zero says
+        // nothing about the original.
+        serde_json::from_str(&out).unwrap_or_else(|_| serde_json::Number::from(0))
     }
 
     /// A masked string value — unless it is JSON itself: Codex carries a
@@ -395,9 +515,11 @@ impl Scrub {
                     continue 'outer;
                 }
             }
-            if let Some(len) = tag_len(rest) {
-                out.push_str(&rest[..len]);
-                rest = &rest[len..];
+            if let Some((open, name)) = tag_at(rest) {
+                out.push_str(&rest[..open]);
+                out.push_str(&self.tag_name(&rest[open..open + name]));
+                out.push('>');
+                rest = &rest[open + name + 1..];
                 continue;
             }
             // A percent escape in a `file://` URI is one character of the
@@ -472,10 +594,10 @@ fn replace_ignore_ascii_case(text: &str, needle: &str, with: &str) -> String {
     out
 }
 
-/// The length of a markup tag at the start of `text`: `<TAG>`, `</TAG>`,
-/// `<command-name>`. Tag names are format, not content — the readers split a
-/// request out of `<USER_REQUEST>…</USER_REQUEST>` by them.
-fn tag_len(text: &str) -> Option<usize> {
+/// A markup tag at the start of `text` (`<TAG>`, `</TAG>`, `<command-name>`):
+/// the length of its opening (`<` or `</`) and of its name. The brackets are
+/// always kept, so a masked tag is still a tag where it was.
+fn tag_at(text: &str) -> Option<(usize, usize)> {
     let body = text.strip_prefix('<')?;
     let body = body.strip_prefix('/').unwrap_or(body);
     let first = body.chars().next()?;
@@ -485,7 +607,60 @@ fn tag_len(text: &str) -> Option<usize> {
     let name = body
         .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
         .unwrap_or(body.len());
-    (body[name..].starts_with('>')).then(|| text.len() - body.len() + name + 1)
+    (body[name..].starts_with('>')).then(|| (text.len() - body.len(), name))
+}
+
+/// Tag names a reader splits on, kept whole: Antigravity's request wrapper
+/// (`antigravity::split_user_input`), Claude Code's slash-command wrappers
+/// (`claude::first_prompt` skips text that opens with `<command-` or
+/// `<local-command-`), its reminders, and the children of Codex's
+/// environment block. Codex's own injected openings come from the reader's
+/// list (`codex::INJECTED_PREFIXES`), so the two cannot drift. Any other tag
+/// name is the writer's text: the first version kept every name of tag
+/// shape, so `Author: <JaneDoe>` kept the author.
+const TAG_NAMES: &[&str] = &[
+    "USER_REQUEST",
+    "ADDITIONAL_METADATA",
+    "command-name",
+    "command-message",
+    "command-args",
+    "command-contents",
+    "local-command-stdout",
+    "local-command-stderr",
+    "local-command-caveat",
+    "system-reminder",
+    "cwd",
+    "shell",
+    "approval_policy",
+    "sandbox_mode",
+    "network_access",
+    "writable_roots",
+    "current_date",
+    "timezone",
+];
+
+/// The tag prefixes `claude::first_prompt` matches on: a `<command-…>` tag
+/// not in `TAG_NAMES` keeps the prefix, so the reader still skips it, and
+/// loses the rest.
+const TAG_PREFIXES: &[&str] = &["local-command-", "command-"];
+
+impl Scrub {
+    fn tag_name(&self, name: &str) -> String {
+        let injected = super::codex::INJECTED_PREFIXES.iter().any(|p| {
+            p.strip_prefix('<')
+                .and_then(|p| p.strip_suffix('>'))
+                .is_some_and(|p| p == name)
+        });
+        if injected || TAG_NAMES.contains(&name) {
+            return name.to_string();
+        }
+        for prefix in TAG_PREFIXES {
+            if let Some(rest) = name.strip_prefix(prefix) {
+                return format!("{prefix}{}", self.text(rest));
+            }
+        }
+        self.text(name)
+    }
 }
 
 /// Every home directory, whoever's, as `dev`: `/Users/<x>`, `/home/<x>`,
@@ -622,6 +797,21 @@ mod tests {
             "{t}"
         );
         assert!(!t.contains("fix"));
+        // Codex's injected openings, from the reader's own list.
+        for p in super::super::codex::INJECTED_PREFIXES {
+            assert!(s.text(p).starts_with(p), "{p}: {}", s.text(p));
+        }
+        // RG-28 review: a tag-shaped name nobody splits on is the writer's
+        // text. Brackets stay; the name does not. A `<command-…>` tag keeps
+        // the prefix Claude Code's reader skips it by.
+        let t = s.text("Author: <JaneDoe> for </acme-payroll> <command-AcmeRun>");
+        for leak in ["JaneDoe", "acme", "payroll", "Acme"] {
+            assert!(!t.contains(leak), "{leak}: {t}");
+        }
+        assert!(t.contains(": <") && t.contains(" </"), "{t}");
+        assert_eq!(t.matches('<').count(), 3, "{t}");
+        assert_eq!(t.matches('>').count(), 3, "{t}");
+        assert!(t.contains(" <command-") && t.ends_with('>'), "{t}");
         let md = s.markdown("- [x] Ship it\n  - [/] Test\n- [ ] Docs");
         assert!(md.starts_with("- [x] "), "{md}");
         assert!(md.contains("\n  - [/] ") && md.contains("\n- [ ] "), "{md}");
@@ -710,6 +900,109 @@ mod tests {
         let out = s.jsonl(nested);
         assert!(!out.contains("JaneDoe"), "{out}");
         assert!(out.contains(r#""tool_use_id":"t1""#), "{out}");
+    }
+
+    /// RG-28 second review: keys and numbers. Every shape below came out
+    /// byte for byte on the version that masked only values.
+    #[test]
+    fn a_key_or_a_number_in_tool_data_is_masked_unless_a_reader_needs_it() {
+        let s = scrub();
+        // JSON in a result's string content, keyed by a name and an address.
+        let result = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"{\"Jane Doe\":{\"iban_no\":4012888888881881,\"salary\":185000},\"jdoe@clientbank.com\":true}"}]}}"#;
+        let out = s.jsonl(result);
+        for leak in [
+            "Jane",
+            "iban",
+            "salary",
+            "4012888888881881",
+            "185000",
+            "jdoe",
+            "clientbank",
+            "@",
+        ] {
+            assert!(!out.contains(leak), "{leak}: {out}");
+        }
+        // The numbers keep their digit count.
+        let v: Value = serde_json::from_str(out.trim_end()).unwrap();
+        let inner: Value =
+            serde_json::from_str(v["message"]["content"][0]["content"].as_str().unwrap()).unwrap();
+        let mut digits: Vec<usize> = inner
+            .as_object()
+            .unwrap()
+            .values()
+            .filter_map(Value::as_object)
+            .flat_map(|o| o.values())
+            .map(|n| n.as_u64().unwrap().to_string().len())
+            .collect();
+        digits.sort();
+        assert_eq!(digits, [6, 16], "{inner}");
+
+        // A call's input keyed by a client, and Claude Code's structured
+        // result keyed by a person.
+        let call = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"mcp__crm__q","input":{"customers":{"AcmeCorp Holdings":{"owed":40000}}}}]},"toolUseResult":{"structuredContent":{"Bob Smith":1}}}"#;
+        let out = s.jsonl(call);
+        for leak in [
+            "customers",
+            "AcmeCorp",
+            "Holdings",
+            "owed",
+            "40000",
+            "structuredContent",
+            "Bob",
+            "Smith",
+        ] {
+            assert!(!out.contains(leak), "{leak}: {out}");
+        }
+        assert!(out.contains(r#""name":"mcp__crm__q""#), "{out}");
+
+        // Codex's shell call: the environment's variable names.
+        let shell = r#"{"type":"response_item","payload":{"type":"local_shell_call","call_id":"c9","action":{"type":"exec","command":["make"],"env":{"ACME_SECRET_TOKEN_NAME":"x"}}}}"#;
+        let out = s.jsonl(shell);
+        assert!(!out.contains("ACME") && !out.contains("SECRET"), "{out}");
+        assert!(out.contains(r#""call_id":"c9""#), "{out}");
+
+        // Outside data, a key with a space or an address in it is text.
+        let envelope = r#"{"type":"user","jane.doe@clientbank.com":1,"Jane Doe":2,"uuid":"u"}"#;
+        let out = s.jsonl(envelope);
+        for leak in ["jane", "Jane", "clientbank", "@"] {
+            assert!(!out.contains(leak), "{leak}: {out}");
+        }
+        assert!(out.contains(r#""uuid":"u""#), "{out}");
+
+        // What the readers take from data stays: task ids as numbers and as
+        // strings, statuses, the plan's keys.
+        let task = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t3","name":"TaskUpdate","input":{"taskId":12,"status":"completed","addBlockedBy":[3,"4"]}}]},"toolUseResult":{"task":{"id":12,"subject":"x"}}}"#;
+        let v: Value = serde_json::from_str(s.jsonl(task).trim_end()).unwrap();
+        let input = &v["message"]["content"][0]["input"];
+        assert_eq!(input["taskId"], 12);
+        assert_eq!(input["status"], "completed");
+        assert_eq!(input["addBlockedBy"], serde_json::json!([3, "4"]));
+        assert_eq!(v["toolUseResult"]["task"]["id"], 12);
+    }
+
+    /// A masked key that spells one already in the object must not replace
+    /// it: both values survive.
+    #[test]
+    fn a_masked_key_never_overwrites_another() {
+        // A salt and a two-letter word that masks to `id` under it.
+        let words: Vec<String> = (b'a'..=b'z')
+            .flat_map(|a| (b'a'..=b'z').map(move |b| String::from_utf8(vec![a, b]).unwrap()))
+            .collect();
+        let (s, clash) = (0..64)
+            .map(|salt| Scrub::new(salt, None))
+            .find_map(|s| {
+                let w = words
+                    .iter()
+                    .find(|w| *w != "id" && s.word(w) == "id")?
+                    .clone();
+                Some((s, w))
+            })
+            .expect("some two-letter word masks to `id`");
+        let line = format!(r#"{{"type":"tool_result","content":{{"id":"1","{clash}":"2"}}}}"#);
+        let v: Value = serde_json::from_str(&s.json(&line)).unwrap();
+        let content = v["content"].as_object().unwrap();
+        assert_eq!(content.len(), 2, "{content:?}");
+        assert_eq!(content["id"], "1");
     }
 
     #[test]
