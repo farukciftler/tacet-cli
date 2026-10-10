@@ -736,3 +736,319 @@ fn generation_driven_by_the_mask_always_yields_valid_json() {
         "the schema rejected it: {output}"
     );
 }
+
+// ------------------------------------------------- an open field has to end
+
+/// A digit sequence the grammar cannot be talked out of: the measured runaways
+/// of audit L25 were `0.` + 200 000 digits and `1e-` + 200 000 zeros, both
+/// still open before `MAX_FRACTION_DIGITS` and `MAX_EXPONENT_DIGITS` existed.
+#[test]
+fn a_number_has_a_last_digit() {
+    use crate::state::{MAX_EXPONENT_DIGITS, MAX_FRACTION_DIGITS};
+    let free = ArgSchema::object(vec![Field::new("n", ArgSchema::number()).required()]);
+    let g = grammar(&free);
+
+    let full = format!(r#"{{"n":0.{}"#, "1".repeat(MAX_FRACTION_DIGITS));
+    let mut d = g.state();
+    d.advance(&full).expect("the bound itself is writable");
+    let allowed = d.allowed_prefixes();
+    assert!(
+        !allowed.chars().any(|c| c.is_ascii_digit()),
+        "a digit past the fraction bound opened: {allowed:?}"
+    );
+    assert!(allowed.contains('}') && allowed.contains('e'));
+    assert!(!accepts(&free, &format!("{full}1}}")));
+    assert!(accepts_and_is_json(&free, &format!("{full}}}")));
+
+    let exponent = format!(r#"{{"n":1e-{}"#, "0".repeat(MAX_EXPONENT_DIGITS));
+    let mut d = g.state();
+    d.advance(&exponent).expect("the bound itself is writable");
+    assert!(!d.allowed_prefixes().chars().any(|c| c.is_ascii_digit()));
+    assert!(accepts_and_is_json(&free, &format!("{exponent}}}")));
+    assert!(!accepts(&free, &format!("{exponent}1}}")));
+
+    // The integer part has no constant of its own: representability bounds it.
+    let integer = ArgSchema::object(vec![Field::new("n", ArgSchema::integer()).required()]);
+    let mut d = grammar(&integer).state();
+    d.advance(r#"{"n":12345678901234567890"#)
+        .expect("20 digits under u64::MAX");
+    assert!(!d.allowed_prefixes().chars().any(|c| c.is_ascii_digit()));
+}
+
+/// The fraction bound must never cut off a value a RANGE holds: a bounded
+/// number refuses the exponent, so plain decimal is its only spelling. Every
+/// f64 below is written the way Rust prints it — plain decimal, shortest
+/// round-trip — and must be producible in a range a few ulps either side of it.
+///
+/// NOT THE POINT RANGE `[x, x]`, and that is a measurement, not a softening:
+/// the grammar now compares the value `serde_json` will hand the tool, and
+/// `serde_json` rounds a 17-digit mantissa twice, so `0.000…22250738585074237`
+/// (x = 2.2250738585074237e-308) comes back one ulp off x. In `[x, x]` the
+/// VALIDATOR refuses that spelling as out of range, so the grammar refusing it
+/// too is the agreement this crate is for. A range one ulp wide is not a shape
+/// any tool declares; the four ulps here are the margin that keeps this test
+/// about the digit bound rather than about rounding.
+#[test]
+fn every_f64_a_range_can_hold_is_still_writable_in_plain_decimal() {
+    use crate::state::MAX_FRACTION_DIGITS;
+    let mut longest = 0;
+    let mut values = vec![
+        5e-324,
+        f64::MIN_POSITIVE,
+        f64::MIN_POSITIVE * 1.000_000_000_000_1,
+        1.234_567_89e-310,
+        2.2e-300,
+        0.1,
+        1.0 / 3.0,
+        123.456,
+    ];
+    // A spread of subnormals, where the fewest leading digits are saved.
+    let mut bits = 1u64;
+    while bits < f64::MIN_POSITIVE.to_bits() {
+        values.push(f64::from_bits(bits));
+        bits = bits * 3 + 7;
+    }
+    for x in values {
+        let text = format!("{x}");
+        let digits = text.split_once('.').map_or(0, |(_, f)| f.len());
+        longest = longest.max(digits);
+        assert!(digits <= MAX_FRACTION_DIGITS, "{x:e} needs {digits} digits");
+        let lo = f64::from_bits(x.to_bits().saturating_sub(4));
+        let hi = f64::from_bits(x.to_bits() + 4);
+        let near = ArgSchema::object(vec![
+            Field::new("n", ArgSchema::number().range(Some(lo), Some(hi))).required(),
+        ]);
+        let call = format!(r#"{{"n":{text}}}"#);
+        assert!(
+            accepts(&near, &call),
+            "the range around {x:e} cannot write {text}"
+        );
+        let value: serde_json::Value = serde_json::from_str(&call).expect("JSON");
+        assert!(near.validate(&value).is_ok(), "validate disagrees on {x:e}");
+    }
+    // MEASURED: the longest plain spelling in this set is 5e-324's, 324
+    // fraction digits — the figure `MAX_FRACTION_DIGITS` is set above.
+    assert_eq!(longest, 324);
+}
+
+/// A run of zeros under a SUBNORMAL lower bound must be cut while a nonzero
+/// digit can still reach the bound, not left open until the fraction bound
+/// turns it into a dead end. Found by review: `[5e-324, 1]` with `0.` and 399
+/// zeros left the mask empty and `is_done()` false, because the reach
+/// `10^-d` was clamped at `1e-308` and so never fell below a subnormal `lo`.
+///
+/// The walk is the adversarial one: a `0` whenever the mask offers it, then the
+/// close, and only then the smallest digit. Every prefix it visits is one the
+/// mask offered, so every one of them must have a way out.
+#[test]
+fn a_subnormal_bound_never_strands_a_run_of_zeros() {
+    let ranges = [
+        (5e-324, 1.0),
+        (1e-310, 1.0),
+        (1.234_567_89e-310, 1.0),
+        (f64::MIN_POSITIVE, 1.0),
+        (-1.0, -5e-324),
+        (-1.0, -1e-310),
+        (-1.0, -1.234_567_89e-310),
+        (-1.0, -f64::MIN_POSITIVE),
+    ];
+    for (lo, hi) in ranges {
+        let schema = ArgSchema::object(vec![
+            Field::new("n", ArgSchema::number().range(Some(lo), Some(hi))).required(),
+        ]);
+        let g = grammar(&schema);
+        let mut d = g.state();
+        let mut text = String::from(if lo < 0.0 {
+            r#"{"n":-0."#
+        } else {
+            r#"{"n":0."#
+        });
+        d.advance(&text).expect("the start of the walk is legal");
+        for _ in 0..600 {
+            if d.is_done() {
+                break;
+            }
+            let allowed = d.allowed_prefixes();
+            assert!(
+                !allowed.is_empty(),
+                "[{lo:e}, {hi:e}]: the mask is empty after {} characters of {text:.40}…",
+                text.len()
+            );
+            let next = ['0', '}']
+                .into_iter()
+                .find(|&c| allowed.contains(c))
+                .or_else(|| allowed.chars().next())
+                .expect("a non-empty mask offers a character");
+            d.advance(&next.to_string()).expect("the mask offered it");
+            text.push(next);
+        }
+        assert!(d.is_done(), "[{lo:e}, {hi:e}]: the walk never closed");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("JSON");
+        assert!(
+            schema.validate(&value).is_ok(),
+            "[{lo:e}, {hi:e}]: the walk closed on a value validate refuses: {text}"
+        );
+    }
+}
+
+/// An array the schema leaves open still has a last item (audit L25: 100 001
+/// elements were still open before `ARRAY_CEILING`).
+#[test]
+fn an_unbounded_array_has_a_last_item() {
+    use crate::state::ARRAY_CEILING;
+    let open = ArgSchema::object(vec![
+        Field::new("xs", ArgSchema::array(ArgSchema::bool())).required(),
+    ]);
+    let items = vec!["true"; ARRAY_CEILING].join(",");
+    let mut d = grammar(&open).state();
+    d.advance(&format!(r#"{{"xs":[{items}"#))
+        .expect("the ceiling itself is writable");
+    let allowed = d.allowed_prefixes();
+    assert!(!allowed.contains(','), "a comma past the ceiling opened");
+    assert!(allowed.contains(']'));
+    assert!(accepts_and_is_json(
+        &open,
+        &format!(r#"{{"xs":[{items}]}}"#)
+    ));
+    assert!(!accepts(&open, &format!(r#"{{"xs":[{items},true]}}"#)));
+
+    // A declared bound is the schema's word and stays exactly as it was ...
+    let declared = ArgSchema::object(vec![
+        Field::new(
+            "xs",
+            ArgSchema::array(ArgSchema::bool()).length(None, Some(ARRAY_CEILING + 5)),
+        )
+        .required(),
+    ]);
+    let more = vec!["true"; ARRAY_CEILING + 5].join(",");
+    assert!(accepts(&declared, &format!(r#"{{"xs":[{more}]}}"#)));
+    // ... and a declared MINIMUM above the ceiling raises it, so the array can
+    // still close: without that the schema would have no valid array at all.
+    let floor = ARRAY_CEILING + 3;
+    let at_least = ArgSchema::object(vec![
+        Field::new(
+            "xs",
+            ArgSchema::array(ArgSchema::bool()).length(Some(floor), None),
+        )
+        .required(),
+    ]);
+    let exactly = vec!["true"; floor].join(",");
+    assert!(accepts_and_is_json(
+        &at_least,
+        &format!(r#"{{"xs":[{exactly}]}}"#)
+    ));
+    assert!(!accepts(
+        &at_least,
+        &format!(r#"{{"xs":[{exactly},true]}}"#)
+    ));
+}
+
+/// `validator_value`'s fast path must give the tool layer's answer, bit for
+/// bit, on every shape on either side of its lines (15 digits, ±22 net power of
+/// ten, 18 integer digits). The one difference allowed is the documented one:
+/// a refusal where Rust already rounds to infinity.
+#[test]
+fn the_fast_path_and_the_validator_agree() {
+    use crate::state::validator_value;
+    let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+    let mut digit = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        char::from(b'0' + (seed % 10) as u8)
+    };
+    let exponents = [
+        None,
+        Some(-330i32),
+        Some(-24),
+        Some(-23),
+        Some(-22),
+        Some(-1),
+        Some(0),
+        Some(7),
+        Some(22),
+        Some(23),
+        Some(290),
+        Some(307),
+        Some(308),
+        Some(309),
+    ];
+    let mut texts: Vec<String> = Vec::new();
+    for int_len in 1..=21usize {
+        for frac_len in [0usize, 1, 2, 7, 13, 14, 15, 16, 17, 22, 23] {
+            for exp in exponents {
+                for _ in 0..3 {
+                    let mut t = String::new();
+                    let first = digit();
+                    t.push(if int_len > 1 && first == '0' {
+                        '1'
+                    } else {
+                        first
+                    });
+                    for _ in 1..int_len {
+                        t.push(digit());
+                    }
+                    if frac_len > 0 {
+                        t.push('.');
+                        for _ in 0..frac_len {
+                            t.push(digit());
+                        }
+                    }
+                    if let Some(e) = exp {
+                        t.push_str(&format!("e{e}"));
+                    }
+                    texts.push(format!("-{t}"));
+                    texts.push(t);
+                }
+            }
+        }
+    }
+    let edge = format!("17976931348623157{}", "0".repeat(292));
+    for t in [
+        "0",
+        "-0",
+        "0.0",
+        "-0.0",
+        "18446744073709551615",
+        "18446744073709551616",
+        "-9223372036854775808",
+        "-9223372036854775809",
+        "999999999999999999",
+        "-999999999999999999",
+        "1.7976931348623157e308",
+        "1.7976931348623158e308",
+        edge.as_str(),
+    ] {
+        texts.push(t.to_string());
+    }
+    let mut narrowed = 0;
+    for text in &texts {
+        for is_integer in [false, true] {
+            if is_integer && text.contains(['.', 'e']) {
+                continue;
+            }
+            let fast = validator_value(text, is_integer, true);
+            let exact = ArgSchema::json_number_value(text, is_integer);
+            // Unbounded, only the yes/no is read — and it must be the same.
+            let open = validator_value(text, is_integer, false);
+            assert_eq!(
+                open.is_some(),
+                fast.is_some(),
+                "{text}: the unbounded verdict differs"
+            );
+            if fast.map(f64::to_bits) == exact.map(f64::to_bits) {
+                continue;
+            }
+            assert!(
+                fast.is_none() && text.parse::<f64>().is_ok_and(f64::is_infinite),
+                "{text} (integer: {is_integer}): fast path {fast:?}, the tool layer {exact:?}"
+            );
+            narrowed += 1;
+        }
+    }
+    // MEASURED: 19 417 spellings, and the infinity refusal decided none of
+    // them differently — it is a shortcut to the same answer here, and this
+    // says so rather than leaving it to be assumed.
+    assert!(texts.len() > 19_000, "the table collapsed: {}", texts.len());
+    assert_eq!(narrowed, 0);
+}

@@ -79,14 +79,27 @@
 //! MEASURED ON THIS MACHINE (M-series, macOS arm64, debug `cargo test`):
 //! 96 generated schemas x 4 walks = 384 walks over vocabularies of 61 to 82
 //! tokens, one `mask` + one `mask_with_terminator` + one FULL advance sweep of
-//! the vocabulary at every step. Walks ran 14.4 tokens on average and 60 at the
-//! longest (5,529 tokens over the 384). The refusal test walks each schema once
-//! more and then mutates that witness 2,426 + 858 ways. The seven tests together
-//! are 5.3s in one thread, of which the exhaustive number-prefix search at the
+//! the vocabulary at every step. Walks ran 15.8 tokens on average and 70 at the
+//! longest (6,080 tokens over the 384). The refusal test walks each schema once
+//! more and then mutates that witness 2,538 + 885 ways. The ten tests together
+//! are 8.7s in one thread, of which the exhaustive number-prefix search at the
 //! bottom is the bulk — so the budget goes almost entirely to the one part that
 //! is exhaustive rather than sampled, which is the right place for it. (These
-//! figures moved when `escape_bonus` was added: before it, 14.0 tokens, 54 at
-//! the longest, 2,411 truncating mutants.)
+//! figures moved twice: when `escape_bonus` was added — before it, 14.0 tokens,
+//! 54 at the longest, 2,411 truncating mutants — and when audit M15/M16 put
+//! escaped literals in the pools and the `-0` steer in the walk: before that,
+//! 14.4 tokens, 60 at the longest, 2,426 + 858 mutants. The number search went
+//! from 5.5s to 8.0s on this machine when the number checks started asking the
+//! tool layer's own parser; that is debug-build iterator cost, see `range_fits`
+//! for the release figure.)
+//!
+//! AND THE SWEEP HAS A LONG FORM. `a_long_sweep_never_disagrees_with_the_tool_layer`
+//! is `#[ignore]`d and runs the same walk over 200 000 walks — the size of the
+//! fuzz that found `-0` (audit M16). Run it before touching `state.rs`:
+//!
+//! ```text
+//! cargo test --release -p tacet-grammar --test grammar_property -- --ignored
+//! ```
 //!
 //! The three sweep tests take a DISJOINT THIRD of the seed table each — the same
 //! driver, the same assertions, different schemas — so the table is covered
@@ -278,15 +291,24 @@ impl Xorshift64Star {
 /// decision. `üst` is here on purpose — `CompiledField::name_chars` is a
 /// `Vec<char>`, and a name whose first character is multi-byte is the test of
 /// that being chars and not bytes.
-const NAME_POOL: [&str; 10] = [
-    "a", "an", "and", "count", "counter", "c", "query", "q", "name", "üst",
+///
+/// `a\b` (a real backslash) is here since audit M15: a key is compiled to its
+/// JSON SPELLING (`a\\b`), and a pool without an escape in it never asked
+/// whether the automaton and `serde_json` read that spelling the same way.
+const NAME_POOL: [&str; 11] = [
+    "a", "an", "and", "count", "counter", "c", "query", "q", "name", "üst", r"a\b",
 ];
 
-/// Enum values, also prefix-colliding. No `"` and no `\`: compile.rs records
-/// that a choice containing one becomes unproducible on purpose, so putting one
-/// here would generate a schema the grammar is DESIGNED to reject rather than a
-/// schema it is wrong about.
-const CHOICE_POOL: [&str; 6] = ["all", "allow", "al", "near", "n", "on"];
+/// Enum values, also prefix-colliding.
+///
+/// THIS POOL USED TO EXCLUDE `"` AND `\`, with a note that compile.rs made such
+/// a choice "unproducible on purpose". That note was the defect (audit M15):
+/// `C:\temp` came out of the grammar as `C:<TAB>emp` and `a"b` stranded the
+/// model. Values are now compiled to their JSON spelling, so both kinds are in
+/// the pool — `C:\t` is the one that used to decode to a TAB, and `a"b` shares
+/// its first letter with `all`/`allow`/`al` so the escape sits inside a live
+/// prefix race.
+const CHOICE_POOL: [&str; 8] = ["all", "allow", "al", "near", "n", "on", r"C:\t", r#"a"b"#];
 
 /// Number bounds. Every entry is inhabited, and every entry with `is_integer`
 /// contains an integer — a range like (0.5, 0.7) on an integer, or min > max,
@@ -457,11 +479,16 @@ fn vocabulary(schema: &ArgSchema) -> Vec<String> {
             set.insert(c.to_string());
         }
         if !literal.is_empty() {
+            // Both the RAW literal and its JSON SPELLING: the raw one is what a
+            // tokenizer that learned `C:\t` would offer (and the grammar must
+            // close it), the spelled one is what the grammar must open.
             set.insert(literal.clone());
+            let spelled = render_string(literal);
+            set.insert(spelled[1..spelled.len() - 1].to_string());
         }
     }
     for name in &names {
-        set.insert(format!("\"{name}\":"));
+        set.insert(format!("{}:", render_string(name)));
     }
     for t in [
         "{\"", "\":", "\":\"", "\"}", "\"},", ",\"", "}]", "}}", "\"})", ")", "[]", "[{", "]}",
@@ -702,12 +729,20 @@ struct Census {
     /// Walks that reached `StringStage::Hex` — i.e. wrote `\u` and then had to
     /// satisfy `hex_fits` for four digits, surrogate pairing included.
     unicode_escapes: usize,
+    /// Walks that wrote a `-` where a number starts, and so stood at the one
+    /// position where `-0` is decided.
+    negative_numbers: usize,
+    /// Walks that then wrote `0` right after it — legal in a NUMBER field
+    /// (-0.0 is a number), and since audit M16 never offered in an INTEGER one.
+    minus_zero: usize,
 }
 
 impl Census {
     fn absorb(&mut self, other: &Census) {
         self.escapes += other.escapes;
         self.unicode_escapes += other.unicode_escapes;
+        self.negative_numbers += other.negative_numbers;
+        self.minus_zero += other.minus_zero;
     }
 }
 
@@ -737,6 +772,15 @@ fn walk_with_census(seed: u64, schema: &ArgSchema) -> (String, Census) {
     let mut last_was_escape = false;
     // Hex digits still owed in the `\u` escape being written, 4 down to 0.
     let mut hex_left = 0usize;
+    // THE SAME TREATMENT FOR `-0`, and for the same reason: this sweep was green
+    // while the grammar closed on `-0` in an integer field, a disagreement the
+    // audit's 200 000-walk fuzz hit 15 287 times (M16). The sampler prices `-`
+    // and `0` like any other digit, and the multi-character `-1` token outbids
+    // both in the open phase, so the one two-step path that decides it was
+    // rarely walked. One `-` then one `0` is FORCED per walk where the grammar
+    // offers them — the mask still decides whether they are legal.
+    let mut owed_minus = true;
+    let mut last_was_minus = false;
 
     loop {
         let trace = Trace {
@@ -843,6 +887,18 @@ fn walk_with_census(seed: u64, schema: &ArgSchema) -> (String, Census) {
                 0
             }
         };
+        // The `-0` steer (see `owed_minus`). A `-` straight after `e` is an
+        // exponent's sign, not a number's, and is left to the scoring.
+        let after_exponent = output.ends_with(['e', 'E']);
+        let minus_bonus = |text: &str| -> i64 {
+            if (owed_minus && !in_body && !after_exponent && text == "-")
+                || (last_was_minus && text == "0")
+            {
+                1 << 20
+            } else {
+                0
+            }
+        };
         for (id, next) in &accepted {
             let text = &vocab[*id];
             let mut chars = text.chars();
@@ -855,7 +911,8 @@ fn walk_with_census(seed: u64, schema: &ArgSchema) -> (String, Census) {
                 (true, _, _) => -2000,
                 _ => score(text, next, spaced),
             } + (rng.draw() % 7) as i64
-                + escape_bonus(text);
+                + escape_bonus(text)
+                + minus_bonus(text);
             if s > best_score {
                 best_score = s;
                 best.clear();
@@ -887,6 +944,14 @@ fn walk_with_census(seed: u64, schema: &ArgSchema) -> (String, Census) {
         // backslash cannot be anything else: a multi-character token whose last
         // character is `\` leaves the automaton owing an escape too.
         last_was_escape = text.ends_with('\\');
+        if last_was_minus && text == "0" {
+            census.minus_zero += 1;
+        }
+        last_was_minus = !in_body && !after_exponent && text == "-";
+        if last_was_minus {
+            census.negative_numbers += 1;
+            owed_minus = false;
+        }
         spaced = text.chars().all(char::is_whitespace);
         state
             .advance(&text)
@@ -937,10 +1002,12 @@ fn sweep(seeds: &[u64]) -> (usize, Census) {
 
 /// The non-vacuity floor for one third of the seed table.
 ///
-/// MEASURED on this machine over the whole table (384 walks): 33 walks entered a
-/// string escape from the body, and 43 `\u` escapes were opened — more than 33
+/// MEASURED on this machine over the whole table (384 walks): 22 walks entered a
+/// string escape from the body, and 23 `\u` escapes were opened — more than 22
 /// because the digits are steered into the high-surrogate block and a pair opens
-/// a second `\u` for its low half. Per third: 15, 9 and 19. It is not higher
+/// a second `\u` for its low half. Per third: 8, 6 and 9. (33 and 43, per third
+/// 15, 9 and 19, before the pools gained escaped literals in audit M15 — the
+/// schema stream shifted, the floor below did not need to.) It is not higher
 /// because a walk can only escape inside a free string body and most generated
 /// schemas never put it in one; forcing more would mean biasing the SCHEMA
 /// generator, which is a different measurement. The floor is set below the
@@ -948,9 +1015,21 @@ fn sweep(seeds: &[u64]) -> (usize, Census) {
 /// the ZERO this file measured before `escape_bonus` existed does.
 const MIN_UNICODE_ESCAPES_PER_THIRD: usize = 3;
 
+/// The same floor for the `-0` steer. MEASURED: 8, 36 and 8 walks per third
+/// stood at a number's minus sign, and 1, 8 and 8 of them then wrote `-0` in a
+/// NUMBER field, where it is legal. Set below the smallest third, for the
+/// reason the escape floor gives.
+const MIN_NEGATIVE_NUMBERS_PER_THIRD: usize = 4;
+
 /// The assertion every sweep test makes about its own coverage.
 fn assert_not_vacuous(seeds: &[u64], witnesses: usize, census: &Census) {
     assert_eq!(witnesses, seeds.len() * WALKS_PER_SCHEMA as usize);
+    assert!(
+        census.negative_numbers >= MIN_NEGATIVE_NUMBERS_PER_THIRD,
+        "only {} of {witnesses} walks stood at a number's minus sign; the `-0` decision \
+         (audit M16) was then never put to the per-step assertions",
+        census.negative_numbers
+    );
     assert!(
         census.unicode_escapes >= MIN_UNICODE_ESCAPES_PER_THIRD,
         "only {} of {witnesses} walks reached a \\u escape ({} entered any escape at all). \
@@ -985,6 +1064,38 @@ fn the_terminator_opens_the_call_close_and_nothing_after_it() {
     let seeds = &SCHEMA_SEEDS[2 * THIRD..];
     let (witnesses, census) = sweep(seeds);
     assert_not_vacuous(seeds, witnesses, &census);
+}
+
+/// How many schemas the long sweep generates; four walks each makes the
+/// 200 000 walks of the fuzz that found `-0` in an integer field (audit M16).
+const LONG_SWEEP_SCHEMAS: usize = 50_000;
+
+/// THE SAME PROPERTY AT THE SIZE THAT FOUND THE LAST DEFECT. The 384 walks
+/// above are a budget for every `cargo test`; the audit's 200 000-walk fuzz was
+/// what found the one disagreement they missed, 15 287 times. This keeps that
+/// size runnable and DETERMINISTIC — the schema seeds come from a fixed
+/// xorshift stream, not a clock — so "the long sweep is green" is a statement
+/// anyone can re-derive.
+///
+/// MEASURED (M-series, release, 9 Oct 2026): 200 000 walks in 37.8s, every one
+/// parsed by `serde_json` and accepted by `conforms` and `validate`. 30 136 of
+/// them stood at a number's minus sign and 9 674 went on to write `-0` in a
+/// NUMBER field; none wrote it in an integer one.
+#[test]
+#[ignore = "200 000 walks; run with --release -- --ignored before touching state.rs"]
+fn a_long_sweep_never_disagrees_with_the_tool_layer() {
+    let mut stream = Xorshift64Star::new(0x00C0_FFEE_D15A_6EE5);
+    let seeds: Vec<u64> = (0..LONG_SWEEP_SCHEMAS).map(|_| stream.draw()).collect();
+    let (witnesses, census) = sweep(&seeds);
+    assert_eq!(witnesses, LONG_SWEEP_SCHEMAS * WALKS_PER_SCHEMA as usize);
+    // The floors scale with the table; a long sweep that stopped reaching the
+    // two steered positions would be a long way of measuring nothing.
+    assert!(census.unicode_escapes >= MIN_UNICODE_ESCAPES_PER_THIRD * 100);
+    assert!(census.negative_numbers >= MIN_NEGATIVE_NUMBERS_PER_THIRD * 100);
+    eprintln!(
+        "LONGSWEEP walks={witnesses} escapes={} unicode={} negative={} minus_zero={}",
+        census.escapes, census.unicode_escapes, census.negative_numbers, census.minus_zero
+    );
 }
 
 // ---------------------------------------------------------------- refusal
@@ -1332,12 +1443,13 @@ fn every_mutation_of_an_accepted_call_is_refused_at_a_named_index() {
     // collapse of the corpus does.
     assert!(
         truncations >= 2_300 && refusals >= 800,
-        "the corpus collapsed: {truncations} truncations (2426 on this seed table), \
-         {refusals} refusals (858)"
+        "the corpus collapsed: {truncations} truncations (2538 on this seed table), \
+         {refusals} refusals (885)"
     );
-    // MEASURED: exactly 1 of the 859 mutants came out still-conforming and was
-    // skipped, so the table really is producing invalid calls rather than
-    // accidentally valid ones. The bound is a floor, not that number, because a
+    // MEASURED: 0 of the 885 mutants came out still-conforming and was skipped
+    // (1 of 859 before the escaped literals joined the pools in audit M15), so
+    // the table really is producing invalid calls rather than accidentally
+    // valid ones. The bound is a floor, not that number, because a
     // schema-shape change may legitimately move it by a few.
     assert!(
         skipped * 4 < refusals,
@@ -1569,17 +1681,20 @@ fn a_number_too_large_for_f64_cannot_be_generated() {
     // these, which is what makes "ask Rust's parse for finiteness" the RULE and
     // not an approximation of it. Underflow needs no rule — `1e-400` is 0.0 to
     // both of them, and neither complains.
-    for good in [
-        "1e308",
-        "1.5e308",
-        "1e-400",
-        "1e-31212121212121212",
-        long_ok.as_str(),
-    ] {
+    for good in ["1e308", "1.5e308", "1e-400", "1e-0400", long_ok.as_str()] {
         let text = format!(r#"{{"n":{good}}}"#);
         assert!(accepts(&free, &text), "must stay producible: {good}");
         serde_json::from_str::<Value>(&text).unwrap_or_else(|e| panic!("{good}: {e}"));
     }
+    // ONE SPELLING THIS TEST USED TO DEMAND, NOW REFUSED ON PURPOSE. Both sides
+    // read `1e-31212121212121212` as 0.0, and it stayed producible until the
+    // audit (L25) measured what that meant: an exponent with no digit bound is a
+    // path with no obligation to end — `1e-` and 200 000 zeros was still open.
+    // The exponent now stops at four digits (`MAX_EXPONENT_DIGITS`); 0.0 is
+    // still writable as `0`, and `1e-0400` above shows the padding that is left.
+    let underflow = r#"{"n":1e-31212121212121212}"#;
+    assert!(!accepts(&free, underflow), "the exponent's digit bound");
+    assert!(serde_json::from_str::<Value>(underflow).is_ok());
     for bad in [
         "1e309",
         "1e400",
