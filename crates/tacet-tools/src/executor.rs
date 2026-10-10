@@ -48,6 +48,7 @@
 //! drop it, only a real new turn resets it.
 
 use serde_json::Value;
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -1679,6 +1680,12 @@ pub const TOOL_THREAD_PREFIX: &str = "tool:";
 /// A PROCESS-WIDE SIDE EFFECT, which is why `ToolExecutor::new` does not do it
 /// for you: a library constructor that rewires the panic hook surprises every
 /// test binary that links it.
+///
+/// The hook is silent for one more case: a panic raised inside `quietly`, on
+/// any thread. That is how a reader called WITHOUT a tool — `--from`,
+/// `/resume-from`, `tacet handoff`, on the shell's or `main`'s own thread —
+/// keeps the same promise (RG-04 review: before this, `catch_unwind` caught
+/// the unwind but std's hook had already printed the payload).
 pub fn quiet_tool_panics() {
     static INSTALLED: std::sync::Once = std::sync::Once::new();
     INSTALLED.call_once(|| {
@@ -1687,11 +1694,38 @@ pub fn quiet_tool_panics() {
             let on_a_tool_thread = std::thread::current()
                 .name()
                 .is_some_and(|name| name.starts_with(TOOL_THREAD_PREFIX));
-            if !on_a_tool_thread {
+            // `try_with`: a panic while this thread's locals are being torn
+            // down must still reach a hook, not panic inside it.
+            let quiet_here = QUIET.try_with(Cell::get).unwrap_or(false);
+            if !on_a_tool_thread && !quiet_here {
                 previous(info);
             }
         }));
     });
+}
+
+thread_local! {
+    /// Set while `quietly` runs a call on this thread.
+    static QUIET: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Runs `call` with its panics kept off the screen by the hook
+/// `quiet_tool_panics` installs. It does not catch anything: the caller's
+/// `catch_unwind` does that, and must hold the error message itself.
+///
+/// A THREAD FLAG, NOT A THREAD NAME: the callers this exists for run on
+/// `main` or the shell's thread, whose other panics — Tacet's own bugs — must
+/// still reach the screen. The flag is restored on the way out, unwinding
+/// included, so a panic after the call is printed again.
+pub fn quietly<T>(call: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = QUIET.try_with(|q| q.set(self.0));
+        }
+    }
+    let _restore = Restore(QUIET.with(|q| q.replace(true)));
+    call()
 }
 
 #[cfg(test)]

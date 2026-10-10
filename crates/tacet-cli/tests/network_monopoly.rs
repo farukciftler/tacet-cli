@@ -431,6 +431,11 @@ const RUNTIME_SPAWN_SITES: &[(&str, &str)] = &[
         "a macOS-only test: the fixed path `/usr/bin/osascript`, pure date arithmetic",
     ),
     (
+        "tacet-tools/tests/a_guarded_panic_stays_off_the_screen.rs",
+        "`current_exe()`, the test binary itself, re-run on one test so a panic hook can be \
+         installed in a process of its own (RG-04)",
+    ),
+    (
         "tacet-cli/tests/the_nightly_script_names_real_flags.rs",
         "a test helper called with the literals `git` and `bash`, inside a temp repository",
     ),

@@ -196,8 +196,19 @@ pub struct ReaderPanicked;
 ///
 /// The payload is dropped, not shown: it may quote the foreign line that
 /// caused it, and that line is somebody else's text on the user's terminal.
+/// Dropping it HERE only keeps it out of the error message; std's panic hook
+/// runs before the unwind reaches `catch_unwind` and prints it to stderr.
+/// The call therefore runs under `executor::quietly`, which the hook
+/// `quiet_tool_panics` installs in the binary honours — measured in
+/// `tests/a_guarded_panic_stays_off_the_screen.rs`, where without it the
+/// payload is on the child's stderr. The price: a bug of Tacet's own inside the call
+/// (`tacet handoff` guards its whole subcommand) is silent too, and only the
+/// caller's error sentence says something stopped.
 pub fn guarded<T>(call: impl FnOnce() -> T) -> Result<T, ReaderPanicked> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(call)).map_err(|_| ReaderPanicked)
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::executor::quietly(call)
+    }))
+    .map_err(|_| ReaderPanicked)
 }
 
 /// What a listing found, and the folders whose reader panicked on the way.
@@ -709,30 +720,46 @@ impl Imported {
 /// `--from` calls this before any tool runs, and one malformed line must cost
 /// the user an error message, not the shell.
 pub fn import(roots: &SessionRoots, agent: AgentKind, id: &str) -> Result<Imported, String> {
-    import_from(agent, id, || read_session(roots, agent, id))
+    import_from(
+        agent,
+        id,
+        || read_session(roots, agent, id),
+        Imported::from_read,
+    )
 }
 
-/// `import` with the read passed in, so a test can hand it one that panics.
+impl Imported {
+    /// The digest, the fenced seed and the transcript of one read session.
+    fn from_read(read: SessionRead) -> Self {
+        let digest = Digest::of(&read);
+        let seed = seed_text(&digest);
+        let transcript = transcript_text(&read.session);
+        Imported {
+            digest,
+            seed,
+            transcript,
+        }
+    }
+}
+
+/// `import` with the read and the digest step passed in, so a test can hand
+/// it either one panicking.
 ///
 /// THE DIGEST IS INSIDE THE GUARD TOO, not only the read: `Digest::of` and
 /// `transcript_text` walk the same foreign text (titles, tool arguments, file
 /// names) and clip it by characters, and a panic there ends the shell exactly
-/// as one in the parser would.
+/// as one in the parser would. No input is known to make them panic, which is
+/// why `build` is a parameter: the test that holds it inside the guard needs
+/// one that does.
 fn import_from(
     agent: AgentKind,
     id: &str,
     read: impl FnOnce() -> Result<SessionRead, SessionError>,
+    build: impl FnOnce(SessionRead) -> Imported,
 ) -> Result<Imported, String> {
     guarded(|| {
         let read = read().map_err(|e| e.to_string())?;
-        let digest = Digest::of(&read);
-        let seed = seed_text(&digest);
-        let transcript = transcript_text(&read.session);
-        Ok(Imported {
-            digest,
-            seed,
-            transcript,
-        })
+        Ok(build(read))
     })
     .map_err(|ReaderPanicked| {
         format!(
@@ -1742,14 +1769,19 @@ mod tests {
     /// production path: `import` is `import_from` with the real read.
     #[test]
     fn a_reader_that_panics_while_importing_is_an_error_not_a_crash() {
-        let got = import_from(AgentKind::Codex, "0199d3a1", || {
-            Panics(AgentKind::Codex)
-                .read(Path::new("/nonexistent"), "0199d3a1")
-                .map(|session| SessionRead {
-                    session,
-                    warnings: Vec::new(),
-                })
-        });
+        let got = import_from(
+            AgentKind::Codex,
+            "0199d3a1",
+            || {
+                Panics(AgentKind::Codex)
+                    .read(Path::new("/nonexistent"), "0199d3a1")
+                    .map(|session| SessionRead {
+                        session,
+                        warnings: Vec::new(),
+                    })
+            },
+            Imported::from_read,
+        );
         let Err(message) = got else {
             panic!("a panicking reader imported something");
         };
@@ -1764,11 +1796,41 @@ mod tests {
 
         let roots = SessionRoots::Only(vec![fixtures(AgentKind::ClaudeCode)]);
         let id = "11111111-0000-4000-8000-111111111111";
-        let ok = import_from(AgentKind::ClaudeCode, id, || {
-            read_session(&roots, AgentKind::ClaudeCode, id)
-        })
+        let ok = import_from(
+            AgentKind::ClaudeCode,
+            id,
+            || read_session(&roots, AgentKind::ClaudeCode, id),
+            Imported::from_read,
+        )
         .expect("the same seam with the real read imports");
         assert_eq!(ok.digest.id, id);
+    }
+
+    /// RG-04 review: the read succeeds and the step after it — the digest,
+    /// the seed, the transcript, all walking foreign text — panics. That is
+    /// an error too, which holds `build` inside the guard and not after it.
+    #[test]
+    fn a_digest_that_panics_after_a_good_read_is_an_error_not_a_crash() {
+        let roots = SessionRoots::Only(vec![fixtures(AgentKind::ClaudeCode)]);
+        let id = "11111111-0000-4000-8000-111111111111";
+        let read_ran = std::cell::Cell::new(false);
+        let got = import_from(
+            AgentKind::ClaudeCode,
+            id,
+            || {
+                read_ran.set(true);
+                read_session(&roots, AgentKind::ClaudeCode, id)
+            },
+            |_| panic!("the digest met a title no version of this reader has seen"),
+        );
+        assert!(read_ran.get(), "the read never ran, so this proves nothing");
+        let Err(message) = got else {
+            panic!("a panicking digest imported something");
+        };
+        assert!(
+            message.contains("could not parse") && !message.contains("no version of this reader"),
+            "{message}"
+        );
     }
 
     fn spawns_in(text: &str) -> Vec<&'static str> {

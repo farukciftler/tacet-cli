@@ -924,33 +924,41 @@ fn the_git_actions_the_page_lists_are_the_tools() {
 /// comparator's first design and was replaced on purpose, because refusing
 /// threw away 164 sound cases to avoid 20 unsound ones (eval_cmd.rs). The
 /// guard reads every refusal the page attributes to `--compare` to the end of
-/// its clause, and the warning the comparator really prints.
+/// its SENTENCE, and the warning the comparator really prints.
+///
+/// To the sentence, not the clause: a first version stopped at the first
+/// comma, and "`--compare` refuses, when catalogs differ, to pair two
+/// different models" passed it (review of 10 Oct 2026). The misstatements the
+/// guard has been shown to miss or catch are checked below as well, so a
+/// rewrite of the scan that goes blind to one fails here.
 #[test]
 fn the_page_says_compare_leaves_out_what_a_differing_catalog_touches() {
     let page = prose(&read("README.md"));
-    let sentences: Vec<&str> = page
-        .split(". ")
-        .filter(|s| s.contains("--compare"))
-        .collect();
-    let mut refusals = 0;
-    for sentence in &sentences {
-        let lower = sentence.to_lowercase();
-        let mut rest = lower.as_str();
-        while let Some(at) = rest.find("refus") {
-            let clause = rest[at..].split([',', ';', ':']).next().unwrap_or_default();
-            refusals += 1;
-            assert!(
-                !clause.contains("catalog") && !clause.contains("tool"),
-                "README.md says `--compare` refuses on a catalog difference; it leaves \
-                 those cases out and pairs the rest: …{clause}…"
-            );
-            rest = &rest[at + "refus".len()..];
-        }
-    }
+    let (refusals, wrong) = compare_refusals(&page);
+    assert!(
+        wrong.is_empty(),
+        "README.md says `--compare` refuses on a catalog difference; it leaves those \
+         cases out and pairs the rest: {wrong:#?}"
+    );
     assert!(
         refusals >= 1,
         "no refusal attributed to `--compare` was found — the scan stopped matching"
     );
+    for misstated in [
+        "`--compare` refuses two runs whose tool sets differ. Next.",
+        "`--compare` refuses, when catalogs differ, to pair two different models. Next.",
+        "`--compare` refuses to pair two different models, and runs whose catalogs differ. Next.",
+        "`--compare` refuses to pair two models and two catalogs. Next.",
+    ] {
+        assert!(
+            !compare_refusals(misstated).1.is_empty(),
+            "the scan no longer sees a misstatement: {misstated}"
+        );
+    }
+    let sentences: Vec<&str> = page
+        .split(". ")
+        .filter(|s| s.contains("--compare"))
+        .collect();
     assert!(
         sentences.iter().any(|s| {
             let s = s.to_lowercase();
@@ -967,4 +975,37 @@ fn the_page_says_compare_leaves_out_what_a_differing_catalog_touches() {
         "eval_cmd.rs no longer excludes on a catalog difference — the README sentence \
          this test guards must change with it"
     );
+}
+
+/// How many refusals `prose` attributes to `--compare`, and those that are
+/// about a catalog.
+///
+/// From each "refus" to the end of its sentence, split at ", and " / "; " into
+/// clauses. The refusal's own clause may not mention a catalog or a tool at
+/// all; a later clause may, only when it is the one that says what happens
+/// instead ("leaves out", "exclud"). The true sentence is exactly that shape:
+/// "refuses to pair two different models, and when the catalogs differ it
+/// leaves out every case that touches a tool one side lacked".
+fn compare_refusals(prose: &str) -> (usize, Vec<String>) {
+    let about_catalog = |c: &str| c.contains("catalog") || c.contains("tool");
+    let says_instead = |c: &str| c.contains("leaves out") || c.contains("exclud");
+    let mut refusals = 0;
+    let mut wrong = Vec::new();
+    for sentence in prose.split(". ").filter(|s| s.contains("--compare")) {
+        let lower = sentence.to_lowercase();
+        let mut rest = lower.as_str();
+        while let Some(at) = rest.find("refus") {
+            refusals += 1;
+            let tail = &rest[at..];
+            let mut clauses = tail.split(", and ").flat_map(|c| c.split("; "));
+            let own = clauses.next().unwrap_or_default();
+            let misstated =
+                about_catalog(own) || clauses.any(|c| about_catalog(c) && !says_instead(c));
+            if misstated {
+                wrong.push(tail.to_string());
+            }
+            rest = &rest[at + "refus".len()..];
+        }
+    }
+    (refusals, wrong)
 }
