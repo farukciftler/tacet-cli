@@ -306,6 +306,99 @@ fn the_smoke_check_builds_the_binary_it_measures() {
     );
 }
 
+/// THE `--print-features` ANSWER IS COMPARED, AND A WRONG ONE STOPS THE RUN.
+///
+/// The test above checks that the question is asked. Review replaced the
+/// comparison with `if false` and it stayed green: a script that asks and
+/// ignores the answer reads the same to a text search. So this one runs the
+/// script. A copy sits in a temp tree (its `cd "$REPO"` lands there, not in
+/// this checkout); `HOME` points into the temp dir, and the script's own
+/// `PATH="$HOME/.cargo/bin:$PATH"` puts stub `cargo` and `jq` first, which
+/// report a stub `tacet` built with whatever features `STUB_FEATURES` says.
+/// The model directory does not exist, so a run that gets past the check
+/// stops at "no model.gguf" without measuring anything — which is also why
+/// the exit code alone (127 both ways) cannot tell the two paths apart and the
+/// `measuring` line is what is asserted. Unix only: the script is bash.
+#[cfg(unix)]
+#[test]
+fn a_binary_with_the_wrong_features_is_not_measured() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let root =
+        std::env::temp_dir().join(format!("tacet-smoke-feat-{}-{nanos}", std::process::id()));
+    let stubs = root.join("home/.cargo/bin");
+    std::fs::create_dir_all(root.join("scripts")).expect("temp dir");
+    std::fs::create_dir_all(&stubs).expect("temp dir");
+    std::fs::write(root.join("scripts/smoke.sh"), read("scripts/smoke.sh")).expect("copy");
+    let tacet = root.join("tacet");
+    let log = root.join("tacet.log");
+    let stub = |path: &Path, body: String| {
+        std::fs::write(path, body).expect("stub");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    };
+    stub(
+        &tacet,
+        format!(
+            "#!/bin/sh\necho \"$*\" >> '{}'\n\
+             [ \"$1\" = --print-features ] && echo \"$STUB_FEATURES\"\nexit 0\n",
+            log.display()
+        ),
+    );
+    stub(
+        &stubs.join("cargo"),
+        format!(
+            "#!/bin/sh\necho '{{\"reason\":\"compiler-artifact\",\"executable\":\"{}\"}}'\n",
+            tacet.display()
+        ),
+    );
+    stub(
+        &stubs.join("jq"),
+        format!("#!/bin/sh\ncat >/dev/null\necho '{}'\n", tacet.display()),
+    );
+
+    let run = |reported: &str| {
+        let out = Command::new("bash")
+            .arg(root.join("scripts/smoke.sh"))
+            .arg(root.join("no-such-model-dir"))
+            .current_dir(&root)
+            .env("HOME", root.join("home"))
+            .env("TACET_SMOKE_FEATURES", "candle")
+            .env("STUB_FEATURES", reported)
+            .env_remove("TACET_SMOKE_SCRIPT")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .output()
+            .expect("bash runs");
+        String::from_utf8_lossy(&out.stderr).to_string()
+    };
+
+    // The control: the right answer gets past the check. Without it a script
+    // that failed for any other reason would satisfy the assertion below.
+    let right = run("candle");
+    assert!(
+        right.contains("measuring ") && right.contains("no model.gguf"),
+        "a binary reporting the expected features was not let through: {right}"
+    );
+
+    let wrong = run("metal");
+    assert!(
+        wrong.contains("reports features 'metal', expected 'candle'")
+            && !wrong.contains("measuring "),
+        "a binary reporting the wrong features was measured anyway: {wrong}"
+    );
+    let calls = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        !calls.contains("chat"),
+        "the stub tacet was sent a message: {calls}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// THE SEAM IS `+x`, NOT `:-`.
 ///
 /// An emptiness test here sends the EMPTY-ANSWER case — one of the five — to

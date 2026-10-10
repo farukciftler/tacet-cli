@@ -133,6 +133,61 @@ impl Job {
     fn text(&self) -> String {
         self.lines.join("\n")
     }
+
+    /// Why this job might not stop anything: a soft `continue-on-error` or any
+    /// `if:` on the job itself. Empty means it gates.
+    fn loopholes(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.key("continue-on-error").iter().any(|v| is_soft(v)) {
+            out.push(format!("job {:?} has continue-on-error", self.name));
+        }
+        if let Some(condition) = self.key("if").first() {
+            out.push(format!("job {:?} runs only `if: {condition}`", self.name));
+        }
+        out
+    }
+}
+
+/// SOFT IS ANYTHING BUT A LITERAL `false`. GitHub honours `continue-on-error`
+/// on the job and on the step, and either turns a failed check into a green
+/// tick. `${{ … }}` and `'true'` are soft too — the first version of the M27
+/// guard compared against `true` alone and a quoted `"true"` walked past it.
+fn is_soft(value: &str) -> bool {
+    value.trim().trim_matches(['\'', '"']) != "false"
+}
+
+/// The value of one of a step's own keys (`if:`, `continue-on-error:`), on
+/// whichever line of the step carries it — `- if:` opens a step as often as
+/// `- run:` does.
+fn step_key(step: &[String], key: &str) -> Option<String> {
+    let prefix = format!("{key}:");
+    step.iter().find_map(|l| {
+        l.trim()
+            .trim_start_matches("- ")
+            .strip_prefix(&prefix)
+            .map(|v| v.trim().to_string())
+    })
+}
+
+/// Why this step might not stop anything, as `Job::loopholes` for a job.
+///
+/// ANY `if:`, NOT ONLY ONE NAMING AN EVENT. The adversarial review put
+/// `if: github.event_name == 'push'` on the supply-chain and candle jobs and
+/// `if: always()` on `publish`; each left its guard green. Telling a harmless
+/// condition from one that skips the gate on a pull request means evaluating
+/// GitHub's expression language, and a guard that half-does that is the guard
+/// that gets talked past. No gate here needs a condition today, so none may
+/// have one: a future gate that genuinely does will fail this, and that is the
+/// moment somebody should read it.
+fn step_loopholes(step: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    if step_key(step, "continue-on-error").is_some_and(|v| is_soft(&v)) {
+        out.push(format!("step has continue-on-error: {step:?}"));
+    }
+    if let Some(condition) = step_key(step, "if") {
+        out.push(format!("step runs only `if: {condition}`: {step:?}"));
+    }
+    out
 }
 
 fn jobs(text: &str) -> Vec<Job> {
@@ -169,7 +224,13 @@ fn job<'a>(all: &'a [Job], name: &str) -> &'a Job {
 /// The shell source of every `run:` in the file: the inline value, or the
 /// block under `run: |`.
 fn run_blocks(text: &str) -> Vec<String> {
-    let lines = settings(text);
+    let out = runs_in(&settings(text));
+    assert!(!out.is_empty(), "no `run:` was found");
+    out
+}
+
+/// `run_blocks` over any slice of lines — one step's, for instance.
+fn runs_in(lines: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim_start().trim_start_matches("- ");
@@ -186,7 +247,32 @@ fn run_blocks(text: &str) -> Vec<String> {
         );
         out.push(block.join("\n"));
     }
-    assert!(!out.is_empty(), "no `run:` was found");
+    out
+}
+
+/// Every (job, step) whose shell runs `command`, with what might stop that
+/// step from gating: its own loopholes and its job's. A gate holds when at
+/// least one of them has none.
+///
+/// A WHOLE COMMAND LINE, NOT A SUBSTRING: `cargo test --workspace` is a prefix
+/// of the candle `--no-run` compile, and a substring match let a soft test
+/// step hide behind a hard compile step. Arguments after ` -- ` go to the tool
+/// (`cargo fmt --all -- --check`) and still count as running the gate.
+fn runners_of(all: &[Job], command: &str) -> Vec<(String, Vec<String>)> {
+    let runs = |line: &str| {
+        let line = line.trim();
+        line == command || line.starts_with(&format!("{command} -- "))
+    };
+    let mut out = Vec::new();
+    for job in all {
+        for step in job.steps() {
+            if runs_in(&step).iter().any(|r| r.lines().any(runs)) {
+                let mut loopholes = job.loopholes();
+                loopholes.extend(step_loopholes(&step));
+                out.push((job.name.clone(), loopholes));
+            }
+        }
+    }
     out
 }
 
@@ -307,8 +393,9 @@ fn a_release_is_published_only_after_its_tests_pass() {
         !testers.is_empty(),
         "no job in release.yml runs `cargo test --workspace` on the tagged commit"
     );
-    let needs = job(&all, "publish").key("needs").join(" ");
-    for tester in testers {
+    let publish = job(&all, "publish");
+    let needs = publish.key("needs").join(" ");
+    for tester in &testers {
         assert!(
             needs
                 .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
@@ -318,6 +405,23 @@ fn a_release_is_published_only_after_its_tests_pass() {
             tester.name
         );
     }
+
+    // NEEDING THE JOB IS NOT ENOUGH; THE JOB HAS TO BE ABLE TO FAIL. The first
+    // version stopped at `needs`, and an adversarial review kept it green
+    // three ways while a red test still published: `continue-on-error: true`
+    // on `verify`, the same on its `cargo test --workspace` step, and
+    // `if: always()` on `publish` — which runs it whatever its needs did.
+    let gating = runners_of(&all, "cargo test --workspace");
+    assert!(
+        gating.iter().any(|(_, loopholes)| loopholes.is_empty()),
+        "every job that tests the tagged commit can let a failure through: {gating:?}"
+    );
+    assert!(
+        publish.key("if").is_empty(),
+        "publish carries `if: {}`; `always()`, `failure()` or `cancelled()` there runs \
+         it whatever the tests did, and no condition here is needed",
+        publish.key("if").join(" ")
+    );
 }
 
 /// M27 — THE CHECKS ONLY THIS REPOSITORY CAN BREAK ARE A HARD GATE.
@@ -341,27 +445,21 @@ fn the_supply_chain_checks_this_repository_can_break_are_a_hard_gate() {
                         .map(|c| c.trim().to_string())
                 })
                 .unwrap_or_else(|| "check".to_string());
-            // SOFT AT EITHER LEVEL. GitHub honours `continue-on-error` on the
-            // job and on the step, and either one turns a failed check into a
-            // green tick. The first version of this guard read only the job
-            // key; an adversarial review put `continue-on-error: true` on the
-            // cargo-deny-action STEP of the gating job and this test stayed
-            // green while a `git =` dependency would have merged. Anything but
-            // a literal `false` counts — `${{ … }}` and `'true'` are soft too.
-            let is_soft = |v: &str| v.trim().trim_matches(['\'', '"']) != "false";
-            let at_job = j.key("continue-on-error").iter().any(|v| is_soft(v));
-            let at_step = j
+            // SOFT AT EITHER LEVEL, AND CONDITIONAL COUNTS AS SOFT. The first
+            // version of this guard read only the job's `continue-on-error`;
+            // review put it on the cargo-deny-action STEP and the test stayed
+            // green. The second missed `if: github.event_name == 'push'` on
+            // the job, which stops the gate running on the pull requests it
+            // exists to stop. A check that may not run gates nothing.
+            let mut loopholes = j.loopholes();
+            for step in j
                 .steps()
                 .iter()
                 .filter(|s| s.iter().any(|l| l.contains("cargo-deny-action")))
-                .flatten()
-                .any(|l| {
-                    l.trim()
-                        .trim_start_matches("- ")
-                        .strip_prefix("continue-on-error:")
-                        .is_some_and(is_soft)
-                });
-            (j.name.clone(), command, at_job || at_step)
+            {
+                loopholes.extend(step_loopholes(step));
+            }
+            (j.name.clone(), command, !loopholes.is_empty())
         })
         .collect();
     assert!(!deny.is_empty(), "ci.yml runs cargo-deny nowhere");
@@ -389,6 +487,42 @@ fn the_supply_chain_checks_this_repository_can_break_are_a_hard_gate() {
         deny.iter().any(|(_, c, _)| checks(c, "advisories")),
         "advisories are no longer checked at all: {deny:?}"
     );
+
+    // THE OTHER HALF OF THE README'S SENTENCE. It says `unknown-git` and
+    // `unknown-registry` are hard failures; a gating job only makes that true
+    // if deny.toml still says `deny`. With `unknown-git = "warn"` the workflow
+    // half above stayed green and nothing else read the file, so the claim
+    // could go false under a passing suite. Read by line, like everything
+    // here: a section header, then `key = value`.
+    let mut section = String::new();
+    let mut found: Vec<(String, String)> = Vec::new();
+    for line in read("deny.toml").lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            section = line.trim_matches(['[', ']']).to_string();
+        } else if let Some((key, value)) = line.split_once('=') {
+            found.push((
+                format!("{section}.{}", key.trim()),
+                value.trim().to_string(),
+            ));
+        }
+    }
+    for key in [
+        "sources.unknown-git",
+        "sources.unknown-registry",
+        "bans.wildcards",
+    ] {
+        let values: Vec<&String> = found
+            .iter()
+            .filter(|(k, _)| k == key)
+            .map(|(_, v)| v)
+            .collect();
+        assert!(
+            values == ["\"deny\""],
+            "deny.toml `{key}` must be exactly \"deny\" — the README calls it a hard \
+             failure — and is {values:?}"
+        );
+    }
 }
 
 /// M28 + D17 — EVERY GATE CONTRIBUTING LISTS AND SAYS CI RUNS, CI RUNS.
@@ -427,12 +561,24 @@ fn every_gate_contributing_lists_runs_on_a_pull_request() {
             .any(|l| l.trim().trim_end_matches(':') == "pull_request"),
         "ci.yml no longer runs on pull requests"
     );
-    let commands = run_blocks(&ci).join("\n");
-    let missing: Vec<&String> = gates.iter().filter(|g| !commands.contains(*g)).collect();
-    assert!(
-        missing.is_empty(),
-        "CONTRIBUTING lists {missing:?} as a gate, but no step in ci.yml runs it"
-    );
+    // RUNNING IT IS NOT GATING ON IT. This first checked only that the command
+    // text appeared in some `run:`; review put `continue-on-error: true` and,
+    // separately, `if: github.event_name == 'push'` on `candle-compiles` and it
+    // stayed green both times — the candle compile could stop failing a pull
+    // request, or stop running on one, under a passing test.
+    let all = jobs(&ci);
+    for gate in &gates {
+        let runners = runners_of(&all, gate);
+        assert!(
+            !runners.is_empty(),
+            "CONTRIBUTING lists `{gate}` as a gate, but no step in ci.yml runs it"
+        );
+        assert!(
+            runners.iter().any(|(_, loopholes)| loopholes.is_empty()),
+            "ci.yml runs `{gate}`, but nowhere that a failure stops a pull request: \
+             {runners:?}"
+        );
+    }
 }
 
 /// L32 — NO `${{ }}` FROM AN INPUT OR AN EVENT IS PASTED INTO SHELL SOURCE.
@@ -530,4 +676,24 @@ fn the_release_builds_from_nothing() {
         !text.contains("rust-cache"),
         "release.yml restores a build cache that another branch's run may have written"
     );
+    // NOT ONLY THE ONE NAMED rust-cache. `actions/cache` restoring `target/` or
+    // `~/.cargo` is the same poisoning with a different spelling, and this
+    // guard read only the first one. Any action with `cache` in its name, and
+    // any `cache…:` input switching one on inside another action.
+    for line in text.lines() {
+        let setting = line.trim().trim_start_matches("- ");
+        if let Some(action) = setting.strip_prefix("uses:") {
+            assert!(
+                !action.to_ascii_lowercase().contains("cache"),
+                "release.yml uses `{}`, a cache another branch's run may have written",
+                action.trim()
+            );
+        }
+        if let Some((key, value)) = setting.split_once(':') {
+            assert!(
+                !key.trim().to_ascii_lowercase().starts_with("cache") || !is_soft(value),
+                "release.yml switches on a cache with `{setting}`"
+            );
+        }
+    }
 }

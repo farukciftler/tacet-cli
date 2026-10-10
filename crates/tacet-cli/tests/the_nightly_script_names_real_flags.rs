@@ -333,6 +333,25 @@ fn the_journal_directory_survives_midnight_and_tells_edits_apart() {
         "an untracked file changed the build and not the journal"
     );
 
+    // AND ON A CLEAN TRACKED TREE. The step above runs with `a.txt` already
+    // edited, so the hash path is taken for that reason alone; review dropped
+    // the untracked-file test from DIRTY and this stayed green. The case it
+    // missed is the common one: a clean commit plus a new `tests/*.rs` or
+    // `src/bin/*.rs`, which cargo discovers by itself and builds.
+    std::fs::write(repo.join("a.txt"), "committed\n").expect("restore");
+    let untracked_only = run_dir("20261011");
+    assert!(
+        untracked_only != before_midnight && untracked_only.contains("-dirty"),
+        "a clean commit plus one untracked file shares the clean commit's \
+         journal: {untracked_only}"
+    );
+    std::fs::remove_file(repo.join("new_module.rs")).expect("remove");
+    assert_eq!(
+        run_dir("20261011"),
+        before_midnight,
+        "with the tree back at the commit, the commit's own journal must come back"
+    );
+
     assert!(
         !home.join(".tacet").exists(),
         "--print-run-dir must touch nothing, and it created {}",
