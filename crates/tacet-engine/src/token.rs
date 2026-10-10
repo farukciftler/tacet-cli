@@ -208,6 +208,22 @@ pub const MIN_ANSWER: usize = 256;
 /// everywhere past these 512 tokens.
 pub const CONVERSATION_KEPT: usize = 512;
 
+/// The fewest tokens of a question truncation may send — or the whole
+/// question, if it is shorter than this.
+///
+/// A CUT QUESTION BELOW THIS IS NOT THE USER'S QUESTION (review of L21, third
+/// pass). With the fixed part a few tokens under `prompt_ceiling()`, the
+/// last-resort cut kept whatever was left: on a 4096 window,
+/// "what is in this folder?" reached the model as "?" under a 3808-token
+/// system block and as "" under 3810 and 3812, with `fit` returning Ok. A
+/// model handed a word or a punctuation mark answers a question nobody
+/// asked, and the user is told only that the question was "cut". Eight is a
+/// short instruction ("now make it a markdown table" is eleven), so a cut
+/// that keeps this much still reads as a request; one that cannot is refused,
+/// with the same message as a fixed part over the ceiling, because it is the
+/// same situation a few tokens earlier.
+pub const MIN_QUESTION_KEPT: usize = 8;
+
 /// The average BYTES per token — 5/2 = 2.5; since it is fractional, numerator
 /// and denominator are kept apart.
 ///
@@ -258,9 +274,11 @@ pub struct TruncationReport {
     /// The estimated token count after truncation.
     pub final_estimate: usize,
     /// The part truncation may not touch — system block, tool descriptions,
-    /// note, memory — leaves less than `MIN_ANSWER` of the window ON ITS OWN
-    /// (it is over `prompt_ceiling()`). The question was left whole and the
-    /// prompt does not fit; the turn cannot run (see `fit`).
+    /// note, memory — leaves no room for the conversation: it is over
+    /// `prompt_ceiling()` on its own, or so close under it that the question
+    /// could keep fewer than `MIN_QUESTION_KEPT` tokens, or the history none
+    /// of its turns. The question and history were left whole and the prompt
+    /// does not fit; the turn cannot run (see `fit`).
     pub fixed_part_too_large: bool,
 }
 
@@ -412,6 +430,14 @@ impl TokenCounter {
             .prompt_cap()
             .max(ceiling.min(fixed + CONVERSATION_KEPT));
         let mut report = TruncationReport::default();
+        // On the tool loop's second pass the question lives in the history
+        // and the question field is empty; kept so that dropping EVERY turn
+        // can be undone (see below). A clone of a few kilobytes per turn.
+        let whole_history = prompt
+            .question
+            .trim()
+            .is_empty()
+            .then(|| prompt.history.clone());
 
         // 1) Drop old turns from the front.
         while self.prompt_estimate(prompt) > target && !prompt.history.is_empty() {
@@ -423,6 +449,20 @@ impl TokenCounter {
         if self.prompt_estimate(prompt) > target && prompt.guide.is_some() {
             prompt.guide = None;
             report.guide_dropped = true;
+        }
+
+        // A CONVERSATION DROPPED TO NOTHING IS NOT A TURN (review of L21, third
+        // pass). With no question and the fixed part a few tokens under the
+        // ceiling, step 1 dropped every turn and the prompt "fit": on a 4096
+        // window a 3792-token system block sent the model its instructions and
+        // nothing to answer. The turns go back, and the prompt is refused
+        // unless the whole of it fits the ceiling after all.
+        if let Some(history) = whole_history.filter(|h| !h.is_empty()) {
+            if prompt.history.is_empty() {
+                prompt.history = history;
+                report.dropped_turns = 0;
+                return self.undone(prompt, report);
+            }
         }
 
         // 3) Last resort: truncate the question. THE END is preserved — the
@@ -454,11 +494,35 @@ impl TokenCounter {
             }
             let original = std::mem::take(&mut prompt.question);
             let kept = self.longest_tail(prompt, &original, target);
-            prompt.question = from_last_bytes(&original, kept);
+            let tail = from_last_bytes(&original, kept);
+            // A FIXED PART JUST UNDER THE CEILING is the same failure a few
+            // tokens earlier: `fixed` is measured with no question, and an
+            // empty question renders without its user fence, so the check
+            // above passed while not even a short question could join it.
+            // Measured on a 4096 window with "what is in this folder?": a
+            // 3802-token system block sent " in this folder?", 3808 sent "?",
+            // 3810 and 3812 sent "". See `MIN_QUESTION_KEPT`.
+            let floor = Self::estimate(&original).min(MIN_QUESTION_KEPT);
+            if !original.is_empty() && Self::estimate(&tail) < floor {
+                prompt.question = original;
+                return self.undone(prompt, report);
+            }
+            prompt.question = tail;
             report.question_truncated = prompt.question.len() < original.len();
         }
 
         report.final_estimate = self.prompt_estimate(prompt);
+        report
+    }
+
+    /// The end of a truncation that would have left the model nothing to
+    /// answer and was put back: the conversation is whole again, and the
+    /// fixed part is reported as too large unless the whole prompt fits the
+    /// ceiling anyway (then it is sent as it is — the target was an aim, the
+    /// ceiling is the limit).
+    fn undone(&self, prompt: &Prompt, mut report: TruncationReport) -> TruncationReport {
+        report.final_estimate = self.prompt_estimate(prompt);
+        report.fixed_part_too_large = report.final_estimate > self.prompt_ceiling();
         report
     }
 
@@ -504,9 +568,11 @@ impl TokenCounter {
     /// them: it truncated and never validated, so a prompt whose fixed part was
     /// over the cap went to the model with its question cut to nothing and a
     /// generation cap reaching past the window (audit L21, second pass). After
-    /// `truncate` the only prompt left over the cap is one whose system block,
-    /// tools, note and memory are over it alone; no amount of history or
-    /// question removal helps it, and the error says how far over it is.
+    /// `truncate` the only prompt left over the ceiling is one whose system
+    /// block, tools, note and memory leave the conversation no room — over it
+    /// alone, or near enough that only a fragment of the question or none of
+    /// the history would fit. Truncation puts the conversation back whole in
+    /// that case, so the error measures the prompt the user actually sent.
     pub fn fit(&self, prompt: &mut Prompt) -> crate::error::EngineResult<TruncationReport> {
         let report = self.truncate(prompt);
         self.validate(prompt)?;
@@ -899,6 +965,113 @@ mod budget_tests {
             );
             assert_eq!(estimate + cap, declared, "the cap is the real room");
         }
+    }
+
+    /// A system block of exactly `tokens` estimated tokens: "word " is two at
+    /// the prose ratio and a trailing "x" rounds up to one more.
+    fn system_of(tokens: usize) -> String {
+        let mut system = "word ".repeat(tokens / 2);
+        if tokens % 2 == 1 {
+            system.push('x');
+        }
+        assert_eq!(TokenCounter::estimate(&system), tokens);
+        system
+    }
+
+    /// THE BAND JUST UNDER THE CEILING (review of L21, third pass). The
+    /// refusal fired only for a fixed part OVER the ceiling; a fixed part at
+    /// or a few tokens under it passed that check, and then the question was
+    /// cut to whatever was left — measured on a 4096 window with "what is in
+    /// this folder?": system 3808 sent "?", 3810 and 3812 sent "" and `fit`
+    /// returned Ok. An empty question renders without its user fence, so
+    /// `fixed` was under the ceiling while no question at all could join it.
+    /// Every size in the band either refuses or sends a question the model
+    /// can read: never empty, never fewer than `MIN_QUESTION_KEPT` tokens of
+    /// it (or the whole of a shorter one).
+    ///
+    /// SIXTY TOKENS UNDER THE CEILING, not twenty: the band is measured in
+    /// SYSTEM tokens, and the three templates' fences put the fixed part ~30
+    /// over the system block, so a sweep of the last twenty never reached
+    /// it and passed on the broken code. The counts at the end make the
+    /// sweep prove it crossed from sent to refused.
+    #[test]
+    fn a_fixed_part_just_under_the_ceiling_never_sends_a_question_cut_to_nothing() {
+        let counter = TokenCounter::new(4096, GENERATION_SHARE);
+        let ceiling = counter.prompt_ceiling();
+        for question in [
+            "what is in this folder?",
+            "hi",
+            "now turn the list above into a markdown table, sorted by size",
+        ] {
+            let floor = TokenCounter::estimate(question).min(MIN_QUESTION_KEPT);
+            let (mut sent, mut refused) = (0, 0);
+            for system_tokens in ceiling - 60..=ceiling {
+                let mut prompt = Prompt::new(system_of(system_tokens), question);
+                match counter.fit(&mut prompt) {
+                    Ok(report) => {
+                        let kept = &prompt.question;
+                        assert!(
+                            !kept.is_empty() && question.ends_with(kept.as_str()),
+                            "system {system_tokens}: sent {kept:?} of {question:?} ({report:?})"
+                        );
+                        assert!(
+                            TokenCounter::estimate(kept) >= floor,
+                            "system {system_tokens}: sent {kept:?} of {question:?}, \
+                             under {floor} tokens"
+                        );
+                        assert!(!report.fixed_part_too_large);
+                        assert!(counter.prompt_estimate(&prompt) <= ceiling);
+                        sent += 1;
+                    }
+                    Err(crate::error::EngineError::BudgetExceeded { measured, budget }) => {
+                        assert_eq!(prompt.question, question, "refused, but cut first");
+                        assert!(measured > budget && budget == ceiling);
+                        refused += 1;
+                    }
+                    Err(other) => panic!("system {system_tokens}: {other}"),
+                }
+            }
+            assert!(
+                sent > 0 && refused > 0,
+                "{question:?}: the sweep did not cross the edge ({sent} sent, {refused} refused)"
+            );
+        }
+    }
+
+    /// The same band on the tool loop's second pass, where the question lives
+    /// in the history and the question field is empty. Dropping turns until
+    /// the prompt fits ended, near the ceiling, with no turn left: the model
+    /// was asked to go on with a conversation it could not see.
+    #[test]
+    fn a_fixed_part_just_under_the_ceiling_never_sends_an_empty_conversation() {
+        let counter = TokenCounter::new(4096, GENERATION_SHARE);
+        let ceiling = counter.prompt_ceiling();
+        let (mut sent, mut refused) = (0, 0);
+        for system_tokens in ceiling - 60..=ceiling {
+            let history = vec![
+                Turn::user("What is 125 times 8?"),
+                Turn::assistant(r#"calculate({"expression":"125*8"})"#),
+                Turn::tool("1000"),
+            ];
+            let mut prompt = Prompt::new(system_of(system_tokens), "").with_history(history);
+            match counter.fit(&mut prompt) {
+                Ok(report) => {
+                    assert!(
+                        !prompt.history.is_empty(),
+                        "system {system_tokens}: sent with every turn dropped ({report:?})"
+                    );
+                    assert!(counter.prompt_estimate(&prompt) <= ceiling);
+                    sent += 1;
+                }
+                Err(crate::error::EngineError::BudgetExceeded { measured, budget }) => {
+                    assert_eq!(prompt.history.len(), 3, "refused, but cut first");
+                    assert!(measured > budget && budget == ceiling);
+                    refused += 1;
+                }
+                Err(other) => panic!("system {system_tokens}: {other}"),
+            }
+        }
+        assert!(sent > 0 && refused > 0, "{sent} sent, {refused} refused");
     }
 
     /// THE TOOL LOOP'S SECOND PASS ON THE FLOOR. The question has moved into
