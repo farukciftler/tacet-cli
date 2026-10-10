@@ -369,6 +369,48 @@ fn what_a_file_cannot_vouch_for_is_refused() {
         )
     );
 
+    // A subagent whose lines record its `agentId` is named after that id, and
+    // the path must agree: before, the name was the path's alone, and
+    // `agent-zeynepk-private.jsonl` was filed under it.
+    let agent_line = |agent: &str| {
+        let mut v: serde_json::Value =
+            serde_json::from_str(&claude_line("2.1.285", Some("/Users/dev/x"))).unwrap();
+        v["agentId"] = agent.into();
+        v.to_string()
+    };
+    let in_session = "p/c0000285-0000-4000-8000-000000000099/subagents";
+    assert_eq!(
+        place(
+            Path::new(&format!("{in_session}/agent-a7f3c2e1.jsonl")),
+            &agent_line("a7f3c2e1"),
+            None
+        )
+        .unwrap(),
+        Path::new(CC.slug()).join(
+            "2.1.285/projects/-Users-dev-x/c0000285-0000-4000-8000-000000000099/subagents/agent-a7f3c2e1.jsonl"
+        )
+    );
+
+    // Every file the Antigravity reader opens under `brain/<id>/` is still
+    // filed — the refusals below are about names it never opens.
+    let conversation = "a0000255-0000-4000-8000-000000000001";
+    for below in [
+        "task.md",
+        "implementation_plan.md",
+        "implementation_plan.md.metadata.json",
+        "walkthrough.md",
+        "walkthrough.md.metadata.json",
+        ".system_generated/logs/transcript_full.jsonl",
+        ".system_generated/logs/transcript.jsonl",
+    ] {
+        let rel = format!("antigravity-ide/brain/{conversation}/{below}");
+        assert_eq!(
+            place(Path::new(&format!("/h/.gemini/{rel}")), "", Some("2.5.5")).unwrap(),
+            Path::new(AG.slug()).join("2.5.5").join(&rel),
+            "{below}"
+        );
+    }
+
     // A transcript resumed across an update records both versions; filing it
     // under the first is what `every_file_records_the_version_of_its_directory`
     // catches only after the commit. The refusal names both.
@@ -527,6 +569,42 @@ fn what_a_file_cannot_vouch_for_is_refused() {
             Path::new("g/antigravity-ide/brain/a1/task.md"),
             "- [ ] x".to_string(),
             Some("latest"),
+        ),
+        (
+            "a subagent named for an agent its lines do not record",
+            Path::new(
+                "p/c0000285-0000-4000-8000-000000000099/subagents/agent-zeynepk-private.jsonl",
+            ),
+            agent_line("a7f3c2e1"),
+            None,
+        ),
+        (
+            "a subagent that records two agents",
+            Path::new("p/c0000285-0000-4000-8000-000000000099/subagents/agent-a7f3c2e1.jsonl"),
+            format!("{}\n{}", agent_line("a7f3c2e1"), agent_line("a7f3c2e2")),
+            None,
+        ),
+        (
+            "an Antigravity id that is not an id",
+            Path::new("g/antigravity-ide/brain/zeynepk notes/task.md"),
+            "- [ ] x".to_string(),
+            Some("2.5.5"),
+        ),
+        (
+            "an Antigravity file the reader never opens",
+            Path::new(
+                "g/antigravity-ide/brain/a0000255-0000-4000-8000-000000000001/zeynepk-diary.md",
+            ),
+            "- [ ] x".to_string(),
+            Some("2.5.5"),
+        ),
+        (
+            "an Antigravity log outside the logs directory",
+            Path::new(
+                "g/antigravity-ide/brain/a0000255-0000-4000-8000-000000000001/zeynepk/transcript.jsonl",
+            ),
+            "{}".to_string(),
+            Some("2.5.5"),
         ),
         (
             "a file that records nothing",

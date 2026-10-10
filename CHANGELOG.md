@@ -38,6 +38,13 @@ that fails without the fix.
   alike, and the envelopes no reader opens that hold a tool's answer (Codex's
   `mcp_tool_call_end` and `exec_command_end`, Claude Code's `progress`) are
   data. The salt comes from the OS, not the clock (RG-28).
+* `corpus_capture --into` files a capture by what it records, not by the
+  path it was copied from: a Claude Code transcript under its `sessionId`, a
+  subagent under its session and its `agentId`, and an Antigravity file only
+  when its conversation id is an id and the reader opens that file. Each name
+  used to be taken from the capturer's disk, so the unmasked home directory
+  or a file name like `zeynepk-diary.md` reached the committed corpus path
+  (RG-28).
 
 **Fixed:**
 
@@ -52,6 +59,9 @@ that fails without the fix.
   import is an error, and `tacet handoff hook` stays silent and exits 0 under
   the other agent, its panic kept off stderr (RG-04).
 * The reaped-pid test runs only where the probe can tell (RG-08).
+* `write_code` stops when the turn is stopped: its syntax check and the run
+  of the model's code end on Ctrl-C instead of running on to their 10 s
+  timeout, and a stop that lands after the last stage delivers nothing (M4).
 
 **Documents:** the README says Claude Code's SessionStart hook has never run in
 a real Claude Code (RG-21, guarded in the README as in

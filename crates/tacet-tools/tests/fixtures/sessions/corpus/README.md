@@ -45,7 +45,10 @@ The steps, for whoever does:
    `--into` derives `<agent>/<version>/…` from what the captured file
    records (`sessions::corpus::place`): Claude Code's `version` and its
    *masked* working directory, Codex's `cli_version` and the rollout's date,
-   Antigravity's root and conversation id from the input path. Antigravity
+   Antigravity's root and conversation id from the input path — the id held
+   to the reader's id shape, and the file under it to one the Antigravity
+   reader opens (`task.md`, `implementation_plan.md`, `walkthrough.md`, their
+   `.metadata.json`, `.system_generated/logs/transcript*.jsonl`). Antigravity
    records no version, so its files need `--version <v>` as well (the
    product's About box). A version that is not dotted numbers, or that the
    file contradicts, is refused, and so is a file that records two (a
@@ -54,7 +57,9 @@ The steps, for whoever does:
    built from the `sessionId` the file records, not from the input path:
    a transcript must be named `<sessionId>.jsonl`, a subagent's
    `agent-<id>.jsonl` must sit in `<sessionId>/subagents/` (its lines record
-   the parent's id), and a file whose lines record two sessions is refused.
+   the parent's id) and, when its lines record an `agentId`, be named
+   `agent-<agentId>.jsonl`; a file whose lines record two sessions or two
+   agents is refused.
    It is filed the same way, inside its session's directory. Typing the output path yourself
    (`corpus_capture <input> <output>`) still works, and is how a file with
    no layout of its own (Claude Code's `tasks/<list>/<n>.json`) is captured;

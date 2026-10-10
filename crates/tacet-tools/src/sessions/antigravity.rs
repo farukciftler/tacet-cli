@@ -75,6 +75,26 @@ const TRANSCRIPT_FALLBACK: &str = "transcript.jsonl";
 /// holds the inbox and, under the CLI root, a git repository.
 pub const ARTIFACTS: [&str; 2] = ["implementation_plan.md", "walkthrough.md"];
 
+/// Whether `below` (the components under `brain/<id>/`) names a file this
+/// reader opens. Kept beside the names it is built from so the corpus filer
+/// (`corpus::place`) cannot drift from the reader: a file the reader never
+/// opens vouches for nothing, and its name came from the capturer's disk.
+pub(super) fn reads_in_brain(below: &[&str]) -> bool {
+    match below {
+        ["task.md"] => true,
+        [name] => ARTIFACTS.iter().any(|a| {
+            *name == *a
+                || name
+                    .strip_prefix(a)
+                    .is_some_and(|rest| rest == ".metadata.json")
+        }),
+        [".system_generated", "logs", log] => {
+            *log == TRANSCRIPT_FULL || *log == TRANSCRIPT_FALLBACK
+        }
+        _ => false,
+    }
+}
+
 /// Caps. Antigravity's task logs were MEASURED up to 65 MB, so the transcript
 /// cap sits above that with room; a listing reads only the head (title, start,
 /// workspace) and the tail (latest state), never the whole file.
