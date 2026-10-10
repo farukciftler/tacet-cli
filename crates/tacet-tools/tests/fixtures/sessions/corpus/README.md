@@ -48,7 +48,10 @@ The steps, for whoever does:
    Antigravity's root and conversation id from the input path. Antigravity
    records no version, so its files need `--version <v>` as well (the
    product's About box). A version that is not dotted numbers, or that the
-   file contradicts, is refused. Typing the output path yourself
+   file contradicts, is refused, and so is a file that records two (a
+   session resumed after the agent updated itself vouches for neither). A
+   subagent's transcript is filed inside its session's directory, at
+   `<id>/subagents/`, as the agent wrote it. Typing the output path yourself
    (`corpus_capture <input> <output>`) still works, and is how a file with
    no layout of its own (Claude Code's `tasks/<list>/<n>.json`) is captured;
    it is also how the two silent mistakes are made — a transcript left under

@@ -2900,7 +2900,7 @@ mod tests {
     ///
     /// `sandbox_must_run()` is what turns every `tool_or_skip()` in this crate
     /// from a skip into a failure, and it is switched on by three lines of YAML.
-    /// Delete them — or rename the variable on one side only — and 25 tests go
+    /// Delete them — or rename the variable on one side only — and 26 tests go
     /// back to passing without measuring anything, exactly as they did before
     /// this work, with nothing anywhere going red. That figure is not asserted
     /// from memory: `the_skip_count_the_documents_quote_is_the_count_in_the_source`
@@ -2975,7 +2975,11 @@ mod tests {
             // THE CALL SHAPE, NOT THE NAME. Matching the name alone made the
             // scanner count its own matcher line and every doc comment that
             // mentions the helper — measured: 16 in this file instead of 15.
-            } else if line.starts_with("let Some(tool) =") && line.contains("tool_or_skip") {
+            // `let Some(` rather than `let Some(tool) =`: write_code's stage-1
+            // stop test binds `mut tool` to swap the interpreter, and the
+            // narrower match left it uncounted — a Linux figure one too LOW,
+            // the quiet direction, while this test stayed green.
+            } else if line.starts_with("let Some(") && line.contains("tool_or_skip()") {
                 total += 1;
                 if in_macos_fn {
                     macos_only += 1;

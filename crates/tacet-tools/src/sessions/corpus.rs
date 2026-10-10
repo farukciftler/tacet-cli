@@ -22,6 +22,7 @@
 //! It reads nothing and writes nothing: `corpus_capture --into` does both,
 //! and only on a file the person chose.
 
+use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
 use super::antigravity::ROOTS;
@@ -72,8 +73,8 @@ pub fn place(input: &Path, captured: &str, version: Option<&str>) -> Result<Path
         ));
     }
     let records = Records::of(captured);
-    if let Some(cli) = records.codex_version {
-        let cli = agreed(dotted(&cli)?, version)?;
+    if let Some(cli) = only(&records.codex_versions, name)? {
+        let cli = agreed(dotted(cli)?, version)?;
         let (_, compressed) =
             rollout_id(name).ok_or_else(|| format!("{name} is not named like a Codex rollout"))?;
         if compressed {
@@ -87,8 +88,8 @@ pub fn place(input: &Path, captured: &str, version: Option<&str>) -> Result<Path
         }
         return Ok(out);
     }
-    if let Some(recorded) = records.claude_version {
-        let recorded = agreed(dotted(&recorded)?, version)?;
+    if let Some(recorded) = only(&records.claude_versions, name)? {
+        let recorded = agreed(dotted(recorded)?, version)?;
         let cwd = records
             .cwd
             .ok_or_else(|| format!("{name}: no line records a working directory"))?;
@@ -133,6 +134,26 @@ fn dotted(version: &str) -> Result<String, String> {
         Ok(version.to_string())
     } else {
         Err(format!("{version:?} is not a version (dotted numbers)"))
+    }
+}
+
+/// The one version the file records, or `None` if it records none.
+///
+/// MORE THAN ONE IS REFUSED, not settled by the first line. A transcript
+/// resumed after the agent updated itself carries both versions, and
+/// `every_file_records_the_version_of_its_directory` holds EVERY line against
+/// the directory — so a first-wins pick passed here and broke that test only
+/// after the file was committed (measured: 2.1.285 then 2.1.293 was filed
+/// under 2.1.285). Such a file vouches for neither version on its own.
+fn only<'a>(versions: &'a BTreeSet<String>, name: &str) -> Result<Option<&'a str>, String> {
+    let mut each = versions.iter();
+    match (each.next(), each.next()) {
+        (Some(one), None) => Ok(Some(one)),
+        (None, _) => Ok(None),
+        (Some(a), Some(b)) => Err(format!(
+            "{name}: the file records versions {a} and {b}; a session resumed across an \
+             update vouches for neither alone — capture one recorded under a single version"
+        )),
     }
 }
 
@@ -183,8 +204,9 @@ fn antigravity_parts(input: &Path) -> Option<AntigravityParts<'_>> {
 /// What a captured `.jsonl` records about where it belongs.
 #[derive(Default)]
 struct Records {
-    claude_version: Option<String>,
-    codex_version: Option<String>,
+    /// Every distinct one, not the first: see `only`.
+    claude_versions: BTreeSet<String>,
+    codex_versions: BTreeSet<String>,
     cwd: Option<String>,
 }
 
@@ -198,15 +220,25 @@ impl Records {
             if v.get("type").and_then(|t| t.as_str()) == Some("session_meta")
                 && let Some(cli) = v.pointer("/payload/cli_version").and_then(|c| c.as_str())
             {
-                r.codex_version.get_or_insert_with(|| cli.to_string());
+                r.codex_versions.insert(cli.to_string());
             }
             // A Claude Code line carries its session id beside the version; a
             // `version` key alone (inside some tool's data) is not one.
             if v.get("sessionId").and_then(|s| s.as_str()).is_some() {
                 if let Some(ver) = v.get("version").and_then(|s| s.as_str()) {
-                    r.claude_version.get_or_insert_with(|| ver.to_string());
+                    r.claude_versions.insert(ver.to_string());
                 }
-                if let Some(cwd) = v.get("cwd").and_then(|s| s.as_str()) {
+                // `cwd: ""` is no working directory. It encodes to an empty
+                // name, which pushes nothing, and the file landed directly in
+                // `projects/` — measured: `claude/2.1.285/projects/c1.jsonl` —
+                // where the reader never looks (it lists `projects/<dir>/<id>.jsonl`).
+                // Any non-empty cwd encodes to a non-empty name, so this is the
+                // one place the rule needs to live.
+                if let Some(cwd) = v
+                    .get("cwd")
+                    .and_then(|s| s.as_str())
+                    .filter(|c| !c.is_empty())
+                {
                     r.cwd.get_or_insert_with(|| cwd.to_string());
                 }
             }

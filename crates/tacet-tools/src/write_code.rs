@@ -1025,7 +1025,7 @@ mod tests {
     /// panic carrying `diagnose()`. The gate is defined once, in
     /// `run_code::sandbox_must_run`, because the tests it silences are skipped
     /// by the same absent shield and must be re-enabled by the same switch:
-    /// 9 here and 16 in run_code.rs on Linux. Those two figures are DERIVED from
+    /// 10 here and 16 in run_code.rs on Linux. Those two figures are DERIVED from
     /// the source and checked against this sentence by
     /// `the_skip_count_the_documents_quote_is_the_count_in_the_source`; written
     /// out by hand they were "eight and sixteen", and sixteen was wrong. The syntax-check path
@@ -1690,6 +1690,63 @@ mod tests {
             outcome.to_model
         );
         assert!(!root.join("spinning.py").exists() && !root.join("spinning.js").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 5c) A STOP ENDS THE SYNTAX CHECK TOO (audit M4, stage 1). 5b cannot see
+    ///     this half: real code clears `node --check` / `py_compile` in
+    ///     milliseconds, so a check that ignored the stop would still pass it.
+    ///     A check that never ends is needed, and no interpreter offers one, so
+    ///     the interpreter is swapped for `yes`: handed `--check <script>` or
+    ///     `-m py_compile <script>` it prints them forever, never forks (the
+    ///     macOS profile denies `process-fork`), and lives where both shields
+    ///     let a program be read. Measured with stage 1 back on a token nobody
+    ///     holds: the call ran out the 10 s `SYNTAX_CHECK_TIMEOUT` (10.01 s on
+    ///     macOS, 10 Oct 2026); with the turn's token it ends on the stop.
+    #[cfg(unix)]
+    #[test]
+    fn a_stop_ends_the_syntax_check_and_delivers_nothing() {
+        let Some(mut tool) = tool_or_skip() else {
+            return;
+        };
+        let yes = Path::new("/usr/bin/yes");
+        assert!(yes.exists(), "the stand-in for a check that never ends");
+        let key = tool.interpreters[0].key;
+        tool.interpreters = vec![Interpreter {
+            key,
+            path: yes.to_path_buf(),
+            extension: tool.interpreters[0].extension,
+        }];
+        tool.state.new_turn();
+        let root = temp_dir("stop-check");
+        let token = CancelToken::new();
+        let mut ctx = context(&root).with_cancel_token(token.clone());
+        let stopper = {
+            let token = token.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(300));
+                token.cancel();
+            })
+        };
+        let started = std::time::Instant::now();
+        let outcome = hold(tool.run(
+            json!({"file_name": "checked", "lines": ["x = 1"]}),
+            &mut ctx,
+        ));
+        let elapsed = started.elapsed();
+        stopper.join().expect("stopper");
+
+        assert!(
+            elapsed < Duration::from_millis(300) + Duration::from_millis(1500),
+            "the stop took {elapsed:?}; the syntax check ran on to its own timeout"
+        );
+        assert_eq!(
+            outcome.state,
+            ToolState::Failed(crate::run_code::STOPPED.into()),
+            "{}",
+            outcome.to_model
+        );
+        assert!(!root.join("checked.py").exists() && !root.join("checked.js").exists());
         std::fs::remove_dir_all(&root).ok();
     }
 

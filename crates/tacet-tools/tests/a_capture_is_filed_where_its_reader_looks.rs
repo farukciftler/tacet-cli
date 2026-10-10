@@ -263,6 +263,59 @@ fn a_capture_from_a_real_home_is_filed_where_its_reader_finds_it() {
     }
 }
 
+/// A subagent's transcript, captured with its session, is filed in that
+/// session's directory: the reader lists `projects/<dir>/*.jsonl` as sessions,
+/// so one filed beside its session instead shows up as a session of its own
+/// named `agent-…`, and is missing from the session it belongs to.
+#[test]
+fn a_subagent_is_filed_inside_its_session_not_beside_it() {
+    let scratch = Scratch::new("subagent");
+    let into = scratch.0.join("corpus");
+    let id = "11111111-0000-4000-8000-111111111111";
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/sessions")
+        .join(CC.slug())
+        .join("projects/-Users-dev-demo");
+    let home = scratch.0.join("home").join(format!(".{}", CC.slug()));
+    for rel in [
+        format!("{id}.jsonl"),
+        format!("{id}/subagents/agent-a1.jsonl"),
+    ] {
+        let text = std::fs::read_to_string(fixtures.join(&rel)).unwrap();
+        let input = home.join("projects/-Users-dev-demo").join(&rel);
+        write(&input, &text);
+        let filed = place(&input, &text, None).unwrap();
+        assert_eq!(
+            filed,
+            Path::new(CC.slug())
+                .join("2.1.285/projects/-Users-dev-demo")
+                .join(&rel)
+        );
+        write(&into.join(&filed), &text);
+    }
+    let root = into.join(CC.slug()).join("2.1.285");
+    let listed: Vec<String> = ClaudeSource::with_probe(dead)
+        .discover_for_cwd(&root, Path::new("/Users/dev/demo"))
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    assert_eq!(
+        listed,
+        vec![id.to_string()],
+        "the subagent was listed as a session"
+    );
+    assert_eq!(
+        shape(CC, &root, id),
+        shape(
+            CC,
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/sessions")
+                .join(CC.slug()),
+            id
+        )
+    );
+}
+
 /// Nothing a file records becomes a directory unless it is the shape it
 /// claims, and a version the file does not record is not filed under.
 #[test]
@@ -292,7 +345,68 @@ fn what_a_file_cannot_vouch_for_is_refused() {
             .join("2.1.285/projects/-Users-dev-x/c0000285-0000-4000-8000-000000000099.jsonl")
     );
 
+    // The same version on every line is one version, not two.
+    let twice = format!(
+        "{}\n{}",
+        claude_line("2.1.285", Some("/Users/dev/x")),
+        claude_line("2.1.285", Some("/Users/dev/x"))
+    );
+    assert_eq!(place(transcript, &twice, None).unwrap(), ok);
+
+    // A subagent's transcript goes in its session's directory, beside the
+    // session — the one component `place` takes from the input path rather
+    // than the file.
+    let subagent = place(
+        Path::new("p/c0000285-0000-4000-8000-000000000099/subagents/agent-x.jsonl"),
+        &claude_line("2.1.285", Some("/Users/dev/x")),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        subagent,
+        Path::new(CC.slug()).join(
+            "2.1.285/projects/-Users-dev-x/c0000285-0000-4000-8000-000000000099/subagents/agent-x.jsonl"
+        )
+    );
+
+    // A transcript resumed across an update records both versions; filing it
+    // under the first is what `every_file_records_the_version_of_its_directory`
+    // catches only after the commit. The refusal names both.
+    let resumed = format!(
+        "{}\n{}",
+        claude_line("2.1.285", Some("/Users/dev/x")),
+        claude_line("2.1.293", Some("/Users/dev/x"))
+    );
+    let refused = place(transcript, &resumed, None).unwrap_err();
+    assert!(
+        refused.contains("2.1.285") && refused.contains("2.1.293"),
+        "{refused}"
+    );
+
     for (why, input, text, asked) in [
+        (
+            "a Claude Code transcript that records two versions",
+            transcript,
+            resumed.clone(),
+            None,
+        ),
+        (
+            "a Codex rollout that records two versions",
+            Path::new("s/rollout-2026-10-06T11-00-00-0199e000-0047-7000-8000-000000000001.jsonl"),
+            concat!(
+                r#"{"type":"session_meta","payload":{"cli_version":"0.47.0"}}"#,
+                "\n",
+                r#"{"type":"session_meta","payload":{"cli_version":"0.48.0"}}"#
+            )
+            .to_string(),
+            None,
+        ),
+        (
+            "an empty working directory, which encodes to no directory",
+            transcript,
+            claude_line("2.1.285", Some("")),
+            None,
+        ),
         (
             "a version that walks out of the corpus",
             transcript,
