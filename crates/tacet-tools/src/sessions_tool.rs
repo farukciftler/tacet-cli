@@ -99,6 +99,9 @@ const FILES: usize = 8;
 const WARNING_CHARS: usize = 160;
 const WARNINGS: usize = 2;
 const TITLE_CHARS: usize = 70;
+/// One artifact's line in the summary: its name and what its metadata says
+/// it is. The text itself is in the stored transcript, not here.
+const ARTIFACT_CHARS: usize = 140;
 
 /// Where the readers look.
 ///
@@ -268,6 +271,16 @@ fn list_from(
 pub struct SessionRead {
     pub session: AgentSession,
     pub warnings: Vec<String>,
+    /// The reports the agent wrote for the user beside the session —
+    /// Antigravity's `implementation_plan.md` and `walkthrough.md`; empty for
+    /// the other two agents, which keep no such files.
+    ///
+    /// CARRIED, NOT DROPPED (RG-15). The Antigravity reader read both files
+    /// and this layer kept only the session and the notices, so the plan the
+    /// agent wrote and the walkthrough of what it changed reached neither the
+    /// summary nor the stored transcript: `--from antigravity:` continued a
+    /// session without the two documents its user was shown.
+    pub artifacts: Vec<antigravity::Artifact>,
 }
 
 /// Reads one session from the first root that has it.
@@ -303,12 +316,12 @@ pub fn read_session_with(
             // reading as the whole one.
             AgentKind::ClaudeCode => ClaudeSource::new()
                 .read_report(&root, id)
-                .map(|r| (r.session, r.warnings)),
+                .map(|r| (r.session, r.warnings, Vec::new())),
             AgentKind::Codex => CodexSource.read(&root, id).map(|s| {
                 let warning = version::check_read(AgentKind::Codex, None, s.version.as_deref())
                     .warning()
                     .map(str::to_string);
-                (s, warning.into_iter().collect())
+                (s, warning.into_iter().collect(), Vec::new())
             }),
             // Antigravity records no version in its files, so the gate is
             // asked about the installed app's (`antigravity::session_version`)
@@ -328,11 +341,17 @@ pub fn read_session_with(
                 );
                 let mut warnings = r.notices;
                 warnings.extend(gate.warning().map(str::to_string));
-                (session, warnings)
+                (session, warnings, r.artifacts)
             }),
         };
         match got {
-            Ok((session, warnings)) => return Ok(SessionRead { session, warnings }),
+            Ok((session, warnings, artifacts)) => {
+                return Ok(SessionRead {
+                    session,
+                    warnings,
+                    artifacts,
+                });
+            }
             Err(SessionError::NotFound { .. }) => continue,
             Err(e) => refused = Some(e),
         }
@@ -368,6 +387,10 @@ pub struct Digest {
     /// The last `LAST_STEPS` steps, reasoning left out.
     pub steps: Vec<String>,
     pub warnings: Vec<String>,
+    /// One line per report the agent wrote beside the session (Antigravity's
+    /// `implementation_plan.md`, `walkthrough.md`): its name and its
+    /// metadata's summary, or its first line when it has none.
+    pub artifacts: Vec<String>,
     /// How many entries the full transcript holds.
     pub entries: usize,
 }
@@ -571,6 +594,7 @@ impl Digest {
                 .iter()
                 .map(|w| one_line(w, WARNING_CHARS))
                 .collect(),
+            artifacts: read.artifacts.iter().map(artifact_line).collect(),
             entries: s.entries.len(),
         }
     }
@@ -634,6 +658,12 @@ impl Digest {
                 lines.push(format!("- [{}] {title}", status.as_str()));
             }
         }
+        // After the plan, before the files: the implementation plan and the
+        // walkthrough are the agent's own account of what it meant to do and
+        // what it did, which a file list cannot say.
+        for a in &self.artifacts {
+            lines.push(format!("Artifact: {a}"));
+        }
         if !self.files.is_empty() {
             let from = self.files.len().saturating_sub(FILES);
             lines.push(format!("Files touched: {}", self.files[from..].join(", ")));
@@ -659,6 +689,40 @@ impl Digest {
         }
         out
     }
+}
+
+/// One artifact as the summary names it: `name — summary`, the summary being
+/// the metadata's or, without one, the document's first non-empty line.
+fn artifact_line(a: &antigravity::Artifact) -> String {
+    let about = a
+        .summary
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| a.text.lines().map(str::trim).find(|l| !l.is_empty()));
+    let line = match about {
+        Some(about) => format!("{} — {about}", a.name),
+        None => a.name.clone(),
+    };
+    one_line(&line, ARTIFACT_CHARS)
+}
+
+/// What goes to the DataStore for one read: the transcript, then each
+/// artifact the agent wrote beside it, whole and defanged, under a header
+/// that names it and what its metadata says.
+pub fn read_text(read: &SessionRead) -> String {
+    let mut out = transcript_text(&read.session);
+    for a in &read.artifacts {
+        out.push_str(&format!("[artifact {}]\n", one_line(&a.name, 60)));
+        if let Some(summary) = &a.summary {
+            out.push_str(&format!("summary: {}\n", one_line(summary, ARTIFACT_CHARS)));
+        }
+        if let Some(t) = a.updated {
+            out.push_str(&format!("updated: {}\n", iso_utc(t)));
+        }
+        out.push_str(&tacet_kernel::defang(a.text.trim_end()));
+        out.push_str("\n\n");
+    }
+    out
 }
 
 /// The whole transcript, one block per entry, defanged — what goes to the
@@ -759,7 +823,7 @@ impl Imported {
     fn from_read(read: SessionRead) -> Self {
         let digest = Digest::of(&read);
         let seed = seed_text(&digest);
-        let transcript = transcript_text(&read.session);
+        let transcript = read_text(&read);
         Imported {
             digest,
             seed,
@@ -1081,7 +1145,7 @@ impl SessionReadTool {
         let source_ref = ctx.store(
             "agent-session",
             &format!("{} entries", digest.entries),
-            transcript_text(&read.session),
+            read_text(&read),
         );
         let text = format!(
             "{}\nThe full transcript ({} entries) is stored; this is a summary of it.{}",
@@ -1224,6 +1288,7 @@ mod tests {
                 plan,
             },
             warnings: Vec::new(),
+            artifacts: Vec::new(),
         }
     }
 
@@ -1668,6 +1733,90 @@ mod tests {
         );
     }
 
+    /// The stored body behind a `source_ref=` at the end of `text`.
+    fn stored_after(store: &SharedStore, text: &str) -> String {
+        let at = text
+            .rfind("source_ref=")
+            .unwrap_or_else(|| panic!("no stored transcript is referenced:\n{text}"));
+        let source_ref = text[at + "source_ref=".len()..]
+            .trim_end_matches(')')
+            .to_string();
+        let Some(crate::data_store::Value::Text(body)) =
+            store.value(&tacet_kernel::SourceRef(source_ref.clone()))
+        else {
+            panic!("{source_ref} is not a stored transcript");
+        };
+        body
+    }
+
+    /// RG-15: Antigravity's `implementation_plan.md` and `walkthrough.md`
+    /// reach the model — a line each in the summary, with the metadata's
+    /// summary — and the stored transcript, whole, on both paths a read
+    /// takes: `session_read` and the continuation `--from` builds.
+    /// RED BEFORE THE FIX: `read_session_with` kept the session and the
+    /// notices and dropped `AntigravityRead::artifacts`, so neither document
+    /// was anywhere but on disk.
+    #[test]
+    fn an_antigravity_read_carries_its_artifacts_to_the_summary_and_the_store() {
+        const ID: &str = "7f3c2a10-5b6e-4c1d-9a8f-0e1d2c3b4a01";
+        let root = fixtures(AgentKind::Antigravity).join(antigravity::ROOTS[0].0);
+        let roots = SessionRoots::Only(vec![root]);
+        // What only the two documents say. Checked absent from the step log
+        // first: a fixture whose transcript quoted them would prove nothing.
+        let plan_text = "Add a regression test at 23:59:59.";
+        let walk_text = "`next_run_wraps_at_midnight` covers it";
+        let read = read_session(&roots, AgentKind::Antigravity, ID).unwrap();
+        let log = transcript_text(&read.session);
+        assert!(
+            !log.contains(plan_text) && !log.contains(walk_text),
+            "the step log already holds the artifacts' text; this proves nothing"
+        );
+        let names: Vec<&str> = read.artifacts.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, antigravity::ARTIFACTS, "{names:?}");
+
+        // session_read: the summary names each one, the store holds both.
+        let store = Arc::new(SharedStore::new());
+        let ctx = context(&store);
+        let out = SessionReadTool::new(roots.clone())
+            .work(
+                &serde_json::json!({ "agent": AgentKind::Antigravity.slug(), "id": ID }),
+                &ctx,
+            )
+            .expect("the fixture reads");
+        for line in [
+            "Artifact: implementation_plan.md — Wrap next_run at midnight and add a regression test.",
+            "Artifact: walkthrough.md — What changed and how it was tested.",
+        ] {
+            assert!(out.to_model.contains(line), "{line}\n{}", out.to_model);
+        }
+        assert!(
+            !out.to_model.contains(walk_text),
+            "the summary carried a whole artifact: {}",
+            out.to_model
+        );
+        let body = stored_after(&store, &out.to_model);
+        for want in [
+            "[artifact implementation_plan.md]",
+            plan_text,
+            "[artifact walkthrough.md]",
+            walk_text,
+            "summary: What changed and how it was tested.",
+        ] {
+            assert!(body.contains(want), "{want} is not stored:\n{body}");
+        }
+
+        // The continuation: the seed's summary and the stored transcript.
+        let store = Arc::new(SharedStore::new());
+        let imported = import(&roots, AgentKind::Antigravity, ID).expect("the fixture reads");
+        let seed = imported.seed_storing(&*store as &dyn tacet_kernel::DataStore);
+        assert!(seed.contains("Artifact: implementation_plan.md"), "{seed}");
+        let body = stored_after(&store, &seed);
+        assert!(
+            body.contains(plan_text) && body.contains(walk_text),
+            "{body}"
+        );
+    }
+
     /// RG-17: both tools say yes to both questions, so a read taints the
     /// session and marks it as holding outside text — and neither acts on the
     /// host by itself.
@@ -1910,6 +2059,7 @@ mod tests {
                     .map(|session| SessionRead {
                         session,
                         warnings: Vec::new(),
+                        artifacts: Vec::new(),
                     })
             },
             Imported::from_read,

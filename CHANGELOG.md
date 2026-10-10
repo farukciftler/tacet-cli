@@ -19,6 +19,25 @@ releases to follow.
 
 ---
 
+## Unreleased — the audit of 9 Oct 2026: completeness, 11 Oct 2026
+
+**Fixed:**
+
+* An Antigravity session read through `session_read`, `--from` or
+  `/resume-from` carries its `implementation_plan.md` and `walkthrough.md`:
+  a line each in the summary (the name and its metadata's summary) and the
+  whole text in the stored transcript. The reader read both and the layer
+  above it dropped them, so neither reached the model or the store (RG-15).
+* `tacet handoff install antigravity` prints and installs the shape
+  Antigravity documents — `{"tacet-handoff": {"PreInvocation": [{"type":
+  "command", "command": …}]}}`, a named hook with its handler directly under
+  the event. It wrote Claude Code's matcher-group shape under a top-level
+  `hooks` key, which Antigravity reads as a hook named `hooks` that runs
+  nothing; an entry of that old shape is not counted as installed.
+  `docs/agent-handoff.md` shows the new snippet (RG-25).
+
+---
+
 ## Unreleased — the audit of 9 Oct 2026: completeness, 10 Oct 2026
 
 What the second pass over the review found unfinished, each fixed with a test

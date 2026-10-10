@@ -127,14 +127,26 @@ against Codex's hook documentation before relying on it.
 In `.agents/hooks.json` or `~/.gemini/config/hooks.json`:
 
 ```json
-{"hooks": {"PreInvocation": [{"hooks": [{"type": "command",
-  "command": "/path/to/tacet handoff hook antigravity"}]}]}}
+{"tacet-handoff": {"PreInvocation": [{"type": "command",
+  "command": "/path/to/tacet handoff hook antigravity"}]}}
 ```
+
+Not the Claude Code shape: Antigravity's `hooks.json` maps hook *names* to
+their events, and a PreInvocation hook lists its handlers directly under the
+event, with no matcher and no nested `hooks` list
+(https://antigravity.google/docs/hooks, read 11 Oct 2026). An earlier Tacet
+printed and installed `{"hooks": {"PreInvocation": [{"hooks": […]}]}}`, which
+Antigravity would read as a hook named `hooks` whose handler runs nothing;
+if you installed that, delete it — `tacet handoff install antigravity --path`
+adds the entry above beside it and does not count the old one as installed.
 
 The hook prints `{"injectSteps": [{"ephemeralMessage": "…"}]}`. The session id
 is taken from the event's conversation id, or from `transcriptPath`
-(`brain/<id>/…`). No Antigravity hook was run; check the shape against
-https://antigravity.google/docs/hooks .
+(`brain/<id>/…`). PreInvocation runs before every model call, so the record
+(at most 9,000 characters) is sent again each time; it is not limited to
+`invocationNum` 0 because the documentation does not say whether an
+ephemeral message outlives the call it came with. No Antigravity hook was
+run; the shape is the documentation's, not a measurement.
 
 ## Rule text to paste
 

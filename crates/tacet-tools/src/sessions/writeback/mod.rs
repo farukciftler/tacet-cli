@@ -349,37 +349,81 @@ pub fn hook_command(tacet_bin: &str, agent: AgentKind) -> String {
     format!("{} handoff hook {}", shell_quote(tacet_bin), agent.slug())
 }
 
-/// The hook entry Tacet adds, in the agents' shared shape: a group with an
-/// optional matcher and a list of command hooks. Claude Code's shape is
-/// documented and was read from its docs; Codex's `hooks.json` and
-/// Antigravity's `hooks.json` are given the same shape, NOT MEASURED on either
-/// (neither ran a Tacet hook on this machine) — docs/agent-handoff.md says so
-/// next to the snippet.
+/// The name Tacet's hook goes under in Antigravity's `hooks.json`, whose
+/// top-level keys are hook names (see `hook_group`).
+pub const ANTIGRAVITY_HOOK_NAME: &str = "tacet-handoff";
+
+/// The top-level key the event list sits under: Claude Code's and Codex's
+/// `hooks`, Antigravity's hook name.
+fn hooks_key(agent: AgentKind) -> &'static str {
+    match agent {
+        AgentKind::ClaudeCode | AgentKind::Codex => "hooks",
+        AgentKind::Antigravity => ANTIGRAVITY_HOOK_NAME,
+    }
+}
+
+/// Where the entry goes, as the install question names it:
+/// `hooks.SessionStart` or `tacet-handoff.PreInvocation`.
+pub fn hook_location(agent: AgentKind) -> String {
+    format!("{}.{}", hooks_key(agent), hook_event(agent))
+}
+
+/// The entry Tacet adds under the event.
+///
+/// Claude Code's shape is a group with an optional matcher and a list of
+/// command hooks, read from its documentation; Codex's `hooks.json` is given
+/// the same shape, NOT MEASURED (Codex did not run a Tacet hook on this
+/// machine) — docs/agent-handoff.md says so next to the snippet.
+///
+/// ANTIGRAVITY'S IS NOT THAT SHAPE, and for a while it was given it anyway
+/// (completeness pass of 11 Oct 2026, RG-25): `{"hooks":{"PreInvocation":
+/// [{"hooks":[…]}]}}`. https://antigravity.google/docs/hooks, read 11 Oct
+/// 2026: `hooks.json` "maps hook names to their event configurations", and
+/// for PreInvocation "the structure is simpler (a list of handlers directly
+/// under the event key)" — its example is `"reminder": {"PreInvocation":
+/// [{"type": "command", "command": "./scripts/reminder.sh"}]}`, no matcher,
+/// no nested list. Read that way, the old entry was a hook NAMED `hooks`
+/// whose one handler had no command: nothing would ever have run. So the
+/// entry is the handler itself, under `ANTIGRAVITY_HOOK_NAME`. Still NOT
+/// MEASURED: no Antigravity has run it.
+///
+/// EVERY INVOCATION, NOT ONLY THE FIRST. PreInvocation fires before every
+/// model call and the input carries `invocationNum`; answering only at 0
+/// would cut the re-sent context. It is not done: the docs do not say
+/// whether 0 is per conversation or per user turn, nor whether an
+/// `ephemeralMessage` outlives the call it was injected into — if it does
+/// not, the model would see the record once and lose it on the next call.
 pub fn hook_group(agent: AgentKind, command: &str) -> Value {
-    let hooks = json!([{ "type": "command", "command": command }]);
+    let handler = json!({ "type": "command", "command": command });
     match agent {
         // `startup|resume`: a fresh session and a resumed one are where the
         // user comes back to work Tacet touched; `clear` and `compact` would
         // re-add the record into a context the user just emptied.
         AgentKind::ClaudeCode | AgentKind::Codex => {
-            json!({ "matcher": "startup|resume", "hooks": hooks })
+            json!({ "matcher": "startup|resume", "hooks": [handler] })
         }
-        AgentKind::Antigravity => json!({ "hooks": hooks }),
+        AgentKind::Antigravity => handler,
     }
 }
 
 /// The whole snippet, as a settings file holding only Tacet's hook would read.
 pub fn install_snippet(agent: AgentKind, command: &str) -> Value {
-    json!({ "hooks": { hook_event(agent): [hook_group(agent, command)] } })
+    json!({ hooks_key(agent): { hook_event(agent): [hook_group(agent, command)] } })
 }
 
-/// Does any command hook under `groups` run `command`?
-fn already_installed(groups: &[Value], command: &str) -> bool {
-    groups.iter().any(|g| {
-        g.get("hooks").and_then(Value::as_array).is_some_and(|hs| {
-            hs.iter()
-                .any(|h| h.get("command").and_then(Value::as_str) == Some(command))
-        }) || g.get("command").and_then(Value::as_str) == Some(command)
+/// Does any entry under `groups` run `command`? A Claude Code / Codex group
+/// holds its handlers in `hooks`; an Antigravity PreInvocation list IS the
+/// handlers, and a group nested there runs nothing, so it does not count.
+fn already_installed(agent: AgentKind, groups: &[Value], command: &str) -> bool {
+    let runs = |h: &Value| h.get("command").and_then(Value::as_str) == Some(command);
+    groups.iter().any(|g| match agent {
+        AgentKind::ClaudeCode | AgentKind::Codex => {
+            g.get("hooks")
+                .and_then(Value::as_array)
+                .is_some_and(|hs| hs.iter().any(runs))
+                || runs(g)
+        }
+        AgentKind::Antigravity => runs(g),
     })
 }
 
@@ -392,7 +436,7 @@ fn already_installed(groups: &[Value], command: &str) -> bool {
 /// feature flag is a dependency decision), so the keys come back sorted — the
 /// install screen says so before the user answers.
 ///
-/// A file whose shape is not what the agent documents (`hooks` not an object,
+/// A file whose shape is not what the agent documents (`hooks`, or Antigravity's `tacet-handoff`, not an object,
 /// the event not a list) is REFUSED, not repaired: Tacet does not know what
 /// the user meant by it.
 pub fn merge_hook(
@@ -409,19 +453,33 @@ pub fn merge_hook(
         },
     };
     let event = hook_event(agent);
-    let hooks = root
-        .entry("hooks")
-        .or_insert_with(|| Value::Object(Map::new()));
+    let key = hooks_key(agent);
+    // Antigravity's hooks are named: the same command under a hook the user
+    // named something else is already installed, and adding Tacet's would
+    // run it twice before every model call.
+    if agent == AgentKind::Antigravity
+        && root.iter().any(|(name, hook)| {
+            name != key
+                && hook
+                    .get(event)
+                    .and_then(Value::as_array)
+                    .is_some_and(|hs| already_installed(agent, hs, command))
+        })
+    {
+        let text = serde_json::to_string_pretty(&Value::Object(root)).map_err(|e| e.to_string())?;
+        return Ok((text + "\n", false));
+    }
+    let hooks = root.entry(key).or_insert_with(|| Value::Object(Map::new()));
     let Value::Object(hooks) = hooks else {
-        return Err("`hooks` is not an object".into());
+        return Err(format!("`{key}` is not an object"));
     };
     let groups = hooks
         .entry(event)
         .or_insert_with(|| Value::Array(Vec::new()));
     let Value::Array(groups) = groups else {
-        return Err(format!("`hooks.{event}` is not a list"));
+        return Err(format!("`{key}.{event}` is not a list"));
     };
-    if already_installed(groups, command) {
+    if already_installed(agent, groups, command) {
         let text = serde_json::to_string_pretty(&Value::Object(root)).map_err(|e| e.to_string())?;
         return Ok((text + "\n", false));
     }
@@ -830,6 +888,89 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    /// RG-25: Antigravity's entry is the shape its documentation gives —
+    /// https://antigravity.google/docs/hooks, read 11 Oct 2026: a NAMED hook
+    /// at the top level, handlers directly under `PreInvocation`, no matcher
+    /// and no nested `hooks` list. RED BEFORE THE FIX: the install wrote
+    /// Claude Code's `{"hooks":{"PreInvocation":[{"hooks":[…]}]}}`, which
+    /// Antigravity reads as a hook named `hooks` whose handler has no command,
+    /// and `merge_hook(None, …) == install_snippet(…)` above stayed green
+    /// because it compared the wrong shape with itself.
+    #[test]
+    fn the_antigravity_hook_is_a_named_hook_with_its_handler_under_the_event() {
+        let command = hook_command("/opt/tacet", AgentKind::Antigravity);
+        let documented = json!({
+            "tacet-handoff": {
+                "PreInvocation": [{ "type": "command", "command": command }]
+            }
+        });
+        assert_eq!(
+            install_snippet(AgentKind::Antigravity, &command),
+            documented
+        );
+        assert_eq!(
+            hook_location(AgentKind::Antigravity),
+            "tacet-handoff.PreInvocation"
+        );
+        let (fresh, changed) = merge_hook(None, AgentKind::Antigravity, &command).unwrap();
+        assert!(changed);
+        assert_eq!(serde_json::from_str::<Value>(&fresh).unwrap(), documented);
+
+        // Beside the user's own hooks, which are kept as they are.
+        let existing = r#"{"my-linter-hook":{"PostToolUse":[{"matcher":"run_command","hooks":[{"type":"command","command":"./lint.sh"}]}]},"reminder":{"PreInvocation":[{"type":"command","command":"./reminder.sh"}]}}"#;
+        let (text, changed) = merge_hook(Some(existing), AgentKind::Antigravity, &command).unwrap();
+        assert!(changed);
+        let v: Value = serde_json::from_str(&text).unwrap();
+        let before: Value = serde_json::from_str(existing).unwrap();
+        assert_eq!(v["my-linter-hook"], before["my-linter-hook"]);
+        assert_eq!(v["reminder"], before["reminder"]);
+        assert_eq!(v["tacet-handoff"], documented["tacet-handoff"], "{text}");
+        assert!(
+            v.get("hooks").is_none(),
+            "a hook named `hooks` was added: {text}"
+        );
+        // Once: again, or under a name the user chose, it is already there.
+        assert_eq!(
+            merge_hook(Some(&text), AgentKind::Antigravity, &command).unwrap(),
+            (text.clone(), false)
+        );
+        let renamed = format!(
+            r#"{{"mine":{{"PreInvocation":[{{"type":"command","command":{}}}]}}}}"#,
+            Value::String(command.clone())
+        );
+        assert!(
+            !merge_hook(Some(&renamed), AgentKind::Antigravity, &command)
+                .unwrap()
+                .1
+        );
+        // The old nested entry runs nothing in Antigravity, so it does not
+        // count as installed: the documented one is added beside it.
+        let old = serde_json::to_string(&json!({
+            "hooks": {"PreInvocation": [{"hooks": [{"type": "command", "command": command}]}]}
+        }))
+        .unwrap();
+        let (text, changed) = merge_hook(Some(&old), AgentKind::Antigravity, &command).unwrap();
+        assert!(changed, "{text}");
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["tacet-handoff"], documented["tacet-handoff"], "{text}");
+        // A `tacet-handoff` that is not the documented shape is refused.
+        for bad in [
+            r#"{"tacet-handoff":[]}"#,
+            r#"{"tacet-handoff":{"PreInvocation":{}}}"#,
+        ] {
+            assert!(
+                merge_hook(Some(bad), AgentKind::Antigravity, &command).is_err(),
+                "{bad}"
+            );
+        }
+        // Claude Code keeps its matcher group; only Antigravity changed.
+        assert_eq!(
+            install_snippet(AgentKind::ClaudeCode, "t"),
+            json!({"hooks": {"SessionStart": [{"matcher": "startup|resume",
+                "hooks": [{"type": "command", "command": "t"}]}]}})
+        );
     }
 
     #[test]

@@ -234,15 +234,19 @@ fn install(agent: &str, path: Option<&Path>, color: &Color) -> Result<(), String
         "{}",
         serde_json::to_string_pretty(&snippet).unwrap_or_default()
     );
-    if agent != AgentKind::ClaudeCode {
-        println!(
-            "{}",
-            color.paint(
-                DIM,
-                "This entry follows Claude Code's documented hook shape; it was not run against \
-                 this agent on a real install. Check it against the agent's hook documentation."
-            )
-        );
+    let unmeasured = match agent {
+        AgentKind::ClaudeCode => None,
+        AgentKind::Codex => Some(
+            "This entry follows Claude Code's documented hook shape; it was not run against \
+             this agent on a real install. Check it against the agent's hook documentation.",
+        ),
+        AgentKind::Antigravity => Some(
+            "This entry follows Antigravity's documented hooks.json shape \
+             (https://antigravity.google/docs/hooks); no Antigravity has run it yet.",
+        ),
+    };
+    if let Some(line) = unmeasured {
+        println!("{}", color.paint(DIM, line));
     }
     let Some(path) = path else {
         println!(
@@ -313,7 +317,7 @@ fn install_into(
     let group = writeback::hook_group(agent, command);
     let mut lines = vec![
         format!("file: {}", path.display()),
-        format!("adds to hooks.{}:", writeback::hook_event(agent)),
+        format!("adds to {}:", writeback::hook_location(agent)),
     ];
     lines.extend(
         serde_json::to_string_pretty(&group)

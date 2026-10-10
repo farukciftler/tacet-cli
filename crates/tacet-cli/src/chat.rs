@@ -3518,6 +3518,7 @@ mod continuation_tests {
             files: Vec::new(),
             steps: Vec::new(),
             warnings: vec!["version 9.9\u{1b}]0;pwned\u{7}\u{1b}[2J is not measured".into()],
+            artifacts: Vec::new(),
             entries: 3,
         };
         let lines = continuation_notice(&d, true);
