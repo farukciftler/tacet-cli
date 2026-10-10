@@ -797,15 +797,17 @@ impl WriteCodeTool {
         outcome
     }
 
-    /// Two-stage verification + delivery. The SINGLE write point is at the end
-    /// of this function: none of its error branches can leave a file behind.
+    /// Two-stage verification + delivery. The SINGLE write point is `deliver`,
+    /// called at the end of this function: none of its error branches can
+    /// leave a file behind.
     ///
     /// BOTH STAGES LISTEN TO THE TURN'S STOP (audit M4). They used to go through
     /// `run_program`, which hands its child a token nobody holds: a Ctrl-C while
     /// the model's script looped reached the executor, which abandoned the call
     /// after its 3 s grace, while the sandboxed process ran on to its own 10 s
     /// timeout with nobody waiting for it. A stopped stage is an error, so the
-    /// write at the end is never reached.
+    /// write at the end is never reached; a stop that lands between the stages'
+    /// polls is caught by `deliver` itself.
     #[allow(clippy::too_many_arguments)]
     fn validate_and_deliver(
         &self,
@@ -920,52 +922,83 @@ impl WriteCodeTool {
             Err(h) => return ToolOutcome::failed(&h),
         };
 
-        // STAGE 3 — delivery. The verified SOURCE is written (not the script
-        // itself, the same content): the file name is the name the user asked
-        // for, the permissions are 0600 (the document layer's rule — privacy on device starts with the file permission).
-        let body = safe_stem(file_name);
-        let target = match empty_target(sandbox, &body, interpreter.extension) {
-            Ok(h) => h,
-            Err(h) => return ToolOutcome::failed(&h),
-        };
-        if let Err(h) = std::fs::write(&target, code.as_bytes()) {
-            return ToolOutcome::failed(&ToolError::Io(h));
-        }
-        // PLATFORM RECORD — THE 0600 STAMP EXISTS ONLY ON UNIX (the same
-        // as `create_document::finish_up` and `tacet_memory::store::narrow_permissions`
-        // rationale as written at the top of the document layer): on Windows
-        // `set_permissions` only flips the read-only flag, it does not restrict
-        // access; faking it would produce the illusion of "stamped" without
-        // providing privacy. Touching the ACL on Windows would need a new
-        // dependency; the gap is left DELIBERATELY and IS NOT MEASURED ON THIS MACHINE.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).ok();
-        }
-
-        let name = target
-            .file_name()
-            .map(|a| a.to_string_lossy().into_owned())
-            .unwrap_or(body);
-        let short = truncate(&output, MODEL_OUTPUT_CAP);
-        let output_note = if output.trim().is_empty() {
-            "(the run printed nothing — mention the file, do not invent output)".to_string()
-        } else if short.len() < output.len() {
-            format!("output:\n{short}\n(output truncated)")
-        } else {
-            format!("output:\n{short}")
-        };
-        ToolOutcome::written(
-            format!("Code verified · {name} · {ms} ms"),
-            format!(
-                "ok: {name} written to the working folder and verified by running it ({ms} ms).\n\
-                 {output_note}\n\
-                 Tell the user the file name and what it does; show the demo output if any."
-            ),
+        deliver(
+            code,
+            file_name,
+            interpreter.extension,
+            sandbox,
+            output,
+            ms,
+            cancel,
         )
-        .raw_output(output)
     }
+}
+
+/// STAGE 3 — delivery. The verified SOURCE is written (not the script
+/// itself, the same content): the file name is the name the user asked
+/// for, the permissions are 0600 (the document layer's rule — privacy on device starts with the file permission).
+///
+/// THE STOP IS READ ONCE MORE HERE, before anything is written (audit M4,
+/// review of f7001e9). The two stages only see it on a poll tick while a child
+/// runs, so a stop that lands after stage 2's process has exited — or before
+/// its first tick, when the script ends at once — reached this write anyway:
+/// the executor reported the turn stopped while a new file sat in the user's
+/// folder. A separate function so the test can hand it a stop that has
+/// already landed; no real process can place one between stage 2 and here.
+fn deliver(
+    code: &str,
+    file_name: &str,
+    extension: &str,
+    sandbox: &Path,
+    output: String,
+    ms: u128,
+    cancel: &CancelToken,
+) -> ToolOutcome {
+    if cancel.is_cancelled() {
+        return ToolOutcome::failed(&ToolError::Other(crate::run_code::STOPPED.into()));
+    }
+    let body = safe_stem(file_name);
+    let target = match empty_target(sandbox, &body, extension) {
+        Ok(h) => h,
+        Err(h) => return ToolOutcome::failed(&h),
+    };
+    if let Err(h) = std::fs::write(&target, code.as_bytes()) {
+        return ToolOutcome::failed(&ToolError::Io(h));
+    }
+    // PLATFORM RECORD — THE 0600 STAMP EXISTS ONLY ON UNIX (the same
+    // as `create_document::finish_up` and `tacet_memory::store::narrow_permissions`
+    // rationale as written at the top of the document layer): on Windows
+    // `set_permissions` only flips the read-only flag, it does not restrict
+    // access; faking it would produce the illusion of "stamped" without
+    // providing privacy. Touching the ACL on Windows would need a new
+    // dependency; the gap is left DELIBERATELY and IS NOT MEASURED ON THIS MACHINE.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).ok();
+    }
+
+    let name = target
+        .file_name()
+        .map(|a| a.to_string_lossy().into_owned())
+        .unwrap_or(body);
+    let short = truncate(&output, MODEL_OUTPUT_CAP);
+    let output_note = if output.trim().is_empty() {
+        "(the run printed nothing — mention the file, do not invent output)".to_string()
+    } else if short.len() < output.len() {
+        format!("output:\n{short}\n(output truncated)")
+    } else {
+        format!("output:\n{short}")
+    };
+    ToolOutcome::written(
+        format!("Code verified · {name} · {ms} ms"),
+        format!(
+            "ok: {name} written to the working folder and verified by running it ({ms} ms).\n\
+             {output_note}\n\
+             Tell the user the file name and what it does; show the demo output if any."
+        ),
+    )
+    .raw_output(output)
 }
 
 // ---------------------------------------------------------------------------
@@ -1747,6 +1780,55 @@ mod tests {
             outcome.to_model
         );
         assert!(!root.join("checked.py").exists() && !root.join("checked.js").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 5d) A STOP THAT LANDS AFTER THE LAST STAGE DELIVERS NOTHING (audit M4,
+    ///     review of f7001e9). 5b and 5c stop a child that is still running;
+    ///     the stages read the stop only on a poll tick, so one that lands once
+    ///     stage 2's process has exited — or a script that ends before the
+    ///     first tick — went straight on to the write. `deliver` is handed the
+    ///     verified code and a stop that has already landed: nothing may be
+    ///     written. The same call on a live token writes the file, so an empty
+    ///     folder here means the stop was obeyed, not that delivery is broken.
+    ///     No interpreter is involved, so this does not skip.
+    #[test]
+    fn a_stop_after_the_last_stage_delivers_nothing() {
+        let root = temp_dir("stop-late");
+        let stopped = CancelToken::new();
+        stopped.cancel();
+        let outcome = deliver("print(1)\n", "late", "py", &root, "1".into(), 5, &stopped);
+        assert_eq!(
+            outcome.state,
+            ToolState::Failed(crate::run_code::STOPPED.into()),
+            "{}",
+            outcome.to_model
+        );
+        let left: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name())
+            .collect();
+        assert!(left.is_empty(), "a stopped turn delivered {left:?}");
+
+        let live = deliver(
+            "print(1)\n",
+            "late",
+            "py",
+            &root,
+            "1".into(),
+            5,
+            &CancelToken::new(),
+        );
+        assert!(
+            !matches!(live.state, ToolState::Failed(_)),
+            "{}",
+            live.to_model
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("late.py")).unwrap(),
+            "print(1)\n"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 

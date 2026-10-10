@@ -16,8 +16,12 @@
 //! checked to be the shape it claims: a version must parse as dotted numbers
 //! (a `version` of `../../x` is refused, not joined), a working directory is
 //! only ever used through Claude Code's own encoding (every character outside
-//! `[A-Za-z0-9]` becomes `-`), and the remaining components come from the
-//! input path the person named, never from the file.
+//! `[A-Za-z0-9]` becomes `-`), and a Claude Code session's file and
+//! directory are named by the `sessionId` its lines record, held to
+//! `validate_id`'s shape — the input path the person named only has to AGREE
+//! with it. The rest (a rollout's name, an Antigravity root and id, a
+//! subagent's `agent-…` name) comes from the input path, each held to the
+//! shape its reader expects.
 //!
 //! It reads nothing and writes nothing: `corpus_capture --into` does both,
 //! and only on a file the person chose.
@@ -28,7 +32,7 @@ use std::path::{Component, Path, PathBuf};
 use super::antigravity::ROOTS;
 use super::claude::project_dir_name;
 use super::codex::rollout_id;
-use super::model::AgentKind;
+use super::model::{AgentKind, validate_id};
 use super::version::Version;
 
 /// Claude Code cuts an encoded project directory at 200 characters and
@@ -41,8 +45,9 @@ const MAX_PROJECT_DIR: usize = 200;
 /// The path, relative to the corpus root, that `captured` belongs at.
 ///
 /// `input` is the path the file was captured FROM: it supplies only what the
-/// file does not record (an Antigravity conversation's root and id, a Claude
-/// Code subagent's session directory, the file's own name). `captured` is the
+/// file does not record (an Antigravity conversation's root and id, a Codex
+/// rollout's name, a Claude Code subagent's `agent-…` name), and for a Claude
+/// Code transcript it must agree with the `sessionId` the file records. `captured` is the
 /// anonymised text — the working directory in it is the masked one, which is
 /// the one the project directory must encode. `version` is required for
 /// Antigravity, whose files record none, and otherwise must agree with the
@@ -101,23 +106,56 @@ pub fn place(input: &Path, captured: &str, version: Option<&str>) -> Result<Path
                 project.len()
             ));
         }
+        let session = one_session(&records.sessions, name)?;
         let mut out = PathBuf::from(AgentKind::ClaudeCode.slug());
         out.push(recorded);
         out.push("projects");
         out.push(project);
-        // A subagent's transcript lives in its session's directory:
-        // `<id>/subagents/agent-*.jsonl` beside `<id>.jsonl`.
+        // Both names below are built from the recorded id, and the input path
+        // is only required to agree with it. Taking them from the path instead
+        // filed whatever directory the file happened to sit in — measured
+        // against f7001e9: `-Users-zeynepk-acme-billing/subagents/agent-a1.jsonl`
+        // went to `projects/-Users-dev-x/-Users-zeynepk-acme-billing/subagents/…`,
+        // the unmasked home committed after all, and a main transcript saved as
+        // `zeynepk-acme.jsonl` was filed under that name, where
+        // `ClaudeSource::read(root, <its id>)` never finds it.
         let parent = input.parent();
         if parent.and_then(Path::file_name).and_then(|n| n.to_str()) == Some("subagents") {
-            let session = parent
+            // A subagent's lines record its PARENT's sessionId (the fixture
+            // `agent-a1.jsonl` records 11111111-…), and it lives in that
+            // session's directory: `<id>/subagents/agent-*.jsonl` beside `<id>.jsonl`.
+            let dir = parent
                 .and_then(Path::parent)
                 .and_then(Path::file_name)
-                .and_then(|n| n.to_str())
-                .ok_or_else(|| format!("{name}: a subagent file outside a session directory"))?;
+                .and_then(|n| n.to_str());
+            if dir != Some(session) {
+                return Err(format!(
+                    "{name}: a subagent file belongs in its session's directory `{session}/subagents/`, \
+                     and this one is not in it"
+                ));
+            }
+            // The agent's own id is not on every line (the fixture records
+            // none), so the name is the one component left to the path: it is
+            // held to the reader's `agent-*` and to an id's shape.
+            let stem = name.strip_suffix(".jsonl").unwrap_or(name);
+            if !stem.starts_with("agent-") || validate_id(stem).is_err() {
+                return Err(format!(
+                    "{name}: a subagent transcript is named `agent-<id>.jsonl`"
+                ));
+            }
             out.push(session);
             out.push("subagents");
+            out.push(name);
+        } else {
+            let filed = format!("{session}.jsonl");
+            if name != filed {
+                return Err(format!(
+                    "{name}: the file records session {session}, and a transcript is named \
+                     after its session (`{filed}`) — the reader finds it by that name alone"
+                ));
+            }
+            out.push(filed);
         }
-        out.push(name);
         return Ok(out);
     }
     Err(format!(
@@ -153,6 +191,24 @@ fn only<'a>(versions: &'a BTreeSet<String>, name: &str) -> Result<Option<&'a str
         (Some(a), Some(b)) => Err(format!(
             "{name}: the file records versions {a} and {b}; a session resumed across an \
              update vouches for neither alone — capture one recorded under a single version"
+        )),
+    }
+}
+
+/// The one session the file records, held to the shape of an id.
+///
+/// TWO ARE REFUSED, as two versions are by `only`: a file whose lines name
+/// two sessions belongs under neither name, and filing it under one would
+/// hand the reader the other's lines when it asks for that id.
+fn one_session<'a>(sessions: &'a BTreeSet<String>, name: &str) -> Result<&'a str, String> {
+    let mut each = sessions.iter();
+    match (each.next(), each.next()) {
+        (Some(one), None) => validate_id(one)
+            .map(|()| one.as_str())
+            .map_err(|e| format!("{name}: its sessionId is not an id: {e}")),
+        (None, _) => Err(format!("{name}: no line records a sessionId")),
+        (Some(a), Some(b)) => Err(format!(
+            "{name}: the file records sessions {a} and {b}; it belongs under neither alone"
         )),
     }
 }
@@ -207,6 +263,8 @@ struct Records {
     /// Every distinct one, not the first: see `only`.
     claude_versions: BTreeSet<String>,
     codex_versions: BTreeSet<String>,
+    /// Every distinct `sessionId`: see `one_session`.
+    sessions: BTreeSet<String>,
     cwd: Option<String>,
 }
 
@@ -224,7 +282,8 @@ impl Records {
             }
             // A Claude Code line carries its session id beside the version; a
             // `version` key alone (inside some tool's data) is not one.
-            if v.get("sessionId").and_then(|s| s.as_str()).is_some() {
+            if let Some(session) = v.get("sessionId").and_then(|s| s.as_str()) {
+                r.sessions.insert(session.to_string());
                 if let Some(ver) = v.get("version").and_then(|s| s.as_str()) {
                     r.claude_versions.insert(ver.to_string());
                 }

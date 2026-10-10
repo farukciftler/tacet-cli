@@ -50,8 +50,12 @@ The steps, for whoever does:
    product's About box). A version that is not dotted numbers, or that the
    file contradicts, is refused, and so is a file that records two (a
    session resumed after the agent updated itself vouches for neither). A
-   subagent's transcript is filed inside its session's directory, at
-   `<id>/subagents/`, as the agent wrote it. Typing the output path yourself
+   Claude Code transcript's name and a subagent's session directory are
+   built from the `sessionId` the file records, not from the input path:
+   a transcript must be named `<sessionId>.jsonl`, a subagent's
+   `agent-<id>.jsonl` must sit in `<sessionId>/subagents/` (its lines record
+   the parent's id), and a file whose lines record two sessions is refused.
+   It is filed the same way, inside its session's directory. Typing the output path yourself
    (`corpus_capture <input> <output>`) still works, and is how a file with
    no layout of its own (Claude Code's `tasks/<list>/<n>.json`) is captured;
    it is also how the two silent mistakes are made — a transcript left under

@@ -383,7 +383,74 @@ fn what_a_file_cannot_vouch_for_is_refused() {
         "{refused}"
     );
 
+    // The session's names come from the id the file records; a path that
+    // disagrees is refused rather than filed. The three inputs below were each
+    // filed by f7001e9, two of them with the unmasked user in the corpus path
+    // and one where `ClaudeSource::read(root, id)` never finds it.
+    let line = claude_line("2.1.285", Some("/Users/dev/x"));
+    let home = "/h/.claude/projects";
+    let other_session = format!("{line}\n{}", line.replace("000000000099", "000000000098"));
+    // A name that agrees with its file but is no id: a space is a directory
+    // name nobody's reader lists, and `validate_id` is what the readers hold
+    // an id to.
+    let not_an_id = line.replace("c0000285-0000-4000-8000-000000000099", "zeynepk notes");
+    for (why, input) in [
+        (
+            "a subagent whose session directory is a project directory",
+            format!("{home}/-Users-zeynepk-acme-billing/subagents/agent-a1.jsonl"),
+        ),
+        (
+            "a subagent under a directory that is not its session",
+            format!("{home}/-Users-zeynepk-acme/zeynepk-private-notes/subagents/agent-a1.jsonl"),
+        ),
+        (
+            "a main transcript not named after its session",
+            format!("{home}/-Users-zeynepk-acme/zeynepk-acme.jsonl"),
+        ),
+        (
+            "a subagent not named `agent-…`",
+            format!(
+                "{home}/-Users-zeynepk-acme/c0000285-0000-4000-8000-000000000099/subagents/zeynepk.jsonl"
+            ),
+        ),
+    ] {
+        let got = place(Path::new(&input), &line, None);
+        assert!(got.is_err(), "{why}: filed at {got:?}");
+    }
+    // The same session, correctly laid out, is still filed — the refusals
+    // above are about the path disagreeing, not about where it came from.
+    assert_eq!(
+        place(
+            Path::new(&format!(
+                "{home}/-Users-zeynepk-acme/c0000285-0000-4000-8000-000000000099.jsonl"
+            )),
+            &line,
+            None
+        )
+        .unwrap(),
+        ok
+    );
+
     for (why, input, text, asked) in [
+        (
+            // Named after one of the two, so only the second id refuses it.
+            "a Claude Code transcript that records two sessions",
+            Path::new("p/c0000285-0000-4000-8000-000000000098.jsonl"),
+            other_session.clone(),
+            None,
+        ),
+        (
+            "a sessionId that is not an id",
+            Path::new("p/zeynepk notes.jsonl"),
+            not_an_id.clone(),
+            None,
+        ),
+        (
+            "a Claude Code transcript that records no session",
+            transcript,
+            r#"{"type":"user","version":"2.1.285","cwd":"/Users/dev/x"}"#.to_string(),
+            None,
+        ),
         (
             "a Claude Code transcript that records two versions",
             transcript,
