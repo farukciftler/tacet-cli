@@ -2,7 +2,17 @@
 //!
 //! ```text
 //! cargo run -p tacet-tools --example corpus_capture -- [--salt <n>] <input> <output>
+//! cargo run -p tacet-tools --example corpus_capture -- [--salt <n>] [--version <v>] \
+//!     --into <corpus> <input>
 //! ```
+//!
+//! With `--into`, the output path is not typed: `sessions::corpus::place`
+//! derives `<agent>/<version>/…` under `<corpus>` from what the captured file
+//! records (and, for Antigravity, which records no version, from `--version`).
+//! Typed by hand, the two easy mistakes were silent — a transcript left under
+//! its original, unmasked project directory still reads by id, and one under
+//! the wrong version directory makes the corpus vouch for a version nobody
+//! captured.
 //!
 //! `<input>` is a `.jsonl` transcript or rollout, a `.json` (Antigravity's
 //! `.metadata.json`, Claude Code's `tasks/<list>/<n>.json`) or a `.md`
@@ -28,6 +38,7 @@ use std::process::ExitCode;
 
 use tacet_tools::sessions::anonymise::Scrub;
 use tacet_tools::sessions::claude::project_dir_name;
+use tacet_tools::sessions::corpus;
 use tacet_tools::sessions::secrets;
 
 /// A Claude Code transcript was measured up to tens of MB, an Antigravity log
@@ -46,6 +57,8 @@ fn main() -> ExitCode {
 
 fn run(args: Vec<String>) -> Result<(), String> {
     let mut salt: Option<u64> = None;
+    let mut into: Option<PathBuf> = None;
+    let mut version: Option<String> = None;
     let mut paths: Vec<PathBuf> = Vec::new();
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -57,16 +70,26 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         .map_err(|_| format!("--salt {v:?} is not a number"))?,
                 );
             }
+            "--into" => into = Some(PathBuf::from(it.next().ok_or("--into needs a directory")?)),
+            "--version" => version = Some(it.next().ok_or("--version needs a version")?),
             "-h" | "--help" => {
-                println!("usage: corpus_capture [--salt <n>] <input> <output>");
+                println!("{USAGE}");
                 return Ok(());
             }
             _ => paths.push(PathBuf::from(a)),
         }
     }
-    let [input, output] = <[PathBuf; 2]>::try_from(paths)
-        .map_err(|_| "usage: corpus_capture [--salt <n>] <input> <output>".to_string())?;
-    if output.exists() {
+    let (input, output) = match (into.as_ref(), paths.len()) {
+        (Some(_), 1) => (paths.remove(0), None),
+        (None, 2) => {
+            let output = paths.remove(1);
+            (paths.remove(0), Some(output))
+        }
+        _ => return Err(format!("usage: {USAGE}")),
+    };
+    if let Some(output) = &output
+        && output.exists()
+    {
         return Err(format!("{} exists; not overwriting it", output.display()));
     }
     let name = input
@@ -93,6 +116,16 @@ fn run(args: Vec<String>) -> Result<(), String> {
         Kind::Json => scrub.json(&text),
         Kind::Markdown => scrub.markdown(&text),
     };
+    // Placed from the CAPTURED text: the project directory must encode the
+    // masked working directory, never the one the input was filed under.
+    let output = match (output, into) {
+        (Some(output), _) => output,
+        (None, Some(into)) => into.join(corpus::place(&input, &out, version.as_deref())?),
+        (None, None) => return Err(format!("usage: {USAGE}")),
+    };
+    if output.exists() {
+        return Err(format!("{} exists; not overwriting it", output.display()));
+    }
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     }
@@ -110,6 +143,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
     );
     Ok(())
 }
+
+const USAGE: &str = "corpus_capture [--salt <n>] <input> <output>\n       \
+                     corpus_capture [--salt <n>] [--version <v>] --into <corpus> <input>";
 
 enum Kind {
     Jsonl,

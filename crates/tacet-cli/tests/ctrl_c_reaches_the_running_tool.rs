@@ -88,15 +88,33 @@ fn still_running(needle: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Seven seconds and six digits of fraction no other run will draw: long enough
+/// to still be sleeping when the SIGINT lands, short enough that a failure
+/// leaves nothing behind for long.
+fn unique_seconds() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
+    let mixed = (u64::from(std::process::id()) * 1_000_003 + nanos) % 1_000_000;
+    format!("7.{mixed:06}")
+}
+
 /// RED BEFORE THE FIX: the process died of the signal (no exit code, no JSON
-/// line), and `sleep 7.31` was still running afterwards.
+/// line), and its `sleep` was still running afterwards.
 #[test]
 fn a_sigint_during_a_tool_ends_the_tool_and_not_the_shell() {
     let s = Scratch::new("tool");
     install_sleep(&s);
     // A duration nothing else on the machine is sleeping for, so `pgrep`
-    // finds this test's command and only this test's.
-    let marker = "7.31";
+    // finds this test's command and only this test's. It was the constant
+    // `7.31`, and that was not true: a `sleep 7.31` left by an earlier run, or
+    // by a second checkout's tests running beside this one, satisfied the
+    // "started" wait and then the "outlived" check, and the test failed
+    // (measured: once in a parallel workspace run, once in 3 quick reruns,
+    // then 14 of 14 with no stale `sleep` alive). Drawn from this process
+    // and the clock, it can only be this run's.
+    let marker = unique_seconds();
     let started = Instant::now();
     let child = tacet(&s)
         .args(["chat", "--engine", "fake", "--json", "--message", "wait"])

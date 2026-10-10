@@ -48,8 +48,9 @@ use tacet_kernel::{
 
 use crate::run_code::{
     CODE_CAP, CodeOutcome, CodeState, Interpreter, MAX_ATTEMPTS, MODEL_OUTPUT_CAP, NetworkShield,
-    error_text, language_from_source, looks_like_python, run_program, truncate,
+    error_text, language_from_source, looks_like_python, run_program_until, truncate,
 };
+use tacet_kernel::context::CancelToken;
 
 /// The timeout of the execution verification. The same base as `run_code`'s
 /// default; the model CANNOT CHOOSE a duration here — a script to be delivered
@@ -787,6 +788,7 @@ impl WriteCodeTool {
                 &sandbox,
                 &script,
                 last_attempt,
+                ctx.cancel_token(),
             ),
             Err(h) => ToolOutcome::failed(&ToolError::Io(h)),
         };
@@ -797,6 +799,14 @@ impl WriteCodeTool {
 
     /// Two-stage verification + delivery. The SINGLE write point is at the end
     /// of this function: none of its error branches can leave a file behind.
+    ///
+    /// BOTH STAGES LISTEN TO THE TURN'S STOP (audit M4). They used to go through
+    /// `run_program`, which hands its child a token nobody holds: a Ctrl-C while
+    /// the model's script looped reached the executor, which abandoned the call
+    /// after its 3 s grace, while the sandboxed process ran on to its own 10 s
+    /// timeout with nobody waiting for it. A stopped stage is an error, so the
+    /// write at the end is never reached.
+    #[allow(clippy::too_many_arguments)]
     fn validate_and_deliver(
         &self,
         code: &str,
@@ -805,17 +815,19 @@ impl WriteCodeTool {
         sandbox: &Path,
         script: &Path,
         last_attempt: bool,
+        cancel: &CancelToken,
     ) -> ToolOutcome {
         let verification = script.parent().unwrap_or(sandbox);
 
         // STAGE 1 — syntax.
         let args = syntax_check_args(interpreter, script);
-        match run_program(
+        match run_program_until(
             &self.shield,
             verification,
             &interpreter.path,
             &args,
             SYNTAX_CHECK_TIMEOUT,
+            cancel,
         ) {
             Ok(CodeOutcome::Succeeded { .. }) => {}
             Ok(CodeOutcome::Error(message)) => {
@@ -861,12 +873,13 @@ impl WriteCodeTool {
 
         // STAGE 2 — execution. Output IS NOT REQUIRED: what is delivered is the
         // file, the output is only evidence. But it must finish without an error.
-        let run = run_program(
+        let run = run_program_until(
             &self.shield,
             verification,
             &interpreter.path,
             &[script.into()],
             EXECUTION_TIMEOUT,
+            cancel,
         );
         let (output, ms) = match run {
             Ok(CodeOutcome::Succeeded { output, ms, .. }) => (output, ms),
@@ -1012,7 +1025,7 @@ mod tests {
     /// panic carrying `diagnose()`. The gate is defined once, in
     /// `run_code::sandbox_must_run`, because the tests it silences are skipped
     /// by the same absent shield and must be re-enabled by the same switch:
-    /// 8 here and 16 in run_code.rs on Linux. Those two figures are DERIVED from
+    /// 9 here and 16 in run_code.rs on Linux. Those two figures are DERIVED from
     /// the source and checked against this sentence by
     /// `the_skip_count_the_documents_quote_is_the_count_in_the_source`; written
     /// out by hand they were "eight and sixteen", and sixteen was wrong. The syntax-check path
@@ -1633,6 +1646,50 @@ mod tests {
             outcome.to_model
         );
         assert!(!root.join("crashing.py").exists() && !root.join("crashing.js").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 5b) A STOP ENDS THE VERIFICATION RUN (audit M4). The model's code loops;
+    ///     the turn is stopped 300 ms in. Before the fix the stop never reached
+    ///     the child — both stages ran under a token nobody held — so the call
+    ///     sat out the full 10 s `EXECUTION_TIMEOUT` and came back "timed out",
+    ///     the executor having long since abandoned it. `run_code`'s twin of
+    ///     this is `an_infinite_loop_is_killed_on_timeout_or_on_a_stop`, and the
+    ///     bound is the same one.
+    #[test]
+    fn a_stop_ends_the_verification_run_and_delivers_nothing() {
+        let Some(tool) = tool_or_skip() else { return };
+        tool.state.new_turn();
+        let root = temp_dir("stop");
+        let token = CancelToken::new();
+        let mut ctx = context(&root).with_cancel_token(token.clone());
+        let lines = match tool.interpreters[0].key {
+            "python" => json!(["while True:", "    pass"]),
+            _ => json!(["while (true) {}"]),
+        };
+        let stopper = {
+            let token = token.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(300));
+                token.cancel();
+            })
+        };
+        let started = std::time::Instant::now();
+        let outcome = hold(tool.run(json!({"file_name": "spinning", "lines": lines}), &mut ctx));
+        let elapsed = started.elapsed();
+        stopper.join().expect("stopper");
+
+        assert!(
+            elapsed < Duration::from_millis(300) + Duration::from_millis(1500),
+            "the stop took {elapsed:?}; the looping script ran on to its own timeout"
+        );
+        assert_eq!(
+            outcome.state,
+            ToolState::Failed(crate::run_code::STOPPED.into()),
+            "{}",
+            outcome.to_model
+        );
+        assert!(!root.join("spinning.py").exists() && !root.join("spinning.js").exists());
         std::fs::remove_dir_all(&root).ok();
     }
 

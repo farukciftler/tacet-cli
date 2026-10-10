@@ -54,7 +54,7 @@ jobs:
       # `run_code` and `write_code` refuse to enter the catalog unless a shield
       # can be found AND measured, so on a runner without bubblewrap every one of
       # their process tests took the `tool_or_skip()` escape hatch and passed by
-      # printing a line. 24 on Linux — 16 in run_code.rs, 8 in write_code.rs: the
+      # printing a line. 25 on Linux — 16 in run_code.rs, 9 in write_code.rs: the
       # network cut, the write confinement, the timeout kill, the output cap, the
       # `node --check` / `python3 -m py_compile` verification path, and the
       # discovery assert, all reporting green having executed nothing.
@@ -67,7 +67,7 @@ jobs:
       # which is `#[cfg(target_os = "macos")]` and does not compile here at all —
       # and fails if this line disagrees with them.
       #
-      # One `apt-get install` is what makes those 24 real, which is why this
+      # One `apt-get install` is what makes those 25 real, which is why this
       # lives in the existing matrix job rather than in a fourth job: it needs no
       # second cold Rust build and no second cache key.
       # The cost is entirely test time — the newly-enabled tests carry 20-25 s

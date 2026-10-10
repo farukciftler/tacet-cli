@@ -111,7 +111,7 @@ const TERM_GRACE: Duration = Duration::from_millis(500);
 
 /// The chip sentence for a run that was stopped. The model never sees it — a
 /// stopped turn is answered by the executor's own fixed text.
-const STOPPED: &str = "the script was stopped";
+pub(crate) const STOPPED: &str = "the script was stopped";
 
 // ---------------------------------------------------------------------------
 // The network shield
@@ -1185,9 +1185,11 @@ pub fn run_program(
 }
 
 /// `run_program`, listening to `cancel` (audit M4). A SEPARATE ENTRY rather than
-/// a new parameter on `run_program`, so its other callers (`write_code`'s
-/// syntax checks) keep compiling unchanged; a check that takes ten seconds at
-/// most has less need of a Ctrl-C than a script that may loop.
+/// a new parameter on `run_program`, so the shield measurement — which runs
+/// outside any turn, with no stop to listen to — keeps compiling unchanged.
+/// Every call made FOR a turn comes here: `run_code`, and both of `write_code`'s
+/// stages, whose syntax check was once thought too short to need a Ctrl-C
+/// while its execution stage runs the model's own, possibly looping, code.
 pub fn run_program_until(
     shield: &NetworkShield,
     runtime: &Path,
@@ -2898,7 +2900,7 @@ mod tests {
     ///
     /// `sandbox_must_run()` is what turns every `tool_or_skip()` in this crate
     /// from a skip into a failure, and it is switched on by three lines of YAML.
-    /// Delete them — or rename the variable on one side only — and 24 tests go
+    /// Delete them — or rename the variable on one side only — and 25 tests go
     /// back to passing without measuring anything, exactly as they did before
     /// this work, with nothing anywhere going red. That figure is not asserted
     /// from memory: `the_skip_count_the_documents_quote_is_the_count_in_the_source`

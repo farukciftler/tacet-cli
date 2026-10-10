@@ -35,12 +35,26 @@ No real session is in the corpus yet: capturing one means reading somebody's
 `~/.claude`, `~/.codex` or `~/.gemini`, which only that person can agree to.
 The steps, for whoever does:
 
-1. Capture each file of the session through the anonymiser, into the right
-   `<agent>/<version>/` directory:
+1. Capture each file of the session through the anonymiser, and let it file
+   the result:
 
    ```
-   cargo run -p tacet-tools --example corpus_capture -- <input> <output>
+   cargo run -p tacet-tools --example corpus_capture -- --into crates/tacet-tools/tests/fixtures/sessions/corpus <input>
    ```
+
+   `--into` derives `<agent>/<version>/…` from what the captured file
+   records (`sessions::corpus::place`): Claude Code's `version` and its
+   *masked* working directory, Codex's `cli_version` and the rollout's date,
+   Antigravity's root and conversation id from the input path. Antigravity
+   records no version, so its files need `--version <v>` as well (the
+   product's About box). A version that is not dotted numbers, or that the
+   file contradicts, is refused. Typing the output path yourself
+   (`corpus_capture <input> <output>`) still works, and is how a file with
+   no layout of its own (Claude Code's `tasks/<list>/<n>.json`) is captured;
+   it is also how the two silent mistakes are made — a transcript left under
+   its original project directory, whose name is the unmasked home path,
+   still reads by id. `tests/a_capture_is_filed_where_its_reader_looks.rs`
+   holds every file here to where `place` would file it.
 
    It keeps what the readers depend on (line types, ids and parent links,
    timestamps, versions, tool names, task ids and statuses, the markup tags

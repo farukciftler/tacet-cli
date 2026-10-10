@@ -19,6 +19,7 @@ pub mod anonymise;
 pub mod antigravity;
 pub mod claude;
 pub mod codex;
+pub mod corpus;
 pub mod handoff;
 pub mod model;
 pub mod secrets;
