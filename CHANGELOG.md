@@ -19,6 +19,58 @@ releases to follow.
 
 ---
 
+## Unreleased — the audit of 9 Oct 2026, wave 3
+
+Not published either, and kept apart from waves 1 and 2 for the same reason.
+No library API changes in this wave: everything below is the `tacet` binary,
+a test corpus and a script.
+
+**Security:**
+
+* A pipe into `--message`, a replayed transcript (`--continue`, `--session`)
+  and an injected memory note taint the session from the start, so an
+  outbound call after any of them asks first; before, only a tool could taint
+  (H2-b). The `--message` help no longer says "NO DATA LEAVES" (D15).
+* Receipts (format 2) keep a tool chip's kind, its outcome by one of five
+  fixed names and its length — never its words: a failed chip's sentence,
+  built from the call's input, stays out (L27, RG-32). `tacet sessions
+  --purge` deletes `receipts.jsonl`, its head and its lock.
+* While a turn runs, a SIGINT cancels the turn and the running tool instead of
+  ending the shell — under `--json` and with stdout piped too (M4).
+
+**Fixed:**
+
+* `receipts.head` records the count and the last hash, and `tacet log` reports
+  a cut tail, an emptied log, and a missing head as not intact. A head is
+  never rebuilt from a log that already holds format-2 receipts, so deleting
+  it no longer hides a cut: such a log reads "head missing" until
+  `tacet sessions --purge` (L26). The hash is unkeyed and the help no longer
+  calls the log tamper-proof.
+* Appends from several sessions hold a lock with a per-acquisition token; a
+  stale lock has one taker (L28).
+* A `--continue` chain keeps every earlier turn, and "latest" is the file
+  written last (L29); the privacy notice says a continued conversation is
+  copied into each new file (L27, L29).
+* The daily update check runs only at the end of an interactive session with
+  stdout and stderr on a terminal — never after `--message`, under `--json`,
+  or piped (D7). The README now says what the bare `tacet update` does: it
+  downloads and installs after asking; `--check` only looks (D6).
+* The updater removes an earlier download's leftovers with the staged binary
+  (L3); `probe_features` gives up on a binary after 10 s (L7).
+* Codex reader: an ordinal of `u64::MAX` in a paginated rollout no longer
+  overflows the gap count (RG-28).
+* `scripts/session-roundtrip.sh` (RG-29): E3 reads "same" — the outcome that
+  lets a Claude Code version join the write range — only when the answer
+  credits Tacet with the note and does not credit the user; an answer that
+  merely says "Tacet", or quotes the note's header, no longer passes. E2 tells
+  a claim of authorship from a denial anywhere in the sentence. E1 checks both
+  sessions answered READY. A run that differs or stops after a paid turn
+  keeps its scratch directory (raw output and transcript copies), names any
+  session filed outside the predicted project directory, and counts E1's
+  cost; a stop before the first turn leaves no scratch behind.
+
+---
+
 ## Unreleased — the audit of 9 Oct 2026, wave 2
 
 Nothing below is published yet either. It sits apart from wave 1 so a reader

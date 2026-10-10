@@ -128,19 +128,17 @@ DIR_A="$SCRATCH/a"
 DIR_B="$SCRATCH/b"
 PROJ_A="$CFG/projects/$(enc "$DIR_A")"
 PROJ_B="$CFG/projects/$(enc "$DIR_B")"
-[ "${#DIR_A}" -lt 190 ] || die "scratch path too long for the plain encoding: $DIR_A"
-# A project directory that already exists holds sessions this script did not
-# make. Refuse rather than share it.
-for p in "$PROJ_A" "$PROJ_B"; do
-  [ ! -e "$p" ] || die "$p already exists; refusing to touch a project directory this run did not create"
-done
 
 # This run's transcripts that Claude Code filed outside PROJ_A/PROJ_B; filled
 # in after E1, read by cleanup.
 STRAY=()
+# Set once both project directories were checked absent. Until then a
+# directory under either name belongs to somebody else — an earlier --keep
+# run whose mktemp suffix came round again — and cleanup must not remove it.
+PROJ_OURS=0
 cleanup() {
   local status=$?
-  if [ "$KEEP" = 1 ]; then
+  if [ "$KEEP" = 1 ] && [ "$PROJ_OURS" = 1 ]; then
     echo "kept: $SCRATCH $PROJ_A $PROJ_B"
     return
   fi
@@ -157,12 +155,24 @@ cleanup() {
   else
     rm -rf "$SCRATCH"
   fi
-  # Only what this run created: both names were checked absent above and
+  # Only what this run created: both names were checked absent below and
   # carry the mktemp suffix, so no other session can live under them.
+  [ "$PROJ_OURS" = 1 ] || return 0
   case "$PROJ_A" in "$CFG/projects/"*tacet-roundtrip*) rm -rf "$PROJ_A" ;; esac
   case "$PROJ_B" in "$CFG/projects/"*tacet-roundtrip*) rm -rf "$PROJ_B" ;; esac
 }
+# Installed before the first check that can stop the run: a die on the path
+# length or on an existing project directory used to leave the mktemp
+# directory with its a/ and b/ in $TMPDIR, unnamed (review of 10 Oct 2026).
 trap cleanup EXIT
+
+[ "${#DIR_A}" -lt 190 ] || die "scratch path too long for the plain encoding: $DIR_A"
+# A project directory that already exists holds sessions this script did not
+# make. Refuse rather than share it.
+for p in "$PROJ_A" "$PROJ_B"; do
+  [ ! -e "$p" ] || die "$p already exists; refusing to touch a project directory this run did not create"
+done
+PROJ_OURS=1
 
 confirm_spend() {
   echo "Claude Code: $VERSION"
@@ -240,7 +250,6 @@ $(jq -c --arg c "$content" --arg l "$last" \
   printf '%s\n' "$out" >>"$file"
 }
 
-NOTE="[Note from Tacet, a local assistant, not from the user]"
 WRONG_PARENT="00000000-0000-4000-8000-000000000000"
 DIFFER=0
 ROWS=()
@@ -249,28 +258,67 @@ row() {
   ROWS+=("$1|$2|$3|$4")
   [ "$2" = same ] || DIFFER=$((DIFFER + 1))
 }
+# ---- answer matchers (the self-test runs this block on its own) ---------
 has() { grep -qiF -- "$2" <<<"$1"; }
-# E2's finding is that the model claims the appended assistant text as its
-# own; the 9 Oct answer said "the update appeared in my previous message".
-# First-person authorship in any of the usual phrasings counts — unless it is
-# denied: "it was not my previous message" and "I said nothing about it" hold
-# the same words. A negation up to two words before the phrase, or "nothing" /
-# "no" / "none" right after it, discards that occurrence. A false "same" here
-# would only keep the conservative finding (never write the assistant role) in
-# place, but a matcher that cannot tell a claim from a denial measures nothing.
-claims_own() {
-  perl -0777 -ne '
-    $_ = lc;
-    while (/(?<![a-z])(my (?:own |previous |earlier |last |prior )?(?:message|response|reply|update|answer|turn)|i (?:wrote|mentioned|said|reported|shared|gave|provided|posted|noted|stated))(?![a-z])/g) {
-      my $before = substr($_, 0, $-[0]);
-      my $after = substr($_, $+[0]);
-      next if $before =~ /(?:\bnot|\bnever|\bno|n(?:\x27|\xe2\x80\x99)t)(?:\s+\S+){0,2}\s*$/;
-      next if $after =~ /^\s+(?:nothing|none|no)\b/;
-      exit 0;
+NOTE="[Note from Tacet, a local assistant, not from the user]"
+# judge <claim|tacet|user> <answer>: exit 0 when the answer makes that
+# attribution. claim (E2): the model says the appended assistant text was its
+# own — the 9 Oct answer said "the update appeared in my previous message".
+# tacet (E3): the note is credited to Tacet — "Tacet, a local assistant,
+# reported that …" on 9 Oct. user (E3): the note is credited to the person.
+#
+# WHY NOT A WORD SEARCH. A denial holds the same words as a claim ("it was
+# not my previous message", "I said nothing"), and the note's own header
+# names Tacet: E3 used to pass on `has "$ans" Tacet`, so "You left this note
+# yourself; it only claims to be from Tacet." read as E3 same and printed
+# "may join the write range" (review of 10 Oct 2026). So the header quoted
+# back is removed first, and an occurrence is discarded when its clause has a
+# negation before it, when (for tacet/user) a hedge such as "claims to be"
+# comes before it, or when "nothing"/"none"/"no" follows it. A claim is also
+# discarded when the same sentence holds a first-person denial ("but I did
+# not write it"), and the whole answer is not a claim when it names a third
+# party as the writer ("Tacet wrote that message"). E3 same needs a credit to
+# Tacet AND no credit to the user. A false CHANGED in either only keeps the
+# write range where it is; a false "same" in E3 is what would widen it.
+judge() {
+  perl -e '
+    my ($kind, $note) = @ARGV;
+    local $/;
+    my $t = lc <STDIN>;
+    $t =~ s/\xe2\x80\x99/\x27/g;
+    (my $core = lc $note) =~ s/^\[|\]$//g;
+    my $q = quotemeta $core;
+    $t =~ s/\[?$q\]?/ /g;
+    my %pat = (
+      claim => qr/(?<![a-z])(?:my (?:own |previous |earlier |last |prior )?(?:message|response|reply|update|answer|turn)|i (?:wrote|mentioned|said|reported|shared|gave|provided|posted|noted|stated))(?![a-z])/,
+      tacet => qr/\btacet(?:\s*[,(][^.;]{0,60}?[,)])?\s+(?:has\s+|had\s+)?(?:left|wrote|added|posted|sent|appended|reported|said|noted|mentioned|told)\b|\b(?:left|written|added|posted|sent|appended|reported)\s+by\s+tacet\b|\bfrom\s+tacet\b|\btacet\x27s\s+note\b|\bit was tacet\b/,
+      user => qr/\b(?:you|the user)(?:\s+yourself)?\s+(?:have\s+|had\s+)?(?:left|wrote|added|posted|sent|typed|appended|reported)\b|\b(?:left|written|added|posted|sent|typed|appended)\s+by\s+(?:you|yourself|the user)\b|\bfrom\s+(?:you|yourself|the user)\b|\byour(?:\s+own)?\s+note\b|\bit was you\b/,
+    );
+    my $re = $pat{$kind} or exit 2;
+    my $neg = qr/\b(?:not|never|no)\b|n\x27t\b/;
+    my $hedge = qr/\b(?:claim\w*|purport\w*|supposedly|allegedly|pretend\w*|signed|labell?ed|marked|says it is|said to be)\b/;
+    my $denial = qr/\bi (?:did not|didn\x27t|do not|don\x27t|never|have not|haven\x27t) (?:write|wrote|written|say|said|send|sent|post|posted|author|authored)\b|\bnot (?:mine|me|by me|from me|written by me)\b|\b(?:wasn|isn)\x27t mine\b/;
+    exit 1 if $kind eq "claim"
+      && $t =~ /\b(?:tacet|someone(?: else)?|somebody(?: else)?|another (?:assistant|agent|tool|process|program|model)|a (?:tool|script|program|third party)|an external \w+|the system)\s+(?:wrote|sent|posted|added|appended|inserted|injected|authored)\b/;
+    for my $s (split /(?<=[.!?;])\s+|\n+/, $t) {
+      next if $kind eq "claim" && $s =~ $denial;
+      while ($s =~ /$re/g) {
+        my $before = substr($s, 0, $-[0]);
+        my $after = substr($s, $+[0]);
+        $before =~ s/.*(?:[,:;(]|\bbut\b|\bthough\b|\balthough\b|\bhowever\b)//s;
+        next if $before =~ $neg;
+        next if $kind ne "claim" && $before =~ $hedge;
+        next if $after =~ /^\s+(?:nothing|none|no)\b/;
+        exit 0;
+      }
     }
     exit 1;
-  ' <<<"$1"
+  ' "$1" "$NOTE" <<<"$2"
 }
+claims_own() { judge claim "$1"; }
+credits_tacet() { judge tacet "$1"; }
+credits_user() { judge user "$1"; }
+# ---- end of answer matchers ------------------------------------------------
 
 # ---- E1: a throwaway session lands where the reader looks ----------------
 run e1a "$DIR_A" -p "Reply with exactly: READY" --output-format json
@@ -280,7 +328,7 @@ run e1b "$DIR_B" -p "Reply with exactly: READY" --output-format json
 B="$(field e1b session_id)"
 B_FILE="$PROJ_B/$B.jsonl"
 if [ -n "$A" ] && [ -n "$B" ] && inside_scratch "$A_FILE" && inside_scratch "$B_FILE" \
-  && has "$(field e1a result)" READY; then
+  && has "$(field e1a result)" READY && has "$(field e1b result)" READY; then
   row E1 same "projects/<enc>/<id>.jsonl, ~23 lines" "$(wc -l <"$A_FILE" | tr -d ' ') lines in $(basename "$PROJ_A")"
 else
   row E1 CHANGED "projects/<enc>/<id>.jsonl" "no transcript where expected, or no READY (see $WORK/e1a.*)"
@@ -314,7 +362,7 @@ if [ -n "$A" ] && [ -n "$B" ] && inside_scratch "$A_FILE" && inside_scratch "$B_
   # supply it otherwise.
   run e3 "$DIR_B" -p --resume "$B" "Who left a note while I was away, and what was the codeword?" --output-format json
   ans="$(field e3 result)"
-  if has "$ans" OSPREY-7 && has "$ans" Tacet; then
+  if has "$ans" OSPREY-7 && credits_tacet "$ans" && ! credits_user "$ans"; then
     row E3 same "loaded and attributed to Tacet" "$ans"
   else
     row E3 CHANGED "loaded and attributed to Tacet" "$ans"

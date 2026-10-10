@@ -116,12 +116,11 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// THE PAGES THEMSELVES. Ignored on the branch that changed the command,
-/// because this unit does not own the README: the integrator applies the
-/// paragraph above to both pages and deletes the `#[ignore]` line in the same
-/// commit (CLAUDE.md — the README ships with the code).
+/// THE PAGES THEMSELVES. Both carry the paragraph above since the wave-3
+/// merge that changed the command; the README ships with the code
+/// (CLAUDE.md), so a later edit to either page that drifts from what
+/// `tacet update` does goes red here.
 #[test]
-#[ignore = "un-ignore in the commit that applies the D6/D7 README paragraph"]
 fn both_readmes_say_what_update_does() {
     for page in ["README.md", "crates/tacet-cli/README.md"] {
         let text = std::fs::read_to_string(repo_root().join(page)).expect("the page is readable");

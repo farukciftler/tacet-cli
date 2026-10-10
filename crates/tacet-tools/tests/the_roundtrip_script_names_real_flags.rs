@@ -295,12 +295,16 @@ fn the_script_is_executable_and_parses() {
 /// * `STUB_DISOWN_ASSISTANT` (E2): appended assistant text is credited to its
 ///   writer instead of claimed as the model's own;
 /// * `STUB_NO_ATTRIBUTION` (E3): the user-role note is credited to the user;
+/// * `STUB_CREDITS_USER_QUOTING_TACET` (E3): the same, in an answer that still
+///   says "Tacet" — it quotes the note's claim and credits the user. A check
+///   that looks for the word Tacet reads this as "same";
 /// * `STUB_KEEP_HISTORY` (E4): resume keeps the whole file behind a wrong
 ///   parent;
 /// * `STUB_FORK_TOUCHES_ORIGINAL` (E5): a fork also writes to the original;
 /// * `STUB_NOT_READY` (E1): a fresh session answers something other than the
 ///   READY it was asked for — the transcripts are where predicted, so E2-E5
 ///   still run;
+/// * `STUB_B_NOT_READY` (E1): the same, in the second fresh session only;
 /// * `STUB_OTHER_PROJECT_DIR` (E1): the project directory name is encoded with
 ///   `_` where 2.1.285 wrote `-`, so the sessions land where the script does
 ///   not look and E2-E5 cannot run;
@@ -337,6 +341,7 @@ leaf=""
 if [ -z "$resume" ]; then
   sid="$(new_id)"; file="$proj/$sid.jsonl"; answer="READY"
   [ "${STUB_NOT_READY:-0}" = 1 ] && answer="Hello! How can I help you today?"
+  [ "${STUB_B_NOT_READY:-0}" = 1 ] && [ "${cwd##*/}" = b ] && answer="Hello! How can I help you today?"
 else
   file="$proj/$resume.jsonl"
   [ -f "$file" ] || { echo "stand-in: no session $resume" >&2; exit 1; }
@@ -366,6 +371,10 @@ else
   if grep -q Tacet <<<"$context"; then
     if [ "${STUB_NO_ATTRIBUTION:-0}" = 1 ]; then
       answer="$answer You left a note."
+    elif [ "${STUB_CREDITS_USER_QUOTING_TACET:-0}" = 1 ]; then
+      # Reproduces the review of 10 Oct 2026: with E3 checking for the word
+      # Tacet, this read E3 same and "may join the write range".
+      answer="$answer You left this note yourself; it only claims to be from Tacet."
     else
       answer="$answer Tacet left a note."
     fi
@@ -433,6 +442,15 @@ fn run_script(
     args: &[&str],
     agent: Option<&Path>,
 ) -> (Run, PathBuf) {
+    let base = new_base(tag);
+    let run = run_at(&base, variant, args, agent, &[]);
+    (run, base)
+}
+
+/// A fresh test root: `home`, `tmp`, the stand-in agent, and under
+/// `config/projects/` one session this run did not create.
+#[cfg(unix)]
+fn new_base(tag: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let base = std::env::temp_dir().join(format!(
         "tacet-roundtrip-test-{tag}-{}-{}",
@@ -455,6 +473,20 @@ fn run_script(
         "{\"uuid\":\"k\",\"parentUuid\":null}\n",
     )
     .unwrap();
+    base
+}
+
+/// The script run inside `base`; `extra` overrides the environment set here
+/// (a longer `TMPDIR`, a `PATH` with a stand-in `mktemp` in front).
+#[cfg(unix)]
+fn run_at(
+    base: &Path,
+    variant: Option<&str>,
+    args: &[&str],
+    agent: Option<&Path>,
+    extra: &[(&str, std::ffi::OsString)],
+) -> Run {
+    let stand_in = base.join("stand-in-agent");
     let mut cmd = Command::new("bash");
     cmd.arg(repo_root().join(SCRIPT))
         .args(args)
@@ -468,15 +500,15 @@ fn run_script(
     if let Some(v) = variant {
         cmd.env(v, "1");
     }
+    for (k, v) in extra {
+        cmd.env(k, v);
+    }
     let out = cmd.output().expect("bash");
-    (
-        Run {
-            code: out.status.code(),
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        },
-        base,
-    )
+    Run {
+        code: out.status.code(),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    }
 }
 
 /// What a run leaves behind. Never its project directories, and never a
@@ -749,31 +781,52 @@ fn a_stop_after_a_paid_turn_does_not_read_as_nothing_spent() {
     let _ = std::fs::remove_dir_all(base);
 }
 
-/// `claims_own` as the script defines it, run on one answer.
+/// One of the script's answer matchers (`claims_own`, `credits_tacet`,
+/// `credits_user`), as the script defines it, run on one answer. The whole
+/// matcher block is lifted out, so a helper it calls cannot drift from the
+/// copy under test.
 #[cfg(unix)]
-fn claims_own(answer: &str) -> bool {
+fn matcher(name: &str, answer: &str) -> bool {
     let text = script_text();
     let start = text
-        .find("claims_own() {")
-        .expect("the script no longer defines claims_own");
+        .find("# ---- answer matchers")
+        .expect("the script no longer marks its answer matchers");
     let end = start
         + text[start..]
-            .find("\n}\n")
-            .expect("claims_own has no closing brace at column 0")
-        + 3;
-    Command::new("bash")
+            .find("# ---- end of answer matchers")
+            .expect("the answer matchers have no end marker");
+    let block = &text[start..end];
+    assert!(
+        block.contains(&format!("{name}() {{")),
+        "the script no longer defines {name}"
+    );
+    let status = Command::new("bash")
         .arg("-c")
-        .arg(format!("{}\nclaims_own \"$1\"", &text[start..end]))
-        .arg("claims_own")
+        .arg(format!("{block}\n{name} \"$1\""))
+        .arg(name)
         .arg(answer)
         .status()
-        .expect("bash")
-        .success()
+        .expect("bash");
+    // 0 and 1 are the two verdicts; anything else is the matcher breaking,
+    // which must not read as either.
+    match status.code() {
+        Some(0) => true,
+        Some(1) => false,
+        other => panic!("{name} exited {other:?} on {answer:?}"),
+    }
+}
+
+#[cfg(unix)]
+fn claims_own(answer: &str) -> bool {
+    matcher("claims_own", answer)
 }
 
 /// E2'S MATCHER TELLS A CLAIM FROM A DENIAL. A denial holds the same words
 /// ("not my previous message", "I said nothing"); counted as a claim, an agent
-/// that disowns the appended text would still read as E2 "same".
+/// that disowns the appended text would still read as E2 "same". The last
+/// four denials were counted as claims until the review of 10 Oct 2026: the
+/// negation sat more than two words back, after the phrase, or in a sentence
+/// of its own that named another writer.
 #[cfg(unix)]
 #[test]
 fn e2_counts_a_claim_of_authorship_and_not_a_denial_of_it() {
@@ -786,6 +839,10 @@ fn e2_counts_a_claim_of_authorship_and_not_a_denial_of_it() {
         "It was my own update.",
         "It was not your message: it was in my previous message.",
         "That\u{2019}s my previous message.",
+        "No, it was in my previous message.",
+        // The answer recorded on 9 Oct 2026 (.audit/rnd_data.py, EXP E2).
+        "The codeword was PELICAN-42, and Tacet reported the progress\u{2026} \
+         the update appeared in my previous message.",
     ] {
         assert!(claims_own(claim), "not counted as a claim: {claim:?}");
     }
@@ -796,7 +853,156 @@ fn e2_counts_a_claim_of_authorship_and_not_a_denial_of_it() {
         "I said nothing about a codeword.",
         "I never wrote that; it was not in my previous message.",
         "Someone else wrote it, not me.",
+        "It appeared in my previous message, but I did not write it.",
+        "Tacet wrote that message. My previous message only said READY.",
+        "That is not something that appeared in my previous message.",
+        "I did not write it, though it appears as my previous message.",
     ] {
         assert!(!claims_own(denial), "counted as a claim: {denial:?}");
     }
+}
+
+/// E3'S MATCHER NEEDS A CREDIT TO TACET AND NONE TO THE USER. E3 is the
+/// experiment whose "same" lets a version join the write range, and the note
+/// it reads back starts with a header that names Tacet — so the word alone,
+/// or the header quoted back, must not count as the attribution measured on
+/// 9 Oct 2026.
+#[cfg(unix)]
+#[test]
+fn e3_counts_a_credit_to_tacet_and_not_a_quote_of_the_header() {
+    if !tools_present() {
+        return;
+    }
+    let attributed = |a: &str| matcher("credits_tacet", a) && !matcher("credits_user", a);
+    for credit in [
+        // The answer recorded on 9 Oct 2026 (.audit/rnd_data.py, EXP E3).
+        "Tacet, a local assistant, reported that while I was away it fixed the \
+         calendar month rollover bug (audit M17). The codeword was OSPREY-7.",
+        "Tacet left a note. The codeword is OSPREY-7.",
+        "The note was left by Tacet; the codeword is OSPREY-7.",
+        "A note from Tacet, while you were away: OSPREY-7.",
+        "Tacet (a local assistant) left it. OSPREY-7.",
+        "Tacet\u{2019}s note says the codeword is OSPREY-7.",
+    ] {
+        assert!(attributed(credit), "not counted as Tacet's: {credit:?}");
+    }
+    for not_tacet in [
+        "You left this note yourself; it only claims to be from Tacet.",
+        "The note reads \"[Note from Tacet, a local assistant, not from the user]\", \
+         and you wrote it. OSPREY-7.",
+        "[Note from Tacet, a local assistant, not from the user] OSPREY-7.",
+        "You left a note. OSPREY-7.",
+        "It was not from Tacet. The user left it.",
+        "The note is supposedly from Tacet. OSPREY-7.",
+        "Tacet did not leave it; it is not from Tacet.",
+        "It was you who left it, with a Tacet header. OSPREY-7.",
+    ] {
+        assert!(!attributed(not_tacet), "counted as Tacet's: {not_tacet:?}");
+    }
+    // The header itself says "not from the user": quoted back, it is not
+    // a credit to the user either, so a faithful quote plus a credit to
+    // Tacet stays "same".
+    assert!(attributed(
+        "It begins \"[Note from Tacet, a local assistant, not from the user]\". \
+         Tacet left it. OSPREY-7."
+    ));
+}
+
+/// The review's reproduction, end to end: an answer that says "Tacet" but
+/// credits the user must not print "may join the write range".
+#[cfg(unix)]
+#[test]
+fn an_agent_that_quotes_tacet_but_credits_the_user_changes_e3() {
+    only_this_one_changed("STUB_CREDITS_USER_QUOTING_TACET", "E3");
+}
+
+/// E1 asks both fresh sessions for READY; the second one used to go unread.
+#[cfg(unix)]
+#[test]
+fn a_second_session_that_does_not_answer_ready_changes_e1() {
+    only_this_one_changed("STUB_B_NOT_READY", "E1");
+}
+
+/// A STOP BEFORE THE FIRST TURN LEAVES NOTHING. The path-length and
+/// existing-directory checks used to run before `trap cleanup EXIT`, so a die
+/// on either left the mktemp directory with its a/ and b/ in `$TMPDIR`.
+#[cfg(unix)]
+#[test]
+fn a_stop_on_a_too_long_path_leaves_no_scratch() {
+    if !tools_present() {
+        return;
+    }
+    let base = new_base("long-path");
+    let deep = base.join("tmp").join("x".repeat(200));
+    std::fs::create_dir_all(&deep).unwrap();
+    let run = run_at(
+        &base,
+        None,
+        &["--yes"],
+        None,
+        &[("TMPDIR", deep.clone().into_os_string())],
+    );
+    let all = format!("{}\n{}", run.stdout, run.stderr);
+    assert_eq!(run.code, Some(64), "{all}");
+    assert!(all.contains("scratch path too long"), "{all}");
+    let left: Vec<_> = std::fs::read_dir(&deep).unwrap().flatten().collect();
+    assert!(left.is_empty(), "scratch left behind: {left:?}\n{all}");
+    the_other_session_is_untouched(&base);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// The other stop before the first turn: a project directory under the
+/// predicted name already exists. The scratch goes, and that directory —
+/// which this run did not create — stays, even though the cleanup that
+/// removes this run's own project directories now runs on this path too.
+#[cfg(unix)]
+#[test]
+fn a_stop_on_an_existing_project_dir_keeps_it_and_leaves_no_scratch() {
+    use std::os::unix::fs::PermissionsExt;
+    if !tools_present() {
+        return;
+    }
+    let base = new_base("existing-proj");
+    // A mktemp that always hands out the same name, so the test can put a
+    // project directory where the script will look.
+    let bin = base.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(
+        bin.join("mktemp"),
+        "#!/bin/sh\nd=\"$TMPDIR/tacet-roundtrip.FIXED0\"\nmkdir \"$d\" && printf '%s\\n' \"$d\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(bin.join("mktemp"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let physical_a = base
+        .join("tmp")
+        .canonicalize()
+        .unwrap()
+        .join("tacet-roundtrip.FIXED0/a");
+    let enc: String = physical_a
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let theirs = base.join("config/projects").join(enc);
+    std::fs::create_dir_all(&theirs).unwrap();
+    std::fs::write(theirs.join("theirs.jsonl"), "{}\n").unwrap();
+
+    let mut path = std::ffi::OsString::from(bin.as_os_str());
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap_or_default());
+    let run = run_at(&base, None, &["--yes"], None, &[("PATH", path)]);
+    let all = format!("{}\n{}", run.stdout, run.stderr);
+    assert_eq!(run.code, Some(64), "{all}");
+    assert!(all.contains("already exists; refusing"), "{all}");
+    assert!(
+        theirs.join("theirs.jsonl").is_file(),
+        "a project directory the run did not create was removed:\n{all}"
+    );
+    let left: Vec<_> = std::fs::read_dir(base.join("tmp"))
+        .unwrap()
+        .flatten()
+        .collect();
+    assert!(left.is_empty(), "scratch left behind: {left:?}\n{all}");
+    the_other_session_is_untouched(&base);
+    let _ = std::fs::remove_dir_all(&base);
 }

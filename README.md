@@ -143,11 +143,11 @@ tacet --version        # tacet 0.1.26 (metal)  ← the part in brackets is the e
 Or grab a prebuilt binary from [Releases](../../releases) — macOS (Apple Silicon
 and Intel), Linux and Windows.
 
-Check for a newer version at any time — this is the only command that talks to GitHub, and only when you run it:
+Update at any time — `tacet update` asks GitHub for the newest release, and only when you run it:
 
 ```bash
-tacet update            # tells you what's available
-tacet update --install  # downloads and replaces the binary, with your confirmation
+tacet update            # downloads the newest release and replaces the binary — after asking
+tacet update --check    # only looks: says whether a newer version exists, writes nothing
 ```
 
 **This command replaces the running binary, so it is worth saying what backs it.**
@@ -176,7 +176,9 @@ tacet config set update.check off   # never
 ```
 
 The check is throttled to once every 24 hours, prints a single line when a newer
-version exists, stays silent when it fails, and never runs when output is piped.
+version exists and stays silent when it fails. It runs only at the end of an
+interactive session with both stdout and stderr on a terminal — never after
+`tacet -m`/`--message`, under `--json`, or when output is piped or captured.
 
 ## Quickstart
 
