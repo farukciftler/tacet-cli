@@ -71,6 +71,13 @@ go out under one version per crate, with the bumps named in both lists.
   CLI rollouts, written from openai/codex's source and fixture-tested only;
   a `.jsonl.zst` rollout is listed and refused with the `zstd -d` advice
   (RG-11, RG-12, RG-13).
+* `tacet-tools`: `sessions::antigravity` — `AntigravitySource`, a
+  `SessionSource` over the step logs and `task.md` under the three
+  `~/.gemini/antigravity*` roots; the conversation databases are dated, never
+  opened (RG-14, RG-15). A title is what the user typed inside
+  `<USER_REQUEST>`, Antigravity's `<ADDITIONAL_METADATA>` block is kept as a
+  system note rather than the user's words, and the workspace is
+  `run_command`'s `Cwd` — the shape measured over 50 real logs on 10 Oct 2026.
 
 ---
 

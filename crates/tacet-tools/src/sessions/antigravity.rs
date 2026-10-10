@@ -11,8 +11,19 @@
 //!   would refuse it anyway (`.db` is not an allowed extension).
 //! * `brain/<cascadeId>/.system_generated/logs/transcript_full.jsonl` (fallback
 //!   `transcript.jsonl`) — one JSON step per line: `{step_index, type, source,
-//!   status, created_at, content?, thinking?, tool_calls?}`. The only readable
-//!   record of the conversation.
+//!   status, created_at, content?, thinking?, tool_calls?, error?, exit_code?,
+//!   truncated_fields?}`. The only readable record of the conversation.
+//!
+//! THE REAL SHAPE, NOT THE BRIEF'S. MEASURED by the review of this reader on
+//! 10 Oct 2026, on one Mac (macOS 26.5.2), over 50 step logs (13,534 lines)
+//! under `antigravity-ide` and `antigravity-cli`, counting key names and tags
+//! only, never values: those eleven keys are the only top-level ones — no step
+//! carries a workspace field of any spelling — and every `USER_INPUT` (426 of
+//! 426) is `<USER_REQUEST>…</USER_REQUEST><ADDITIONAL_METADATA>…
+//! </ADDITIONAL_METADATA>`, the metadata holding the local time and, in 260 of
+//! them, `/Users/` paths. The first version of this reader was written to a
+//! guessed shape and, run over those logs, titled 34 of 34 sessions with
+//! wrapper markup and found a workspace for none.
 //! * `brain/<cascadeId>/task.md`, `implementation_plan.md`, `walkthrough.md`,
 //!   each with a `<name>.md.metadata.json` beside it — the agent's plan and its
 //!   reports to the user.
@@ -265,6 +276,50 @@ fn content_role(step: &Value) -> (Role, EntryKind) {
     }
 }
 
+const REQUEST_OPEN: &str = "<USER_REQUEST>";
+const REQUEST_CLOSE: &str = "</USER_REQUEST>";
+const METADATA_OPEN: &str = "<ADDITIONAL_METADATA>";
+const METADATA_CLOSE: &str = "</ADDITIONAL_METADATA>";
+
+/// A `USER_INPUT`'s content split into what the user typed and the block
+/// Antigravity appended to it (see THE REAL SHAPE above).
+///
+/// THE METADATA IS NOT THE USER SPEAKING. It is the app's note of the local
+/// time and open files; filed under `Role::User` it would reach a summary as
+/// words the user said, the one role a downstream prompt trusts — and it is
+/// most of a listing's 120-character title before the request even starts.
+///
+/// The request runs from the first opening tag to the LAST closing one, so a
+/// request that quotes the tag stays whole; the metadata is looked for only
+/// after it. A cut tag (a head read that stopped mid-step drops the line, so
+/// that is only a hand-written log) keeps what follows the opener. Content
+/// with no wrapper is all request: an older or other build that does not wrap
+/// must still be read, not emptied.
+fn split_user_input(text: &str) -> (String, Option<String>) {
+    let Some(open) = text.find(REQUEST_OPEN) else {
+        return (text.to_string(), None);
+    };
+    let body = &text[open + REQUEST_OPEN.len()..];
+    let (request, rest) = match body.rfind(REQUEST_CLOSE) {
+        Some(close) => (&body[..close], &body[close + REQUEST_CLOSE.len()..]),
+        None => match body.find(METADATA_OPEN) {
+            Some(meta) => (&body[..meta], &body[meta..]),
+            None => (body, ""),
+        },
+    };
+    let metadata = rest.find(METADATA_OPEN).map(|at| {
+        let inner = &rest[at + METADATA_OPEN.len()..];
+        let inner = inner
+            .rfind(METADATA_CLOSE)
+            .map_or(inner, |end| &inner[..end]);
+        inner.trim().to_string()
+    });
+    (
+        request.trim().to_string(),
+        metadata.filter(|m| !m.is_empty()),
+    )
+}
+
 /// One step as entries: its reasoning, then what it said or returned, then
 /// the tool calls it made — the order the model produced them in.
 fn step_entries(step: &Value) -> Vec<Entry> {
@@ -280,7 +335,29 @@ fn step_entries(step: &Value) -> Vec<Entry> {
             ts,
         });
     }
-    if let Some(text) = text_of(step.get("content")) {
+    if step_type(step) == "USER_INPUT"
+        && let Some(text) = text_of(step.get("content"))
+    {
+        let (request, metadata) = split_user_input(&text);
+        if !request.is_empty() {
+            out.push(Entry {
+                role: Role::User,
+                kind: EntryKind::Text,
+                text: request,
+                tool: None,
+                ts,
+            });
+        }
+        if let Some(metadata) = metadata {
+            out.push(Entry {
+                role: Role::System,
+                kind: EntryKind::Text,
+                text: metadata,
+                tool: None,
+                ts,
+            });
+        }
+    } else if let Some(text) = text_of(step.get("content")) {
         let (role, kind) = content_role(step);
         out.push(Entry {
             role,
@@ -309,10 +386,14 @@ fn step_entries(step: &Value) -> Vec<Entry> {
 
 /// The first request, as one line: the listing's title. Antigravity's real
 /// titles are only in the IDE's `state.vscdb` protobuf, which is not read.
+/// The request is what the user typed, without the wrapper and the metadata
+/// block (`split_user_input`); a step whose request is empty is skipped.
 fn title_of<'a>(steps: impl IntoIterator<Item = &'a Value>) -> String {
     let first = steps.into_iter().find_map(|step| {
         if step_type(step) == "USER_INPUT" {
             text_of(step.get("content"))
+                .map(|text| split_user_input(&text).0)
+                .filter(|request| !request.is_empty())
         } else {
             None
         }
@@ -328,24 +409,20 @@ fn title_of<'a>(steps: impl IntoIterator<Item = &'a Value>) -> String {
     format!("{}…", cut.trim_end())
 }
 
-/// The keys a step was looked at for its workspace. The brief says the
-/// workspace comes from the transcript but did not record the field, so these
-/// are the spellings the hook documentation and the sibling formats use; a log
-/// without any of them gives `None`, never a guess from a file path. NOT
-/// MEASURED on a real transcript — RG-28's corpus will say which one it is.
-const WORKSPACE_KEYS: &[&str] = &[
-    "workspace",
-    "workspace_path",
-    "workspace_uri",
-    "workspaceUri",
-    "cwd",
-];
-const WORKSPACE_LIST_KEYS: &[&str] = &[
-    "workspace_roots",
-    "workspaceRoots",
-    "workspace_folders",
-    "workspaceFolders",
-];
+/// The argument a tool call names its working directory by: `Cwd`, PascalCase
+/// like every Antigravity tool argument, on `run_command`. MEASURED (the review
+/// of 10 Oct 2026, the 50 logs above): 1,348 times.
+///
+/// THE ONLY WORKSPACE FIELD THERE IS. This reader first looked for top-level
+/// `workspace`/`workspace_uri`/`cwd`/`workspaceRoots`-style keys, spellings
+/// borrowed from the hook docs and the sibling formats; MEASURED absent from
+/// every one of the 13,534 steps, so they found a workspace for no session and
+/// are gone. `list_dir`'s `DirectoryPath` (278 times) is NOT used: it is a
+/// directory the agent looked into, which may be any subdirectory, or outside
+/// the project altogether, and a wrong workspace files a session under the
+/// wrong project. The first `Cwd` in step order is taken: the agent starts
+/// where the user opened it, and a later `cd` elsewhere is not the workspace.
+const CWD_ARG: &str = "Cwd";
 
 /// `file:///Users/x/my%20repo` or `/Users/x/repo` to a path; anything that is
 /// not an absolute local path is `None`.
@@ -377,19 +454,14 @@ fn percent_decode(text: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
+/// The workspace: the first absolute `Cwd` a tool call names, in step order.
+/// A relative or non-local one is skipped, never resolved against a guess.
 fn workspace_of<'a>(steps: impl IntoIterator<Item = &'a Value>) -> Option<PathBuf> {
     steps.into_iter().find_map(|step| {
-        WORKSPACE_KEYS
-            .iter()
-            .find_map(|k| str_field(step, k).and_then(local_path))
-            .or_else(|| {
-                WORKSPACE_LIST_KEYS.iter().find_map(|k| {
-                    step.get(*k)?
-                        .as_array()?
-                        .iter()
-                        .find_map(|v| v.as_str().and_then(local_path))
-                })
-            })
+        step.get("tool_calls")?.as_array()?.iter().find_map(|call| {
+            let args = call.get("args").or_else(|| call.get("arguments"))?;
+            str_field(args, CWD_ARG).and_then(local_path)
+        })
     })
 }
 
@@ -918,24 +990,91 @@ not json at all
     }
 
     #[test]
-    fn a_workspace_is_a_local_absolute_path_or_nothing() {
+    fn a_workspace_is_the_first_cwd_a_tool_call_names_or_nothing() {
         let v = |s: &str| serde_json::from_str::<Value>(s).unwrap();
+        let call = |args: &str| {
+            v(&format!(
+                r#"{{"step_index":1,"type":"PLANNER_RESPONSE","tool_calls":[{{"name":"run_command","args":{args}}}]}}"#
+            ))
+        };
         assert_eq!(
-            workspace_of([&v(r#"{"workspace_uri":"file:///Users/a/my%20repo"}"#)]),
+            workspace_of([&call(r#"{"CommandLine":"ls","Cwd":"/Users/a/my repo"}"#)]),
             Some(PathBuf::from("/Users/a/my repo"))
         );
+        // The first in step order wins over a later `cd` elsewhere, and a
+        // call without one is passed over rather than ending the search.
+        let first = call(r#"{"Cwd":"file:///w/one%20two"}"#);
+        let later = call(r#"{"Cwd":"/w/elsewhere"}"#);
+        let none = call(r#"{"CommandLine":"pwd"}"#);
         assert_eq!(
-            workspace_of([&v(r#"{"workspaceRoots":["file:///w/one","/w/two"]}"#)]),
-            Some(PathBuf::from("/w/one"))
+            workspace_of([&none, &first, &later]),
+            Some(PathBuf::from("/w/one two"))
         );
-        for none in [
-            r#"{"workspace":"relative/dir"}"#,
-            r#"{"workspace":"https://example.com/repo"}"#,
-            r#"{"workspace_uri":"file:///bad%zz"}"#,
-            r#"{"content":"/Users/a/repo is where I work"}"#,
+        for nothing in [
+            // A relative, remote or undecodable `Cwd` is not a guess to make.
+            call(r#"{"Cwd":"relative/dir"}"#),
+            call(r#"{"Cwd":"https://example.com/repo"}"#),
+            call(r#"{"Cwd":"file:///bad%zz"}"#),
+            // A directory the agent only LOOKED INTO is not where it works.
+            v(
+                r#"{"tool_calls":[{"name":"list_dir","args":{"DirectoryPath":"/Users/a/repo/src"}}]}"#,
+            ),
+            // The top-level keys the first version looked for were MEASURED
+            // absent from every real step; one in a log is not a workspace.
+            v(r#"{"workspace_uri":"file:///Users/a/my%20repo"}"#),
+            v(r#"{"workspaceRoots":["/w/one"]}"#),
+            v(r#"{"content":"/Users/a/repo is where I work"}"#),
         ] {
-            assert_eq!(workspace_of([&v(none)]), None, "{none}");
+            assert_eq!(workspace_of([&nothing]), None, "{nothing}");
         }
+    }
+
+    /// Every real `USER_INPUT` wraps the request and appends Antigravity's
+    /// metadata (THE REAL SHAPE, module doc). The title is the request; the
+    /// metadata is a system note, never the user speaking.
+    #[test]
+    fn a_wrapped_request_is_the_title_and_its_metadata_is_not_the_user() {
+        let content = "<USER_REQUEST>\nfix the rollover bug\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-10-09T12:00:00+03:00.\nActive Document: /Users/dev/src/app/src/scheduler.rs\n</ADDITIONAL_METADATA>";
+        let step = serde_json::json!({
+            "step_index": 0, "type": "USER_INPUT", "source": "USER_EXPLICIT", "content": content
+        });
+        assert_eq!(title_of([&step]), "fix the rollover bug");
+        let entries = step_entries(&step);
+        let shape: Vec<_> = entries.iter().map(|e| (e.role, e.kind)).collect();
+        assert_eq!(
+            shape,
+            [
+                (Role::User, EntryKind::Text),
+                (Role::System, EntryKind::Text)
+            ]
+        );
+        assert_eq!(entries[0].text, "fix the rollover bug");
+        assert!(
+            entries
+                .iter()
+                .filter(|e| e.role == Role::User)
+                .all(|e| !e.text.contains("/Users/") && !e.text.contains('<')),
+            "the metadata or the wrapper reached the user's words: {entries:?}"
+        );
+        assert!(entries[1].text.starts_with("The current local time is"));
+
+        // A request that quotes the closing tag stays whole; content with no
+        // wrapper is all request; a request with nothing in it gives no title.
+        let (request, meta) =
+            split_user_input("<USER_REQUEST>why does </USER_REQUEST> appear</USER_REQUEST>");
+        assert_eq!(
+            (request.as_str(), meta),
+            ("why does </USER_REQUEST> appear", None)
+        );
+        assert_eq!(split_user_input("plain").0, "plain");
+        let empty: Value = serde_json::from_str(
+            r#"{"step_index":0,"type":"USER_INPUT","content":"<USER_REQUEST> </USER_REQUEST><ADDITIONAL_METADATA>t</ADDITIONAL_METADATA>"}"#,
+        )
+        .unwrap();
+        let next: Value =
+            serde_json::from_str(r#"{"step_index":1,"type":"USER_INPUT","content":"second"}"#)
+                .unwrap();
+        assert_eq!(title_of([&empty, &next]), "second");
     }
 
     #[test]
@@ -1006,6 +1145,15 @@ not json at all
         // Tildes have no such rule: a ~~~ opener's info string may hold '`'.
         let tilde = "~~~ a`b\n- [ ] in the fence\n~~~\n- [ ] after\n";
         let got: Vec<_> = parse_task_md(tilde)
+            .iter()
+            .map(|t| t.title.clone())
+            .collect();
+        assert_eq!(got, ["after"]);
+
+        // A closer may be LONGER than its opener: ```` closes ```. Read as
+        // still open, the fence would swallow every task below it.
+        let longer = "```\n- [ ] ex\n````\n- [ ] after\n";
+        let got: Vec<_> = parse_task_md(longer)
             .iter()
             .map(|t| t.title.clone())
             .collect();

@@ -16,6 +16,14 @@
 //! * `9b1e4d20…` — a database and nothing else (the brain was never written).
 //! * `c4d5e6f7…` — no database, only the fallback `transcript.jsonl`, its last
 //!   step still RUNNING.
+//!
+//! THE STEPS HAVE THE MEASURED SHAPE (module doc of `sessions::antigravity`,
+//! THE REAL SHAPE): no top-level workspace key, every `USER_INPUT` wrapped in
+//! `<USER_REQUEST>` with an `<ADDITIONAL_METADATA>` block after it, and the
+//! working directory only as `run_command`'s PascalCase `Cwd` argument. The
+//! first fixture had a top-level `workspace_uri` and bare requests, so it held
+//! the reader to a format no real log has. What is measured is the keys and
+//! the tags; the wording inside the metadata block is invented.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -111,12 +119,14 @@ fn a_listing_names_every_conversation_newest_first_with_its_first_request() {
 
     let a = &list[0];
     assert_eq!(a.agent, AgentKind::Antigravity);
-    // Step 0's request, as one line, even though it is not the first USER_INPUT
-    // line a reader that ignored step order would meet in a reshuffled file.
+    // Step 0's request, as one line: the inside of `<USER_REQUEST>`, with
+    // neither the tag nor the metadata block's local time and paths.
     assert_eq!(
         a.title,
         "Fix the midnight rollover bug in the scheduler and add a test for it."
     );
+    // From step 6's `run_command` `Cwd`: no step has a workspace key, and the
+    // `/Users/` paths in the metadata block and in `view_file` are not one.
     assert_eq!(
         a.cwd.as_deref(),
         Some(Path::new("/Users/dev/src/rollover app"))
@@ -202,6 +212,7 @@ fn a_read_dedupes_by_step_keeps_the_last_state_and_says_the_log_trails() {
         shape,
         [
             (Role::User, EntryKind::Text, None),
+            (Role::System, EntryKind::Text, None),
             (Role::Assistant, EntryKind::Thinking, None),
             (Role::Assistant, EntryKind::Text, None),
             (Role::Assistant, EntryKind::ToolCall, Some("view_file")),
@@ -213,15 +224,35 @@ fn a_read_dedupes_by_step_keeps_the_last_state_and_says_the_log_trails() {
                 Some("replace_file_content")
             ),
             (Role::User, EntryKind::Text, None),
+            (Role::System, EntryKind::Text, None),
+            (Role::Assistant, EntryKind::Text, None),
+            (Role::Assistant, EntryKind::ToolCall, Some("run_command")),
             (Role::Tool, EntryKind::ToolResult, Some("RUN_COMMAND")),
         ]
     );
+    // What the user typed is the user's entry; the wrapper and the metadata
+    // block (local time, open files) are not words the user said.
+    assert_eq!(
+        s.entries[0].text,
+        "Fix the midnight rollover bug in the scheduler\nand add a test for it."
+    );
+    assert_eq!(s.entries[8].text, "Looks good, now run the tests.");
+    for e in s.entries.iter().filter(|e| e.role == Role::User) {
+        assert!(
+            !e.text.contains("USER_REQUEST")
+                && !e.text.contains("ADDITIONAL_METADATA")
+                && !e.text.contains("local time"),
+            "{:?}",
+            e.text
+        );
+    }
+    assert!(s.entries[1].text.starts_with("The current local time is"));
     // Step 2 was logged RUNNING (no content) and then DONE: the DONE line wins.
     assert_eq!(
-        s.entries[4].text,
+        s.entries[5].text,
         "fn next_run(now: Time) -> Time { now + DAY }"
     );
-    assert_eq!(s.entries[8].text, "test result: ok. 12 passed; 0 failed");
+    assert_eq!(s.entries[12].text, "test result: ok. 12 passed; 0 failed");
     assert_eq!(s.started, Some(epoch("2026-10-09T09:00:00Z")));
     assert_eq!(s.updated, Some(epoch(T) + 75));
     assert!(!s.live);
@@ -315,7 +346,8 @@ fn the_fallback_log_is_read_and_said_to_be_the_fallback() {
     let read = AntigravitySource.read_full(&root, C).unwrap();
     assert_eq!(read.transcript, TranscriptFile::Fallback);
     assert_eq!(read.session.title, "Summarise the open pull requests");
-    assert_eq!(read.session.entries.len(), 2);
+    // The request, Antigravity's metadata note, and the running reply.
+    assert_eq!(read.session.entries.len(), 3);
     assert!(read.session.live);
     assert_eq!(read.lag_seconds, None, "no database to trail");
     assert!(
