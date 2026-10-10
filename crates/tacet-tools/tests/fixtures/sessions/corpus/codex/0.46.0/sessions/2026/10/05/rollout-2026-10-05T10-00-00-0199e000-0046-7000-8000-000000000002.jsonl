@@ -1,0 +1,8 @@
+{"timestamp":"2026-10-05T10:00:00.000Z","type":"session_meta","payload":{"id":"0199e000-0046-7000-8000-000000000002","timestamp":"2026-10-05T10:00:00.000Z","cwd":"/home/dev/corpus","originator":"codex_cli_rs","cli_version":"0.46.0","source":"cli","model_provider":"openai","history_mode":"legacy"}}
+{"timestamp":"2026-10-05T10:00:05.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Bump the version"}]}}
+{"timestamp":"2026-10-05T10:00:06.000Z","type":"response_item","payload":{"type":"mess
+{"timestamp":"2026-10-05T10:00:06.500Z","type":"event_msg"}
+{"timestamp":"2026-10-05T10:00:06.600Z","payload":{"type":"agent_message","message":"no type"}}
+{"timestamp":"2026-10-05T10:00:02.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Bumped to 1.2.0."}]}}
+{"timestamp":"2026-10-05T10:00:09.000Z","type":"event_msg","payload":{"type":"user_message","message":"Bump the version","images":[]}}
+{"timestamp":"2026-10-05T10:00:01.000Z","type":"event_msg","payload":{"type":"agent_message","message":"Bumped to 1.2.0."}}
