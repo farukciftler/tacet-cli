@@ -148,8 +148,30 @@ pub fn record_in(dir: &Path, at: u64, trace: &ToolTrace) -> std::io::Result<()> 
         at,
         &crate::ui::one_line(&trace.icon),
         trace.text.chars().count() as u64,
-        &format!("{:?}", trace.state),
+        state_name(&trace.state),
     )
+}
+
+/// Every outcome a format-2 receipt may name. `verify` refuses any other.
+const STATES: [&str; 5] = ["Running", "Read", "Written", "NeedsPermission", "Failed"];
+
+/// The outcome by NAME ONLY (audit L27, found in review). The first format-2
+/// receipt wrote `format!("{:?}", state)`, and `Failed` carries the chip's
+/// failure sentence, which is built from the call's own input: http_call's
+/// "no host name: {url}", an MCP server's error text, shell's "'{command}' is
+/// not allowed". A review recorded a failed call to
+/// `https://x.test/?passport=U1234567` and found the URL, passport number and
+/// all, in receipts.jsonl. The match has no wildcard so that a new variant
+/// fails to compile here instead of falling back to Debug.
+fn state_name(state: &tacet_kernel::ToolState) -> &'static str {
+    use tacet_kernel::ToolState;
+    match state {
+        ToolState::Running => "Running",
+        ToolState::Read => "Read",
+        ToolState::Written => "Written",
+        ToolState::NeedsPermission => "NeedsPermission",
+        ToolState::Failed(_) => "Failed",
+    }
 }
 
 /// One line, under the lock, followed by the head.
@@ -187,7 +209,16 @@ fn append_in(dir: &Path, at: u64, kind: &str, chars: u64, state: &str) -> std::i
         Some(head) => {
             judge(lines.len() as u64, |i| line_hash(lines[i]), &head) == HeadVerdict::Reached
         }
-        None => !head_path.exists(),
+        // A HEAD IS BORN ONLY WITH THE LOG (audit L26, second review). With
+        // "no head file, so start one" a cut tail was erased by `rm
+        // receipts.head` and one ordinary tool run: five receipts, two cut,
+        // head deleted, one append, and the verdict went from Unrecorded to
+        // Reached. Every format-2 append leaves a head behind it, so a log
+        // that already holds a format-2 line and has no head LOST its head,
+        // and that stays visible (`HeadVerdict::Missing`) instead of being
+        // papered over. The one honest start is a log with nothing in it a
+        // head could have covered: empty, or written before heads existed.
+        None => !head_path.exists() && !lines.iter().any(|l| is_current_format(l)),
     };
     let payload = canonical(at, kind, chars, state);
     let hash = tacet_web::download::sha256_hex(format!("{prev}{payload}").as_bytes());
@@ -237,6 +268,14 @@ fn line_hash(line: &str) -> Option<String> {
         .get("hash")?
         .as_str()
         .map(str::to_string)
+}
+
+/// Does this line claim the current format. Unverified, like `line_hash`.
+fn is_current_format(line: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(line)
+        .ok()
+        .and_then(|v| v.get("v").and_then(|x| x.as_u64()))
+        .is_some()
 }
 
 /// Written to a temp name and renamed, so a reader never sees half a head.
@@ -463,6 +502,11 @@ fn verify(raw: &str) -> Result<Vec<Entry>, usize> {
                 if v.get("text").is_some() {
                     return Err(i + 1);
                 }
+                // The same for an outcome that is not one of the fixed names:
+                // the first format-2 writer put `Failed("<sentence>")` here.
+                if !STATES.contains(&state.as_str()) {
+                    return Err(i + 1);
+                }
                 (canonical(at, &tool, chars, &state), None, Some(chars))
             }
             None => {
@@ -497,6 +541,11 @@ enum HeadVerdict {
     /// No head on disk: a log from before the head existed. Its tail cannot be
     /// checked, and the report says so instead of saying "intact".
     Unrecorded,
+    /// No head on disk, but the log holds receipts that always write one: the
+    /// head was deleted (or a crash hit the very first append). Its tail cannot
+    /// be checked either, and unlike `Unrecorded` that is not a log's age but
+    /// something that happened to it.
+    Missing,
     /// The head names more entries than the log holds — the tail was cut.
     TailCut { expected: u64, found: u64 },
     /// The entry the head names is not the one in the log.
@@ -505,7 +554,11 @@ enum HeadVerdict {
 
 fn check_head(entries: &[Entry], head: Option<&(u64, String)>) -> HeadVerdict {
     let Some(head) = head else {
-        return HeadVerdict::Unrecorded;
+        return if entries.iter().any(|e| e.chars.is_some()) {
+            HeadVerdict::Missing
+        } else {
+            HeadVerdict::Unrecorded
+        };
     };
     judge(
         entries.len() as u64,
@@ -606,6 +659,14 @@ fn log_in(dir: &Path, json: bool, limit: usize, color: &Color) -> ExitCode {
             return broken(
                 format!("receipt {at} is not the one the head recorded"),
                 Some(at as usize),
+            );
+        }
+        HeadVerdict::Missing => {
+            return broken(
+                "the head is missing, and every receipt in this format leaves one: \
+                 the tail cannot be checked and may have been cut"
+                    .to_string(),
+                None,
             );
         }
         HeadVerdict::Reached | HeadVerdict::Unrecorded => {}
@@ -972,6 +1033,103 @@ mod tests {
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].tool, "~");
         assert_eq!(entries[0].chars, Some(secrets[0].1.chars().count() as u64));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// AUDIT L27 / RG-32, the hole the second review found: a FAILED chip's
+    /// outcome carried its sentence, and that sentence is built from the call's
+    /// input — a URL with a passport number in it, an MCP server's error text.
+    #[test]
+    fn a_failed_chip_keeps_its_outcome_and_none_of_its_sentence() {
+        let dir = temp_dir("failed-words");
+        let failures = [
+            "The API was not called: no host name: https://x.test/?passport=U1234567",
+            "crm · invalid customer id 'Ayşe Yılmaz, IBAN TR330006100519786457841326'",
+            "'deploy --token AWS_SECRET=abc123 prod' is not allowed",
+        ];
+        for (i, sentence) in failures.iter().enumerate() {
+            let mut t = trace("globe", "calling");
+            t.state = ToolState::Failed(sentence.to_string());
+            record_in(&dir, i as u64, &t).unwrap();
+        }
+        let raw = std::fs::read_to_string(dir.join(FILE)).unwrap();
+        for needle in [
+            "U1234567",
+            "passport",
+            "x.test",
+            "Ayşe",
+            "IBAN",
+            "AWS_SECRET",
+            "abc123",
+        ] {
+            assert!(
+                !raw.contains(needle),
+                "a failed chip's sentence reached the receipt log ({needle}):\n{raw}"
+            );
+        }
+        let entries = verify(&raw).expect("the chain verifies");
+        assert!(entries.iter().all(|e| e.state == "Failed"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A format-2 line whose outcome is a sentence was written by the first
+    /// format-2 code, or by hand; either way it is the leak, so it does not
+    /// verify — even with a correct hash.
+    #[test]
+    fn a_format_2_line_with_a_sentence_for_its_outcome_is_refused() {
+        let state = "Failed(\"no host name: https://x.test/?passport=U1234567\")";
+        let payload = canonical(1, "globe", 7, state);
+        let hash = tacet_web::download::sha256_hex(format!("{GENESIS}{payload}").as_bytes());
+        let line = serde_json::json!({
+            "at": 1, "chars": 7, "state": state, "tool": "globe", "v": FORMAT,
+            "prev": GENESIS, "hash": hash,
+        });
+        assert_eq!(verify(&format!("{line}\n")).err(), Some(1));
+
+        let payload = canonical(1, "globe", 7, "Failed");
+        let hash = tacet_web::download::sha256_hex(format!("{GENESIS}{payload}").as_bytes());
+        let line = serde_json::json!({
+            "at": 1, "chars": 7, "state": "Failed", "tool": "globe", "v": FORMAT,
+            "prev": GENESIS, "hash": hash,
+        });
+        assert!(
+            verify(&format!("{line}\n")).is_ok(),
+            "the control: a name verifies"
+        );
+    }
+
+    /// AUDIT L26, the second hole: `rm receipts.head` and one ordinary tool
+    /// run used to start a fresh head that fit the cut log, and `tacet log`
+    /// said "chain intact, tail matches its head" — no hash computed.
+    #[test]
+    fn a_deleted_head_does_not_let_a_cut_tail_heal() {
+        let dir = temp_dir("cut-rm-head");
+        for i in 0..5 {
+            record_in(&dir, i, &trace("calc", "1+1 = 2")).unwrap();
+        }
+        let path = dir.join(FILE);
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let kept: Vec<&str> = raw.lines().take(3).collect();
+        std::fs::write(&path, kept.join("\n") + "\n").unwrap();
+        std::fs::remove_file(dir.join(HEAD)).unwrap();
+
+        for i in 10..13 {
+            record_in(&dir, i, &trace("calc", "one more turn")).unwrap();
+            assert_eq!(
+                verdict(&dir),
+                Ok(HeadVerdict::Missing),
+                "a deleted head was replaced by one that fits the cut log"
+            );
+        }
+        assert!(!dir.join(HEAD).exists());
+        assert_eq!(log_in(&dir, true, 5, &Color::plain()), ExitCode::FAILURE);
+        // The receipts were still written.
+        assert_eq!(
+            verify(&std::fs::read_to_string(&path).unwrap())
+                .unwrap()
+                .len(),
+            6
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
