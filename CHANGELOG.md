@@ -37,8 +37,8 @@ them.
   goes up to the release that has them.
 * `tacet-engine`: `Generation` gains public `raw` and `executable` fields — build
   it with `Generation::new`. New: `Generation::split_against`, `MIN_ANSWER`,
-  `CONVERSATION_KEPT`, `TokenCounter::prompt_ceiling`, the `thinking_switch`
-  module. `TokenCounter::validate` refuses only above `prompt_ceiling()`.
+  `CONVERSATION_KEPT`, `token::MIN_QUESTION_KEPT`, `TokenCounter::prompt_ceiling`,
+  the `thinking_switch` module. `TokenCounter::validate` refuses only above `prompt_ceiling()`.
 * `tacet-kernel`: `defang` and `register_markers`; `ArgSchema::json_number_value`;
   `ArgSchema::choice` panics on an empty set.
 
@@ -52,7 +52,10 @@ them.
   Ordinary code such as `x <| f` and `<|>` is no longer altered (H3, H4, L37).
 * The thinking split cannot edit or launch a call: a `<think>` inside a call's
   arguments stays in the argument, and when the split can only guess where a
-  block ends nothing runs unless both readings name the same call (H5).
+  block ends nothing runs unless both readings name the same call (H5). A block
+  that is never closed counts as a guess when the search stepped over a
+  `</think>` inside a call, so a call declined in the thinking is not run; a
+  call with both `<think>` and `</think>` in its values is refused, not edited.
 * `git` no longer lets a repository's own config run programs (fsmonitor,
   hooks, `diff.external`, textconv, filter drivers including submodules',
   `gpg.program`, promisor `ext::` fetch). Requires git ≥ 2.31; an older git
@@ -62,8 +65,10 @@ them.
   outside `$HOME`; each scan root has its own budget, so a big working folder no
   longer starves `/tmp` (H7). `write_code` refuses `toxfile`, `dangerfile`,
   `conanfile`, `serverless`, `truffle-config`, the ipython/jupyter config
-  family, and any `.py` name the user's python can import as an installed
-  package (M3).
+  family, any `.py` name the user's python can import as an installed
+  package, and the names of tools started as `python -m <name>` (pip, pytest,
+  mypy, black, ruff, coverage, …), installed or not (M3). `run_code` canonicalises
+  `$HOME` in the command it spawns, not only in the library (M2).
 * No `ureq` agent reads `ALL_PROXY`/`HTTPS_PROXY`/`HTTP_PROXY` any more, in
   `tacet-web` or `tacet-mcp`; MCP refuses userinfo in an address, follows no
   redirect and sends the RFC 8707 `resource` on login (M12, L1).
@@ -77,8 +82,9 @@ them.
   fraction / 4 exponent digits) and arrays without `max` (1024 items) now end
   (M15, M16, L25).
 * A 4096-token window no longer refuses ordinary turns: `fit` refuses only when
-  fewer than `MIN_ANSWER` (256) tokens would be left; a typed question is no
-  longer cut from the front; the in-call loop detector treats JSON keys as
+  fewer than `MIN_ANSWER` (256) tokens would be left, or when the question could
+  keep fewer than `MIN_QUESTION_KEPT` (8) of its tokens (or the history none)
+  beside the fixed part; a typed question is no longer cut from the front; the in-call loop detector treats JSON keys as
   structure again (L21, L22).
 * The shell and the eval build each pass's prompt in one function
   (`tacet_eval::turn_prompt::build_turn_prompt`), tools inside the budget and
@@ -88,7 +94,9 @@ them.
   case (M24). `--compare` sizes the suite from both the fixed and the broken
   cases (L30).
 * `archive`: refuses empty-block deflate floods, overlapping entries and
-  mismatched central/local names; verifies every CRC, a recorded 0 included;
+  mismatched central/local names; verifies every CRC, a recorded 0 included
+  (the CRC and the empty-block limit on extract only, since listing decodes
+  nothing);
   extraction is all-or-nothing and its rollback removes only the directory the
   run made (M8, L11, L14).
 * `calculate` reads `1,000` as a thousand and has one percent rule; `calendar`
