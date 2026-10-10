@@ -28,6 +28,16 @@
 //! in Tacet's handoff record. Every other byte of the file is kept, and
 //! `task.md.metadata.json`'s `updatedAt` is moved to now, the field the IDE was
 //! seen to keep beside each artifact.
+//!
+//! THE EDIT MAY BECOME PART OF ANTIGRAVITY'S OWN GIT HISTORY. Under the CLI
+//! root (`~/.gemini/antigravity-cli/brain/<id>/`) a conversation's folder is a
+//! git repository, and Antigravity commits it on its own — `git log` there
+//! shows "jetski Snapshot" commits (seen by the RG-26 review on 10 Oct 2026,
+//! on the macOS machine this was written on). A box Tacet ticks is then committed by
+//! Antigravity next to the agent's own edits, and stays in that history after
+//! anyone unticks it. So whenever `brain/<id>/.git` exists, the question says
+//! so before the yes; the check is on the folder, not on the root's name,
+//! because whether the IDE root does the same was not looked at.
 
 use std::path::{Path, PathBuf};
 
@@ -44,6 +54,12 @@ pub const TERMS_WARNING: &str = "Experimental: Antigravity's terms of service (s
      third-party software from accessing the product, and writing to its storage is unsupported. \
      Tacet changes only task.md checkboxes, only with this flag, and the supported way to report \
      back is the PreInvocation hook (`tacet handoff install antigravity`).";
+
+/// Added to the question when the conversation's folder is a git repository
+/// (see the module comment): the change outlives the checkbox.
+pub const SNAPSHOT_WARNING: &str = "this conversation's folder is a git repository: \
+     Antigravity's automatic \"jetski Snapshot\" commits will record this change in its \
+     history, where it stays even if the box is changed back";
 
 /// The largest `task.md` this writer edits. A plan is a page; the line-to-item
 /// map below is quadratic in lines and is not run on a file it was not meant
@@ -248,6 +264,9 @@ fn update_impl(
     ];
     for u in updates {
         lines.push(format!("  {} → {}", u.title, u.status));
+    }
+    if std::fs::symlink_metadata(root.join("brain").join(id).join(".git")).is_ok() {
+        lines.push(SNAPSHOT_WARNING.to_string());
     }
     let q = Question {
         heading: format!(
@@ -454,6 +473,35 @@ mod tests {
         let r = update_impl(&root, ID, &one, true, &quiet, &yes(), false);
         assert!(matches!(r, Err(WriteError::Live(_))), "{r:?}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), TASK_MD);
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    /// RG-26: a conversation folder that is a git repository (the CLI root's
+    /// are, and Antigravity commits them as "jetski Snapshot") is named in the
+    /// question; one that is not, is not.
+    #[test]
+    fn a_snapshotted_conversation_says_so_in_the_question() {
+        let root = root();
+        let one = [set("Handle DST", Status::Completed)];
+        let no = Answer(false, RefCell::new(Vec::new()));
+        let r = update_impl(&root, ID, &one, true, &quiet, &no, false);
+        assert!(matches!(r, Err(WriteError::Declined)), "{r:?}");
+        assert!(
+            !no.1.borrow()[0].lines.iter().any(|l| l.contains("jetski")),
+            "{:?}",
+            no.1.borrow()[0]
+        );
+        std::fs::create_dir_all(root.join("brain").join(ID).join(".git")).unwrap();
+        let no = Answer(false, RefCell::new(Vec::new()));
+        let r = update_impl(&root, ID, &one, true, &quiet, &no, false);
+        assert!(matches!(r, Err(WriteError::Declined)), "{r:?}");
+        let asked = no.1.borrow();
+        assert!(
+            asked[0].lines.iter().any(|l| l == SNAPSHOT_WARNING),
+            "{:?}",
+            asked[0]
+        );
+        assert!(SNAPSHOT_WARNING.contains("jetski Snapshot"));
         let _ = std::fs::remove_dir_all(root.parent().unwrap());
     }
 

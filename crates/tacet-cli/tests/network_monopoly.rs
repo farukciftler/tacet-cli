@@ -399,8 +399,9 @@ const RUNTIME_SPAWN_SITES: &[(&str, &str)] = &[
     (
         "tacet-tools/src/sessions/writeback/codex.rs",
         "the Codex binary the USER names with `tacet handoff note codex --program <path>` \
-         (never looked up on PATH), run as `app-server` only after the y/N question that \
-         names it and says it can reach the network (RG-23); no model turn is started. Not a \
+         (a bare name is refused, never looked up on PATH; the path is resolved and the \
+         resolved file is what runs), run as `app-server` only after the y/N question that \
+         names that file and says it can reach the network (RG-23); no model turn is started. Not a \
          model tool: no AGENT_CLI_SPAWNERS row, because the model cannot reach this path. Its \
          tests run a stand-in shell script from a temp directory",
     ),

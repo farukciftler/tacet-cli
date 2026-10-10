@@ -527,8 +527,9 @@ pub enum HandoffJob {
         /// the original untouched.
         #[arg(long)]
         fork: bool,
-        /// Codex: the codex binary to run as `app-server`. Never looked up on
-        /// PATH: you name what runs.
+        /// Codex: the path to the codex binary to run as `app-server`. Never
+        /// looked up on PATH: a bare name is refused, and the question shows
+        /// the resolved file that will run.
         #[arg(long, value_name = "PATH")]
         program: Option<std::path::PathBuf>,
         /// Codex: append to the rollout file instead (refused until a Codex

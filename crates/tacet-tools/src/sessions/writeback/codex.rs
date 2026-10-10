@@ -17,8 +17,10 @@
 //! itself starts no model turn (it adds items to the thread's history, which
 //! the model sees on the next turn the user starts), so no paid turn is spent
 //! here — but the process is the vendor's, not Tacet's. So it is never found
-//! on PATH: the user names the binary, the question says what will run, and
-//! nothing starts before a yes.
+//! on PATH: a bare name such as `codex` is refused (`Command::new` would search
+//! PATH for it, and the question would name a binary nobody chose), the path
+//! the user gives is resolved to the absolute file that will run, the question
+//! shows THAT path, and nothing starts before a yes.
 //!
 //! THE ROLLOUT APPEND IS THE FRAGILE PATH. Codex rebuilds the model's context
 //! from `response_item` lines and the transcript the user sees from
@@ -172,9 +174,11 @@ pub fn inject(server: &mut AppServer<'_>, thread_id: &str, note: &str) -> Result
 /// Starts `program app-server`, injects `note` into thread `thread_id` — after
 /// asking — and shuts the server down.
 ///
-/// `root`: the Codex home whose writer locks are checked first, when known. A
-/// thread another Codex process owns is refused (RG-31): the app-server would
-/// have to take the thread over from it.
+/// `root`: the Codex home whose writer locks are checked first. A thread
+/// another Codex process owns is refused (RG-31): the app-server would have to
+/// take the thread over from it. With no home, or a home that is not a
+/// folder, a held lock cannot be ruled out, and that is refused too — every
+/// other writer here fails closed when it cannot see the other writer.
 pub fn inject_via_app_server(
     program: &Path,
     root: Option<&Path>,
@@ -189,9 +193,21 @@ pub fn inject_via_app_server(
             "a note must open with Tacet's prefix; nothing else is sent".into(),
         ));
     }
-    if let Some(root) = root
-        && is_live(root, thread_id)
-    {
+    let program = resolve_program(program)?;
+    let Some(root) = root else {
+        return Err(WriteError::Live(
+            "the Codex folder could not be resolved, so a held thread-writer lock cannot be \
+             ruled out; pass --root"
+                .into(),
+        ));
+    };
+    if !root.is_dir() {
+        return Err(WriteError::Live(format!(
+            "{} is not a folder, so a held thread-writer lock cannot be ruled out; pass --root",
+            root.display()
+        )));
+    }
+    if is_live(root, thread_id) {
         return Err(WriteError::Live(format!(
             "a Codex process holds thread {thread_id} (thread-writer-locks/{thread_id}.lock)"
         )));
@@ -212,7 +228,34 @@ pub fn inject_via_app_server(
     if !confirm.confirm(&q) {
         return Err(WriteError::Declined);
     }
-    run_app_server(program, thread_id, note, timeout)
+    run_app_server(&program, thread_id, note, timeout)
+}
+
+/// The absolute file `program` names, or a refusal.
+///
+/// A name with no directory in it is refused rather than looked up: given
+/// `codex`, `Command::new` searches PATH, so the binary that ran would be
+/// whichever `codex` came first there, and the question would have shown only
+/// the word. A path is resolved (symlinks too — an npm-installed `codex` is a
+/// link to a script) so the question names the file that will run, and that
+/// same resolved path is what is started.
+fn resolve_program(program: &Path) -> Result<PathBuf, WriteError> {
+    if program.components().count() < 2 && !program.is_absolute() {
+        return Err(WriteError::Refused(format!(
+            "--program {} is a bare name, which would be looked up on PATH; give the path to \
+             the binary you mean (for example the one `command -v {}` prints)",
+            program.display(),
+            program.display()
+        )));
+    }
+    let resolved = std::fs::canonicalize(program).map_err(io_error(program))?;
+    if !resolved.is_file() {
+        return Err(WriteError::Refused(format!(
+            "{} is not a file",
+            resolved.display()
+        )));
+    }
+    Ok(resolved)
 }
 
 fn run_app_server(
@@ -223,8 +266,8 @@ fn run_app_server(
 ) -> Result<(), WriteError> {
     use std::process::{Command, Stdio};
     use std::sync::mpsc;
-    // The program is the one the user named on the command line (`--program`),
-    // never a name looked up here; the question above showed it.
+    // `program` is the resolved absolute path the question above showed
+    // (`resolve_program`), so no PATH search happens here.
     let mut child = Command::new(program)
         .arg("app-server")
         .stdin(Stdio::piped())
@@ -843,7 +886,7 @@ done
 
         let declined = inject_via_app_server(
             &script,
-            None,
+            Some(&dir),
             LEGACY,
             &note(),
             &Answer(false, RefCell::new(0)),
@@ -893,6 +936,116 @@ done
             Duration::from_secs(10),
         );
         assert!(matches!(r, Err(WriteError::Live(_))), "{r:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Records each question and answers no.
+    struct Shown(RefCell<Vec<Question>>);
+
+    impl Confirm for Shown {
+        fn confirm(&self, q: &Question) -> bool {
+            self.0.borrow_mut().push(q.clone());
+            false
+        }
+    }
+
+    /// RG-23: `--program codex` would make `Command::new` search PATH, and the
+    /// question would name a word, not a binary. A bare name is refused before
+    /// anything is asked. The refusal looks at the shape, not the word, so the
+    /// test uses `sh` — on every PATH, so a lookup WOULD find something — and
+    /// a name on none. It does not write the literal `codex`: network_monopoly's
+    /// name scan would then need a NAMED_NOT_RUN row for that word in the one
+    /// file that does start the app-server, and such a row would also let a
+    /// real `Command::new("codex")` here go unseen.
+    #[test]
+    fn a_bare_program_name_is_refused_before_anything_is_asked() {
+        let dir = scratch();
+        for bare in ["sh", "tacet-no-such-program"] {
+            let ask = Answer(false, RefCell::new(0));
+            let r = inject_via_app_server(
+                Path::new(bare),
+                Some(&dir),
+                LEGACY,
+                &note(),
+                &ask,
+                Duration::from_secs(10),
+            );
+            assert!(
+                matches!(r, Err(WriteError::Refused(ref w)) if w.contains("bare name")),
+                "{bare}: {r:?}"
+            );
+            assert_eq!(*ask.1.borrow(), 0, "{bare}: asked about a PATH lookup");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// RG-23: the question names the file that will run — the resolved
+    /// absolute path, through a symlink — not the spelling that was typed.
+    #[cfg(unix)]
+    #[test]
+    fn the_question_names_the_resolved_binary() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch();
+        let real = dir.join("real-codex");
+        std::fs::write(&real, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let link = dir.join("linked-app-server");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let ask = Shown(RefCell::new(Vec::new()));
+        let r = inject_via_app_server(
+            &link,
+            Some(&dir),
+            LEGACY,
+            &note(),
+            &ask,
+            Duration::from_secs(10),
+        );
+        assert!(matches!(r, Err(WriteError::Declined)), "{r:?}");
+        let shown = ask.0.borrow();
+        assert_eq!(
+            shown[0].lines[0],
+            format!(
+                "program: {} app-server",
+                std::fs::canonicalize(&real).unwrap().display()
+            )
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// RG-31: with no Codex folder (or one that is not a folder) the writer
+    /// lock cannot be checked, so the write is refused as Live — nothing is
+    /// asked and the server is not started.
+    #[cfg(unix)]
+    #[test]
+    fn without_a_codex_folder_nothing_is_asked_or_started() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch();
+        let log = dir.join("started.log");
+        let script = dir.join("fake-app-server");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\nexit 0\n", log.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let missing = dir.join("no-such-codex-home");
+        for root in [None, Some(missing.as_path()), Some(script.as_path())] {
+            let ask = yes();
+            let r = inject_via_app_server(
+                &script,
+                root,
+                LEGACY,
+                &note(),
+                &ask,
+                Duration::from_secs(10),
+            );
+            assert!(
+                matches!(r, Err(WriteError::Live(ref w)) if w.contains("cannot be ruled out")),
+                "{root:?}: {r:?}"
+            );
+            assert_eq!(*ask.1.borrow(), 0, "{root:?}: asked without a lock check");
+        }
+        assert!(!log.exists(), "the server was started without a lock check");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
