@@ -22,6 +22,7 @@ use tacet_tools::sessions::writeback::{
     self, Confirm, Question, WriteError, antigravity as ag_write, claude as claude_write,
     codex as codex_write,
 };
+use tacet_tools::sessions_tool::guarded;
 
 use crate::cli::HandoffJob;
 use crate::ui::{self, BOLD, Color, DIM, YELLOW};
@@ -70,15 +71,46 @@ fn handoff_dir() -> Result<PathBuf, String> {
 }
 
 pub fn run(job: HandoffJob) -> ExitCode {
+    run_with(job, dispatch)
+}
+
+/// What `tacet handoff` says when the work under it panicked. It cannot say
+/// nothing was written: `append_note` writes, then re-reads the chain to
+/// check it, and the re-read is a parse like any other.
+const STOPPED: &str = "tacet handoff stopped on an internal error while reading another agent's \
+                       files; whether anything was written before it stopped is not known";
+
+/// `run` with the work passed in, so a test can hand it work that panics.
+fn run_with(
+    job: HandoffJob,
+    work: impl FnOnce(HandoffJob, &Color) -> Result<(), String>,
+) -> ExitCode {
     // `hook` answers on stdout for another program and must never fail it.
     if let HandoffJob::Hook { agent } = &job {
         hook(agent);
         return ExitCode::SUCCESS;
     }
     let color = Color::setup();
-    let result = match job {
+    // UNDER `guarded`, EVERY SUBCOMMAND (RG-04): `note` and `tasks` call the
+    // Claude Code, Codex and Antigravity readers directly — `locate`, the
+    // chain rebuild behind `append_note` and `fork_with_note`, the rollout
+    // parse, the task.md parser — with no executor above them, so a reader
+    // panicking on a line from a release it has never seen was a backtrace
+    // instead of a sentence.
+    let result = guarded(|| work(job, &color)).unwrap_or_else(|_| Err(STOPPED.to_string()));
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("  {}", color.paint(YELLOW, &message));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn dispatch(job: HandoffJob, color: &Color) -> Result<(), String> {
+    match job {
         HandoffJob::Hook { .. } => Ok(()),
-        HandoffJob::Install { agent, path } => install(&agent, path.as_deref(), &color),
+        HandoffJob::Install { agent, path } => install(&agent, path.as_deref(), color),
         HandoffJob::Show { agent, id, json } => show(&agent, &id, json),
         HandoffJob::Update {
             agent,
@@ -111,13 +143,6 @@ pub fn run(job: HandoffJob) -> ExitCode {
             experimental,
             root,
         } => tasks(&agent, &id, &set, experimental, root.as_deref()),
-    };
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(message) => {
-            eprintln!("  {}", color.paint(YELLOW, &message));
-            ExitCode::FAILURE
-        }
     }
 }
 
@@ -136,9 +161,17 @@ fn hook(agent: &str) {
     {
         return;
     }
-    if let Some(out) = writeback::hook_response(agent, &dir, &input) {
+    if let Some(out) = hook_answer(|| writeback::hook_response(agent, &dir, &input)) {
         println!("{out}");
     }
+}
+
+/// The hook's answer, or silence if building it panicked (RG-04): the input
+/// is JSON another agent wrote, and a panic here exits 101 under that agent,
+/// which reports the hook as failed on every session start — the one thing a
+/// hook that "must never fail it" cannot do.
+fn hook_answer<T>(respond: impl FnOnce() -> Option<T>) -> Option<T> {
+    guarded(respond).ok().flatten()
 }
 
 /// The path of this binary for the hook command. Canonical, so a hook keeps
@@ -864,6 +897,37 @@ mod tests {
         assert!(
             shown >= 3,
             "the document shows too few flags to check: {shown}"
+        );
+    }
+
+    /// RG-04: a reader that panics under `tacet handoff note` / `tasks` is a
+    /// failed command with a sentence, not an unwind out of `main`. `run` is
+    /// `run_with(job, dispatch)`, so this is the production frame with only
+    /// the work swapped for one that panics the way a reader would.
+    #[test]
+    fn a_reader_that_panics_under_handoff_is_a_failure_not_a_crash() {
+        let job = HandoffJob::Show {
+            agent: AgentKind::ClaudeCode.slug().into(),
+            id: "11111111-0000-4000-8000-111111111111".into(),
+            json: false,
+        };
+        let code = run_with(job, |_, _| {
+            panic!("the chain rebuild met a line no version of the reader has seen")
+        });
+        assert_eq!(code, ExitCode::FAILURE);
+    }
+
+    /// RG-04: the hook answers for another agent and exits 0 whatever
+    /// happens; a panic while building its answer is silence.
+    #[test]
+    fn a_hook_whose_answer_panics_stays_silent() {
+        assert_eq!(
+            hook_answer(|| -> Option<String> { panic!("the agent's hook input broke the parser") }),
+            None
+        );
+        assert_eq!(
+            hook_answer(|| Some("said".to_string())),
+            Some("said".to_string())
         );
     }
 }

@@ -179,21 +179,75 @@ fn source(agent: AgentKind) -> Box<dyn SessionSource> {
     }
 }
 
+/// A reader call that panicked instead of returning (audit M30, RG-04).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReaderPanicked;
+
+/// Runs one call into the readers under `catch_unwind`.
+///
+/// THE READERS PARSE THREE FORMATS THAT CHANGE BETWEEN RELEASES nobody here
+/// controls, so a line no version of this code has seen can reach an index or
+/// an `unwrap` that was never meant to see it. Inside a tool the executor
+/// already runs the call on its own thread under `catch_unwind`; this is for
+/// the callers that reach a reader WITHOUT a tool — `--from`, `/resume-from`
+/// with and without a reference, and `tacet handoff` — where the frame above
+/// the panic is the shell's own loop or `main`, and one malformed file would
+/// end the program instead of costing an error message.
+///
+/// The payload is dropped, not shown: it may quote the foreign line that
+/// caused it, and that line is somebody else's text on the user's terminal.
+pub fn guarded<T>(call: impl FnOnce() -> T) -> Result<T, ReaderPanicked> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(call)).map_err(|_| ReaderPanicked)
+}
+
+/// What a listing found, and the folders whose reader panicked on the way.
+#[derive(Debug, Clone, Default)]
+pub struct Listing {
+    pub sessions: Vec<SessionSummary>,
+    /// One sentence per (agent, root) that could not be listed. Said, not
+    /// dropped: an empty list with a reader that died behind it reads as "you
+    /// have no sessions", which is false.
+    pub failed: Vec<String>,
+}
+
 /// Every session of `agents` under `roots`, newest first. A session found
 /// under two roots (a root registered twice, a symlinked home) is listed once.
-pub fn list_sessions(roots: &SessionRoots, agents: &[AgentKind]) -> Vec<SessionSummary> {
-    let mut out: Vec<SessionSummary> = Vec::new();
+pub fn list_sessions(roots: &SessionRoots, agents: &[AgentKind]) -> Listing {
+    list_from(roots, agents, &source)
+}
+
+/// `list_sessions` with the readers passed in, so a test can hand it one that
+/// panics. Each `discover` is guarded on its own: one agent's reader dying on
+/// one folder must not hide the other agents' sessions.
+fn list_from(
+    roots: &SessionRoots,
+    agents: &[AgentKind],
+    source: &dyn Fn(AgentKind) -> Box<dyn SessionSource>,
+) -> Listing {
+    let mut out = Listing::default();
     for &agent in agents {
         let src = source(agent);
         for root in roots.for_agent(agent) {
-            for s in src.discover(&root) {
-                if !out.iter().any(|o| o.agent == s.agent && o.id == s.id) {
-                    out.push(s);
+            let Ok(found) = guarded(|| src.discover(&root)) else {
+                out.failed.push(format!(
+                    "the {} sessions under {} could not be listed: the reader failed on a file it could not parse",
+                    agent.display_name(),
+                    one_line(&root.display().to_string(), 120)
+                ));
+                continue;
+            };
+            for s in found {
+                if !out
+                    .sessions
+                    .iter()
+                    .any(|o| o.agent == s.agent && o.id == s.id)
+                {
+                    out.sessions.push(s);
                 }
             }
         }
     }
-    model::newest_first(&mut out);
+    model::newest_first(&mut out.sessions);
     out
 }
 
@@ -651,24 +705,41 @@ impl Imported {
 
 /// Reads `agent:id` and builds what the shell seeds a turn with.
 ///
-/// UNDER `catch_unwind`, like every reader call (audit M30, RG-04): inside a
-/// tool the executor provides it, but `--from` calls this before any tool
-/// runs, and one malformed line must cost the user an error message, not the
-/// shell.
+/// UNDER `guarded`, like every reader call outside a tool (audit M30, RG-04):
+/// `--from` calls this before any tool runs, and one malformed line must cost
+/// the user an error message, not the shell.
 pub fn import(roots: &SessionRoots, agent: AgentKind, id: &str) -> Result<Imported, String> {
-    let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        read_session(roots, agent, id)
-    }))
-    .map_err(|_| format!("reading the {} session {id} failed", agent.display_name()))?
-    .map_err(|e| e.to_string())?;
-    let digest = Digest::of(&read);
-    let seed = seed_text(&digest);
-    let transcript = transcript_text(&read.session);
-    Ok(Imported {
-        digest,
-        seed,
-        transcript,
+    import_from(agent, id, || read_session(roots, agent, id))
+}
+
+/// `import` with the read passed in, so a test can hand it one that panics.
+///
+/// THE DIGEST IS INSIDE THE GUARD TOO, not only the read: `Digest::of` and
+/// `transcript_text` walk the same foreign text (titles, tool arguments, file
+/// names) and clip it by characters, and a panic there ends the shell exactly
+/// as one in the parser would.
+fn import_from(
+    agent: AgentKind,
+    id: &str,
+    read: impl FnOnce() -> Result<SessionRead, SessionError>,
+) -> Result<Imported, String> {
+    guarded(|| {
+        let read = read().map_err(|e| e.to_string())?;
+        let digest = Digest::of(&read);
+        let seed = seed_text(&digest);
+        let transcript = transcript_text(&read.session);
+        Ok(Imported {
+            digest,
+            seed,
+            transcript,
+        })
     })
+    .map_err(|ReaderPanicked| {
+        format!(
+            "reading the {} session {id} failed on a line the reader could not parse",
+            agent.display_name()
+        )
+    })?
 }
 
 /// The fenced summary. The line inside the fence says whose text it is: the
@@ -795,7 +866,13 @@ impl SessionsListTool {
             .map(|n| n as usize)
             .unwrap_or(DEFAULT_LIST)
             .clamp(1, MAX_LIST);
-        let mut all = list_sessions(&self.roots, &agents);
+        let Listing {
+            sessions: mut all,
+            failed,
+        } = list_sessions(&self.roots, &agents);
+        // A folder that could not be listed is said, after whatever was:
+        // "no session" with a dead reader behind it would be a false answer.
+        let failed_text: String = failed.iter().map(|f| format!("\n({f})")).collect();
         let total = all.len();
         all.truncate(limit);
         if all.is_empty() {
@@ -803,7 +880,7 @@ impl SessionsListTool {
             return Ok(ToolOutcome::read_ok(
                 "No agent sessions found",
                 format!(
-                    "No {} session was found on this machine.",
+                    "No {} session was found on this machine.{failed_text}",
                     names.join(" or ")
                 ),
             ));
@@ -854,6 +931,7 @@ impl SessionsListTool {
             }
             text.push_str(&line);
         }
+        text.push_str(&failed_text);
         text.push_str("\nRead one with session_read(agent, id).");
         text.push_str(&source_ref_suffix(source_ref.as_str()));
         Ok(ToolOutcome::read_ok(
@@ -1597,6 +1675,100 @@ mod tests {
             "Command"
         );
         assert!(!spawns_in(&planted).is_empty());
+    }
+
+    /// A reader meeting a line from a release it has never seen — the case
+    /// `guarded` exists for. No real reader is known to panic on any input,
+    /// which is exactly why the guard is tested with one that does.
+    struct Panics(AgentKind);
+
+    impl SessionSource for Panics {
+        fn agent(&self) -> AgentKind {
+            self.0
+        }
+        fn default_roots(&self) -> Vec<PathBuf> {
+            Vec::new()
+        }
+        fn discover(&self, _: &Path) -> Vec<SessionSummary> {
+            panic!("discover met a line no version of this reader has seen")
+        }
+        fn read(&self, _: &Path, _: &str) -> Result<AgentSession, SessionError> {
+            panic!("read met a line no version of this reader has seen")
+        }
+    }
+
+    /// RG-04 (`/resume-from` with no reference): one reader dying on one
+    /// folder costs that folder, named, and not the listing — nor the shell
+    /// that asked for it, which has no executor above it here.
+    #[test]
+    fn a_reader_that_panics_while_listing_costs_its_folder_not_the_list() {
+        let roots = SessionRoots::Only(vec![
+            fixtures(AgentKind::ClaudeCode),
+            fixtures(AgentKind::Codex).join("home"),
+        ]);
+        let listing = list_from(&roots, &AgentKind::ALL, &|agent| match agent {
+            AgentKind::Codex => Box::new(Panics(agent)),
+            other => source(other),
+        });
+        assert!(
+            listing
+                .sessions
+                .iter()
+                .any(|s| s.agent == AgentKind::ClaudeCode),
+            "the Claude Code sessions were lost with the Codex reader: {:?}",
+            listing.sessions
+        );
+        assert!(
+            listing.sessions.iter().all(|s| s.agent != AgentKind::Codex),
+            "a reader that panicked listed something"
+        );
+        // Every reader tries every root, so the Codex reader died twice.
+        assert_eq!(listing.failed.len(), 2, "{:?}", listing.failed);
+        for f in &listing.failed {
+            assert!(
+                f.contains(AgentKind::Codex.display_name()) && f.contains("could not be listed"),
+                "the failure does not say whose folder: {f}"
+            );
+        }
+        // And the real readers on the same folders list without a failure,
+        // so the two above came from the panic and not from the fixtures.
+        let clean = list_sessions(&roots, &AgentKind::ALL);
+        assert!(clean.failed.is_empty(), "{:?}", clean.failed);
+        assert!(clean.sessions.iter().any(|s| s.agent == AgentKind::Codex));
+    }
+
+    /// RG-04 (`--from`, `/resume-from <ref>`): a read that panics is an
+    /// error the shell can print, not an unwind through it. The seam is the
+    /// production path: `import` is `import_from` with the real read.
+    #[test]
+    fn a_reader_that_panics_while_importing_is_an_error_not_a_crash() {
+        let got = import_from(AgentKind::Codex, "0199d3a1", || {
+            Panics(AgentKind::Codex)
+                .read(Path::new("/nonexistent"), "0199d3a1")
+                .map(|session| SessionRead {
+                    session,
+                    warnings: Vec::new(),
+                })
+        });
+        let Err(message) = got else {
+            panic!("a panicking reader imported something");
+        };
+        assert!(
+            message.contains(&format!(
+                "{} session 0199d3a1",
+                AgentKind::Codex.display_name()
+            )) && message.contains("could not parse")
+                && !message.contains("no version of this reader"),
+            "the error names the session and keeps the payload off the terminal: {message}"
+        );
+
+        let roots = SessionRoots::Only(vec![fixtures(AgentKind::ClaudeCode)]);
+        let id = "11111111-0000-4000-8000-111111111111";
+        let ok = import_from(AgentKind::ClaudeCode, id, || {
+            read_session(&roots, AgentKind::ClaudeCode, id)
+        })
+        .expect("the same seam with the real read imports");
+        assert_eq!(ok.digest.id, id);
     }
 
     fn spawns_in(text: &str) -> Vec<&'static str> {

@@ -857,3 +857,114 @@ fn the_last_publish_is_the_changelogs() {
         "README.md must say \"{want}\" — the newest publish CHANGELOG.md records"
     );
 }
+
+/// The page as prose: fenced blocks removed (their text is output, not a
+/// claim in a sentence) and every run of whitespace folded to one space, so a
+/// sentence wrapped across lines reads as one.
+fn prose(markdown: &str) -> String {
+    let mut out = String::new();
+    let mut fenced = false;
+    for line in markdown.lines() {
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+            continue;
+        }
+        if !fenced {
+            out.push_str(line);
+            out.push(' ');
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// L38: the actions the page lists for `git` are the tool's actions.
+///
+/// It said "status, log, diff, show" while `Action::ALL` held three — the
+/// model was never offered `show`. Read from `Action::ALL` itself, the
+/// constant the tool's schema and parser are built from, so an action added
+/// to the tool without a word on the page fails here as well.
+#[test]
+fn the_git_actions_the_page_lists_are_the_tools() {
+    const MARKER: &str = "`git` is **read-only**:";
+    let page = prose(&read("README.md"));
+    assert_eq!(
+        page.matches(MARKER).count(),
+        1,
+        "README.md states the git tool's actions once, after {MARKER:?}"
+    );
+    let listed = page
+        .split(MARKER)
+        .nth(1)
+        .and_then(|rest| rest.split('.').next())
+        .expect("a list after the marker");
+    let mut shown: Vec<String> = listed
+        .split(',')
+        .map(|a| a.trim().trim_start_matches("and ").trim().to_string())
+        .filter(|a| !a.is_empty())
+        .collect();
+    let mut actual: Vec<String> = tacet_tools::git::Action::ALL
+        .iter()
+        .map(|a| a.name().to_string())
+        .collect();
+    shown.sort();
+    actual.sort();
+    assert_eq!(
+        shown, actual,
+        "README.md lists the git actions as {listed:?}; the tool has {actual:?}"
+    );
+}
+
+/// D8: the page never says `--compare` refuses two runs whose catalogs
+/// differ. It does not: it leaves out the cases that touch a tool one side
+/// lacked, names them, and pairs the rest.
+///
+/// The sentence said it "refuses to pair across either a different model or a
+/// different catalog". The model half is true
+/// (`a_comparison_across_two_models_is_refused`); the catalog half was the
+/// comparator's first design and was replaced on purpose, because refusing
+/// threw away 164 sound cases to avoid 20 unsound ones (eval_cmd.rs). The
+/// guard reads every refusal the page attributes to `--compare` to the end of
+/// its clause, and the warning the comparator really prints.
+#[test]
+fn the_page_says_compare_leaves_out_what_a_differing_catalog_touches() {
+    let page = prose(&read("README.md"));
+    let sentences: Vec<&str> = page
+        .split(". ")
+        .filter(|s| s.contains("--compare"))
+        .collect();
+    let mut refusals = 0;
+    for sentence in &sentences {
+        let lower = sentence.to_lowercase();
+        let mut rest = lower.as_str();
+        while let Some(at) = rest.find("refus") {
+            let clause = rest[at..].split([',', ';', ':']).next().unwrap_or_default();
+            refusals += 1;
+            assert!(
+                !clause.contains("catalog") && !clause.contains("tool"),
+                "README.md says `--compare` refuses on a catalog difference; it leaves \
+                 those cases out and pairs the rest: …{clause}…"
+            );
+            rest = &rest[at + "refus".len()..];
+        }
+    }
+    assert!(
+        refusals >= 1,
+        "no refusal attributed to `--compare` was found — the scan stopped matching"
+    );
+    assert!(
+        sentences.iter().any(|s| {
+            let s = s.to_lowercase();
+            s.contains("catalog") && (s.contains("leaves out") || s.contains("exclud"))
+        }),
+        "README.md must say what `--compare` does when the catalogs differ: it leaves \
+         out the cases that touch a tool one side lacked"
+    );
+    // The behaviour the sentence describes, read from the comparator: on a
+    // catalog difference it warns and excludes; it does not stop.
+    let comparator = read("crates/tacet-cli/src/eval_cmd.rs");
+    assert!(
+        comparator.contains("touch a tool one side lacked are EXCLUDED from the test below"),
+        "eval_cmd.rs no longer excludes on a catalog difference — the README sentence \
+         this test guards must change with it"
+    );
+}
