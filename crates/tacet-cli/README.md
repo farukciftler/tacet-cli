@@ -103,7 +103,7 @@ looking at what the model is actually sent.
 |---|---|
 | Name | a tool that isn't in the catalog — the model cannot invent a callable |
 | Schema | arguments that don't validate, even if the grammar was bypassed |
-| Approval | outbound data in a session that has touched personal data; any `shell` or `db_write` call once the session has read text from outside the machine (a web page, an HTTP or MCP answer, an imported transcript); every call to an MCP server marked `always_ask` |
+| Approval | outbound data in a session that has touched personal data; any `shell` or `db_write` call once the session has read text from outside the machine (a web page, an HTTP or MCP answer, an imported transcript); every call to an MCP server marked `always_ask` — and with nobody at a terminal to ask, the answer is no |
 | Cancel | anything, the moment you interrupt the turn — `shell` and `run_code` end their process group within about a second; any other tool that does not stop is left behind after 3 s and the turn says so |
 
 **Bulk data never enters the model.** A tool that reads a 40 000-row spreadsheet puts the data in a store and hands the model a short summary plus a reference. The next tool that needs it fetches it by reference. The context window is a budget, not a bottleneck.
@@ -282,20 +282,20 @@ tacet addon close shell          # keep the config, take the tool away
 | `shell` | `shell` | only the programs you list, and **no shell interpretation** |
 | `workspace` | *(no new tool)* | named directories the file tools may also reach |
 | `http` | `http` | only the exact hosts you list, HTTPS only, no redirects |
-| `db` | `db`, and `db_write` only if you list a file | read-only SQLite by default, over the `sqlite3` binary already on your machine |
+| `db` | `db`, and `db_write` only if you list a file and the session is at a terminal | read-only SQLite by default, over the `sqlite3` binary already on your machine |
 | `clipboard` | `clipboard` | reads and writes the system clipboard |
 
 Two things worth knowing before you install `shell`:
 
 **There is no shell.** The command runs as `program` + a list of arguments, never through `sh -c`, so `; rm -rf /` arrives as an *argument* — nothing parses it. And the allow-list is not checked after the fact: it **is** the argument's schema, so the constrained decoder cannot generate a program name outside it.
 
-**Allowing a program allows everything that program can do.** `curl` is network access; `git` can push. So `shell` sits behind the same approval question as `web_search` and `http`: once a turn has touched personal data, every call that could carry it off the machine stops and asks you first.
+**Allowing a program allows everything that program can do.** `curl` is network access; `git` can push. So `shell` sits behind the same approval question as `web_search` and `http`: once a turn has touched personal data, every call that could carry it off the machine stops and asks you first. The question is only ever put to a person at a terminal. In a `--message` run, or a shell whose stdin is a pipe, the answer is a silent no and nothing is read from the pipe — a `y` on the next line is your next message, not consent. At the question only `y` or `yes` and Enter is a yes; Enter alone, Esc, ctrl-c and ctrl-d all say no, and ctrl-c there refuses the call without ending the shell.
 
 There is a second question, and it does not depend on personal data. Once the session has read text from outside the machine (a web page, an `http` or MCP answer, a transcript imported from another agent), every `shell` and `db_write` call asks first, because that text may be what told the model to run it. The question says this in its own words. It does not claim that data will be sent. A "no" covers that one command only.
 
-**Writing to a database is a second tool, not a flag.** `db` is read-only and stays read-only: its lock is `sqlite3 -readonly`, measured on your own binary before the tool is built. If you want a database changed, you name the file — `data/app.db`, relative to the project — while installing the `db` addon, and a *separate* `db_write` tool appears. Name nothing and it does not exist, which is the only gate that holds: the SQL is free text, so a model that has the tool can always spell `DROP TABLE`, and the answer is for the tool not to be there.
+**Writing to a database is a second tool, not a flag.** `db` is read-only and stays read-only: its lock is `sqlite3 -readonly`, measured on your own binary before the tool is built. If you want a database changed, you name the file — `data/app.db`, relative to the project — while installing the `db` addon, and a *separate* `db_write` tool appears. Name nothing and it does not exist — and neither does it in a session with nobody at a terminal to approve it (a `--message` run, or a piped stdin), since a tool whose every call has to be refused only costs the model a turn. Not existing is the only gate that holds: the SQL is free text, so a model that has the tool can always spell `DROP TABLE`, and the answer is for the tool not to be there.
 
-Every `db_write` call is measured before it happens. The statement runs first against a **copy** of the file, and what you are shown is the difference that copy actually took: objects created, dropped or redefined, row counts moved, journal mode changed. Then it asks. Nothing is written until you say yes, the copy that was measured is left beside the database as `<name>.tacet-backup`, and the question is asked again for the next statement — a "no" is about one statement, not about the session.
+Every `db_write` call is measured before it happens. The statement runs first against a **copy** of the file, and what you are shown is the difference that copy actually took: objects created, dropped or redefined, row counts moved, journal mode changed. Then it asks you, at the terminal. Nothing is written until you say yes, the copy that was measured is left beside the database as `<name>.tacet-backup`, and the question is asked again for the next statement — a "no" is about one statement, not about the session.
 
 Two things it does **not** promise. It is not one statement: `sqlite3` re-parses the string it is given, so `SELECT 1; DROP TABLE t` runs both halves — measured, and the reason the effect is shown rather than the statement filtered. And allowing a file allows everything SQL can do to that file, `DROP` and a `WHERE`-less `UPDATE` included. What holds is the file boundary: `-safe` refuses `ATTACH`, `VACUUM INTO` and `writefile()`, all three measured at startup, so the statement cannot reach a second file.
 

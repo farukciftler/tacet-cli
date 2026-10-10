@@ -349,6 +349,11 @@ const RUNTIME_SPAWN_SITES: &[(&str, &str)] = &[
         "tacet-cli/tests/the_shell_budgets_its_tools.rs",
         "`env!(\"CARGO_BIN_EXE_tacet\")`, the binary under test, on the scripted engine",
     ),
+    (
+        "tacet-cli/tests/consent_reaches_the_person.rs",
+        "`env!(\"CARGO_BIN_EXE_tacet\")`, the binary under test, on the scripted engine — \
+         directly, and under the literal `/usr/bin/script` for a pty (audit H1)",
+    ),
 ];
 
 fn workspace_root() -> PathBuf {

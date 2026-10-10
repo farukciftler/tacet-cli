@@ -19,6 +19,48 @@ releases to follow.
 
 ---
 
+## Unreleased — the audit of 9 Oct 2026, wave 2
+
+Nothing below is published yet either. It sits apart from wave 1 so a reader
+can tell which round of fixes a line belongs to; when both are published they
+go out under one version per crate, with the bumps named in both lists.
+
+**Breaking, for the next release of each crate:**
+
+* `tacet-kernel` (additive, but `tacet-tools` needs it): `Tool` gains
+  `external_content()`, `acts_on_host()` and `deadline()`, all defaulted;
+  `ToolContext` carries a `CancelToken` (`cancel_token()`, `with_cancel_token`)
+  and the outside-text flag.
+* `tacet-mcp`: `ConnectionSetting` has a new public `always_ask` field (a struct
+  literal breaks).
+* `tacet-tools`: `ApprovalRequest` has a new public `reason: ApprovalReason`
+  field; `executor::quiet_tool_panics`, `executor::ABANDON_GRACE`.
+
+**Security:**
+
+* An MCP server's answers taint the session (H2-a). Once the session has read
+  text from outside the machine — a web page, an `http` or MCP answer, an
+  imported transcript — every `shell` and `db_write` call asks first, and the
+  question names that reason instead of claiming data will be sent (H2-c,
+  RG-01). A per-connection `always_ask` in `mcp.json` asks before every call to
+  that server; no setting turns the taint off.
+* Every tool call runs on a worker thread under `catch_unwind` with a per-tool
+  deadline: a panic is a failed call, not the end of the session, and a tool
+  that does not stop is left behind after 3 s with the turn saying so (M30,
+  RG-04). Ctrl-C reaches a running tool: `shell` and `run_code` end their
+  process group, SIGTERM then SIGKILL, within about a second (M4).
+* A consent question (outbound approval, `db_write`, an MCP server's question)
+  reaches the person at the terminal, and only them. The turn indicator steps
+  aside while a question is open, so the question is no longer erased and `y`⏎
+  no longer swallowed. The answer is read raw, with its own echo, so Esc (alone
+  or followed by Enter), ctrl-c and ctrl-d decline, and ctrl-c no longer kills
+  the shell. With stdin piped, the question is never asked: the answer is no,
+  nothing is read from the pipe, and the session is not given `db_write` (H1,
+  RG-03, L31).
+* Tool-chip failure reasons and every server string that `tacet mcp try` and
+  the MCP start-up report print are made into one line, with escapes removed
+  (M13, M14). `tacet mcp try` sends the same OAuth token the chat would (L10).
+
 ## Unreleased — the audit of 9 Oct 2026, wave 1
 
 Nothing below is published yet. When it is, the crates whose public API changed
