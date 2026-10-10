@@ -20,10 +20,14 @@
 //!    the manifests as TOML, and again from the dependency graph cargo itself
 //!    resolves (`cargo metadata`), so a client that arrives one crate removed
 //!    counts as much as one declared by name.
-//! 2. No crate reaches a socket some other way — no raw `std::net` in any file
-//!    a crate COMPILES (its whole directory, `build.rs`, and whatever `#[path]`,
+//! 2. No crate reaches a socket some other way — no raw `std::net` connector,
+//!    no name resolution (`to_socket_addrs`), and no libc socket call declared
+//!    in an `extern` block or reached through `libc::`/`nix::`, in any file a
+//!    crate COMPILES (its whole directory, `build.rs`, and whatever `#[path]`,
 //!    `include!` and the manifest's target paths point rustc at), read by a
-//!    lexer that knows what a string literal and a comment are; and no program
+//!    lexer that decodes string literals the way rustc does; every crate cargo
+//!    builds from this repository has to live under `crates/`, where these
+//!    scans look (checked against `cargo metadata`); and no program
 //!    whose job is the network (`docker`, `curl`, `ssh`, …) started outside the
 //!    two crates except by a row that says why — today one: the y/N-approved
 //!    local SearXNG setup in `tacet-cli/src/addon.rs`.
@@ -47,7 +51,9 @@
 //! a self-test at the bottom of this file that feeds it in and expects red —
 //! and so does each of the nine the review of 10 Oct 2026 then found in the
 //! rewrite (multi-line strings, `#[path]`, `include!`, a `Command` alias, `npx`
-//! and `sh -c` launchers, a spawn inside `tacet-mcp`).
+//! and `sh -c` launchers, a spawn inside `tacet-mcp`), and each of the five
+//! its second pass found after that (a program name written with a Rust escape,
+//! a TOML `\x` escape, an `extern "C"` socket, DNS, a crate outside `crates/`).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -92,6 +98,45 @@ const HTTP_CRATES: &[&str] = &[
 /// The `std::net` types that CONNECT or LISTEN. `std::net` also carries address
 /// types (`IpAddr`, `SocketAddr`) that are pure data and open nothing.
 const CONNECTORS: &[&str] = &["TcpStream", "TcpListener", "UdpSocket"];
+
+/// Name resolution: `"host:80".to_socket_addrs()` sends a DNS query, and a query
+/// for `<data>.attacker.example` carries data out without a socket of the
+/// crate's own. `lookup_host` is tokio's spelling of the same call.
+const RESOLVERS: &[&str] = &["ToSocketAddrs", "to_socket_addrs", "lookup_host"];
+
+/// The C library's socket calls. `std` already links libc, so `unsafe extern
+/// "C" { fn socket(..) -> i32; fn connect(..) -> i32; }` is a socket with no
+/// dependency and no `std::net` — the review of 10 Oct 2026 wrote exactly that
+/// and `socket_offenders` returned nothing. They count when DECLARED in an
+/// `extern` block (as a function or a `#[link_name]`) or called through a
+/// `libc::` or `nix::` path; `bind` and `connect` are too common as method names
+/// to count anywhere else.
+///
+/// `syscall`, `dlsym` and `dlopen` are here because they defeat the name:
+/// `syscall(SYS_connect, …)` and `dlsym(…, "connect")` reach the same call with
+/// the word only in a number or a string. Outside the two crates there is no
+/// reason to declare them, so declaring one is red too. tacet-tools' two extern
+/// blocks (`setsid`, `killpg`) are the only ones in the tree (10 Oct 2026).
+const SOCKET_FFI: &[&str] = &[
+    "socket",
+    "socketpair",
+    "connect",
+    "bind",
+    "listen",
+    "accept",
+    "accept4",
+    "send",
+    "sendto",
+    "sendmsg",
+    "recvfrom",
+    "getaddrinfo",
+    "gethostbyname",
+    "gethostbyname2",
+    "res_query",
+    "syscall",
+    "dlsym",
+    "dlopen",
+];
 
 /// Other agents' CLIs. Each one, spawned, sends the conversation to a hosted
 /// model — an outbound call that happens to go through `fork` instead of
@@ -773,7 +818,30 @@ mod toml_lite {
                         None => return self.err("bad unicode escape"),
                     }
                 }
-                other => s.push(other),
+                '"' | '\\' => s.push(c),
+                // TOML 1.1, and Cargo takes it: on 10 Oct 2026 `cargo` 1.98.1
+                // read `net = { package = "\x75req" }` in a scratch crate as
+                // ureq and began locking ureq's dependency tree. Copying the
+                // letter through (the first decoder) read it as `x75req`.
+                'x' => {
+                    let hex: String = self.s[self.i..(self.i + 2).min(self.s.len())]
+                        .iter()
+                        .collect();
+                    self.i += 2;
+                    match u8::from_str_radix(&hex, 16) {
+                        Ok(b) if hex.len() == 2 && hex.chars().all(|d| d.is_ascii_hexdigit()) => {
+                            s.push(char::from(b))
+                        }
+                        _ => return self.err("bad \\x escape"),
+                    }
+                }
+                'e' => s.push('\u{1b}'),
+                // Any other letter is an invalid manifest to Cargo, and so to
+                // this reader: `\q` read as `q` was a pass for a file Cargo
+                // refuses ("missing escaped value, expected `b`, `e`, `f`, `n`,
+                // `r`, `\`, `"`, `x`, `u`, `U`" — cargo 1.98.1, 10 Oct 2026; the
+                // arms above are that list).
+                other => return self.err(&format!("invalid escape `\\{other}`")),
             }
             Ok(())
         }
@@ -812,6 +880,37 @@ mod toml_lite {
 /// its tool is missing has the shape this project already shipped once.
 #[test]
 fn no_crate_outside_the_monopoly_reaches_an_http_client_through_the_graph() {
+    let meta = metadata();
+    let offenders = graph_offenders(&meta);
+    assert!(
+        offenders.is_empty(),
+        "a crate outside the network monopoly reaches an HTTP client:\n  {}",
+        offenders.join("\n  ")
+    );
+}
+
+/// EVERY SCAN IN THIS FILE STARTS FROM `crates/*/Cargo.toml`, and nothing
+/// made that the whole workspace. The review of 10 Oct 2026 named two ways
+/// out, both green: a path dependency outside `crates/` (`vendor/helper` with a
+/// `TcpStream`, depended on by tacet-tools — the graph walk matches client
+/// NAMES, and `helper` is not one), and a workspace member outside `crates/`
+/// (`xtask/`), which no scan opens. So cargo's own list is the reference: every
+/// workspace member, and every package it resolved from a local path, must
+/// have its manifest at `crates/<dir>/Cargo.toml` — where the scans look.
+#[test]
+fn every_local_crate_lives_where_the_scans_look() {
+    let outside = local_packages_outside(&metadata(), &crates_dir());
+    assert!(
+        outside.is_empty(),
+        "a crate cargo builds from this repository lives outside crates/, where the \
+         socket, agent-CLI, network-program and spawn scans never read it. Move it \
+         under crates/ (or teach `manifests_in` to read it):\n  {}",
+        outside.join("\n  ")
+    );
+}
+
+/// `cargo metadata` for this workspace, every feature on, offline.
+fn metadata() -> serde_json::Value {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let out = std::process::Command::new(&cargo)
         .args([
@@ -837,12 +936,44 @@ fn no_crate_outside_the_monopoly_reaches_an_http_client_through_the_graph() {
         members > 5,
         "cargo metadata returned {members} workspace members; this is not the workspace"
     );
-    let offenders = graph_offenders(&meta);
-    assert!(
-        offenders.is_empty(),
-        "a crate outside the network monopoly reaches an HTTP client:\n  {}",
-        offenders.join("\n  ")
-    );
+    meta
+}
+
+/// `name (manifest)` for every workspace member, and every package resolved
+/// from a local path (`source` is null), whose manifest is not
+/// `<crates>/<dir>/Cargo.toml`.
+fn local_packages_outside(meta: &serde_json::Value, crates: &Path) -> Vec<String> {
+    let members: BTreeSet<&str> = meta["workspace_members"]
+        .as_array()
+        .expect("metadata has workspace members")
+        .iter()
+        .filter_map(|m| m.as_str())
+        .collect();
+    // cargo prints canonical paths; CARGO_MANIFEST_DIR may not be (a symlinked
+    // checkout). A path that does not exist (the self-test's) compares as written.
+    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| normalized(p));
+    let crates = canon(crates);
+    let mut out = Vec::new();
+    for p in meta["packages"].as_array().expect("metadata has packages") {
+        let id = p["id"].as_str().unwrap_or_default();
+        if !(p["source"].is_null() || members.contains(id)) {
+            continue;
+        }
+        let manifest = Path::new(p["manifest_path"].as_str().unwrap_or_default());
+        let under_crates = manifest.file_name().is_some_and(|f| f == "Cargo.toml")
+            && manifest
+                .parent()
+                .and_then(Path::parent)
+                .is_some_and(|d| canon(d) == crates);
+        if !under_crates {
+            out.push(format!(
+                "{} ({})",
+                p["name"].as_str().unwrap_or(id),
+                manifest.display()
+            ));
+        }
+    }
+    out
 }
 
 /// Every path, in `cargo metadata` JSON, from a workspace crate outside
@@ -929,8 +1060,8 @@ fn no_crate_outside_the_monopoly_opens_a_raw_socket() {
     );
 }
 
-/// Every `file:line: Type` under `crates` where a crate outside `ALLOWED` names
-/// a socket type in code.
+/// Every `file:line: name` under `crates` where a crate outside `ALLOWED`
+/// reaches the network in code (see `raw_network`).
 fn socket_offenders(crates: &Path) -> Vec<String> {
     let mut offenders = Vec::new();
     for (name, manifest) in manifests_in(crates) {
@@ -941,14 +1072,90 @@ fn socket_offenders(crates: &Path) -> Vec<String> {
         offenders.extend(scan.unfollowable);
         for file in scan.files {
             let text = std::fs::read_to_string(&file).unwrap_or_default();
-            for t in rust_lex::tokens(&text) {
-                if t.kind == rust_lex::Kind::Ident && CONNECTORS.contains(&t.text.as_str()) {
-                    offenders.push(format!("{}:{}: {}", file.display(), t.line, t.text));
-                }
+            for (line, what) in raw_network(&rust_lex::tokens(&text)) {
+                offenders.push(format!("{}:{line}: {what}", file.display()));
             }
         }
     }
     offenders
+}
+
+/// `(line, name)` for each way `toks` reaches the network without a client
+/// crate: a `std::net` connector, a resolver, or a `SOCKET_FFI` name declared in
+/// an `extern` block or called through `libc::`/`nix::`.
+fn raw_network(toks: &[rust_lex::Token]) -> Vec<(usize, String)> {
+    use rust_lex::Kind;
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    // The brace depth inside the innermost open `extern … {` block.
+    let mut extern_at: Option<usize> = None;
+    let path_sep = |i: usize| {
+        toks.get(i).is_some_and(|t| t.text == ":") && toks.get(i + 1).is_some_and(|t| t.text == ":")
+    };
+    for (i, t) in toks.iter().enumerate() {
+        match (t.kind, t.text.as_str()) {
+            (Kind::Punct, "{") => depth += 1,
+            (Kind::Punct, "}") => {
+                if extern_at == Some(depth) {
+                    extern_at = None;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            // `extern {`, `extern "C" {`, `unsafe extern "system" {` — not
+            // `extern crate` or `extern "C" fn` (a definition, not an import).
+            (Kind::Ident, "extern") => {
+                let mut j = i + 1;
+                if toks.get(j).is_some_and(|n| n.kind == Kind::Str) {
+                    j += 1;
+                }
+                if toks.get(j).is_some_and(|n| n.text == "{") && extern_at.is_none() {
+                    extern_at = Some(depth + 1);
+                }
+            }
+            (Kind::Ident, name) if CONNECTORS.contains(&name) || RESOLVERS.contains(&name) => {
+                out.push((t.line, name.to_string()));
+            }
+            // `use libc::{socket, connect};` and `use libc::*;` leave the call
+            // site bare, so the import is where the name is: a glob, or a
+            // socket name anywhere in the braces.
+            (Kind::Ident, "use") => {
+                let stmt: Vec<&rust_lex::Token> =
+                    toks[i + 1..].iter().take_while(|n| n.text != ";").collect();
+                let root = stmt.iter().find(|n| n.kind == Kind::Ident);
+                if root.is_some_and(|r| r.text == "libc" || r.text == "nix")
+                    && stmt
+                        .iter()
+                        .any(|n| n.text == "*" || SOCKET_FFI.contains(&n.text.as_str()))
+                {
+                    out.push((t.line, format!("use {}", root.map_or("", |r| &r.text))));
+                }
+            }
+            (Kind::Ident | Kind::Str, name) if SOCKET_FFI.contains(&name) => {
+                let declared = extern_at.is_some();
+                // `libc::connect`, `nix::sys::socket::connect`, `nix::…::socket`.
+                let via_crate = i >= 2 && path_sep(i - 2) && {
+                    let mut k = i - 2;
+                    let mut root = None;
+                    while k >= 1 && toks[k - 1].kind == Kind::Ident {
+                        root = Some(toks[k - 1].text.as_str());
+                        if k >= 3 && path_sep(k - 3) {
+                            k -= 3;
+                        } else {
+                            break;
+                        }
+                    }
+                    matches!(root, Some("libc" | "nix"))
+                };
+                if t.kind == Kind::Ident && (declared || via_crate)
+                    || t.kind == Kind::Str && declared
+                {
+                    out.push((t.line, format!("extern {name}")));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// The files a crate COMPILES: every `.rs` below its directory, plus every file
@@ -1200,7 +1407,8 @@ mod rust_lex {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum Kind {
         Ident,
-        /// A string literal of any flavour, with its (unescaped enough) text.
+        /// A string literal of any flavour, with its text decoded as rustc
+        /// decodes it (see `unescape`).
         Str,
         Punct,
         Other,
@@ -1259,12 +1467,11 @@ mod rust_lex {
                 let mut text = String::new();
                 while i < s.len() && s[i] != '"' {
                     if s[i] == '\\' {
+                        i = unescape(&s, i + 1, &mut text);
+                    } else {
+                        text.push(s[i]);
                         i += 1;
                     }
-                    if let Some(&ch) = s.get(i) {
-                        text.push(ch);
-                    }
-                    i += 1;
                 }
                 i += 1;
                 out.push(Token {
@@ -1343,6 +1550,61 @@ mod rust_lex {
         out
     }
 
+    /// The escape whose letter is at `s[i]` (just past the `\`), decoded into
+    /// `text` the way rustc decodes it; returns the index after it.
+    ///
+    /// THE FIRST LEXER COPIED THE LETTER THROUGH, so `"cl\u{61}ude"` read as
+    /// `clu{61}ude`, `"\x63odex"` as `x63odex`, and a `\`-newline continuation
+    /// split `"cl\⏎    aude"` into two words. rustc compiles all three to the
+    /// plain name; the review of 10 Oct 2026 fed each to the agent-CLI and
+    /// network-program scans and got `[]`. A name written with an escape is
+    /// still written, so what is compared here is what the binary will hold.
+    /// An escape rustc would reject keeps its letter: the file does not
+    /// compile, so nothing it spells can run.
+    fn unescape(s: &[char], mut i: usize, text: &mut String) -> usize {
+        let Some(&c) = s.get(i) else { return i };
+        i += 1;
+        match c {
+            'n' => text.push('\n'),
+            'r' => text.push('\r'),
+            't' => text.push('\t'),
+            '0' => text.push('\0'),
+            'x' => {
+                let hex: String = s.iter().skip(i).take(2).collect();
+                match u8::from_str_radix(&hex, 16) {
+                    Ok(b) if hex.len() == 2 && hex.chars().all(|d| d.is_ascii_hexdigit()) => {
+                        text.push(char::from(b));
+                        i += 2;
+                    }
+                    _ => text.push('x'),
+                }
+            }
+            'u' if s.get(i) == Some(&'{') => {
+                let close = (i..s.len()).find(|&k| s[k] == '}' || s[k] == '"');
+                let hex: String = match close {
+                    Some(k) if s[k] == '}' => s[i + 1..k].iter().filter(|&&d| d != '_').collect(),
+                    _ => String::new(),
+                };
+                match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                    Some(ch) => {
+                        text.push(ch);
+                        i = close.map_or(i, |k| k + 1);
+                    }
+                    None => text.push('u'),
+                }
+            }
+            // STRING_CONTINUE: the newline and every blank after it vanish.
+            '\n' | '\r' => {
+                while matches!(s.get(i), Some(' ' | '\t' | '\n' | '\r')) {
+                    i += 1;
+                }
+            }
+            // `\\`, `\"`, `\'`.
+            other => text.push(other),
+        }
+        i
+    }
+
     /// `r"…"`, `r#"…"#`, `br##"…"##`, `cr"…"` — no escapes, ends at the quote
     /// followed by as many `#` as opened it. `None` when `i` does not start one
     /// (`r#ident` is a raw identifier, not a string).
@@ -1400,7 +1662,8 @@ mod rust_lex {
 /// PROGRAM POSITION — first word, first word after a shell separator, first
 /// word after a launcher such as `env`, `sh -c` or `npx` — or names its npm
 /// package anywhere, counts: aliases, wrappers and helper functions
-/// (`shell_line("claude", …)`) all have to write the name somewhere.
+/// (`shell_line("claude", …)`) all have to write the name somewhere — and a
+/// name written with an escape (`"cl\u{61}ude"`) is read as rustc reads it.
 ///
 /// NAMES BUILT AT RUN TIME are the limit of a source scan, and are an accepted
 /// risk rather than an open item, because they are enumerated:
@@ -1809,6 +2072,16 @@ fn every_toml_spelling_of_a_dependency_is_a_dependency() {
         declarers_of("[dependencies.net]\npackage = \"\"\"\\u0075req\"\"\"\n"),
         ["ureq"]
     );
+    // TOML 1.1's `\xHH`, which cargo 1.98.1 resolves to ureq (second review
+    // of 10 Oct 2026); the decoder read `x75req`.
+    assert_eq!(
+        declarers_of("[dependencies]\nnet = { package = \"\\x75req\", version = \"3\" }\n"),
+        ["ureq"]
+    );
+    assert_eq!(
+        declarers_of("[dependencies.net]\npackage = \"\"\"\\x75r\\x65q\"\"\"\n"),
+        ["ureq"]
+    );
 }
 
 #[test]
@@ -1844,13 +2117,15 @@ fn an_unreadable_manifest_is_an_error_not_a_pass() {
     assert!(dependencies("[dependencies\nureq = \"3\"\n").is_err());
     assert!(dependencies("[dependencies]\nureq = \"3\n").is_err());
     assert!(dependencies("[dependencies]\nureq \"3\"\n").is_err());
+    // An escape Cargo refuses is not a letter to copy through.
+    assert!(dependencies("[dependencies]\nnet = { package = \"\\qureq\" }\n").is_err());
+    assert!(dependencies("[dependencies]\nnet = { package = \"\\x7\" }\n").is_err());
 }
 
 fn socket_lines(src: &str) -> Vec<usize> {
-    rust_lex::tokens(src)
+    raw_network(&rust_lex::tokens(src))
         .into_iter()
-        .filter(|t| t.kind == rust_lex::Kind::Ident && CONNECTORS.contains(&t.text.as_str()))
-        .map(|t| t.line)
+        .map(|(line, _)| line)
         .collect()
 }
 
@@ -1923,6 +2198,104 @@ impl Drop for FakeWorkspace {
 }
 
 const SOCKET_RS: &str = "pub fn f() { let _ = std::net::TcpStream::connect(\"127.0.0.1:9\"); }\n";
+
+#[test]
+fn a_socket_from_libc_or_a_resolver_is_a_socket() {
+    // The review of 10 Oct 2026, second pass, verbatim in spirit: libc is
+    // already linked, so this needs no dependency and names no `std::net` type.
+    let ffi = r#"unsafe extern "C" {
+    fn socket(domain: i32, ty: i32, proto: i32) -> i32;
+    fn connect(fd: i32, addr: *const u8, len: u32) -> i32;
+}
+pub fn f() { unsafe { let fd = socket(2, 1, 0); connect(fd, std::ptr::null(), 16); } }
+"#;
+    let lines = |src: &str| -> Vec<(usize, String)> { raw_network(&rust_lex::tokens(src)) };
+    assert_eq!(
+        lines(ffi),
+        [
+            (2, "extern socket".to_string()),
+            (3, "extern connect".to_string())
+        ]
+    );
+    // A `#[link_name]` renames the Rust side, not the symbol.
+    assert_eq!(
+        lines("extern {\n    #[link_name = \"connect\"]\n    fn tidy(fd: i32) -> i32;\n}\n").len(),
+        1
+    );
+    // The names that defeat a name scan are red to declare at all.
+    assert_eq!(
+        lines("extern \"C\" { fn syscall(n: i64, ...) -> i64; fn dlsym(h: *mut u8, s: *const u8) -> *mut u8; }")
+            .len(),
+        2
+    );
+    // Through a crate path, or imported bare.
+    assert_eq!(
+        lines("fn f() { unsafe { libc::connect(fd, a, l) }; }").len(),
+        1
+    );
+    assert_eq!(
+        lines("fn f() { nix::sys::socket::bind(fd, &a); }").len(),
+        2,
+        "both `socket` (the module) and `bind` are under nix::"
+    );
+    assert_eq!(
+        lines("use libc::{c_int, socket};\nfn f() { socket(2, 1, 0); }").len(),
+        1
+    );
+    assert_eq!(lines("use libc::*;\n").len(), 1);
+    // DNS is a way out too.
+    assert_eq!(
+        lines("use std::net::ToSocketAddrs;\nfn f() { \"x.example:80\".to_socket_addrs(); }"),
+        [
+            (1, "ToSocketAddrs".to_string()),
+            (2, "to_socket_addrs".to_string())
+        ]
+    );
+    // Not every `connect` is a socket: a method, a definition, an unrelated
+    // extern block, and an `extern "C" fn` that is not an import.
+    assert!(lines("fn f() { pool.connect(); db::connect(); x.bind(y); }").is_empty());
+    assert!(lines("fn connect() {} extern \"C\" fn socket() {} unsafe extern \"C\" { fn setsid() -> i32; fn killpg(g: i32, s: i32) -> i32; } fn bind() {}").is_empty());
+    assert!(lines("extern crate core; fn listen() {}").is_empty());
+
+    // And through the whole scan, in a crate outside the monopoly.
+    let ws = FakeWorkspace::new("ffi");
+    ws.write("tacet-x/Cargo.toml", "[package]\nname = \"tacet-x\"\n");
+    ws.write("tacet-x/src/lib.rs", ffi);
+    let offenders = socket_offenders(&ws.0);
+    assert_eq!(offenders.len(), 2, "{offenders:#?}");
+}
+
+#[test]
+fn a_crate_outside_crates_is_red() {
+    let meta = serde_json::json!({
+        "packages": [
+            {"id": "cli", "name": "tacet-cli", "source": null,
+             "manifest_path": "/w/crates/tacet-cli/Cargo.toml"},
+            {"id": "serde", "name": "serde",
+             "source": "registry+https://github.com/rust-lang/crates.io-index",
+             "manifest_path": "/home/u/.cargo/registry/src/serde-1/Cargo.toml"},
+            // A path dependency of a member, outside crates/.
+            {"id": "helper", "name": "helper", "source": null,
+             "manifest_path": "/w/vendor/helper/Cargo.toml"},
+            // A workspace member outside crates/.
+            {"id": "xtask", "name": "xtask", "source": null,
+             "manifest_path": "/w/xtask/Cargo.toml"},
+            // One level too deep: `manifests_in` reads crates/*/Cargo.toml only.
+            {"id": "deep", "name": "deep", "source": null,
+             "manifest_path": "/w/crates/tacet-cli/fuzz/Cargo.toml"},
+        ],
+        "workspace_members": ["cli", "xtask"],
+    });
+    let outside = local_packages_outside(&meta, Path::new("/w/crates"));
+    assert_eq!(
+        outside,
+        [
+            "helper (/w/vendor/helper/Cargo.toml)",
+            "xtask (/w/xtask/Cargo.toml)",
+            "deep (/w/crates/tacet-cli/fuzz/Cargo.toml)",
+        ]
+    );
+}
 
 #[test]
 fn a_socket_in_build_rs_is_a_socket() {
@@ -2057,6 +2430,20 @@ fn an_agent_cli_is_red_however_it_is_spelled_and_wherever_it_is() {
         "tacet-mcp/src/lib.rs",
         "fn f() { std::process::Command::new(\"codex\").arg(\"app-server\"); }\n",
     );
+    // The review of 10 Oct 2026, second pass: rustc decodes these escapes to
+    // `claude`, `codex` and `claude`; the lexer used to read `clu{61}ude`,
+    // `x63odex`, and `cl` + `aude`.
+    ws.write(
+        "tacet-tools/src/escaped.rs",
+        r#"fn f() {
+    Command::new("cl\u{61}ude").arg("-p");
+    Command::new("\x63odex").arg("app-server");
+    Command::new("cl\
+        aude").arg("-p");
+    Command::new(b"\x61gy");
+}
+"#,
+    );
     // Text that names one and runs nothing stays green.
     ws.write(
         "tacet-tools/src/prose.rs",
@@ -2073,6 +2460,9 @@ fn an_agent_cli_is_red_however_it_is_spelled_and_wherever_it_is() {
     assert!(hit("src/npx.rs", 2), "{problems:#?}");
     assert!(hit("src/sh.rs", 1), "{problems:#?}");
     assert!(hit("tacet-mcp/src/lib.rs", 1), "{problems:#?}");
+    for line in [2, 3, 4, 6] {
+        assert!(hit("src/escaped.rs", line), "{problems:#?}");
+    }
     assert_eq!(
         problems.iter().filter(|p| p.contains("helper.rs")).count(),
         2,
@@ -2082,7 +2472,7 @@ fn an_agent_cli_is_red_however_it_is_spelled_and_wherever_it_is() {
         !problems.iter().any(|p| p.contains("prose.rs")),
         "{problems:#?}"
     );
-    assert_eq!(problems.len(), 6, "{problems:#?}");
+    assert_eq!(problems.len(), 10, "{problems:#?}");
 
     // A NAMED-NOT-RUN row covers that literal in that file, and nothing else.
     ws.write(
@@ -2132,6 +2522,53 @@ fn a_network_program_outside_the_monopoly_is_red_unless_its_row_says_why() {
     let problems = network_program_problems(&ws.0, &rows, &[]);
     assert_eq!(problems.len(), 1, "{problems:#?}");
     assert!(problems[0].contains("`curl`"));
+
+    // Escaped spellings are the program rustc compiles in (review of 10 Oct
+    // 2026, second pass: each read as `x63url`, `dou{63}ker`, `wg` + `et`).
+    ws.write(
+        "tacet-x/src/escaped.rs",
+        r#"fn g() {
+    Command::new("\x63url");
+    Command::new("do\u{6_3}ker").arg("run");
+    Command::new("wg\
+                  et");
+}
+"#,
+    );
+    let problems = network_program_problems(&ws.0, &rows, &[]);
+    for (line, program) in [(2, "curl"), (3, "docker"), (4, "wget")] {
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains(&format!("escaped.rs:{line}:"))
+                    && p.contains(&format!("`{program}`"))),
+            "{problems:#?}"
+        );
+    }
+    assert_eq!(problems.len(), 4, "{problems:#?}");
+}
+
+#[test]
+fn a_string_literal_reads_as_rustc_decodes_it() {
+    let texts = |src: &str| -> Vec<String> {
+        rust_lex::tokens(src)
+            .into_iter()
+            .filter(|t| t.kind == rust_lex::Kind::Str)
+            .map(|t| t.text)
+            .collect()
+    };
+    assert_eq!(
+        texts(r#"("cl\u{61}ude", "\x63odex", b"\x63url", c"a\tb", "q\"\\\'", "\0")"#),
+        ["claude", "codex", "curl", "a\tb", "q\"\\'", "\0"]
+    );
+    // STRING_CONTINUE eats the newline and the indent, not the text after.
+    assert_eq!(texts("\"cl\\\n    \t aude\" x"), ["claude"]);
+    assert_eq!(texts("\"cl\\\r\n  aude\""), ["claude"]);
+    // Raw strings have no escapes, and a malformed escape keeps its letter.
+    assert_eq!(texts(r##"r"cl\u{61}ude" "\xZZ""##), [r"cl\u{61}ude", "xZZ"]);
+    // And the line count still sees the newlines a continuation swallowed.
+    let toks = rust_lex::tokens("\"a\\\n  b\"\nTcpStream");
+    assert_eq!(toks.last().map(|t| t.line), Some(3));
 }
 
 #[test]
