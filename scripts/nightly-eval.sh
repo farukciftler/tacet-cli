@@ -49,13 +49,22 @@ done
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO" || exit 1
 
-# THE COMMIT IS PART OF THE DIRECTORY NAME, and that is the resume key. Two
-# runs of the same commit share a journal and continue each other; a new commit
-# starts a new one, because the cases are not comparable across a code change
-# and the journal's own stamp would refuse them anyway.
+# THE DATE AND THE COMMIT ARE THE DIRECTORY NAME, and that is the resume key.
+# Two runs of the same commit WITH THE SAME EDITS share a journal and continue
+# each other; a new commit starts a new one.
+#
+# THE NAME IS COARSER THAN THE STAMP. `-dirty` says that there are uncommitted
+# edits, not which: two runs on one day with DIFFERENT edits land in the same
+# directory, and the journal's stamp (which hashes the edits themselves) refuses
+# the second rather than mixing them. Commit, or move the directory aside, to
+# start another.
+#
+# UNTRACKED FILES COUNT, because the stamp counts them: a new source file
+# nobody has `git add`ed yet is code the binary was built from. `git diff` alone
+# missed it, and the directory said "clean" for a tree the stamp called dirty.
 COMMIT="$(git rev-parse --short HEAD)"
 DIRTY=""
-if ! git diff --quiet || ! git diff --cached --quiet; then DIRTY="-dirty"; fi
+if [ -n "$(git status --porcelain --untracked-files=all)" ]; then DIRTY="-dirty"; fi
 STAMP="$(date +%Y%m%d)"
 OUT="$HOME/.tacet/nightly"
 RUN="$OUT/$STAMP-$COMMIT$DIRTY"

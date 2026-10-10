@@ -294,3 +294,85 @@ fn a_journal_for_one_budget_is_refused_for_another() {
         "a budget-3 run resumed a default-budget journal"
     );
 }
+
+/// A tool that runs exactly like `inner` and is DESCRIBED differently — the
+/// shape of a release that rewords a description and keeps every name.
+struct Reworded {
+    inner: Arc<dyn tacet_kernel::Tool>,
+    description: String,
+}
+
+impl tacet_kernel::Tool for Reworded {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+    fn description(&self) -> &str {
+        &self.description
+    }
+    fn schema(&self) -> tacet_kernel::ArgSchema {
+        self.inner.schema()
+    }
+    fn run<'a>(
+        &'a self,
+        args: serde_json::Value,
+        ctx: &'a mut tacet_kernel::ToolContext,
+    ) -> tacet_kernel::ToolFuture<'a> {
+        self.inner.run(args, ctx)
+    }
+}
+
+/// THE WORDS THE MODEL READS ARE PART OF WHAT WAS MEASURED (audit M24 review).
+///
+/// The catalog field of the stamp is the tool NAMES. A reworded description, a
+/// changed system instruction, `FINAL_PASS_INSTRUCTION` or `WEB_NUDGE` leave
+/// every name alone, and on an installed binary there is no commit to tell the
+/// two builds apart — `BuildProvenance::default()` is what such a run stamps. So
+/// `prompt_sha256` is the only field that moves, and with it returning a
+/// constant every other test here stayed green.
+#[test]
+fn a_journal_from_reworded_tools_is_refused_when_nothing_else_tells_them_apart() {
+    let dir = tmp("reworded");
+    let e = engine("x");
+    let before = catalog();
+    let after: tacet_kernel::ToolCatalog = before
+        .tools()
+        .iter()
+        .enumerate()
+        .map(|(i, t)| -> Arc<dyn tacet_kernel::Tool> {
+            if i == 0 {
+                Arc::new(Reworded {
+                    inner: Arc::clone(t),
+                    description: format!("{} Prefer this tool.", t.description()),
+                })
+            } else {
+                Arc::clone(t)
+            }
+        })
+        .collect();
+    assert_eq!(
+        before.names(),
+        after.names(),
+        "the fixture must keep every name, or the catalog field catches it"
+    );
+
+    let no_checkout = BuildProvenance::default();
+    let stamp = |c: &tacet_kernel::ToolCatalog| {
+        JournalStamp::new(&e.identity(), c, &no_checkout, &cases(), None, false)
+    };
+    let first = CaseJournal::open(&dir, &stamp(&before)).expect("the journal opens");
+    run_selection_journalled(&cases(), &e, None, false, &suite_catalog, Some(&first));
+
+    let message = CaseJournal::open(&dir, &stamp(&after))
+        .err()
+        .unwrap_or_else(|| panic!("cases measured against other tool descriptions were mixed"));
+    assert!(
+        message.contains("prompt_sha256"),
+        "the refusal must name the prompt hash: {message}"
+    );
+
+    // NOT VACUOUS: the same words still resume.
+    assert!(
+        CaseJournal::open(&dir, &stamp(&before)).is_ok(),
+        "the guard refuses everything, so it proves nothing"
+    );
+}
