@@ -65,6 +65,15 @@ releases to follow.
   because the only test called the helper on its own. A second test reads
   `install` and fails if it reaches the downloader any other way (L3).
 
+**Measured:** the Claude Code SessionStart hook, run for real on 11 Oct 2026
+with Claude Code 2.1.285 (four headless `-p` turns in a throwaway project,
+the entry exactly as `tacet handoff install claude` prints it). A start and a
+resume under a record ran it and the model quoted the record, credited to
+Tacet; `--resume --fork-session` ran no SessionStart hook, so a fork sees only
+a stale copy; whether the interactive screen shows `systemMessage` is still
+not seen. README, `docs/agent-handoff.md` and the ADR say so, and a test now
+holds all four pages to the recorded run in both directions (RG-21).
+
 ---
 
 ## Unreleased — the audit of 9 Oct 2026: completeness, 10 Oct 2026

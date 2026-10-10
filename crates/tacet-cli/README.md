@@ -476,14 +476,15 @@ and the transcript backups `handoff note` keeps. Getting it to the other
 agent has two paths, and the first is the one to use:
 
 * **The agent's own hook** (`tacet handoff install claude|codex|antigravity`).
-  Claude Code and Codex are documented to run `tacet handoff hook <agent>`
-  when a session starts and to get the record as context, and Antigravity to
-  get it as a PreInvocation `ephemeralMessage` from a hook named
-  `tacet-handoff`, in the shape its own documentation gives; no agent has been
-  seen doing it yet (**Not measured** below). No session file is touched; the only
-  thing of the agent's ever written is its settings file, by `install --path
-  <file>`, after showing the change and asking, with the old file kept beside
-  it.
+  Claude Code runs `tacet handoff hook claude` when a session starts or is
+  resumed and puts the record in front of the model (measured below — except
+  a `--fork-session` resume, which runs no hook). Codex is documented to do the
+  same, and Antigravity to get it as a PreInvocation `ephemeralMessage` from a
+  hook named `tacet-handoff`, in the shape its own documentation gives;
+  neither has been seen doing it (**Not measured** below). No session file is
+  touched; the only thing of the agent's ever written is its settings file, by
+  `install --path <file>`, after showing the change and asking, with the old
+  file kept beside it.
 * **A note in the agent's own files**, opt-in and fail-closed. `tacet handoff
   note claude <id>` appends one user-role entry, `[Note from Tacet, a local
   assistant, not from the user] …`, chained to the session's last entry; `--fork`
@@ -516,12 +517,27 @@ once the script's judge learned to read past Markdown emphasis — re-judged fro
 the saved output, not a new paid run), and E2 differed: the model did not claim
 the appended assistant text as its own. Only the user role is written either
 way, so nothing follows from it. The Claude
-Code write range is that one version, 2.1.285. **Not measured:** every Codex
+Code write range is that one version, 2.1.285.
+
+**The SessionStart hook measured on 11 Oct 2026 with Claude Code 2.1.285**, on
+the same Mac (macOS 26.5.2): four headless `claude -p` turns (they reported
+$1.37 between them) in a throwaway project whose `.claude/settings.json` held
+exactly what `tacet handoff install claude` prints. A `--resume`, and a fresh
+start under `--session-id`, each with a record written beforehand, ran the
+hook: Claude Code logged that it "provided additionalContext", kept that
+context in the transcript, and the model — asked without naming Tacet —
+quoted a task title only the record held and said Tacet had left it. A start
+with no record left nothing in the transcript. The `systemMessage` was stored
+in the transcript as a hook system message; `-p` has no screen, so whether the
+interactive one shows it was not seen. `--resume --fork-session` ran no
+SessionStart hook at all, Tacet's or any other: the fork answered from the
+copy of the record the earlier resume had left in its history, and missed a
+task added since. Resume the original session, not a fork, to hand it the
+current record. **Not measured:** every Codex
 path, its hook included (Codex was not installed on that machine; its reader is
-built from Codex's source and tested on fixtures), the Claude Code SessionStart
-hook (`tacet handoff hook claude` is tested on the event its documentation
-describes; no real Claude Code has run it), the Antigravity hook, and any
-write into Antigravity's files (the GUI was not driven).
+built from Codex's source and tested on fixtures), whether Claude Code's
+interactive screen shows the hook's `systemMessage`, the Antigravity hook, and
+any write into Antigravity's files (the GUI was not driven).
 
 **Whose terms apply.** Claude Code's documentation says its transcript format
 "is internal to Claude Code and changes between versions", which is why reading

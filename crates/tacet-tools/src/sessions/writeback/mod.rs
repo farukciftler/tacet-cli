@@ -9,6 +9,10 @@
 //!    `SessionStart` (`additionalContext`), Antigravity `PreInvocation`
 //!    (`injectSteps`). `hook_response` below is what `tacet handoff hook`
 //!    prints; nothing of the agent's is written. RG-21, RG-23, RG-25.
+//!    Claude Code's MEASURED on 11 Oct 2026 (2.1.285, `-p`): the model gets
+//!    the record on a start and on a resume, but `--resume --fork-session`
+//!    runs no SessionStart hook at all — a fork sees only the copy an earlier
+//!    resume left in its history. Nothing a hook prints can change that.
 //! 3. A write into the agent's own storage, each fail-closed and each asked
 //!    about every time (`Confirm`): a note appended to a Claude Code
 //!    transcript or a fork of it (`claude.rs`, RG-22), a Codex app-server
@@ -631,11 +635,74 @@ mod tests {
         dir
     }
 
-    /// Hooks a real agent has been seen to run, each with the date, machine
-    /// and agent version of that run. EMPTY: the Claude Code hook's output is
-    /// tested against its documented shape, but no Claude Code has run it (a
-    /// paid model turn), and neither Codex nor Antigravity was driven.
-    const HOOKS_RUN_BY_THEIR_AGENT: &[(AgentKind, &str)] = &[];
+    /// Hooks a real agent has been seen to run, each with the phrase every
+    /// page that describes the hook must carry: the date and agent version of
+    /// that run (the machine is in the sentence around it).
+    ///
+    /// Claude Code: 11 Oct 2026, Claude Code 2.1.285 on the measuring Mac
+    /// (Apple M4 Pro, macOS 26.5.2), four headless `-p` turns in a throwaway
+    /// project whose `.claude/settings.json` held exactly what `tacet handoff
+    /// install claude` prints. A resume and a startup under a pre-written
+    /// record each ran the hook — Claude Code logged "provided
+    /// additionalContext" and the model quoted a task title only the record
+    /// held, crediting Tacet; a startup with no record left no trace in the
+    /// transcript; `--resume --fork-session` ran NO SessionStart hook at all,
+    /// so the fork answered from the stale copy the earlier resume had left in
+    /// the history. Codex and Antigravity were not driven.
+    const HOOKS_RUN_BY_THEIR_AGENT: &[(AgentKind, &str)] = &[(
+        AgentKind::ClaudeCode,
+        "SessionStart hook measured on 11 Oct 2026 with Claude Code 2.1.285",
+    )];
+
+    /// The pages that describe the hooks. Each must carry the phrase of
+    /// every run recorded above, so a run cannot be recorded here while a
+    /// page still says the hook never ran — or the other way round.
+    const HOOK_PAGES: &[&str] = &[
+        "README.md",
+        "crates/tacet-cli/README.md",
+        "docs/agent-handoff.md",
+        "docs/adr/0001-agent-sessions.md",
+    ];
+
+    fn page(doc: &str) -> String {
+        let page = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join(doc),
+        )
+        .unwrap();
+        page.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// RG-21, the other direction: a hook recorded as run by its agent is
+    /// stated as measured, with its date and version, on every page that
+    /// describes it — and on none of them still described as never run.
+    /// The four pages said "no real Claude Code has run it" until the run of
+    /// 11 Oct 2026; nothing tied them to that run.
+    #[test]
+    fn every_hook_run_by_its_agent_is_dated_on_every_page() {
+        for doc in HOOK_PAGES {
+            let folded = page(doc);
+            for (agent, claim) in HOOKS_RUN_BY_THEIR_AGENT {
+                assert!(
+                    folded.contains(claim),
+                    "{doc} does not say {claim:?} for the {agent:?} hook, \
+                     which a real run is recorded for"
+                );
+            }
+            for stale in [
+                "no real Claude Code has run it",
+                "no Claude Code has run it",
+                "has not been run by a real Claude Code",
+                "NOT RUN by Claude Code",
+            ] {
+                assert!(
+                    !folded.contains(stale),
+                    "{doc} still says {stale:?}, and a run is recorded"
+                );
+            }
+        }
+    }
 
     /// RG-21: the protocol page must not let a hook that was only tested
     /// against documentation read as measured. Every agent `hook_group` gives
@@ -654,13 +721,7 @@ mod tests {
     }
 
     fn hook_not_measured_in(doc: &str) {
-        let page = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../..")
-                .join(doc),
-        )
-        .unwrap();
-        let folded = page.split_whitespace().collect::<Vec<_>>().join(" ");
+        let folded = page(doc);
         let sentence = folded
             .split_once("**Not measured:**")
             .expect("the page has a Not measured sentence")
@@ -678,6 +739,12 @@ mod tests {
         };
         for agent in AgentKind::ALL {
             if HOOKS_RUN_BY_THEIR_AGENT.iter().any(|(a, _)| *a == agent) {
+                assert!(
+                    !sentence.contains(&named(agent)),
+                    "{doc}'s Not measured sentence still names {:?}, \
+                     and a run of that hook is recorded: {sentence:?}",
+                    named(agent)
+                );
                 continue;
             }
             assert!(

@@ -240,7 +240,15 @@ Preferred to fallback, for every agent:
    the `.json` record through `handoff::read` (the secrets gate, the schema
    check, the file name agreeing with the session it names) and renders it as
    Markdown; the `.md` twin is for people and the hook never opens it. No
-   transcript is touched.
+   transcript is touched. Claude Code's half is the SessionStart hook measured
+   on 11 Oct 2026 with Claude Code 2.1.285 (the measuring Mac, macOS 26.5.2,
+   four headless `-p` turns in a throwaway project, $1.37 reported): a resume
+   and a start under a pre-written record each ran it, and the model quoted a
+   task only the record held and credited Tacet; `--resume --fork-session` ran
+   no SessionStart hook at all, so a fork sees only the copy an earlier resume
+   left in its history. Whether the interactive screen shows `systemMessage`
+   was not seen (`-p` has none). docs/agent-handoff.md has the table. The
+   Codex and Antigravity hooks have not been run by their agents.
 3. **A file append** — Claude Code only, inside the measured write range, the
    user-role note format, never into a live session, chain verified after.
    Codex appends additionally refuse when `thread-writer-locks/<id>.lock`

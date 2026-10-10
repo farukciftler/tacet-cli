@@ -4,12 +4,14 @@
   ([docs/adr/0001-agent-sessions.md](adr/0001-agent-sessions.md)).
 * **Date:** 10 Oct 2026.
 * **Measured:** the Claude Code note format and its failure modes, on Claude
-  Code 2.1.285 (9 Oct 2026, experiments E1–E5). **Not measured:** the Claude
-  Code SessionStart hook in a real session (its output is tested against the
-  shape Claude Code's documentation gives; no Claude Code has run it, which
-  would be a paid model turn), every Codex path (Codex was not installed), the
-  Antigravity hook and `task.md` write (the GUI was not driven), and the
-  Codex/Antigravity hook-file shapes. Each section below says which is which.
+  Code 2.1.285 (9 Oct 2026, experiments E1–E5), and the Claude Code
+  SessionStart hook measured on 11 Oct 2026 with Claude Code 2.1.285 (it runs
+  on a start and a resume and the model sees the record; a `--fork-session`
+  resume runs no hook — see its section). **Not measured:** whether Claude
+  Code's interactive screen shows the hook's `systemMessage` (only `-p` was
+  run), every Codex path (Codex was not installed), the Antigravity hook and
+  `task.md` write (the GUI was not driven), and the Codex/Antigravity
+  hook-file shapes. Each section below says which is which.
 
 When you continue another agent's session in Tacet (`tacet chat --from
 claude:<id>`), Tacet starts a **handoff record** for it. This page is the
@@ -96,7 +98,7 @@ what it adds and asking; the old file is kept beside it as
 `<file>.tacet-backup-<time>`. The rest of the file is kept; its keys are
 written back in sorted order.
 
-### Claude Code — SessionStart (documented, used as documented; NOT RUN by Claude Code)
+### Claude Code — SessionStart (MEASURED, 11 Oct 2026, Claude Code 2.1.285)
 
 Add to `~/.claude/settings.json` (all projects) or `.claude/settings.json`:
 
@@ -112,9 +114,27 @@ message to you. The context says it comes from Tacet and is not an
 instruction from the user, and is cut at 9,000 characters (with a line saying
 so), under the cap Claude Code's documentation gives for hook context. That
 shape is checked against the documentation by
-`cargo test -p tacet-cli --test the_handoff_hook_answers_its_agent`; no real
-Claude Code has yet started a session with the hook installed, so whether it
-shows the message and the context is still to be measured.
+`cargo test -p tacet-cli --test the_handoff_hook_answers_its_agent`.
+
+What a real Claude Code did with it — the SessionStart hook measured on 11 Oct
+2026 with Claude Code 2.1.285, on one Mac (Apple M4 Pro, macOS 26.5.2), four
+headless `claude -p` turns in a throwaway project whose `.claude/settings.json`
+held exactly the entry `tacet handoff install claude` printed, with
+`TACET_HOME` pointing at a scratch directory:
+
+| Run | Record | What Claude Code did | What the model said |
+|---|---|---|---|
+| fresh start | none | nothing of Tacet's in the transcript: the hook's answer to a session it has no record for is silence (an empty answer is not logged, so this run does not show that it ran) | — |
+| `--resume <id>` | written after the start | `SessionStart:resume`; logged "provided additionalContext (984 chars)"; kept it in the transcript as `hook_additional_context`, the message as `hook_system_message` | quoted task 2's title, which only the record held, and said Tacet left it — asked without naming Tacet |
+| `--resume <id> --fork-session` | one task added since | **ran no SessionStart hook** (none of the session's hooks, not only Tacet's); original transcript sha256 unchanged | answered from the copy the earlier resume left in the history: two tasks, "NO TASK 3" |
+| `--session-id <new id>` | written before the start | `SessionStart:startup`; "provided additionalContext (863 chars)" | quoted task 1 and its status, credited Tacet |
+
+So the record reaches the model on a start and on a resume. A fork is not
+told the current record: it inherits whatever the last resume put into the
+history, which is dated ("Updated … by …") and may be stale — resume the
+original session to hand it the current one. The `systemMessage` was stored
+in the transcript; `-p` has no screen, so whether the interactive one shows it
+was not seen. The four calls reported $1.37 between them.
 
 ### Codex — SessionStart in `~/.codex/hooks.json` (NOT MEASURED)
 
@@ -236,11 +256,9 @@ Claude Code is `scripts/session-roundtrip.sh`, run by a person, never in CI.
 
 ## What is not done on this machine
 
-* Claude Code: the SessionStart hook has not been run by a real Claude Code.
-  `tacet handoff hook claude` is tested end to end as a program (event on
-  stdin, the documented JSON on stdout, exit 0 on every failure), but whether
-  Claude Code puts `additionalContext` in front of the model and shows
-  `systemMessage` is its documentation's word, not a measurement here.
+* Claude Code: the hook was run by Claude Code 2.1.285 in `-p` mode only
+  (above). Whether the interactive screen shows `systemMessage`, and any other
+  version, are not measured; a `--fork-session` resume runs no hook at all.
 * Codex: the app-server exchange and the hook shape are untested against a
   real `codex`; the rollout append stays refused by the version table until
   the round trip is run on an install.
