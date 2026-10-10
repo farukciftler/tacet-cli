@@ -103,12 +103,12 @@ looking at what the model is actually sent.
 |---|---|
 | Name | a tool that isn't in the catalog — the model cannot invent a callable |
 | Schema | arguments that don't validate, even if the grammar was bypassed |
-| Approval | outbound data in a session that has touched personal data |
-| Cancel | anything, the moment you interrupt the turn |
+| Approval | outbound data in a session that has touched personal data; any `shell` or `db_write` call once the session has read text from outside the machine (a web page, an HTTP or MCP answer, an imported transcript); every call to an MCP server marked `always_ask` |
+| Cancel | anything, the moment you interrupt the turn — `shell` and `run_code` end their process group within about a second; any other tool that does not stop is left behind after 3 s and the turn says so |
 
 **Bulk data never enters the model.** A tool that reads a 40 000-row spreadsheet puts the data in a store and hands the model a short summary plus a reference. The next tool that needs it fetches it by reference. The context window is a budget, not a bottleneck.
 
-**Almost no dependencies.** OOXML (`.xlsx`, `.docx`) generation, zip, deflate and CRC32 are written by hand. So is the MCP client — JSON-RPC 2.0 over Streamable HTTP with SSE, OAuth, elicitation and task polling, in **3,496 non-test lines across twelve files** (5,060 with the tests; 11 `use std` lines in 6 of them; re-derived 10 Oct 2026, counting each file's lines above its first `#[cfg(test)]`). That sentence said "~430 lines with a single `use std`" for a long time: true at the first commit, and never re-derived while the protocol grew. The claim it is here to support survives the correction — there is no client library underneath, and 3,496 lines of plain Rust is still a thing one person can read — but a number in a paragraph about auditability has to be the real one.
+**Almost no dependencies.** OOXML (`.xlsx`, `.docx`) generation, zip, deflate and CRC32 are written by hand. So is the MCP client — JSON-RPC 2.0 over Streamable HTTP with SSE, OAuth, elicitation and task polling, in **3,503 non-test lines across twelve files** (5,067 with the tests; 11 `use std` lines in 6 of them; re-derived 10 Oct 2026, counting each file's lines above its first `#[cfg(test)]`). That sentence said "~430 lines with a single `use std`" for a long time: true at the first commit, and never re-derived while the protocol grew. The claim it is here to support survives the correction — there is no client library underneath, and 3,503 lines of plain Rust is still a thing one person can read — but a number in a paragraph about auditability has to be the real one.
 
 The direct dependency list is `serde`, `serde_json`, `thiserror`, `clap`, `crossterm` and `ureq`. Behind the off-by-default `candle` feature there are three more: `candle-core`, `candle-transformers` and `tokenizers`. Adding to that list is an architectural decision documented at the top of the file, not a convenience.
 
@@ -291,6 +291,8 @@ Two things worth knowing before you install `shell`:
 
 **Allowing a program allows everything that program can do.** `curl` is network access; `git` can push. So `shell` sits behind the same approval question as `web_search` and `http`: once a turn has touched personal data, every call that could carry it off the machine stops and asks you first.
 
+There is a second question, and it does not depend on personal data. Once the session has read text from outside the machine (a web page, an `http` or MCP answer, a transcript imported from another agent), every `shell` and `db_write` call asks first, because that text may be what told the model to run it. The question says this in its own words. It does not claim that data will be sent. A "no" covers that one command only.
+
 **Writing to a database is a second tool, not a flag.** `db` is read-only and stays read-only: its lock is `sqlite3 -readonly`, measured on your own binary before the tool is built. If you want a database changed, you name the file — `data/app.db`, relative to the project — while installing the `db` addon, and a *separate* `db_write` tool appears. Name nothing and it does not exist, which is the only gate that holds: the SQL is free text, so a model that has the tool can always spell `DROP TABLE`, and the answer is for the tool not to be there.
 
 Every `db_write` call is measured before it happens. The statement runs first against a **copy** of the file, and what you are shown is the difference that copy actually took: objects created, dropped or redefined, row counts moved, journal mode changed. Then it asks. Nothing is written until you say yes, the copy that was measured is left beside the database as `<name>.tacet-backup`, and the question is asked again for the next statement — a "no" is about one statement, not about the session.
@@ -381,6 +383,16 @@ over the whole corpus on every `cargo test`.
 ## MCP
 
 Connect servers you run yourself in `~/.tacet/mcp.json`. Their tools join the catalog and pass through the same four gates as built-in ones — a remote tool gets no privileges a local tool doesn't have.
+
+A server's answers always taint the session and always count as outside text, and no setting can turn that off. The one per-connection safety setting only makes a server stricter: `always_ask` asks before every call to it, whether or not the session is tainted.
+
+```json
+{
+  "connections": [
+    { "name": "home server", "url": "https://example.com/mcp", "always_ask": true }
+  ]
+}
+```
 
 ## Architecture
 

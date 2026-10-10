@@ -31,6 +31,14 @@ pub use model::{
 /// so the tool that wraps a reader returns this rather than its own opinion.
 pub const TAINTS_SESSION: bool = true;
 
+/// ...and it is text written OUTSIDE this session (audit H2-c, RG-01): a
+/// transcript that says "run make install" is someone else's instruction, so
+/// after it every host-acting tool asks. The other half of the rule, pinned
+/// beside the first because the trait default for `external_content` is
+/// `false` — a reader that forgot to override it would hand a transcript's
+/// commands to `shell` with no question asked (review of 10 Oct 2026).
+pub const EXTERNAL_CONTENT: bool = true;
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};

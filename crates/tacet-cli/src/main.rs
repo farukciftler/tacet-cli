@@ -231,6 +231,9 @@ const DEFAULT_MODEL: &str = "qwen3-4b";
 static CANCEL: AtomicBool = AtomicBool::new(false);
 
 fn main() -> ExitCode {
+    // A tool's panic becomes a Failed chip with its text made screen-safe; the
+    // default hook would print the raw text over the chat first (M30 review).
+    tacet_tools::executor::quiet_tool_panics();
     // ANSWERED BEFORE ANYTHING ELSE, including argument parsing. `tacet update
     // --install` runs the DOWNLOADED binary with this flag to ask what it was
     // built with, and that question has to be cheap and impossible to fail:
@@ -699,15 +702,32 @@ impl mcp::InputAsk for TerminalAsk {
     }
 }
 
+/// The line above the payload — the sentence the user's "y" answers.
+///
+/// IT SAYS WHY THIS CALL ASKS (audit H2-c, review of 10 Oct 2026). The gate
+/// used to print the outbound sentence for every request, so after a web page
+/// was read a `db_write` or a `shell ls` was described to the user as a data
+/// export: a false sentence on the one line that decides. The reason comes
+/// from the executor and its wording from `ApprovalReason::sentence`, so every
+/// gate says the same true thing. That sentence lives only there; a source
+/// guard in the tests keeps a hard-coded copy from coming back into this file.
+///
+/// The tool name is a catalog name, but an MCP server picks its own; it goes
+/// through `one_line` for the same reason the payload does.
+fn approval_heading(request: &ApprovalRequest) -> String {
+    format!(
+        "  ⚠ the '{}' tool {}:",
+        crate::ui::one_line(&request.tool_name),
+        request.reason.sentence()
+    )
+}
+
 struct TerminalApproval;
 
 impl ApprovalGate for TerminalApproval {
     fn request(&self, request: &ApprovalRequest) -> bool {
         eprintln!();
-        eprintln!(
-            "  ⚠ the '{}' tool will send data to the outside world:",
-            request.tool_name
-        );
+        eprintln!("{}", approval_heading(request));
         // THE CONSENT LINE IS SANITISED HERE, NOT SOMEWHERE UPSTREAM.
         //
         // Today `content` happens to arrive JSON-encoded, so control bytes are
@@ -995,11 +1015,25 @@ fn thinking_switch_for(setting: Option<&str>, message: &str) -> &'static str {
     )
 }
 
+/// What a rebuilt executor must keep from the one it replaces: the taint and
+/// the outside-text flag, both one-way and session-long.
+///
+/// BOTH, NOT ONLY THE TAINT (review of 10 Oct 2026). Only `inherit_taint` was
+/// called here, and the outside-text question survived a `/addon` toggle only
+/// because the chat context happens to carry the same flag. A gate held up by
+/// a second copy of its state is one refactor away from opening; the executor
+/// keeps its own copy so it does not depend on which context it is handed.
+fn carry_session_state(old: &ToolExecutor, new: &ToolExecutor) {
+    new.inherit_taint(old.session_tainted());
+    new.inherit_external_content(old.saw_external_content());
+}
+
 /// Rebuilds everything that derives from the catalog, IN PLACE. The catalog is
 /// a session-start snapshot by design (see the note at its creation); toggling
 /// an addon from inside the shell is the one sanctioned reason to refresh that
-/// snapshot without a restart. What survives the swap: the session taint
-/// (explicitly carried — see `ToolExecutor::inherit_taint`), the shared store,
+/// snapshot without a restart. What survives the swap: the session taint and
+/// the outside-text flag (explicitly carried — see `carry_session_state`), the
+/// shared store,
 /// the memory, the open MCP connections. What resets: the approval denial
 /// cache (the safe direction — it asks again) and the code sandbox state.
 #[allow(clippy::too_many_arguments)]
@@ -1017,7 +1051,6 @@ fn refresh_session(
     web_addon_open: &mut bool,
     code_state: &mut Option<Arc<CodeState>>,
 ) {
-    let tainted = executor.session_tainted();
     let (mut c, cs) = session_catalog(store, memory, color, interactive);
     let names = mcp::feed_catalog(&mut c, mcp_load);
     let mut ex = ToolExecutor::new(c.clone());
@@ -1030,7 +1063,7 @@ fn refresh_session(
         ex = ex.external_tool(*n);
     }
     ex = mcp::bind_executor(ex, &names);
-    ex.inherit_taint(tainted);
+    carry_session_state(executor, &ex);
 
     *constraint = engine.vocab().map(|v| CallConstraint::new(&v, &c));
     *catalog_names = c.names().into_iter().map(String::from).collect();
@@ -2542,5 +2575,125 @@ mod tests {
         let zero = progress_text(0, Some(0));
         assert!(!zero.contains("NaN") && !zero.contains("inf"), "{zero}");
         assert!(!zero.contains('%'), "{zero}");
+    }
+
+    /// AUDIT H2-c, THE QUESTION ITSELF (review of 10 Oct 2026). After a page
+    /// is read, `shell` asks — and it used to ask under "will send data to the
+    /// outside world", a description of a different act. Each reason must reach
+    /// the terminal in its own words, and only the outbound one may speak of
+    /// sending data.
+    #[test]
+    fn the_approval_question_names_its_own_reason() {
+        use tacet_tools::executor::ApprovalReason;
+        let ask = |tool: &str, reason| {
+            approval_heading(&ApprovalRequest {
+                source: "test".into(),
+                tool_name: tool.into(),
+                content: "{}".into(),
+                reason,
+            })
+        };
+        let after_page = ask("shell", ApprovalReason::AfterOutsideContent);
+        assert!(
+            !after_page.contains("send data"),
+            "a host call after outside text is described as a data export: {after_page}"
+        );
+        assert!(
+            after_page.contains(ApprovalReason::AfterOutsideContent.sentence()),
+            "{after_page}"
+        );
+        let configured = ask("remote_x", ApprovalReason::Configured);
+        assert!(!configured.contains("send data"), "{configured}");
+        assert!(configured.contains(ApprovalReason::Configured.sentence()));
+        let outbound = ask("web_fetch", ApprovalReason::Outbound);
+        assert!(
+            outbound.contains("send data to the outside world"),
+            "{outbound}"
+        );
+        // A server-chosen tool name cannot break the line it sits on.
+        assert!(!ask("x\r\x1b[2Kok", ApprovalReason::Outbound).contains('\r'));
+    }
+
+    /// The test above holds `approval_heading`; this holds the gate to it.
+    /// Review of 10 Oct 2026: with the gate's `eprintln!` put back to the old
+    /// fixed outbound sentence and the helper left intact, all 142 tests in
+    /// this file stayed green — the helper was tested, the question the user
+    /// actually reads was not. A branch that moves the gate's body elsewhere
+    /// (U20's `approve`) must carry the call with it.
+    #[test]
+    fn the_terminal_gate_prints_the_heading_it_was_given() {
+        let body = include_str!("main.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the file has a body");
+        // The gate and anything it delegates to sit between its own `struct`
+        // and the next one (the database gate's).
+        let gate = body
+            .split("struct TerminalApproval;")
+            .nth(1)
+            .expect("TerminalApproval is declared")
+            .split("\nstruct ")
+            .next()
+            .expect("the gate has a body");
+        let squeezed: String = gate.split_whitespace().collect();
+        assert!(
+            squeezed.contains("eprintln!(\"{}\",approval_heading(request));"),
+            "the terminal approval gate no longer prints `approval_heading(request)`"
+        );
+        let fixed = ["will send data", " to the outside world"].concat();
+        assert!(
+            !body.contains(&fixed),
+            "main.rs hard-codes the outbound sentence; it belongs to `ApprovalReason::sentence` alone"
+        );
+    }
+
+    /// `quiet_tool_panics` is tested in tacet-tools; this holds `main` to
+    /// calling it, since a hook nobody installs is a tested no-op.
+    #[test]
+    fn main_installs_the_quiet_tool_panic_hook() {
+        let main_body = include_str!("main.rs")
+            .split("fn main() -> ExitCode {")
+            .nth(1)
+            .expect("main is declared")
+            .split("\n}\n")
+            .next()
+            .expect("main has a body");
+        assert!(
+            main_body.contains("tacet_tools::executor::quiet_tool_panics();"),
+            "main no longer installs the hook that keeps tool panics off the chat"
+        );
+    }
+
+    /// A REBUILT EXECUTOR KEEPS BOTH FLAGS. `/addon open|close` swaps the
+    /// executor; the old swap carried the taint and dropped the outside-text
+    /// flag, so the executor's own copy of "a page was read" was lost.
+    #[test]
+    fn a_rebuilt_executor_keeps_the_taint_and_the_outside_text_flag() {
+        let old = ToolExecutor::new(ToolCatalog::new());
+        old.inherit_taint(true);
+        old.inherit_external_content(true);
+        let new = ToolExecutor::new(ToolCatalog::new());
+        carry_session_state(&old, &new);
+        assert!(
+            new.session_tainted(),
+            "the taint did not survive the rebuild"
+        );
+        assert!(
+            new.saw_external_content(),
+            "the outside-text flag did not survive the rebuild"
+        );
+        // One-way: a clean executor carried onto a flagged one clears nothing.
+        carry_session_state(&ToolExecutor::new(ToolCatalog::new()), &new);
+        assert!(new.session_tainted() && new.saw_external_content());
+
+        let body = include_str!("main.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the file has a body");
+        let squeezed: String = body.split_whitespace().collect();
+        assert!(
+            squeezed.contains("carry_session_state(executor,&ex);"),
+            "refresh_session no longer carries the session state onto the new executor"
+        );
     }
 }

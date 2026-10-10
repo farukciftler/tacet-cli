@@ -37,6 +37,13 @@
 //! lives in the `EXTERNAL_TOOLS` list in `tacet-cli`; the 3rd gate (APPROVAL) of
 //! `ToolExecutor` reads that list.
 //!
+//! - AND A THIRD QUESTION, which the two above left unasked until audit H2-c:
+//!   `external_content()` = "was this result WRITTEN BY SOMEONE ELSE". For both
+//!   tools here, yes. It does not tighten the outbound gate (that stays the
+//!   taint's job); it makes the tools that ACT on this machine (`shell`,
+//!   `db_write`) ask before every call for the rest of the session, because a
+//!   page can carry the command the model writes next.
+//!
 //! ---
 //!
 //! THE RESULT TEXT IS UNTRUSTED. Search output is EXTERNAL content entering the
@@ -341,6 +348,15 @@ impl Tool for WebSearchTool {
         false
     }
 
+    /// TRUE — the third question, and the one the first two left open (audit
+    /// H2-c). Not personal, so no taint; but every snippet in the result was
+    /// written by a stranger, and a page that says "now run `python3 -c …`" is
+    /// asking for the next call. After a successful search, the tools that act
+    /// on the host ask before every call.
+    fn external_content(&self) -> bool {
+        true
+    }
+
     fn run<'a>(&'a self, args: Value, ctx: &'a mut ToolContext) -> ToolFuture<'a> {
         boxed(async move {
             if let Err(h) = self.schema().validate(&args) {
@@ -495,6 +511,11 @@ impl Tool for WebFetchTool {
     /// does not read personal data (it does not taint).
     fn taints_session(&self) -> bool {
         false
+    }
+
+    /// TRUE, as for `web_search` — a whole page of a stranger's text.
+    fn external_content(&self) -> bool {
+        true
     }
 
     fn run<'a>(&'a self, args: Value, ctx: &'a mut ToolContext) -> ToolFuture<'a> {
@@ -1151,6 +1172,20 @@ mod tests {
         assert!(tool.schema().validate(&json!({"query": "weather"})).is_ok());
         assert!(tool.schema().validate(&json!({})).is_err());
         assert!(tool.schema().validate(&json!({"query": 5})).is_err());
+    }
+
+    /// AUDIT H2-c, asserted where it is decided: both tools bring a stranger's
+    /// text into the context, so after either one the host-acting tools ask.
+    /// Neither taints — the outbound gate must not tighten over a public page.
+    #[test]
+    fn both_web_tools_count_as_outside_text_and_neither_taints() {
+        for tool in [
+            Arc::new(WebSearchTool::new()) as Arc<dyn Tool>,
+            Arc::new(WebFetchTool::new()),
+        ] {
+            assert!(tool.external_content(), "{}", tool.name());
+            assert!(!tool.taints_session(), "{}", tool.name());
+        }
     }
 
     #[test]

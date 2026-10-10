@@ -365,7 +365,7 @@ pub fn chat(run: ChatRun) -> ExitCode {
         Arc::clone(&screen),
         interactive,
     ));
-    let mut ctx = ToolContext::new(
+    let mut ctx = session_context(
         Arc::clone(&store) as Arc<dyn CoreDataStore>,
         dir,
         Arc::clone(&traces) as Arc<dyn Reporter>,
@@ -1698,6 +1698,30 @@ pub fn chat(run: ChatRun) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The context every tool of the session runs under, LISTENING TO CTRL-C.
+///
+/// WHY THE TOKEN IS WIRED HERE (audit M4, review of 10 Oct 2026). The chat
+/// thread is blocked inside `wait(executor.execute_raw(..))` for as long as a
+/// tool runs, so the `executor.cancel()` in the turn loop — which runs between
+/// generation and execution — can never reach a tool that is already running.
+/// What does keep running is the indicator's key thread, which stores into
+/// `CANCEL`; a context watching that static is the only path from the key to
+/// `run_guarded` and to `shell`/`run_code`'s child. With a plain
+/// `ToolContext::new` here, `shell sleep 9` ran to `exit 0 · 9018 ms` under a
+/// Ctrl-C pressed at second one, and every library test stayed green because
+/// each built its own watching context.
+///
+/// `CANCEL` is cleared at the top of every turn, so watching it never stops
+/// the NEXT turn's tools.
+fn session_context(
+    store: Arc<dyn CoreDataStore>,
+    dir: impl Into<std::path::PathBuf>,
+    reporter: Arc<dyn Reporter>,
+) -> ToolContext {
+    ToolContext::new(store, dir, reporter)
+        .with_cancel_token(tacet_kernel::context::CancelToken::watching(&CANCEL))
+}
+
 /// What the user reads when a turn is refused for the window.
 ///
 /// It names the window, the measured prompt and the way out, because the only
@@ -2553,5 +2577,114 @@ mod window_refusal_tests {
             "window_refusal's doc does not start where it should:\n{refusal}"
         );
         assert!(!refusal.contains("what it can do"), "{refusal}");
+    }
+}
+
+#[cfg(test)]
+mod cancel_wiring_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+    use tacet_kernel::{ArgSchema, Field, Tool, ToolError, ToolFuture, ToolOutcome, boxed};
+    use tacet_tools::executor::ToolCall;
+
+    /// Stands in for `shell sleep 9`: runs until told to stop, the way `shell`
+    /// and `run_code` poll the context between reads of their child. Ten
+    /// seconds, so the red run of this guard finishes rather than hangs.
+    struct Sleeper;
+    impl Tool for Sleeper {
+        fn name(&self) -> &str {
+            "sleeper"
+        }
+        fn description(&self) -> &str {
+            "Waits."
+        }
+        fn schema(&self) -> ArgSchema {
+            ArgSchema::object(vec![Field::new("note", ArgSchema::text())])
+        }
+        fn run<'a>(&'a self, _a: serde_json::Value, ctx: &'a mut ToolContext) -> ToolFuture<'a> {
+            boxed(async move {
+                let started = Instant::now();
+                while started.elapsed() < Duration::from_secs(10) {
+                    if ctx.is_cancelled() {
+                        return ToolOutcome::failed(&ToolError::Other("stopped".into()));
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                ToolOutcome::read_ok("slept", "exit 0")
+            })
+        }
+    }
+
+    /// AUDIT M4, THE SHELL'S END (review of 10 Oct 2026). The library tests
+    /// each build their own watching context, so they stayed green while the
+    /// shell built a plain one and a Ctrl-C during `shell sleep 9` set `CANCEL`
+    /// and nothing else. This drives the context `chat()` builds: the key
+    /// thread's store into `CANCEL` must stop a tool already running under the
+    /// executor, within a second.
+    ///
+    /// ONE TEST, NOT TWO: `CANCEL` is the process's one flag, and two tests
+    /// firing it in parallel would stop each other's tools.
+    #[test]
+    fn the_shells_ctrl_c_stops_a_tool_already_running() {
+        let ctx = session_context(
+            Arc::new(SharedStore::new()) as Arc<dyn CoreDataStore>,
+            std::env::temp_dir(),
+            Arc::new(TraceCollector::new()) as Arc<dyn Reporter>,
+        );
+        CANCEL.store(false, Ordering::SeqCst);
+        assert!(!ctx.is_cancelled(), "a fresh turn must not start stopped");
+        CANCEL.store(true, Ordering::SeqCst);
+        let heard = ctx.is_cancelled();
+        CANCEL.store(false, Ordering::SeqCst);
+        assert!(
+            heard,
+            "the session context does not hear the shell's Ctrl-C flag"
+        );
+        // The turn-start reset must release it again, or one Ctrl-C would stop
+        // every later tool of the session.
+        assert!(!ctx.is_cancelled());
+
+        let catalog: ToolCatalog = [Arc::new(Sleeper) as Arc<dyn Tool>].into_iter().collect();
+        let executor = ToolExecutor::new(catalog);
+        let mut ctx = ctx;
+        let presser = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(300));
+            CANCEL.store(true, Ordering::SeqCst);
+        });
+        let start = Instant::now();
+        let outcome = wait(executor.execute(
+            &ToolCall::new("sleeper", serde_json::json!({})),
+            executor.active_turn(),
+            &mut ctx,
+        ));
+        let elapsed = start.elapsed();
+        presser.join().expect("presser");
+        CANCEL.store(false, Ordering::SeqCst);
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "a Ctrl-C pressed 300 ms in did not reach the running tool: it ran {elapsed:?} ({:?})",
+            outcome.reason
+        );
+    }
+
+    /// The test above holds `session_context`; this holds the loop to it. A
+    /// `ToolContext::new` written back into `chat()` would leave the function
+    /// tested and the shell deaf again.
+    #[test]
+    fn the_turn_loop_builds_its_context_with_the_ctrl_c_token() {
+        let body = include_str!("chat.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the file has a body");
+        let squeezed: String = body.split_whitespace().collect();
+        assert!(
+            squeezed.contains("letmutctx=session_context("),
+            "chat() no longer builds its tool context through `session_context`"
+        );
+        assert_eq!(
+            squeezed.matches("ToolContext::new(").count(),
+            1,
+            "a second `ToolContext::new` in chat.rs builds a context that does not hear Ctrl-C"
+        );
     }
 }

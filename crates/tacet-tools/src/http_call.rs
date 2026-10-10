@@ -198,6 +198,14 @@ impl Tool for HttpCallTool {
         true
     }
 
+    /// TRUE AS WELL (audit H2-c). The host is trusted for DATA, not for
+    /// INSTRUCTIONS (see the header): a tracker's issue body or a calendar
+    /// note is someone else's text, and a host-acting tool should not run what
+    /// it says without asking.
+    fn external_content(&self) -> bool {
+        true
+    }
+
     fn run<'a>(&'a self, args: Value, ctx: &'a mut ToolContext) -> ToolFuture<'a> {
         boxed(async move {
             if let Err(e) = self.schema().validate(&args) {
@@ -472,6 +480,9 @@ mod tests {
             tool().taints_session(),
             "a response from a host the user named is presumed to be their data"
         );
+        // And it is someone else's text (audit H2-c): trusted for data, not for
+        // the next command.
+        assert!(tool().external_content());
     }
 
     /// A HOST OFF THE LIST NEVER REACHES THE SOCKET, and the model learns
