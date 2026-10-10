@@ -210,6 +210,88 @@ fn the_3090_wall_time_is_the_committed_reports() {
     );
 }
 
+/// A duration the page writes, in seconds, with the words in front of it.
+struct Duration<'a> {
+    text: String,
+    seconds: f64,
+    before: &'a [&'a str],
+}
+
+/// Every duration in a folded paragraph: "47.7 min", "6 min", "7 minutes",
+/// "7m 07s" and "7m07s".
+///
+/// The first version of this scan matched only "N.N min". The second review
+/// added "On the RTX 3090 the run takes 6 min." to the page and the test stayed
+/// green — an integer, a spelled-out unit or a minutes-and-seconds figure was
+/// invisible to it, and those are the forms a hand-copied time takes.
+fn durations<'a>(words: &'a [&'a str]) -> Vec<Duration<'a>> {
+    let bare = |w: &str| {
+        w.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.')
+            .trim_end_matches('.')
+            .to_string()
+    };
+    let m_s = |m: &str, s: &str| -> Option<f64> {
+        let m: u64 = m.parse().ok()?;
+        (s.len() == 2).then_some(())?;
+        let s: u64 = s.parse().ok()?;
+        Some((m * 60 + s) as f64)
+    };
+    let mut found = Vec::new();
+    for i in 0..words.len() {
+        let w = bare(words[i]);
+        let next = words.get(i + 1).map(|n| bare(n)).unwrap_or_default();
+        // "7m07s" as one word.
+        if let Some((m, s)) = w.strip_suffix('s').and_then(|x| x.split_once('m')) {
+            if let Some(seconds) = m_s(m, s) {
+                found.push(Duration {
+                    text: w.clone(),
+                    seconds,
+                    before: &words[..i],
+                });
+                continue;
+            }
+        }
+        // "7m 07s" as two.
+        if let (Some(m), Some(s)) = (w.strip_suffix('m'), next.strip_suffix('s')) {
+            if let Some(seconds) = m_s(m, s) {
+                found.push(Duration {
+                    text: format!("{w} {next}"),
+                    seconds,
+                    before: &words[..i],
+                });
+                continue;
+            }
+        }
+        // "47.7 min", "6 min", "7 minutes".
+        let figure = w.trim_start_matches(|c: char| !c.is_ascii_digit());
+        if next.starts_with("min") && !figure.is_empty() {
+            if let Ok(minutes) = figure.parse::<f64>() {
+                found.push(Duration {
+                    text: figure.to_string(),
+                    seconds: minutes * 60.0,
+                    before: &words[..i],
+                });
+            }
+        }
+    }
+    found
+}
+
+/// The first 3090 run's wall clock in seconds, from the report as it was
+/// committed at `sha` — or None where there is no git history to read it from.
+fn wall_s_at(sha: &str, file: &str) -> Option<f64> {
+    let out = Command::new("git")
+        .args(["show", &format!("{sha}:crates/tacet-eval/baselines/{file}")])
+        .current_dir(repo_root())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let v: Value = serde_json::from_slice(&out.stdout).ok()?;
+    Some(wall_ms(&v) as f64 / 1000.0)
+}
+
 /// D1 (review): a 3090 wall time anywhere on the page is either a committed
 /// file's, or says that no report was kept.
 ///
@@ -217,20 +299,25 @@ fn the_3090_wall_time_is_the_committed_reports() {
 /// paragraph under it saying "6.4 minutes with these weights" — the hand-taken
 /// model-table figure, unqualified, one paragraph from the committed 7m 07s.
 /// Pinning the one sentence left every other 3090 sentence free to drift, so
-/// this scans every paragraph that names the card. A figure the Metal report
-/// holds is allowed (the speed-up sentence sets the two side by side); any
-/// other "N.N min" must sit in a paragraph that says it has no report.
+/// this scans every paragraph that names the card. Allowed: the Metal report's
+/// minutes (the speed-up sentence sets the two side by side), the committed
+/// 3090 report's minutes-and-seconds, a figure the page says it once "quoted
+/// as" (checked against the replaced report in git when there is history), and
+/// the CUDA build time, which is a compile and not a run. Anything else must
+/// sit in a paragraph that says "no report kept".
 #[test]
 fn every_3090_wall_time_is_a_committed_file_or_says_it_is_not() {
     let page = readme();
     let cuda_ms = wall_ms(&report("qwen3-4b-cuda-3090.json"));
+    let cuda = minutes_seconds(cuda_ms);
     let metal = format!(
         "{:.1}",
         wall_ms(&report("qwen3-4b-both.json")) as f64 / 60_000.0
     );
+    let replaced = wall_s_at("511f8db", "qwen3-4b-cuda-3090.json");
     require(
         &page,
-        &format!("{} with these weights", minutes_seconds(cuda_ms)),
+        &format!("{cuda} with these weights"),
         "D1: the GPU paragraph quotes the committed 3090 run for these weights",
     );
 
@@ -239,25 +326,49 @@ fn every_3090_wall_time_is_a_committed_file_or_says_it_is_not() {
         if !paragraph.contains("3090") {
             continue;
         }
+        // D1 (second review): "The 3090 wall times remain hand-recorded" sat
+        // one paragraph above the committed 7m 07s. Only the model table's are.
+        assert!(
+            !paragraph.contains("wall times remain hand-recorded")
+                || paragraph.contains("The model table's 3090 wall times remain hand-recorded"),
+            "D1: the page says the 3090 wall times are hand-recorded without \
+             saying which — the committed run's are not: {paragraph}"
+        );
         let words: Vec<&str> = paragraph.split(' ').collect();
-        for pair in words.windows(2) {
-            let figure = pair[0].trim_start_matches(|c: char| !c.is_ascii_digit());
-            let is_minutes = pair[1].starts_with("min");
-            if !is_minutes || !figure.contains('.') || figure.parse::<f64>().is_err() {
+        for d in durations(&words) {
+            scanned += 1;
+            let tail = d.before.iter().rev().take(4).copied().collect::<Vec<_>>();
+            if tail.first() == Some(&"took") && tail.iter().any(|w| w.contains("build")) {
+                continue; // `cargo build --features cuda` took 2m 47s — a compile
+            }
+            if tail.len() >= 2 && tail[1] == "quoted" && tail[0] == "as" {
+                if let Some(wall) = replaced {
+                    assert!(
+                        (d.seconds - wall).abs() < 1.0,
+                        "D1: the page says it once quoted {} for the replaced run, \
+                         and that run's report in 511f8db says {wall:.3} s: {paragraph}",
+                        d.text
+                    );
+                } else {
+                    eprintln!(
+                        "no git history: the replaced run's {} was NOT checked",
+                        d.text
+                    );
+                }
                 continue;
             }
-            scanned += 1;
             assert!(
-                figure == metal || paragraph.contains("no report kept"),
-                "D1: README quotes a 3090-paragraph wall time of {figure} min that no \
-                 committed report holds, and the paragraph does not say \"no report \
-                 kept\": {paragraph}"
+                d.text == metal || d.text == cuda || paragraph.contains("no report kept"),
+                "D1: README quotes a 3090-paragraph wall time of {} that no committed \
+                 report holds, and the paragraph does not say \"no report kept\": \
+                 {paragraph}",
+                d.text
             );
         }
     }
     assert!(
-        scanned >= 2,
-        "only {scanned} minute figures were found in 3090 paragraphs — the scan stopped matching"
+        scanned >= 4,
+        "only {scanned} durations were found in 3090 paragraphs — the scan stopped matching"
     );
 }
 
@@ -674,7 +785,7 @@ fn first_fraction(cell: &str) -> (usize, usize) {
 /// The table under "### The model table", up to the first line that is not a
 /// row. A blank line inside it ends it here exactly as it ends it on GitHub,
 /// which is the point (D4).
-fn model_table(page: &str) -> Vec<ModelRow> {
+fn model_table_lines(page: &str) -> Vec<&str> {
     let start = page
         .find("| model | score | tool selection |")
         .expect("the model table's header");
@@ -682,6 +793,12 @@ fn model_table(page: &str) -> Vec<ModelRow> {
         .lines()
         .skip(2) // the header and the `|---|` separator
         .take_while(|l| l.starts_with('|'))
+        .collect()
+}
+
+fn model_table(page: &str) -> Vec<ModelRow> {
+    model_table_lines(page)
+        .into_iter()
         .map(|l| {
             let cells: Vec<&str> = l.trim_matches('|').split('|').map(str::trim).collect();
             assert_eq!(cells.len(), 7, "a model row has seven cells: {l}");
@@ -722,6 +839,96 @@ fn the_model_table_is_one_table_whose_scores_are_their_counts() {
             "{name}: the row's counts score {derived}, the row says {score}"
         );
     }
+}
+
+/// The commit that first put `line` into README.md, as (full sha, "YYYY-MM-DD"
+/// in the author's zone) — or None without the history to search.
+fn first_commit_holding(line: &str) -> Option<(String, String)> {
+    let out = Command::new("git")
+        .args([
+            "log",
+            "--reverse",
+            "--format=%H %ad",
+            "--date=short",
+            "-S",
+            line,
+            "--",
+            "README.md",
+        ])
+        .current_dir(repo_root())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let first = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()?
+        .to_string();
+    let (sha, date) = first.split_once(' ')?;
+    Some((sha.to_string(), date.to_string()))
+}
+
+/// D4 (review): the model table's rows are dated by the commit that first held
+/// them, not by memory.
+///
+/// The first fix dated the four rows "5–6 Sep 2026". All four first appear in
+/// ae0893a, committed 11:46 on 5 Sep, and the rental's own commits end at 01:35
+/// that morning — so the 6th is a day after the rows existed, a false
+/// measurement date on the one table that has no report to correct it against.
+/// No file records when a hand-taken row was measured; the history records the
+/// latest it can have been, so that is what the page may say: "on or before"
+/// the day the last of the four rows was committed, naming that commit. The
+/// CHANGELOG entry that describes the fix says the same.
+#[test]
+fn the_model_table_is_dated_by_the_commit_that_first_held_its_rows() {
+    let page = readme();
+    let lines = model_table_lines(&page);
+    assert_eq!(lines.len(), 4, "the model table has four rows");
+    let mut firsts = Vec::new();
+    for line in &lines {
+        match first_commit_holding(line) {
+            Some(first) => firsts.push(first),
+            None => {
+                eprintln!("no git history here: the model table's date was NOT checked");
+                return;
+            }
+        }
+    }
+    // ISO dates sort as strings; the latest is the earliest day all four existed.
+    let (sha, date) = firsts
+        .iter()
+        .max_by(|a, b| a.1.cmp(&b.1))
+        .expect("four rows")
+        .clone();
+    let day = day_month_year(&date);
+    let note = page
+        .split("\n\n")
+        .map(folded)
+        .find(|p| p.starts_with("**These four rows are hand-recorded"))
+        .expect("the note under the model table");
+    assert!(
+        note.contains(&format!("on or before {day}")),
+        "D4: the last of the model table's rows was first committed on {day} \
+         ({sha}), so the page may date them \"on or before {day}\" and no later: {note}"
+    );
+    let cited = note
+        .split("first committed in ")
+        .nth(1)
+        .and_then(|rest| rest.split(|c: char| !c.is_ascii_hexdigit()).next())
+        .unwrap_or("");
+    assert!(
+        cited.len() >= 7 && sha.starts_with(cited),
+        "D4: the note must name the commit that first held the rows, {sha}; it names \
+         {cited:?}: {note}"
+    );
+    let changelog =
+        folded(&std::fs::read_to_string(repo_root().join("CHANGELOG.md")).expect("CHANGELOG.md"));
+    assert!(
+        changelog.contains(&format!("hand-recorded on or before {day}")),
+        "D4: the CHANGELOG entry for the fix dates the rows differently from the history, \
+         which says {day} ({sha})"
+    );
 }
 
 /// D5: the seven-language table's `en` column is the file the paragraph under

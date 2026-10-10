@@ -327,6 +327,129 @@ fn every_cargo_step_ci_runs_is_on_contributings_list() {
     );
 }
 
+/// One step of a workflow job: its lines, from the `- ` that opens it to the
+/// line before the next step or job.
+fn workflow_steps(yaml: &str) -> Vec<Vec<&str>> {
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let mut steps: Vec<Vec<&str>> = Vec::new();
+    let mut open = false;
+    for line in yaml.lines() {
+        let t = line.trim_start();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if indent(line) == 6 && t.starts_with("- ") {
+            steps.push(vec![line]);
+            open = true;
+        } else if indent(line) <= 6 {
+            open = false;
+        } else if open {
+            steps.last_mut().expect("a step is open").push(line);
+        }
+    }
+    steps
+}
+
+/// RG-36 (review): what CI can fail a pull request on, beyond the gate list, is
+/// named in CONTRIBUTING.
+///
+/// The fix for RG-36 wrote "CI runs every line of it … and nothing else that can
+/// fail one — except `cargo deny check`". ci.yml had two more: a Linux step that
+/// starts a `bwrap` sandbox and stops the job if it cannot, and
+/// `TACET_SANDBOX_MUST_RUN=1` on the Linux `cargo test`, which turns local skips
+/// into failures. `every_cargo_step_ci_runs_is_on_contributings_list` compares
+/// commands and could not see either. This walks every step: a `cargo` step's
+/// `env:` keys must be shown on that command, a sandbox preflight must be
+/// described, and any step it does not recognise fails, so a new kind of gate
+/// is described before it lands rather than after someone is surprised by it.
+#[test]
+fn every_way_ci_can_fail_a_pull_request_is_named_in_contributing() {
+    let contributing = read("CONTRIBUTING.md")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let ci = read(".github/workflows/ci.yml");
+    let steps = workflow_steps(&ci);
+    assert!(
+        steps.len() >= 10,
+        "ci.yml's steps were not parsed: {}",
+        steps.len()
+    );
+
+    // Setup actions: they fail for reasons of GitHub's, not of the change.
+    const SETUP: [&str; 3] = [
+        "actions/checkout@",
+        "dtolnay/rust-toolchain@",
+        "Swatinem/rust-cache@",
+    ];
+    let mut env_checked = 0;
+    let mut preflights = 0;
+    for step in &steps {
+        let head = step[0].trim_start().trim_start_matches("- ").trim();
+        if let Some(action) = head.strip_prefix("uses:").map(str::trim) {
+            if SETUP.iter().any(|s| action.starts_with(s)) {
+                continue;
+            }
+            assert!(
+                action.starts_with("EmbarkStudios/cargo-deny-action@")
+                    && contributing.contains("`cargo deny check`"),
+                "ci.yml runs the action {action}, which CONTRIBUTING does not name as a \
+                 way CI can fail a pull request"
+            );
+            continue;
+        }
+        let body: Vec<&str> = step.iter().map(|l| l.trim()).collect();
+        let run_line = body
+            .iter()
+            .find_map(|l| l.trim_start_matches("- ").strip_prefix("run:"))
+            .map(str::trim)
+            .unwrap_or_else(|| panic!("a ci.yml step that neither runs nor uses: {step:?}"));
+        if run_line.starts_with("cargo ") {
+            let in_env = body.iter().skip_while(|l| **l != "env:").skip(1);
+            for key in in_env.filter_map(|l| l.split_once(':').map(|(k, _)| k.trim())) {
+                env_checked += 1;
+                let shown = contributing
+                    .match_indices(&format!("{key}="))
+                    .any(|(i, _)| {
+                        contributing[i..]
+                            .split_once(' ')
+                            .is_some_and(|(_, rest)| rest.starts_with(run_line))
+                    });
+                assert!(
+                    shown,
+                    "ci.yml runs `{run_line}` with {key} set; CONTRIBUTING must show it \
+                     as `{key}=… {run_line}` so a contributor can run what CI runs"
+                );
+            }
+            continue;
+        }
+        let script = body.join("\n");
+        if script.contains("bwrap ") {
+            preflights += 1;
+            assert!(
+                contributing.contains("`bwrap --unshare-net` sandbox")
+                    && contributing.contains("stops the job"),
+                "ci.yml has a step that starts a bwrap sandbox and can stop the job; \
+                 CONTRIBUTING does not say so"
+            );
+            continue;
+        }
+        panic!(
+            "ci.yml has a step this test does not recognise; say in CONTRIBUTING how it \
+             can fail a pull request, then teach this test: {step:?}"
+        );
+    }
+    assert!(
+        env_checked >= 1 && preflights >= 1,
+        "the walk found {env_checked} cargo env keys and {preflights} sandbox preflights; \
+         ci.yml has at least one of each"
+    );
+    assert!(
+        !contributing.contains("nothing else that can fail"),
+        "CONTRIBUTING still says nothing beyond the list and deny can fail CI"
+    );
+}
+
 /// "1200" → "1,200", the way the page writes a count.
 fn thousands(n: usize) -> String {
     let digits = n.to_string();

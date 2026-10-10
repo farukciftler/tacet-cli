@@ -73,16 +73,23 @@ cargo run -p tacet-cli -- eval --routing    # the router's own choice, no model 
 cargo run -p tacet-cli -- eval --routing --routing-pressure 20   # the same, with 20 extra tools competing
 ```
 
-CI runs every line of it on each pull request, and nothing else that can fail
-one — except `cargo deny check` (see *The supply chain* below), which runs
-through its own action. Not every line runs everywhere: `cargo build` and
+CI runs every line of it on each pull request, and three more things there can
+fail one. `cargo deny check` (see *The supply chain* below) runs through its own
+action. On Linux, before anything compiles, a step installs bubblewrap and
+starts one `bwrap --unshare-net` sandbox, and stops the job if the runner cannot
+make one. And on Linux `cargo test --workspace` runs under
+`TACET_SANDBOX_MUST_RUN=1`, which turns the sandbox tests that skip on a machine
+without a working `bwrap` into failures; on a Linux box with bubblewrap
+installed, `TACET_SANDBOX_MUST_RUN=1 cargo test --workspace` is that step. CI
+sets the variable on Linux only. Not every line runs everywhere: `cargo build` and
 `cargo test` run on macOS, Linux and Windows; clippy, fmt, the candle
 `--no-run` compile and the three evals run on Linux only. A clippy lint that
 fires only under `cfg(windows)` is therefore yours to find. None of it loads
 weights or opens a socket. The list and `ci.yml` are held together in both
 directions: `the_workflows_keep_their_promises` fails if a line here is not a
 gate there, and `the_docs_match_the_tree` fails if a `cargo` step there is
-missing here. (Until 10 Oct 2026 this list left out the pressure run and
+missing here, or if a step there can fail a pull request in a way this
+paragraph does not name. (Until 10 Oct 2026 this list left out the pressure run and
 spelled the fmt check as the command that rewrites files.)
 
 **The fourth line is the one people skip, and it is the one that bites.**

@@ -44,7 +44,8 @@ abandoned after its 3 s grace.
   whose tool that box lacked skipped the way the corpus skipped them — a 16.9
   point gap, not "thirteen" (D3).
 * The model table is one table again (a blank line split it), and it says
-  that its four rows are hand-recorded on 5–6 Sep 2026 and cannot be
+  that its four rows are hand-recorded on or before 5 Sep 2026 (first
+  committed in ae0893a) and cannot be
   re-measured here (D4). The seven-language table's `en` column quotes the file
   it cites, 136/160, not 133/160 (D5).
 * The journal example writes under `~/.tacet`, not `/tmp` (D10); the version
@@ -67,7 +68,15 @@ abandoned after its 3 s grace.
   — the earlier citation drove only the outbound approval (D22, after H1). The test count is re-measured and
   dated (D23).
 * CONTRIBUTING's gate list is the list CI runs, the pressure run and the fmt
-  `--check` included, and a test now holds that direction too.
+  `--check` included, and a test now holds that direction too. The paragraph
+  under it names the three things beyond the list that can fail a pull
+  request — `cargo deny check`, the Linux `bwrap` preflight, and
+  `TACET_SANDBOX_MUST_RUN=1` on the Linux `cargo test` — and how to run the
+  last one locally (RG-36, review).
+* Every 3090 wall time on the page, in any of the forms a hand-copied time
+  takes ("6 min", "7 minutes", "7m 34s"), is a committed report's or sits in a
+  paragraph that says no report was kept; the sentence that said "the 3090
+  wall times remain hand-recorded" says the model table's (D1, review).
 
 **Added:**
 
