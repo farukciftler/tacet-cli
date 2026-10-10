@@ -136,6 +136,56 @@ fn the_summary_is_sent_with_the_first_question_and_the_handoff_is_started() {
     assert!(record.contains("\"by\": \"tacet\""), "{record}");
 }
 
+/// RG-32 on the binary: the handoff record `--from` leaves holds the other
+/// agent's words, and `tacet sessions --purge` takes it — with its `.md` twin
+/// and the transcript backups `handoff note` keeps beside it.
+/// RED BEFORE THE FIX: the purge deleted the sessions and the receipt log and
+/// left `<config>/handoff/` as it was.
+#[test]
+fn the_purge_takes_the_handoff_the_import_left() {
+    let scratch = Scratch::new("from-purge");
+    install(&scratch, true);
+    let out = chat(&scratch, &reference());
+    assert!(
+        out.status.success(),
+        "tacet failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let record = std::fs::read_to_string(scratch.handoff()).expect("the handoff record");
+    assert!(
+        record.contains("Fix the date rollover"),
+        "the record does not hold the imported text, so this test proves nothing:\n{record}"
+    );
+    let dir = scratch.0.join("handoff");
+    std::fs::create_dir_all(dir.join("backups")).unwrap();
+    std::fs::write(dir.join("backups").join("copy.jsonl"), "a transcript").unwrap();
+
+    let purge = Command::new(env!("CARGO_BIN_EXE_tacet"))
+        .args(["sessions", "--purge", "--json"])
+        .current_dir(scratch.0.join("work"))
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("CODEX_HOME")
+        .env("HOME", &scratch.0)
+        .env("TACET_HOME", &scratch.0)
+        .stdin(Stdio::null())
+        .output()
+        .expect("the tacet binary runs");
+    let stdout = String::from_utf8_lossy(&purge.stdout);
+    assert!(
+        purge.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&purge.stderr)
+    );
+    assert!(
+        !dir.exists(),
+        "the purge left the handoff directory behind: {}",
+        dir.display()
+    );
+    let said: serde_json::Value = serde_json::from_str(stdout.trim()).expect("JSON");
+    assert_eq!(said["handoffs"], 1, "{stdout}");
+}
+
 /// Off until installed: with the addon closed, `--from` reads nothing,
 /// starts nothing, and says how to open it.
 #[test]

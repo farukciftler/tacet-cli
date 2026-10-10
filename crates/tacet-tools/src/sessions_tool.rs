@@ -49,7 +49,7 @@ use tacet_kernel::{
 };
 
 use crate::data_store::Table;
-use crate::sessions::antigravity::AntigravitySource;
+use crate::sessions::antigravity::{self, AntigravitySource};
 use crate::sessions::claude::ClaudeSource;
 use crate::sessions::codex::CodexSource;
 use crate::sessions::handoff::{self, HandoffError, HandoffRecord, HandoffTask};
@@ -232,11 +232,27 @@ pub fn read_session(
                     .map(str::to_string);
                 (s, warning.into_iter().collect())
             }),
-            // Antigravity records no version in its files, so there is no gate
-            // to ask; what the user must know is in the reader's notices.
-            AgentKind::Antigravity => AntigravitySource
-                .read_full(&root, id)
-                .map(|r| (r.session, r.notices)),
+            // THE GATE IS ASKED EVEN THOUGH THE ANSWER IS ALWAYS "UNKNOWN".
+            // Nothing under brain/ records the app version, so the reader
+            // passes `None` and every read warns, under the root's flavor so
+            // the warning cites the range that was measured (IDE 2.5.5, agy
+            // 1.1.10). This branch used to skip the gate on the reasoning that
+            // there was nothing to compare, and the README's "any other
+            // version reads with a warning you see" was then false for
+            // Antigravity alone (RG-36 review): a version nobody measured read
+            // silently. The reader's own notices go first — they are about
+            // THIS read (a log trailing its database), and the summary the
+            // model gets keeps only the first `WARNINGS` lines.
+            AgentKind::Antigravity => AntigravitySource.read_full(&root, id).map(|r| {
+                let gate = version::check_read(
+                    AgentKind::Antigravity,
+                    antigravity::flavor(&root),
+                    r.session.version.as_deref(),
+                );
+                let mut warnings = r.notices;
+                warnings.extend(gate.warning().map(str::to_string));
+                (r.session, warnings)
+            }),
         };
         match got {
             Ok((session, warnings)) => return Ok(SessionRead { session, warnings }),
@@ -1488,6 +1504,44 @@ mod tests {
             read_session(&roots, AgentKind::ClaudeCode, "00000000-dead"),
             Err(SessionError::NotFound { .. })
         ));
+    }
+
+    /// RG-36 / RG-30: an Antigravity read through the path every caller uses
+    /// carries the version gate's warning, citing the IDE range. The reader
+    /// test `every_root_reads_with_a_version_warning_under_its_own_flavor`
+    /// asked `check_read` itself and was green while nothing called it.
+    /// RED BEFORE THE FIX: `read.warnings` was the reader's notices alone and
+    /// held no "has not been read by this Tacet before".
+    #[test]
+    fn an_antigravity_read_carries_the_version_warning() {
+        let root = fixtures(AgentKind::Antigravity).join(antigravity::ROOTS[0].0);
+        let read = read_session(
+            &SessionRoots::Only(vec![root]),
+            AgentKind::Antigravity,
+            "7f3c2a10-5b6e-4c1d-9a8f-0e1d2c3b4a01",
+        )
+        .unwrap();
+        let gate: Vec<&String> = read
+            .warnings
+            .iter()
+            .filter(|w| w.contains("has not been read by this Tacet before"))
+            .collect();
+        assert_eq!(gate.len(), 1, "{:?}", read.warnings);
+        assert!(
+            gate[0].contains("(ide) of unrecorded version")
+                && gate[0].contains("versions 2.5.5–2.5.5 were measured"),
+            "{}",
+            gate[0]
+        );
+        // And it reaches what `--from` prints and the model reads.
+        let d = Digest::of(&read);
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.contains("has not been read by this Tacet before")),
+            "{:?}",
+            d.warnings
+        );
     }
 
     /// RG-17: both tools say yes to both questions, so a read taints the

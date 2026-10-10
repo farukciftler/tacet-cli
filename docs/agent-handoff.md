@@ -5,8 +5,10 @@
 * **Date:** 10 Oct 2026.
 * **Measured:** the Claude Code note format and its failure modes, on Claude
   Code 2.1.285 (9 Oct 2026, experiments E1–E5). **Not measured:** every Codex
-  path (Codex was not installed), the Antigravity hook and `task.md` write (the
-  GUI was not driven), and the Codex/Antigravity hook-file shapes. Each section
+  path (Codex was not installed), the Claude Code SessionStart hook (its output
+  is tested against the documented event, but no real Claude Code has run it),
+  the Antigravity hook and `task.md` write (the GUI was not driven), and the
+  Codex/Antigravity hook-file shapes. Each section
   below says which is which.
 
 When you continue another agent's session in Tacet (`tacet chat --from
@@ -91,7 +93,7 @@ what it adds and asking; the old file is kept beside it as
 `<file>.tacet-backup-<time>`. The rest of the file is kept; its keys are
 written back in sorted order.
 
-### Claude Code — SessionStart (documented, used as documented)
+### Claude Code — SessionStart (documented, used as documented; NOT MEASURED)
 
 Add to `~/.claude/settings.json` (all projects) or `.claude/settings.json`:
 
@@ -105,7 +107,11 @@ The hook prints
 the context goes to the model (as a system reminder in the transcript), the
 message to you. The context says it comes from Tacet and is not an
 instruction from the user, and is cut at 9,000 characters (with a line saying
-so), under the cap Claude Code's documentation gives for hook context.
+so), under the cap Claude Code's documentation gives for hook context. That
+shape is checked against the documentation by
+`cargo test -p tacet-cli --test the_handoff_hook_answers_its_agent`; no real
+Claude Code has yet started a session with the hook installed, so whether it
+shows the message and the context is still to be measured.
 
 ### Codex — SessionStart in `~/.codex/hooks.json` (NOT MEASURED)
 

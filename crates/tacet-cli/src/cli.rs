@@ -129,9 +129,11 @@ pub enum Command {
         /// JSON instead of a human table — same pattern as every other list.
         #[arg(long)]
         json: bool,
-        /// Deletes EVERY stored session, the folder itself and the receipt log
-        /// (`tacet log`). On a terminal it asks first; piped it does not (a
-        /// script that typed this flag meant it, and there is nobody to ask).
+        /// Deletes EVERY stored session, the folder itself, the receipt log
+        /// (`tacet log`) and the handoff records of other agents' sessions
+        /// with their transcript backups (`tacet handoff`). On a terminal it
+        /// asks first; piped it does not (a script that typed this flag meant
+        /// it, and there is nobody to ask).
         #[arg(long)]
         purge: bool,
     },

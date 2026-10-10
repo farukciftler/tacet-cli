@@ -442,7 +442,8 @@ are handed to the two session tools and to nothing else: `read_document` cannot
 reach `~/.codex/auth.json` because you installed this addon. Reading trusts
 the versions somebody measured — Claude Code 2.1.263–2.1.293, Antigravity IDE
 2.5.5, `agy` 1.1.10 — and reads any other version, and every Codex version,
-with a warning you see.
+with a warning you see. Antigravity's files record no version, so every
+Antigravity read carries that warning, naming the version that was measured.
 
 **What reaches the model.** A summary capped at 1,200 characters (goal, last
 request, open plan, files touched, last steps), with every chat-template marker
@@ -461,7 +462,10 @@ above.
 
 **How it reports back.** Continuing a session starts a *handoff record*,
 `<config>/handoff/<agent>-<id>.json` with a rendered `.md` twin, which Tacet and
-the other agents update through `tacet handoff update`. Getting it to the other
+the other agents update through `tacet handoff update`. It holds a summary of
+the other agent's transcript, so `tacet sessions --purge` deletes it along with
+your conversations, the receipt log and the transcript backups `handoff note`
+keeps. Getting it to the other
 agent has two paths, and the first is the one to use:
 
 * **The agent's own hook** (`tacet handoff install claude|codex|antigravity`).
@@ -499,7 +503,9 @@ The experiment cost about one dollar in model turns, which is why it is run by a
 person and never in CI; `scripts/session-roundtrip.sh` repeats it. The Claude
 Code write range is that one version, 2.1.285. **Not measured:** every Codex
 path, its hook included (Codex was not installed on that machine; its reader is
-built from Codex's source and tested on fixtures), the Antigravity hook, and any
+built from Codex's source and tested on fixtures), the Claude Code SessionStart
+hook (`tacet handoff hook claude` is tested on the event its documentation
+describes; no real Claude Code has run it), the Antigravity hook, and any
 write into Antigravity's files (the GUI was not driven).
 
 **Whose terms apply.** Claude Code's documentation says its transcript format

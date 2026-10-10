@@ -1403,7 +1403,8 @@ fn sessions(json: bool, purge: bool) -> ExitCode {
             && std::io::stdout().is_terminal()
             && !ui::ask_yes_no(
                 &color,
-                "delete EVERY stored conversation and the receipt log? this cannot be undone",
+                "delete EVERY stored conversation, the receipt log and the handoff records \
+                 (with their transcript backups)? this cannot be undone",
             )
         {
             println!("{}", color.paint(DIM, "(nothing was deleted)"));
@@ -1415,16 +1416,25 @@ fn sessions(json: bool, purge: bool) -> ExitCode {
         // it behind was a purge that kept the most personal line of the
         // conversation. New receipts hold no words; old logs still do.
         let receipts = receipt::purge();
-        return match (session::Session::purge_all(), receipts) {
-            (Ok(n), Ok(r)) => {
+        // AND THE HANDOFF RECORDS (RG-32): each one is a summary of another
+        // agent's transcript, and `backups/` holds whole copies of one. See
+        // `handoff_cmd::purge_in`.
+        let handoffs = handoff_cmd::purge();
+        return match (session::Session::purge_all(), receipts, handoffs) {
+            (Ok(n), Ok(r), Ok(h)) => {
                 if json {
-                    println!("{}", serde_json::json!({ "purged": n, "receipts": r }));
+                    println!(
+                        "{}",
+                        serde_json::json!({ "purged": n, "receipts": r, "handoffs": h })
+                    );
                 } else {
-                    println!("{n} conversations deleted · {r} receipts deleted");
+                    println!(
+                        "{n} conversations deleted · {r} receipts deleted · {h} handoff records deleted"
+                    );
                 }
                 ExitCode::SUCCESS
             }
-            (Err(e), _) | (_, Err(e)) => {
+            (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => {
                 eprintln!("{}", color.paint(YELLOW, &format!("could not delete: {e}")));
                 ExitCode::FAILURE
             }

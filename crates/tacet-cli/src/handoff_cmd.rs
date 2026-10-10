@@ -69,6 +69,43 @@ fn handoff_dir() -> Result<PathBuf, String> {
         .ok_or_else(|| "the config directory could not be resolved (set TACET_HOME)".to_string())
 }
 
+/// Deletes `<config>/handoff` for `tacet sessions --purge` and says how many
+/// records (`<agent>-<id>.json`) it held.
+///
+/// WHY THE PURGE TAKES IT (RG-32, completeness review). A record is built from
+/// the other agent's transcript — its goal, its last request, its last steps —
+/// and `backups/` holds whole copies of a Claude Code transcript as it was
+/// before `handoff note` appended to it. `sessions --purge` deleted the
+/// conversations and the receipt log and left both behind, so the one command
+/// that answers "how do I get rid of what Tacet keeps" kept the imported text
+/// word for word.
+///
+/// THE DIRECTORY, NOT A LIST OF NAMES. The other agents write here too
+/// (`tacet handoff update`, docs/agent-handoff.md), and a crash leaves a
+/// `.<name>.<pid>.<n>.tmp` beside a record; a purge that knew only the names
+/// Tacet writes today would miss the next kind of file. `remove_dir_all` does
+/// not follow a symlinked `handoff`: it removes the link, never what it points
+/// at.
+pub fn purge_in(dir: &Path) -> Result<usize, String> {
+    let records = match std::fs::read_dir(dir) {
+        Ok(rd) => rd
+            .flatten()
+            .filter(|e| {
+                e.file_type().is_ok_and(|t| t.is_file())
+                    && e.path().extension().is_some_and(|x| x == "json")
+            })
+            .count(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(format!("{}: {e}", dir.display())),
+    };
+    std::fs::remove_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    Ok(records)
+}
+
+pub fn purge() -> Result<usize, String> {
+    purge_in(&handoff_dir()?)
+}
+
 pub fn run(job: HandoffJob) -> ExitCode {
     // `hook` answers on stdout for another program and must never fail it.
     if let HandoffJob::Hook { agent } = &job {
@@ -643,6 +680,34 @@ mod tests {
         ));
         std::fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    /// RG-32: the purge takes every record, its `.md` twin, a crash's temp
+    /// file and the transcript backups, and counts records only; with no
+    /// directory there is nothing to do and nothing to fail.
+    #[test]
+    fn purge_takes_the_records_their_twins_and_the_backups() {
+        let home = scratch("purge");
+        let dir = home.join("handoff");
+        let mut record = HandoffRecord::new(
+            AgentKind::ClaudeCode,
+            "11111111-0000-4000-8000-111111111111",
+        );
+        record.summary = "Goal (first request): PASSPORT-U1234567".into();
+        handoff::write(&dir, &record).unwrap();
+        handoff::write(
+            &dir,
+            &HandoffRecord::new(AgentKind::Codex, "0199d3a1-7c2e-7a10-9b55-3f2c1d0e4a01"),
+        )
+        .unwrap();
+        std::fs::write(dir.join(".claude-x.json.1.0.tmp"), "half").unwrap();
+        std::fs::create_dir_all(dir.join("backups")).unwrap();
+        std::fs::write(dir.join("backups").join("t.jsonl"), "PASSPORT-U1234567").unwrap();
+
+        assert_eq!(purge_in(&dir), Ok(2));
+        assert!(!dir.exists(), "the purge left {}", dir.display());
+        assert_eq!(purge_in(&dir), Ok(0));
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// RG-21: the settings file is written only after a yes, keeps what was
