@@ -373,6 +373,36 @@ fn execute(program: &str, argv: &[OsString], dir: &Path, timeout: Duration) -> R
         }
         child.kill().ok();
         child.wait().ok();
+    } else {
+        // AND ON THE NORMAL PATH TOO (audit L19). The sweep used to run on the
+        // timeout path only, so a program that EXITED CLEANLY after leaving a
+        // background child — `sh -c 'worker & exit 0'`, a test runner that
+        // forgets a server — left that child running outside every deadline,
+        // after the chip had already said "exit 0". `run_code` closed the same
+        // hole; this file copied its shape and missed that half.
+        //
+        // WHAT IT REACHES is what the timeout path reaches: the command's own
+        // process group. A descendant that called `setsid()` itself has left
+        // it (see the note on the session above) — a daemon that detaches on
+        // purpose is not killed, which is also why `git gc --auto`'s
+        // self-daemonising cleanup is not cut short. `setsid` is not the only
+        // door: ANY change of process group leaves it the same way —
+        // `setpgid()`, or job control, which gives every background job its
+        // own group. MEASURED on macOS: under `sh -c 'set -m; sleep 37 &'` the
+        // shell's group was 33479 and the `sleep`'s was 33483, its own pid, so
+        // `sh -c 'set -m; worker & exit 0'` leaves a `worker` this sweep does
+        // not reach. Closing that needs a container that owns every
+        // descendant (a cgroup or a pid namespace), not a signal to a group.
+        //
+        // ORDER: after the exit, so the command's own output is already in the
+        // pipe, and before the bounded join, so a survivor holding the pipe
+        // ends cannot make the readers wait out their grace. On an ordinary
+        // run the group is already empty and this is one syscall returning
+        // ESRCH.
+        #[cfg(unix)]
+        unsafe {
+            killpg(group, SIGKILL);
+        }
     }
     let ms = start.elapsed().as_millis();
 
@@ -1132,6 +1162,53 @@ mod tests {
     }
 
     // --- The bounds ------------------------------------------------------
+
+    /// NOTHING THE COMMAND LEFT IN ITS GROUP OUTLIVES A CLEAN EXIT (audit L19).
+    ///
+    /// `sh` starts a background job and exits 0 at once. The job sits in the
+    /// command's process group (a non-interactive `sh` does no job control, so
+    /// it does not get a group of its own) and writes a canary two seconds
+    /// later. A file that appears after the tool has returned can only have
+    /// been written by something the tool left behind; reading the process
+    /// table instead would measure this machine's other tenants.
+    ///
+    /// The job's own output goes to /dev/null so it does not hold the pipes:
+    /// what is measured is the sweep, not the bounded join.
+    #[cfg(unix)]
+    #[test]
+    fn a_background_child_does_not_outlive_a_clean_exit() {
+        let root = temp_dir("survivor");
+        let canary = root.join("alive.txt");
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                std::fs::remove_dir_all(&self.0).ok();
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+
+        let script = format!(
+            "(sleep 2; echo alive > '{}') >/dev/null 2>&1 & echo started",
+            canary.display()
+        );
+        let (outcome, _) = call(
+            &tool(&["sh"]),
+            &root,
+            json!({ "command": "sh", "args": ["-c", script], "timeout_s": 20 }),
+        );
+        assert!(
+            outcome.to_model.contains("started"),
+            "the command did not run as expected: {}",
+            outcome.to_model
+        );
+        // Longer than the job's own delay, so a survivor has had its chance.
+        std::thread::sleep(Duration::from_secs(4));
+        assert!(
+            !canary.exists(),
+            "a background child outlived the command's clean exit and wrote {}",
+            canary.display()
+        );
+    }
 
     /// THE TIMEOUT REALLY KILLS. `sleep 30` under a one-second deadline has to
     /// come back in about a second, not in thirty.
