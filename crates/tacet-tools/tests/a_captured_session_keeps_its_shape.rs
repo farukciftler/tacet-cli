@@ -341,6 +341,16 @@ fn a_planted_capture_loses_what_identifies_it_and_keeps_its_reading() {
             "toolUseResult":{"structuredContent":{"Bob Smith":1}},
             "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t3","content":
                 r#"{"Jane Doe":{"iban_no":4012888888881881,"salary":185000},"jdoe@clientbank.com":true}"#}]}}),
+        // The third review's shapes: card numbers under `id`, a key the
+        // readers take task ids from, as a number and as a string; and a
+        // tool's answer in a `progress` line, an envelope no reader opens.
+        serde_json::json!({"type":"user","uuid":"u5","parentUuid":"u4","sessionId":id,
+            "cwd":cwd,"version":"2.1.285","timestamp":"2026-10-09T10:00:11.000Z","isSidechain":false,
+            "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t3","content":
+                r#"{"rows":[{"id":4012888888881881},{"id":"5500005555555559"}]}"#}]}}),
+        serde_json::json!({"type":"progress","uuid":"p1","parentUuid":"u5","sessionId":id,
+            "timestamp":"2026-10-09T10:00:12.000Z",
+            "data":{"type":"mcp_progress","result":{"AcmeCorp":{"card":4_111_111_111_111_111_u64}}}}),
     ];
     let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
     let project = tacet_tools::sessions::claude::project_dir_name(cwd);
@@ -389,6 +399,9 @@ fn a_planted_capture_loses_what_identifies_it_and_keeps_its_reading() {
         "4012888888881881",
         "185000",
         "jdoe",
+        "5500005555555559",
+        "4111111111111111",
+        "card",
     ] {
         assert!(!out.contains(leak), "{leak:?} survived:\n{out}");
     }

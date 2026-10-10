@@ -19,6 +19,48 @@ releases to follow.
 
 ---
 
+## Unreleased — the audit of 9 Oct 2026: completeness, 10 Oct 2026
+
+What the second pass over the review found unfinished, each fixed with a test
+that fails without the fix.
+
+**Security:**
+
+* `tacet sessions --purge` deletes the `<config>/handoff/` records — each a
+  summary of another agent's transcript — and the transcript backups `tacet
+  handoff note` keeps, with the conversations and the receipt log; `--json`
+  reports `handoffs` beside `purged` and `receipts` (RG-32).
+* The corpus anonymiser (`examples/corpus_capture.rs`) masks what a tool
+  returned wherever it sits: a value inside a tool's data survives only when
+  a reader takes it from there, a key only when a reader looks it up there,
+  a number only when it is a task id of at most six digits (a card number
+  under `id` was kept), `blockedBy` is kept as a string and as a number
+  alike, and the envelopes no reader opens that hold a tool's answer (Codex's
+  `mcp_tool_call_end` and `exec_command_end`, Claude Code's `progress`) are
+  data. The salt comes from the OS, not the clock (RG-28).
+
+**Fixed:**
+
+* An Antigravity session read through `--from`, `/resume-from` or
+  `session_read` asks the version gate. It was read without one, which the
+  README said never happens. The IDE's version is taken from the installed
+  app's `product.json` on macOS and trusted only for a session written after
+  it; `agy` has no readable version, so every `agy` read warns (RG-30,
+  RG-36).
+* A reader that panics on a file it has never seen costs that file, not the
+  shell: `/resume-from`'s listing names the folder it could not list, an
+  import is an error, and `tacet handoff hook` stays silent and exits 0 under
+  the other agent, its panic kept off stderr (RG-04).
+* The reaped-pid test runs only where the probe can tell (RG-08).
+
+**Documents:** the README says Claude Code's SessionStart hook has never run in
+a real Claude Code (RG-21, guarded in the README as in
+`docs/agent-handoff.md`), that `git` is read-only with the actions the tool
+has (L38), what `eval --compare` leaves out of its verdict (D8), and one
+suite size in both platform rows (D23).
+
+---
+
 ## Unreleased — the audit of 9 Oct 2026: the review of 10 Oct 2026
 
 What the review of waves 1–6 confirmed, each fixed with a test that fails

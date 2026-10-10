@@ -47,11 +47,16 @@ The steps, for whoever does:
    the readers split on), and only in that shape: a kept key holding prose,
    an address or a path is masked like any other text, and inside a tool's
    data (a call's input or arguments, a result's content, JSON carried in a
-   string) only the statuses the readers know, numeric task ids and
-   content-block types survive. Object keys are masked too — inside a tool's
-   data every key but the few the readers look up there, outside it every
-   key that is not one identifier-shaped token — and so is every number in
-   a tool's data but a task id, to one of the same digit count. Any other
+   string, and the payloads no reader opens that hold a tool's answer:
+   Codex's `invocation`, `result`, `stdout`, `stderr`, `aggregated_output`
+   and `formatted_output`, Claude Code's `progress` `data`) only the statuses
+   the readers know, task ids of up to six digits and content-block types
+   survive. Object keys are masked too — inside a tool's data every key but
+   the few the readers look up there, outside it every key that is not one
+   identifier-shaped token — and so is every number in a tool's data but such
+   a task id, to one of the same digit count. Outside a tool's data, numbers
+   and one-token keys are kept: tool output under some other envelope would
+   keep them too, which is another reason for step 2. Any other
    tag keeps its brackets and loses its name. Every other string is masked
    word by word; home directories become `dev`, the capturing user's name
    becomes `dev` in any case, and e-mail addresses are removed. An identifier-shaped value under a kept key outside a tool's data

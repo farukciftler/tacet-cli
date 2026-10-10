@@ -27,9 +27,18 @@
 //! (`{"Jane Doe":{"iban_no":4012…},"jdoe@clientbank.com":true}`) and it came
 //! out whole, address included. Now a key inside a tool's data survives only
 //! when a reader looks it up there (`DATA_KEYS`), a number there only when it
-//! is a task id, and a key outside data only when it is one identifier-shaped
-//! token; a masked number keeps its digit count. A markup tag keeps its
-//! brackets, and its name only when a reader splits on it (`TAG_NAMES`).
+//! is a task id of at most six digits (`TASK_ID_MAX`: the third review found
+//! a card number under `id` kept), and a key outside data only when it is one
+//! identifier-shaped token; a masked number keeps its digit count. OUTSIDE
+//! DATA, NUMBERS AND TOKEN-SHAPED KEYS ARE KEPT, because that is the agents'
+//! own format. So a tool's answer must never be read as envelope: the keys
+//! that hold one in a line no reader opens (`ALWAYS_DATA` — Codex's
+//! `mcp_tool_call_end` and `exec_command_end` payloads, Claude Code's
+//! `progress` lines) are data wherever they appear. An envelope that carries
+//! tool output under a key not on that list is the gap this design leaves,
+//! and why step 2 of the corpus README is reading the output. A markup tag
+//! keeps its brackets, and its name only when a reader splits on it
+//! (`TAG_NAMES`).
 //! Every other string value is
 //! MASKED: each word becomes a pseudo-word of the same length and
 //! case pattern, the same word always the same pseudo-word within one capture
@@ -60,9 +69,10 @@ use serde_json::Value;
 
 /// Keys whose string values are structure, kept verbatim (after the home
 /// rule). Taken from what the three readers look up — `claude.rs`,
-/// `codex.rs`, `antigravity.rs` — and the brief's field lists; a key that is
-/// not here is masked, so forgetting one costs a fixture its meaning, never
-/// its privacy.
+/// `codex.rs`, `antigravity.rs` — and the brief's field lists; a string under
+/// a key that is not here is masked, so forgetting one costs a fixture its
+/// meaning, never that string. (It does not cover keys and numbers outside a
+/// tool's data, which are kept: see `ALWAYS_DATA`.)
 pub const KEEP_KEYS: &[&str] = &[
     // identity and links
     "uuid",
@@ -139,9 +149,31 @@ fn is_data(object_type: Option<&str>, in_call: bool, key: &str) -> bool {
         // whatever variable names the user's shell had (a review's
         // `ACME_SECRET_TOKEN_NAME` came out verbatim as an envelope key).
         "action" => matches!(object_type, Some("local_shell_call" | "web_search_call")),
+        // Envelopes no reader opens, holding a tool's answer: Codex's
+        // `event_msg` `mcp_tool_call_end` (`invocation`, `result`) and
+        // `exec_command_end` (`stdout`, `stderr`, `aggregated_output`,
+        // `formatted_output`), Claude Code's `progress` lines (`data`).
+        // Outside data a key of one identifier-shaped token and every number
+        // are kept, so a review's `{"JaneDoe":{"iban_no":4012…}}` under
+        // `result.Ok.structuredContent` came out whole (RG-28 third review).
+        // `no_reader_looks_up_an_always_data_key` keeps these out of the
+        // readers.
+        k if ALWAYS_DATA.contains(&k) => true,
         _ => false,
     }
 }
+
+/// Keys that are a tool's data wherever they appear. None of the three
+/// readers looks one up, so declaring them data costs no reading.
+const ALWAYS_DATA: &[&str] = &[
+    "invocation",
+    "result",
+    "stdout",
+    "stderr",
+    "aggregated_output",
+    "formatted_output",
+    "data",
+];
 
 /// Object KEYS a reader looks up inside a tool's data. Every other key in
 /// data is masked like text: a tool's JSON is keyed by its own content as
@@ -175,11 +207,28 @@ const DATA_KEYS: &[&str] = &[
     "Cwd",
 ];
 
-/// Keys whose NUMBERS inside data are task ids, kept: Claude Code writes a
-/// task id as a string or a number, and a masked number would no longer
-/// match the same id written the other way. Every other number in data is a
-/// value somebody's tool returned (a balance, a card number) and is masked.
-const DATA_NUMBER_KEYS: &[&str] = &["taskId", "addBlockedBy", "blockedBy", "id"];
+/// Keys whose values inside data are task ids, kept when they are task-id
+/// shaped (`task_id_shaped`), as a string or as a number: Claude Code writes
+/// a task id either way, and a masked one would no longer match the same id
+/// written the other way. The string and number paths read this one list —
+/// `blockedBy` was once in the number list only, so `[3]` was kept and
+/// `["3"]` masked. Every other number in data is a value somebody's tool
+/// returned (a balance, a card number) and is masked.
+const TASK_ID_KEYS: &[&str] = &["taskId", "addBlockedBy", "blockedBy", "id"];
+
+/// The largest task id kept. Claude Code numbers a session's tasks from 1
+/// upward; a key as generic as `id` also holds whatever a tool's JSON keys
+/// by it, and the review found `{"id":4012888888881881}` (a card number)
+/// kept verbatim when the bound was twenty digits.
+const TASK_ID_MAX: u64 = 999_999;
+
+/// One to six ASCII digits, no leading zero beyond a lone `0`.
+fn task_id_shaped(s: &str) -> bool {
+    !s.is_empty()
+        && s.bytes().all(|b| b.is_ascii_digit())
+        && s.parse::<u64>()
+            .is_ok_and(|n| n <= TASK_ID_MAX && n.to_string() == s)
+}
 
 /// Content block types a reader branches on inside a result's content
 /// (`claude.rs` takes the text of a `text` block only). Any other `type`
@@ -199,9 +248,7 @@ fn data_keep(key: &str, s: &str) -> bool {
             super::Status::from_claude_task(s, false).is_some()
                 || super::Status::from_codex_plan(s).is_some()
         }
-        "taskId" | "addBlockedBy" | "id" => {
-            !s.is_empty() && s.len() <= 20 && s.bytes().all(|b| b.is_ascii_digit())
-        }
+        k if TASK_ID_KEYS.contains(&k) => task_id_shaped(s),
         "type" => DATA_BLOCK_TYPES.contains(&s),
         _ => false,
     }
@@ -410,7 +457,9 @@ impl Scrub {
                 }
             }
             Value::Number(n) => {
-                if data && !key.is_some_and(|k| DATA_NUMBER_KEYS.contains(&k) && n.is_u64()) {
+                let task_id = key.is_some_and(|k| TASK_ID_KEYS.contains(&k))
+                    && n.as_u64().is_some_and(|v| v <= TASK_ID_MAX);
+                if data && !task_id {
                     *n = self.number(n);
                 }
             }
@@ -978,6 +1027,103 @@ mod tests {
         assert_eq!(input["status"], "completed");
         assert_eq!(input["addBlockedBy"], serde_json::json!([3, "4"]));
         assert_eq!(v["toolUseResult"]["task"]["id"], 12);
+    }
+
+    /// RG-28 third review: `id` is a key the readers take task ids from and
+    /// a key any tool's JSON uses. A task id is short; a card number under
+    /// `id` or `taskId` is not one, as a number or as a string.
+    #[test]
+    fn a_long_number_under_a_task_id_key_is_masked() {
+        let s = scrub();
+        let result = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"{\"customers\":[{\"id\":4012888888881881},{\"id\":\"5500005555555559\"}]}"}]}}"#;
+        let call = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"TaskUpdate","input":{"taskId":"4012888888881881","addBlockedBy":[5500005555555559]}}]}}"#;
+        for line in [result, call] {
+            let out = s.jsonl(line);
+            for leak in ["4012888888881881", "5500005555555559"] {
+                assert!(!out.contains(leak), "{leak}: {out}");
+            }
+        }
+        // Masked to the same digit count, so the shape stays a long id.
+        let v: Value = serde_json::from_str(s.jsonl(call).trim_end()).unwrap();
+        let id = v["message"]["content"][0]["input"]["taskId"]
+            .as_str()
+            .unwrap();
+        assert_eq!(id.len(), 16, "{id}");
+        // The largest kept id and the smallest masked one, both spellings.
+        let edge = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t3","name":"TaskUpdate","input":{"taskId":"999999","addBlockedBy":[999999,1000000,"1000000","007"]}}]}}"#;
+        let v: Value = serde_json::from_str(s.jsonl(edge).trim_end()).unwrap();
+        let input = &v["message"]["content"][0]["input"];
+        assert_eq!(input["taskId"], "999999");
+        assert_eq!(input["addBlockedBy"][0], 999_999);
+        assert_ne!(input["addBlockedBy"][1], 1_000_000);
+        assert_ne!(input["addBlockedBy"][2], "1000000");
+        assert_ne!(input["addBlockedBy"][3], "007");
+    }
+
+    /// RG-28 third review: `blockedBy` was kept as a number and masked as a
+    /// string, so the same id written the two ways no longer matched.
+    #[test]
+    fn blocked_by_keeps_a_task_id_in_either_spelling() {
+        let s = scrub();
+        // Two digits: a one-character word survives masking anyway.
+        let line = r#"{"type":"user","toolUseResult":{"task":{"id":"7","blockedBy":["13",13]}}}"#;
+        let v: Value = serde_json::from_str(s.jsonl(line).trim_end()).unwrap();
+        assert_eq!(
+            v["toolUseResult"]["task"]["blockedBy"],
+            serde_json::json!(["13", 13])
+        );
+    }
+
+    /// RG-28 third review: a tool's answer in an envelope no reader opens —
+    /// Codex's `mcp_tool_call_end`, Claude Code's `progress` — kept every
+    /// key of one token and every number.
+    #[test]
+    fn a_tools_answer_in_an_unread_envelope_is_masked() {
+        let s = scrub();
+        let codex = r#"{"timestamp":"2026-10-09T10:00:00Z","type":"event_msg","payload":{"type":"mcp_tool_call_end","call_id":"c1","invocation":{"server":"crm","tool":"q","arguments":{"JaneDoe":{"iban_no":4012888888881881}}},"result":{"Ok":{"structuredContent":{"JaneDoe":{"salary":185000}}}}}}"#;
+        let claude = r#"{"type":"progress","uuid":"p1","data":{"type":"x","result":{"AcmeCorp":{"card":4012888888881881}}}}"#;
+        let shell = r#"{"type":"event_msg","payload":{"type":"exec_command_end","call_id":"c2","stdout":"JaneDoe 185000","exit_code":0}}"#;
+        for line in [codex, claude, shell] {
+            let out = s.jsonl(line);
+            for leak in [
+                "JaneDoe",
+                "iban",
+                "4012888888881881",
+                "salary",
+                "185000",
+                "AcmeCorp",
+                "card",
+            ] {
+                assert!(!out.contains(leak), "{leak}: {out}");
+            }
+        }
+        let v: Value = serde_json::from_str(s.jsonl(codex).trim_end()).unwrap();
+        assert_eq!(v["payload"]["type"], "mcp_tool_call_end");
+        assert_eq!(v["payload"]["call_id"], "c1");
+        let v: Value = serde_json::from_str(s.jsonl(shell).trim_end()).unwrap();
+        assert_eq!(v["payload"]["exit_code"], 0);
+    }
+
+    /// `ALWAYS_DATA` is masked wherever it appears, which is free only while
+    /// no reader looks one of those keys up. A reader that starts to would
+    /// read a capture differently from its original; this says why first.
+    #[test]
+    fn no_reader_looks_up_an_always_data_key() {
+        let readers = [
+            ("claude.rs", include_str!("claude.rs")),
+            ("codex.rs", include_str!("codex.rs")),
+            ("antigravity.rs", include_str!("antigravity.rs")),
+        ];
+        for (file, source) in readers {
+            for key in ALWAYS_DATA {
+                assert!(
+                    !source.contains(&format!("\"{key}\"")),
+                    "{file} looks up \"{key}\", which the anonymiser masks as a tool's data"
+                );
+            }
+        }
+        // The scan can see one.
+        assert!(include_str!("codex.rs").contains("\"call_id\""));
     }
 
     /// A masked key that spells one already in the object must not replace
