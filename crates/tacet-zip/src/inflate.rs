@@ -11,6 +11,7 @@
 //! wrong output. What is simple is what can be verified.
 
 use crate::error::{ZipError, ZipResult};
+use std::sync::OnceLock;
 
 /// LSB-first bit reader. Every read is bounds-checked.
 struct BitReader<'a> {
@@ -150,6 +151,24 @@ const CODE_LENGTH_ORDER: [usize; 19] = [
     16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
 ];
 
+/// The most blocks in a row that may decode to nothing.
+///
+/// WHY A RUN AND NOT A TOTAL: an empty block is legitimate — zlib's
+/// `Z_SYNC_FLUSH`/`Z_FULL_FLUSH` end with an empty stored block and
+/// `Z_PARTIAL_FLUSH` with one or two empty fixed blocks — so a streaming writer
+/// that flushes every few KiB leaves thousands of them across a large entry, each
+/// next to real data. What no encoder has a reason to write is a long run of them
+/// with nothing in between, and that run is the whole of the attack: a fixed
+/// empty block is 10 bits, so 4 MiB holds 3,355,443 of them, decodes to 0 bytes,
+/// and therefore matches a declared size of 0 and a CRC of 0 — every gate a
+/// caller has passes it. MEASURED before this limit (release, Apple M4 Pro,
+/// 10 Oct 2026): that stream took 3.87 s and returned `Ok(vec![])`.
+///
+/// 1024 tolerates hundreds of back-to-back flush calls and still refuses the
+/// flood after ~1.3 KB of input. It is not the CPU bound by itself — see
+/// `FIXED` — it is what makes "this decodes to nothing" cost nothing.
+const MAX_EMPTY_BLOCK_RUN: usize = 1024;
+
 /// Decodes a raw DEFLATE stream.
 ///
 /// `max_output` is a hard cap: exceeding it returns `LimitExceeded`. The
@@ -158,15 +177,17 @@ const CODE_LENGTH_ORDER: [usize; 19] = [
 pub fn inflate(data: &[u8], max_output: usize) -> ZipResult<Vec<u8>> {
     let mut br = BitReader::new(data);
     let mut output: Vec<u8> = Vec::new();
+    let mut empty_run = 0usize;
 
     loop {
         let last_block = br.bit()? == 1;
         let kind = br.bits(2)?;
+        let before = output.len();
         match kind {
             0 => stored_block(&mut br, &mut output, max_output)?,
             1 => {
                 let (lit, dist) = fixed_tables();
-                huffman_block(&mut br, &mut output, &lit, &dist, max_output)?;
+                huffman_block(&mut br, &mut output, lit, dist, max_output)?;
             }
             2 => {
                 let (lit, dist) = dynamic_tables(&mut br)?;
@@ -176,6 +197,16 @@ pub fn inflate(data: &[u8], max_output: usize) -> ZipResult<Vec<u8>> {
         }
         if last_block {
             break;
+        }
+        if output.len() == before {
+            empty_run += 1;
+            if empty_run > MAX_EMPTY_BLOCK_RUN {
+                return Err(ZipError::LimitExceeded(
+                    "too many deflate blocks in a row decode to nothing",
+                ));
+            }
+        } else {
+            empty_run = 0;
         }
     }
     Ok(output)
@@ -199,20 +230,33 @@ fn stored_block(br: &mut BitReader<'_>, output: &mut Vec<u8>, max_output: usize)
     Ok(())
 }
 
-fn fixed_tables() -> (Huffman, Huffman) {
-    let mut lit_lengths = [0u8; 288];
-    for (i, l) in lit_lengths.iter_mut().enumerate() {
-        *l = match i {
-            0..=143 => 8,
-            144..=255 => 9,
-            256..=279 => 7,
-            _ => 8,
-        };
-    }
-    // The fixed tables are valid by definition; new() never returns Err here.
-    let lit = Huffman::new(&lit_lengths).expect("the fixed literal table is valid");
-    let dist = Huffman::new(&[5u8; 30]).expect("the fixed distance table is valid");
-    (lit, dist)
+/// The fixed tables, built ONCE per process.
+///
+/// They used to be rebuilt for every fixed block, and that rebuild — not the
+/// decoding — was the cost of a block: MEASURED (release, Apple M4 Pro,
+/// 10 Oct 2026) 4 MiB of fixed blocks carrying one literal each took 2.15 s for
+/// 1.8 MB of output; built once, the same stream takes 21 ms. For scale, 4 MiB
+/// of minimal DYNAMIC blocks — which have to build three tables apiece from the
+/// stream, and cannot be cached — takes 0.36 s: linear in the input, which is
+/// the bound the reader's overlap gate then keeps linear in the ARCHIVE.
+static FIXED: OnceLock<(Huffman, Huffman)> = OnceLock::new();
+
+fn fixed_tables() -> &'static (Huffman, Huffman) {
+    FIXED.get_or_init(|| {
+        let mut lit_lengths = [0u8; 288];
+        for (i, l) in lit_lengths.iter_mut().enumerate() {
+            *l = match i {
+                0..=143 => 8,
+                144..=255 => 9,
+                256..=279 => 7,
+                _ => 8,
+            };
+        }
+        // The fixed tables are valid by definition; new() never returns Err here.
+        let lit = Huffman::new(&lit_lengths).expect("the fixed literal table is valid");
+        let dist = Huffman::new(&[5u8; 30]).expect("the fixed distance table is valid");
+        (lit, dist)
+    })
 }
 
 fn dynamic_tables(br: &mut BitReader<'_>) -> ZipResult<(Huffman, Huffman)> {
@@ -338,5 +382,19 @@ fn huffman_block(
             }
             _ => return Err(ZipError::Malformed("invalid literal/length symbol")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// THE CACHE IS THE FIX, so it is what is pinned: two calls must hand back
+    /// the same tables, not two equal ones. Equality would pass a rebuild — and
+    /// a rebuild per block is what made 4 MiB of fixed blocks cost 2.15 s (see
+    /// `FIXED`).
+    #[test]
+    fn the_fixed_tables_are_built_once() {
+        assert!(std::ptr::eq(fixed_tables(), fixed_tables()));
     }
 }

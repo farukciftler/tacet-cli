@@ -19,9 +19,14 @@
 //!   1. the .zip itself goes through `sandbox_path::resolve_existing_file` and a
 //!      file-size cap, so a planted link cannot be read through;
 //!   2. `tacet_zip::list` reads the central directory WITHOUT decoding a byte,
-//!      and every declared-size gate is applied to that listing — a bomb is
-//!      refused before any CPU is spent on it;
-//!   3. only then is anything inflated, under a ceiling this file chooses;
+//!      and every declared-size gate is applied to that listing — a bomb that
+//!      DECLARES its size is refused before any CPU is spent on it;
+//!   3. only then is anything inflated, under a ceiling this file chooses.
+//!      A bomb that lies about its size — declares 0, decodes to 0, burns CPU
+//!      in between — is not visible to step 2 at all; what bounds it is the
+//!      reader: no two entries may share bytes, and `inflate` refuses a long
+//!      run of blocks that produce nothing (audit M8), so the work is linear in
+//!      the archive's length rather than multiplied by its entry count;
 //!   4. only then does a destination directory come into existence.
 //!
 //! Step 4 last is what makes "the destination was never created" an OBSERVABLE
@@ -38,7 +43,9 @@
 //! names that the DESTINATION considers equal while the duplicate gate does not
 //! — macOS folds Unicode normalisation as well as case (measured; see
 //! `extract`) — are listed as two entries and refused during the write, by name.
-//! Everything a gate here can decide is still decided in the one pass.
+//! Everything a gate here can decide is still decided in the one pass, and a
+//! write that fails after the destination exists removes the destination, so
+//! that refusal, too, leaves nothing behind (audit L14).
 //!
 //! BULK OUTPUT GOES TO THE STORE. A listing of 400 entries is bulk data; it goes
 //! in as a `Table` and the model gets a count plus a `source_ref`. Entry CONTENT
@@ -356,7 +363,8 @@ impl ArchiveTool {
 
     /// GATES 3 AND 4. Everything is decoded and proven BEFORE the destination
     /// exists, so a refusal leaves no directory behind and the absence of one is
-    /// the proof that no inflate ran.
+    /// the proof that no inflate ran. A failure AFTER it exists removes it again
+    /// (`all_or_nothing`), so no refusal at any stage leaves a partial tree.
     fn extract(
         &self,
         ctx: &ToolContext,
@@ -373,11 +381,12 @@ impl ArchiveTool {
             .map_err(zip_error)?;
 
         // THE DECLARED SIZE MUST BE THE TRUE SIZE. For a DEFLATE entry the
-        // reader ignores `raw_size` entirely and a zero CRC is skipped — MEASURED
-        // in tacet-zip's `list_reports_the_directory_without_decoding_anything`,
-        // where an archive declaring 4 GiB opens without complaint and yields
-        // 8 MiB. So the declared numbers are checked against reality HERE, and
-        // an archive that lied is refused.
+        // reader ignores `raw_size` entirely — MEASURED in tacet-zip's
+        // `list_reports_the_directory_without_decoding_anything`, where an
+        // archive declaring 4 GiB opens without complaint and yields 8 MiB. So
+        // the declared numbers are checked against reality HERE, and an archive
+        // that lied is refused. (The CRC is the reader's job and it checks every
+        // entry, a recorded 0 included; it used to skip a 0, audit L11.)
         //
         // IT DOES NOT MAKE `list`'S OUTPUT TRUE — the sentence that used to
         // stand here claimed it did, and that claim was bigger than the code.
@@ -413,79 +422,77 @@ impl ArchiveTool {
         let folder = ctx.resolve_path(".")?;
         let destination = free_directory(&folder, name);
         fs::create_dir(&destination)?;
+        // `lstat` OF WHAT `create_dir` MADE, taken before anything else touches
+        // the name: this is the identity the rollback below is tied to.
+        let made = fs::symlink_metadata(&destination)?;
         // BELT AND BRACES, exactly as `write_document` does after its own naming
         // loop: the directory was just created and rotated past anything that
         // existed, but the write gate must not depend on the naming rule staying
         // correct forever. Re-proving it canonically is what stops a link that
         // won a race from being written through.
-        let destination = crate::sandbox_path::resolve_existing_dir(ctx, &destination)?;
+        let canonical = crate::sandbox_path::resolve_existing_dir(ctx, &destination)?;
+        // INSIDE THE SANDBOX IS NOT THE SAME AS OURS. `canonicalize` follows a
+        // link, so a local process that swapped the fresh directory for a link
+        // to, say, the user's `src/` between `create_dir` and the line above
+        // gets a path that passes the sandbox gate — and the rollback below
+        // would then `remove_dir_all` the user's `src/` (adversarial review of
+        // 2dcf460; reasoned, not raced — the window has no hook to hold open).
+        // `Created::claim` refuses unless the canonical path is the name this
+        // run chose, in the folder it chose it in, and is the very directory
+        // `create_dir` made.
+        let destination = Created::claim(&destination, &made, canonical)?;
 
-        // FROM HERE ON A FAILURE CAN LEAVE A PARTIAL DIRECTORY, and that is a
-        // decision rather than an oversight. Everything that could be refused
-        // has been refused above; what is left is the disk itself — no space, a
-        // permission, a device gone. Rolling back would mean a recursive delete
-        // running on an error path, and a recursive delete is the more dangerous
-        // of the two outcomes to get wrong. What remains is a directory the tool
-        // created, under a name nothing else had, and the chip says the run
-        // failed. NOT MEASURED: no test here fills a disk.
+        // FROM HERE ON A FAILURE REMOVES THE DESTINATION, so a refused archive
+        // leaves nothing behind however far the write got (audit L14, second
+        // half). This used to be the opposite decision — "a recursive delete on
+        // an error path is the more dangerous outcome" — and it was reversed
+        // because the half-unpacked directory turned out NOT to need a full disk.
+        // Two name pairs the DESTINATION FILESYSTEM considers equal while
+        // `inspect`'s fold does not get this far: the fold lowercases, which
+        // covers `A.txt` vs `a.txt`, but it does not normalise Unicode, and
+        // macOS's APFS is normalisation-insensitive as well as case-insensitive.
+        // MEASURED ON THIS MACHINE (APFS, /private/tmp, 10 Oct 2026): `café`
+        // (NFC) as a file and then `cafe\u{301}/b` (NFD) wrote `café`, failed to
+        // make the folder, and left the directory behind; `é.txt` in NFD and
+        // then in NFC is ONE file, and the second write met the first. Windows
+        // has rules of its own (trailing dots, 8.3 short names — NOT MEASURED,
+        // no Windows box here). `inspect` cannot predict
+        // every rule of every filesystem, and the honest folding for the APFS
+        // case IS a Unicode normalisation table this workspace does not carry.
+        // Refusing every name with a combining mark was the other option and
+        // was rejected: HFS+ stored every name decomposed, archives zipped from
+        // it carry NFD names to this day, and the rule would refuse those
+        // ordinary archives to close a hostile one.
         //
-        // AND ONE CASE THAT IS NOT THE DISK: a name pair the DESTINATION
-        // FILESYSTEM considers equal while `inspect`'s fold does not. The fold
-        // lowercases, which covers `A.txt` vs `a.txt`; it does not normalise
-        // Unicode, and macOS's APFS is normalisation-insensitive as well as
-        // case-insensitive. MEASURED ON THIS MACHINE (APFS, /private/tmp):
-        // writing `é.txt` in NFD and then `é.txt` in NFC leaves ONE file holding
-        // the second write. Folding that pair away without a Unicode
-        // normalisation table is not something this workspace can do honestly —
-        // the table IS the algorithm — so the pair is caught HERE instead, by
-        // the filesystem itself, and refused by name. `list` therefore reports
-        // two entries where `extract` refuses: the one place the "one pass, so
-        // list and extract agree" rule does not hold, and it is written down
-        // rather than implied.
-        for k in kept.iter().filter(|k| k.is_dir) {
-            fs::create_dir_all(destination.join(&k.relative))?;
-        }
-        let mut written = 0usize;
-        let mut bytes_written = 0usize;
-        for entry in &decoded {
-            let Some(k) = kept.iter().find(|k| k.name == entry.name) else {
-                continue;
-            };
-            let target = destination.join(&k.relative);
-            if let Some(parent) = target.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            // `symlink_metadata`, NOT `exists`: `exists` follows a link, so a
-            // DANGLING one reports false and `fs::write` would create the file
-            // at the link's target — outside the directory we just proved.
-            //
-            // AND THE TWO READINGS ARE DIFFERENT SENTENCES. A LINK here is
-            // something outside this tool put in a directory it created moments
-            // ago — an escape, and named as one. A REGULAR FILE here is not an
-            // escape at all: the destination was empty, so it can only be an
-            // entry this same run already wrote under a name this filesystem
-            // considers the same (case, or Unicode normalisation — see the note
-            // above). Calling that a `SandboxViolation` was an error message
-            // claiming an escape that did not happen.
-            if let Ok(meta) = target.symlink_metadata() {
-                if meta.file_type().is_symlink() {
-                    return Err(ToolError::SandboxViolation(target));
-                }
-                return Err(ToolError::Other(format!(
-                    "'{}' is the same file as an entry already unpacked — this filesystem \
-                     treats the two names as one (letter case, or a different Unicode spelling \
-                     of the same letters). One would silently replace the other, so the rest of \
-                     the archive was not written.",
-                    short(&k.name)
-                )));
-            }
-            fs::write(&target, &entry.data)?;
-            stamp_owner_only(&target)?;
-            written += 1;
-            bytes_written += entry.data.len();
-        }
+        // WHY THE DELETE IS SAFE TO RUN HERE — and exactly how far that goes.
+        // The canonical re-proof above shows only that the path is INSIDE THE
+        // SANDBOX; on its own it does not show the path is the directory this
+        // run created (an earlier version of this note claimed it did). What
+        // ties the delete to our directory is `Created`: the path is the chosen
+        // name in the chosen folder, it was a real directory (not a link) when
+        // `lstat`ed straight after `create_dir`, on Unix its (device, inode)
+        // matched, and `all_or_nothing` checks all of that AGAIN immediately
+        // before deleting and leaves the folder in place on any mismatch.
+        // Between that last check and the delete, a swap of the top component
+        // for a link is still harmless: `fs::remove_dir_all` does not follow
+        // symbolic links — not the top one, not one inside (the CVE-2022-21658
+        // fix, Rust 1.58.1) — so the link is unlinked, not traversed.
+        // `the_rollback_does_not_follow_a_link_out_of_the_destination` holds
+        // that to a measurement rather than to the standard library's word.
+        // WHAT IT DOES NOT COVER: a process that RENAMES a real directory onto
+        // the fresh (empty) name before the first `lstat` hands us that
+        // directory's identity — but a process that can rename the user's
+        // folders can already delete them, so nothing is given away here.
+        // Off Unix there is no stable (device, inode) in std, so the guard
+        // there is the name and the not-a-link checks only.
+        //
+        // `list` STILL reports two entries for such a pair where `extract`
+        // refuses: the one place the "one pass, so list and extract agree" rule
+        // does not hold, written down rather than implied.
+        let (written, bytes_written) =
+            all_or_nothing(&destination, || unpack(&destination.path, kept, &decoded))?;
 
-        let shown = path_for_model(&destination, &ctx.working_dir);
+        let shown = path_for_model(&destination.path, &ctx.working_dir);
         Ok(ToolOutcome::written(
             format!("{name} · {written} files unpacked"),
             // COUNTS AND A PATH, NEVER CONTENT. What was inside the files is not
@@ -494,8 +501,182 @@ impl ArchiveTool {
             format!("extracted {written} files ({bytes_written} bytes) into {shown}"),
         )
         .raw_output(format!("{shown}: {written} files, {bytes_written} bytes"))
-        .file_path(destination))
+        .file_path(destination.path))
     }
+}
+
+/// The directory `extract` made, pinned to what `create_dir` actually created
+/// so the rollback can never be pointed at anything else. See the rollback
+/// note in `extract`.
+#[derive(Debug)]
+struct Created {
+    /// Canonical, and equal to `canonical(folder) / chosen name`.
+    path: PathBuf,
+    identity: Identity,
+}
+
+#[cfg(unix)]
+type Identity = (u64, u64);
+#[cfg(not(unix))]
+type Identity = ();
+
+#[cfg(unix)]
+fn identity(meta: &fs::Metadata) -> Identity {
+    use std::os::unix::fs::MetadataExt;
+    (meta.dev(), meta.ino())
+}
+#[cfg(not(unix))]
+fn identity(_: &fs::Metadata) -> Identity {}
+
+impl Created {
+    /// `lexical` is the path handed to `create_dir`, `made` its `lstat` taken
+    /// straight afterwards, `canonical` what the sandbox gate resolved it to.
+    /// Any disagreement is a `SandboxViolation` and NOTHING is deleted: the
+    /// directory we made may have been moved, and guessing where is how a
+    /// rollback deletes the wrong thing.
+    fn claim(lexical: &Path, made: &fs::Metadata, canonical: PathBuf) -> ToolResult<Created> {
+        let refuse = || ToolError::SandboxViolation(lexical.to_path_buf());
+        if !made.file_type().is_dir() {
+            return Err(refuse());
+        }
+        let (Some(parent), Some(name)) = (lexical.parent(), lexical.file_name()) else {
+            return Err(refuse());
+        };
+        let expected = parent.canonicalize().map_err(|_| refuse())?.join(name);
+        if canonical != expected {
+            return Err(refuse());
+        }
+        let created = Created {
+            path: canonical,
+            identity: identity(made),
+        };
+        if !created.still_ours() {
+            return Err(refuse());
+        }
+        Ok(created)
+    }
+
+    /// `lstat`, never `stat`: a link standing where our directory stood is
+    /// exactly the case this answers no to.
+    fn still_ours(&self) -> bool {
+        match fs::symlink_metadata(&self.path) {
+            Ok(now) => now.file_type().is_dir() && identity(&now) == self.identity,
+            Err(_) => false,
+        }
+    }
+}
+
+/// Runs `write` against a destination this run created, and removes the
+/// destination if `write` fails — see the rollback note in `extract` for why
+/// the delete is both necessary and safe.
+///
+/// If the removal itself fails the original cause is not hidden behind it, but
+/// the user is told a folder was left, because "refused" with a directory still
+/// on disk is the false sentence this function exists to stop.
+///
+/// The delete runs only if `destination` is STILL the directory `create_dir`
+/// made (`Created::still_ours`, checked again here because the write took
+/// time); otherwise the folder is left and the user is told so.
+fn all_or_nothing<T>(
+    destination: &Created,
+    write: impl FnOnce() -> ToolResult<T>,
+) -> ToolResult<T> {
+    let left = |cause: ToolError, why: &str| {
+        ToolError::Other(format!(
+            "{} — and the partly unpacked folder '{}' {why}",
+            cause.short_error().trim_end_matches('.'),
+            short(&destination.path.to_string_lossy())
+        ))
+    };
+    match write() {
+        Ok(value) => Ok(value),
+        Err(cause) if !destination.still_ours() => Err(left(
+            cause,
+            "was not removed: it is no longer the folder this run created",
+        )),
+        Err(cause) => match fs::remove_dir_all(&destination.path) {
+            Ok(()) => Err(cause),
+            Err(_) => Err(left(cause, "could not be removed")),
+        },
+    }
+}
+
+/// The write itself: every folder entry, then every file, into `destination`.
+/// Returns (files written, bytes written).
+fn unpack(
+    destination: &Path,
+    kept: &[Kept],
+    decoded: &[tacet_zip::ZipEntry],
+) -> ToolResult<(usize, usize)> {
+    for k in kept.iter().filter(|k| k.is_dir) {
+        let folder = destination.join(&k.relative);
+        fs::create_dir_all(&folder).map_err(|e| folder_error(destination, &folder, &k.name, e))?;
+    }
+    let mut written = 0usize;
+    let mut bytes_written = 0usize;
+    for entry in decoded {
+        let Some(k) = kept.iter().find(|k| k.name == entry.name) else {
+            continue;
+        };
+        let target = destination.join(&k.relative);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| folder_error(destination, parent, &k.name, e))?;
+        }
+        // `symlink_metadata`, NOT `exists`: `exists` follows a link, so a
+        // DANGLING one reports false and `fs::write` would create the file
+        // at the link's target — outside the directory we just proved.
+        //
+        // AND THE TWO READINGS ARE DIFFERENT SENTENCES. A LINK here is
+        // something outside this tool put in a directory it created moments
+        // ago — an escape, and named as one. A REGULAR FILE here is not an
+        // escape at all: the destination was empty, so it can only be an
+        // entry this same run already wrote under a name this filesystem
+        // considers the same (case, or Unicode normalisation — see the note
+        // in `extract`). Calling that a `SandboxViolation` was an error
+        // message claiming an escape that did not happen.
+        if let Ok(meta) = target.symlink_metadata() {
+            if meta.file_type().is_symlink() {
+                return Err(ToolError::SandboxViolation(target));
+            }
+            return Err(ToolError::Other(format!(
+                "'{}' is the same file as an entry already unpacked — this filesystem \
+                 treats the two names as one (letter case, or a different Unicode spelling \
+                 of the same letters). One would silently replace the other, so nothing \
+                 from the archive was kept.",
+                short(&k.name)
+            )));
+        }
+        fs::write(&target, &entry.data)?;
+        stamp_owner_only(&target)?;
+        written += 1;
+        bytes_written += entry.data.len();
+    }
+    Ok((written, bytes_written))
+}
+
+/// A folder that could not be made, named when the reason is knowable.
+///
+/// The case worth a sentence is the filesystem-equality one again: `café` as a
+/// file and `cafe\u{301}/b` pass `inspect` (two different strings) and then the
+/// folder lands on the file on APFS. The bare `io::Error` reached the user as
+/// "The file operation could not be completed", which names nothing; if a
+/// non-folder already sits on the path inside the destination, it can only be
+/// an entry this run wrote, and that is what the user is told.
+fn folder_error(destination: &Path, folder: &Path, name: &str, cause: std::io::Error) -> ToolError {
+    let blocked = folder
+        .ancestors()
+        .take_while(|a| *a != destination)
+        .any(|a| a.symlink_metadata().is_ok_and(|m| !m.is_dir()));
+    if !blocked {
+        return ToolError::Io(cause);
+    }
+    ToolError::Other(format!(
+        "'{}' needs a folder where an entry already unpacked is a file — this filesystem \
+         treats the two names as one (letter case, or a different Unicode spelling of the \
+         same letters), so nothing from the archive was kept.",
+        short(name)
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -604,6 +785,35 @@ fn inspect(listing: &[tacet_zip::ZipListing]) -> ToolResult<Vec<Kept>> {
             declared: item.declared_size,
             compressed: item.compressed_size,
         });
+    }
+
+    // A NAME CANNOT BE BOTH A FILE AND A FOLDER. `a` as a file and `a/b` as
+    // anything are two different paths, so the duplicate gate above passes them
+    // — and `extract` then writes `a`, fails to create the folder `a`, and
+    // leaves a half-unpacked directory behind (audit L14). The rule this file
+    // keeps is "refuse the whole archive before anything exists", so the pair is
+    // caught here, in the one pass both actions share, in either order. Folded
+    // the same way as the duplicate gate and for the same reason: on a
+    // case-insensitive destination `A` and `a/b` collide too.
+    let files: std::collections::HashSet<String> = kept
+        .iter()
+        .filter(|k| !k.is_dir)
+        .map(|k| k.relative.to_string_lossy().to_lowercase())
+        .collect();
+    for k in &kept {
+        for ancestor in k.relative.ancestors().skip(1) {
+            if ancestor.as_os_str().is_empty() {
+                break;
+            }
+            if files.contains(&ancestor.to_string_lossy().to_lowercase()) {
+                return Err(ToolError::Other(format!(
+                    "'{}' is a file in the archive and also the folder of '{}'; one would \
+                     have to replace the other",
+                    short(&ancestor.to_string_lossy()),
+                    short(&k.name)
+                )));
+            }
+        }
     }
     Ok(kept)
 }
@@ -1228,10 +1438,15 @@ mod tests {
     }
 
     /// A HEADER THAT LIES ABOUT ITS SIZE. For a DEFLATE entry the zip reader
-    /// ignores `raw_size` entirely and skips a zero CRC — measured in tacet-zip's
-    /// own `list_reports_the_directory_without_decoding_anything`. So the
-    /// declared numbers are proven against reality here, and an archive whose
-    /// directory does not describe its contents is refused rather than unpacked.
+    /// ignores `raw_size` entirely — measured in tacet-zip's own
+    /// `list_reports_the_directory_without_decoding_anything`. So the declared
+    /// numbers are proven against reality here, and an archive whose directory
+    /// does not describe its contents is refused rather than unpacked.
+    ///
+    /// THE CRC IN THE FIXTURE IS CORRECT, and it used to be 0: the reader
+    /// skipped a zero CRC, so 0 was "the other half of the lie". That skip was
+    /// the bug (audit L11); with it gone a zero CRC would be refused by the
+    /// reader first and this test would stop measuring the size gate.
     #[test]
     fn a_header_that_lies_about_its_size_is_refused() {
         let _guard = isolated();
@@ -1245,7 +1460,7 @@ mod tests {
             name: "small.bin".into(),
             body: stream,
             method: 8,
-            crc: 0, // a zero CRC is skipped by the reader — the other half of the lie
+            crc: tacet_zip::crc32(&real),
             declared_size: 3,
             external_attributes: 0o100_644 << 16,
         };
@@ -1296,7 +1511,8 @@ mod tests {
             name: "small.bin".into(),
             body: deflate_stored(&real),
             method: 8,
-            crc: 0,
+            // Correct, so the SIZE is the only lie (see the test above).
+            crc: tacet_zip::crc32(&real),
             declared_size: 3,
             external_attributes: 0o100_644 << 16,
         };
@@ -1356,6 +1572,141 @@ mod tests {
         write_zip(&root, "corrupt.zip", &[bad]);
         assert!(tool.work(&extract_args("corrupt.zip"), &ctx).is_err());
         only_the_archive_is_there(&root, "corrupt.zip");
+    }
+
+    /// AUDIT L11, AT THE TOOL. A corrupt entry whose central directory records
+    /// a CRC of 0 used to be unpacked unverified — the reader skipped a zero —
+    /// while this tool's description promised a CRC refusal. The body here is
+    /// not what any CRC of 0 describes, and the archive is refused by name.
+    #[test]
+    fn a_zero_crc_does_not_wave_a_corrupt_entry_through() {
+        let _guard = isolated();
+        let root = temp_root("crc-zero");
+        let store = Arc::new(SharedStore::new());
+        let ctx = context(&root, &store);
+        let tool = ArchiveTool::new();
+        let mut zeroed = RawEntry::stored("a.txt", b"alpha");
+        zeroed.crc = 0;
+        write_zip(&root, "zeroed.zip", &[zeroed]);
+        let error = refusal(&tool, &ctx, extract_args("zeroed.zip")).short_error();
+        assert!(
+            error.contains("could not be verified"),
+            "refused for the wrong reason, or not at all: {error}"
+        );
+        only_the_archive_is_there(&root, "zeroed.zip");
+    }
+
+    /// AUDIT M8, AT THE TOOL: the bomb that declares nothing. Every block in
+    /// this entry is an empty fixed-Huffman block (10 bits: BFINAL, BTYPE=01,
+    /// the 7-bit end-of-block code), so it decodes to 0 bytes and matches its
+    /// declared size of 0 and its CRC of 0 — `inspect` has nothing to refuse
+    /// on, because by every declared number it is an empty file. Before the fix
+    /// it was unpacked as one, after the CPU had been spent (3.87 s per 4 MiB in
+    /// release). Now `inflate` refuses the run of empty blocks.
+    #[test]
+    fn a_flood_of_empty_deflate_blocks_is_refused_not_unpacked() {
+        let _guard = isolated();
+        let root = temp_root("flood");
+        let store = Arc::new(SharedStore::new());
+        let ctx = context(&root, &store);
+        let tool = ArchiveTool::new();
+        // 256 KiB is ~210,000 blocks — far past the run limit, and small enough
+        // that the unfixed decoder finishes inside a debug test run.
+        let blocks: usize = 256 * 1024 * 8 / 10;
+        let mut stream = vec![0u8; (blocks * 10).div_ceil(8)];
+        for b in 0..blocks {
+            let bit = b * 10;
+            // BTYPE=01 written LSB-first after BFINAL: the block's second bit.
+            stream[(bit + 1) / 8] |= 1 << ((bit + 1) % 8);
+            if b == blocks - 1 {
+                stream[bit / 8] |= 1 << (bit % 8); // BFINAL on the last one
+            }
+        }
+        let flood = RawEntry {
+            name: "empty.bin".into(),
+            body: stream,
+            method: 8,
+            crc: 0,
+            declared_size: 0,
+            external_attributes: 0o100_644 << 16,
+        };
+        write_zip(&root, "flood.zip", &[flood]);
+        let error = refusal(&tool, &ctx, extract_args("flood.zip")).short_error();
+        assert!(
+            error.contains("decode to nothing"),
+            "refused for the wrong reason, or not at all: {error}"
+        );
+        only_the_archive_is_there(&root, "flood.zip");
+    }
+
+    // --- a name is a file or a folder, never both ---
+
+    /// AUDIT L14. `a` as a file and `a/b` are two different names, so the
+    /// duplicate gate passed them; `extract` then wrote `a`, failed to make the
+    /// folder `a`, and left a half-unpacked directory — the one outcome this
+    /// tool's header says it never produces. Both orders, and case-folded,
+    /// because on a case-insensitive destination `A` and `a/b` collide too.
+    #[test]
+    fn a_name_that_is_both_a_file_and_a_folder_is_refused() {
+        let _guard = isolated();
+        let root = temp_root("file-dir");
+        let store = Arc::new(SharedStore::new());
+        let ctx = context(&root, &store);
+        let tool = ArchiveTool::new();
+        let cases: [(&str, [&str; 2]); 4] = [
+            ("file-first.zip", ["a", "a/b"]),
+            ("file-last.zip", ["a/b", "a"]),
+            ("deep.zip", ["x/a", "x/a/b/c.txt"]),
+            ("folded.zip", ["A", "a/b"]),
+        ];
+        for (file, names) in cases {
+            write_zip(
+                &root,
+                file,
+                &[
+                    RawEntry::stored(names[0], b"first"),
+                    RawEntry::stored(names[1], b"second"),
+                ],
+            );
+            let error = refusal(&tool, &ctx, extract_args(file)).short_error();
+            assert!(
+                error.contains("also the folder"),
+                "{file} was refused for the wrong reason, or not at all: {error}"
+            );
+            // AND `list` REFUSES IT TOO — the one-pass rule.
+            assert!(
+                tool.work(&json!({"path": file, "action": "list"}), &ctx)
+                    .is_err(),
+                "{file} was listed although it cannot be extracted"
+            );
+            let _ = fs::remove_file(root.join(file));
+            nothing_is_there(&root);
+        }
+
+        // A folder ENTRY above a file is the ordinary shape and still unpacks.
+        write_zip(
+            &root,
+            "fine.zip",
+            &[RawEntry::stored("a/", b""), RawEntry::stored("a/b", b"x")],
+        );
+        tool.work(&extract_args("fine.zip"), &ctx)
+            .expect("a folder entry with a file under it unpacks");
+        assert_eq!(fs::read(root.join("fine/a/b")).unwrap(), b"x");
+    }
+
+    /// The working directory holds nothing at all — used where each refused
+    /// archive is removed before the next, so "only the archive" would be
+    /// "nothing".
+    fn nothing_is_there(root: &Path) {
+        let left: Vec<String> = fs::read_dir(root)
+            .expect("readable")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            left.is_empty(),
+            "the refusal left something behind: {left:?}"
+        );
     }
 
     #[test]
@@ -1637,6 +1988,233 @@ mod tests {
             ),
             other => panic!("a name collision was reported as {other:?}"),
         }
+        // AND NOTHING IS LEFT. The first spelling WAS written before the second
+        // met it; the destination must be gone, not half-full (audit L14).
+        only_the_archive_is_there(&root, "norm.zip");
+    }
+
+    /// A FILE AND A FOLDER THAT ARE ONE NAME ONLY TO THE FILESYSTEM.
+    ///
+    /// The adversarial review of the first L14 fix, reproduced: `caf\u{e9}` (NFC)
+    /// as a file, then `cafe\u{301}/b` (NFD) under a folder. Two different
+    /// strings, so `inspect`'s file-and-folder gate passes them and `list`
+    /// shows both. On APFS the folder lands on the file: MEASURED 10 Oct 2026,
+    /// the old code wrote `café` (5 bytes), failed with "The file operation
+    /// could not be completed", and left the destination half-unpacked. Now the
+    /// refusal names the collision and the destination is removed.
+    ///
+    /// macOS ONLY for the same reason as the test above: on ext4 the two are
+    /// two names and unpacking both is correct.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_file_and_a_folder_that_differ_only_in_unicode_spelling_leave_nothing() {
+        let _guard = isolated();
+        let root = temp_root("nfd-dir");
+        let store = Arc::new(SharedStore::new());
+        let ctx = context(&root, &store);
+        let tool = ArchiveTool::new();
+        write_zip(
+            &root,
+            "d5.zip",
+            &[
+                RawEntry::stored("caf\u{e9}", b"first"),
+                RawEntry::stored("cafe\u{301}/b", b"second"),
+            ],
+        );
+        let error = refusal(&tool, &ctx, extract_args("d5.zip")).short_error();
+        assert!(
+            error.contains("needs a folder where an entry already unpacked is a file"),
+            "refused without naming the collision: {error}"
+        );
+        only_the_archive_is_there(&root, "d5.zip");
+    }
+
+    /// A WRITE THAT FAILS PART WAY LEAVES NOTHING — THE LINUX FIXTURE.
+    ///
+    /// The two tests above need APFS to make the second write fail. On Linux
+    /// the same end-to-end property is reached through a name ext4 will not
+    /// store: 120 four-byte characters is 120 characters (under
+    /// `MAX_NAME_CHARS`, so `inspect` passes it) but 480 bytes, over ext4's
+    /// 255-byte component limit. The first entry is written, the second cannot
+    /// be, and the destination must go.
+    ///
+    /// LINUX ONLY, AND MEASURED WHY: on APFS (this machine, 10 Oct 2026) the
+    /// same name is ACCEPTED — its limit counts characters, not bytes — so the
+    /// archive unpacked both files and the test could not go red here. NOT RUN
+    /// on a Linux box while writing this; it is the CI's to prove.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_write_that_fails_part_way_removes_the_destination() {
+        let _guard = isolated();
+        let root = temp_root("partway");
+        let store = Arc::new(SharedStore::new());
+        let ctx = context(&root, &store);
+        let tool = ArchiveTool::new();
+        let too_long: String = "\u{1F600}".repeat(120);
+        assert!(too_long.chars().count() <= MAX_NAME_CHARS);
+        write_zip(
+            &root,
+            "long.zip",
+            &[
+                RawEntry::stored("a.txt", b"alpha"),
+                RawEntry::stored(&too_long, b"beta"),
+            ],
+        );
+        refusal(&tool, &ctx, extract_args("long.zip"));
+        only_the_archive_is_there(&root, "long.zip");
+    }
+
+    /// THE ROLLBACK IS A RECURSIVE DELETE, AND THIS IS WHY IT IS ALLOWED TO BE.
+    ///
+    /// The reason the old code refused to roll back was that a recursive
+    /// delete on an error path is the dangerous outcome to get wrong. The
+    /// specific way to get it wrong is to follow a link out of the destination
+    /// and delete what it points at. A link to a folder full of the user's
+    /// files is planted inside the destination, the write fails, and the
+    /// user's files must still be there while the destination is gone.
+    #[cfg(unix)]
+    #[test]
+    fn the_rollback_does_not_follow_a_link_out_of_the_destination() {
+        let root = temp_root("rollback-link");
+        let victim = root.join("victim");
+        fs::create_dir(&victim).expect("victim dir");
+        fs::write(victim.join("keep.txt"), b"mine").expect("victim file");
+        let destination = root.join("unpacked");
+        let created = make(&destination);
+
+        let result: ToolResult<()> = all_or_nothing(&created, || {
+            fs::write(destination.join("a.txt"), b"x")?;
+            std::os::unix::fs::symlink(&victim, destination.join("link"))?;
+            Err(ToolError::Other("the write failed".into()))
+        });
+
+        assert_eq!(
+            fs::read(victim.join("keep.txt")).expect("the user's file survived"),
+            b"mine"
+        );
+        assert_eq!(
+            result
+                .expect_err("the cause is passed through")
+                .short_error(),
+            "the write failed"
+        );
+        assert!(
+            destination.symlink_metadata().is_err(),
+            "the destination was not removed"
+        );
+    }
+
+    /// And a write that succeeds is left alone — a rollback that ran on success
+    /// would pass every refusal test above.
+    #[test]
+    fn a_write_that_succeeds_is_not_rolled_back() {
+        let root = temp_root("rollback-ok");
+        let destination = root.join("unpacked");
+        let created = make(&destination);
+        let counted = all_or_nothing(&created, || {
+            fs::write(destination.join("a.txt"), b"x")?;
+            Ok(1)
+        })
+        .expect("success");
+        assert_eq!(counted, 1);
+        assert_eq!(fs::read(destination.join("a.txt")).unwrap(), b"x");
+    }
+
+    /// What `extract` does between `create_dir` and the write, minus the
+    /// sandbox gate (whose own tests live in `sandbox_path`).
+    fn make(lexical: &Path) -> Created {
+        fs::create_dir(lexical).expect("destination");
+        let made = fs::symlink_metadata(lexical).expect("lstat");
+        let canonical = lexical.canonicalize().expect("canonical");
+        Created::claim(lexical, &made, canonical).expect("our own directory is ours")
+    }
+
+    /// THE RACE THE SANDBOX GATE CANNOT SEE (adversarial review of 2dcf460).
+    /// The fresh directory is swapped for a link to a folder that is ALSO
+    /// inside the sandbox — the user's `src/`. `canonicalize` follows the
+    /// link, the path it returns passes every sandbox check, and an unguarded
+    /// rollback would `remove_dir_all` the user's real folder. The race window
+    /// has no hook, so the swap is done here by hand at the exact point it
+    /// would land: after `create_dir`, before the canonical re-proof.
+    #[cfg(unix)]
+    #[test]
+    fn a_destination_swapped_for_a_link_before_the_re_proof_is_not_claimed() {
+        let root = temp_root("claim-swap");
+        let victim = root.join("src");
+        fs::create_dir(&victim).expect("victim dir");
+        fs::write(victim.join("main.rs"), b"fn main() {}").expect("victim file");
+        let destination = root.join("unpacked");
+        fs::create_dir(&destination).expect("create_dir");
+        let made = fs::symlink_metadata(&destination).expect("lstat");
+        // the swap
+        fs::remove_dir(&destination).expect("race: rmdir");
+        std::os::unix::fs::symlink(&victim, &destination).expect("race: link");
+        let canonical = destination.canonicalize().expect("follows the link");
+        assert_eq!(canonical, victim, "the premise: the gate resolves to src/");
+
+        let claimed = Created::claim(&destination, &made, canonical);
+        assert!(
+            matches!(claimed, Err(ToolError::SandboxViolation(_))),
+            "a swapped destination was claimed: {claimed:?}"
+        );
+        assert_eq!(fs::read(victim.join("main.rs")).unwrap(), b"fn main() {}");
+    }
+
+    /// And the same swap AFTER the claim, during the write: the rollback must
+    /// see that the path no longer names the directory it made, delete
+    /// nothing, and say the folder was left. The `Created` is built by hand
+    /// with the victim's path and the made directory's identity — the state an
+    /// unguarded `extract` reached when `canonicalize` followed the swap.
+    #[cfg(unix)]
+    #[test]
+    fn the_rollback_does_not_delete_a_folder_this_run_did_not_create() {
+        let root = temp_root("rollback-swap");
+        let victim = root.join("src");
+        fs::create_dir(&victim).expect("victim dir");
+        fs::write(victim.join("main.rs"), b"fn main() {}").expect("victim file");
+        let destination = root.join("unpacked");
+        fs::create_dir(&destination).expect("create_dir");
+        let made = fs::symlink_metadata(&destination).expect("lstat");
+        let pointed_elsewhere = Created {
+            path: victim.clone(),
+            identity: identity(&made),
+        };
+
+        let result: ToolResult<()> = all_or_nothing(&pointed_elsewhere, || {
+            // an entry that already exists there trips a refusal on purpose
+            Err(ToolError::Other(
+                "the same file as an entry already unpacked".into(),
+            ))
+        });
+
+        assert_eq!(
+            fs::read(victim.join("main.rs")).expect("the user's folder survived"),
+            b"fn main() {}"
+        );
+        let said = result.expect_err("still a refusal").short_error();
+        assert!(
+            said.contains("no longer the folder this run created"),
+            "the user was not told the folder was left: {said}"
+        );
+    }
+
+    /// The re-check in `all_or_nothing`: a link standing where the claimed
+    /// directory stood is not ours, even though `stat` through it would find a
+    /// directory. Two checks each answer no on their own — the `lstat` sees a
+    /// link, and on Unix the identity differs — so breaking either one alone
+    /// leaves this green; the red proof broke both.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_standing_where_the_destination_stood_is_not_ours() {
+        let root = temp_root("still-ours");
+        let victim = root.join("src");
+        fs::create_dir(&victim).expect("victim dir");
+        let destination = root.join("unpacked");
+        let created = make(&destination);
+        assert!(created.still_ours());
+        fs::remove_dir(&destination).expect("rmdir");
+        std::os::unix::fs::symlink(&victim, &destination).expect("link");
+        assert!(!created.still_ours(), "a link was taken for our directory");
     }
 
     // --- the contract ---
