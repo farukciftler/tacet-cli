@@ -247,6 +247,66 @@ fn every_test_count_on_the_page_is_dated() {
     );
 }
 
+/// D23: every figure the page gives for how many test binaries the suite has
+/// NOW is the one the Linux row re-counted.
+///
+/// The Linux row moved from 99 binaries to 100 and the Windows row, in the
+/// same table, went on saying "the suite has grown to 99 binaries since" —
+/// the same stale number this file exists to stop, created by the commit that
+/// refreshed its neighbour (review of 10 Oct 2026). The two kinds of figure on
+/// the page are told apart by their shape: a past run's own record opens its
+/// parenthesis, "(33 binaries, 4 Sep 2026)", "(31 binaries; …)"; every other
+/// "N binaries" or "N test binaries" is a statement about the suite today and
+/// must equal the one after "the current size of the suite, which is".
+#[test]
+fn every_binary_count_for_the_suite_today_is_the_current_one() {
+    const CURRENT: &str = "the current size of the suite, which is ";
+    let page = prose(&read("README.md"));
+    let current = page
+        .split(CURRENT)
+        .nth(1)
+        .and_then(|rest| rest.split(" test binaries").next())
+        .and_then(|figure| figure.rsplit(' ').next())
+        .expect("the Linux row still states the suite's current size");
+    assert!(
+        current.chars().all(|c| c.is_ascii_digit()) && !current.is_empty(),
+        "the current binary count reads as {current:?}"
+    );
+    let words: Vec<&str> = page.split(' ').collect();
+    let mut today = 0;
+    let mut records = 0;
+    for i in 1..words.len() {
+        let noun = words[i].trim_end_matches([',', ';', '.', ')']);
+        let figure = if noun == "binaries" && words[i - 1] == "test" && i >= 2 {
+            words[i - 2]
+        } else if noun == "binaries" {
+            words[i - 1]
+        } else {
+            continue;
+        };
+        if figure.starts_with('(') {
+            records += 1;
+            continue;
+        }
+        if !figure.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        today += 1;
+        assert_eq!(
+            figure,
+            current,
+            "README.md says the suite has {figure} binaries where the Linux row \
+             re-counted {current}: …{}…",
+            words[i.saturating_sub(12)..(i + 4).min(words.len())].join(" ")
+        );
+    }
+    assert!(
+        today >= 2 && records >= 2,
+        "found {today} figures for today's suite and {records} past records — the \
+         scan stopped matching"
+    );
+}
+
 /// D4: no table on the page is cut in two by a blank line.
 ///
 /// GitHub ends a table at the first blank line and renders what follows as
@@ -928,9 +988,13 @@ fn the_git_actions_the_page_lists_are_the_tools() {
 ///
 /// To the sentence, not the clause: a first version stopped at the first
 /// comma, and "`--compare` refuses, when catalogs differ, to pair two
-/// different models" passed it (review of 10 Oct 2026). The misstatements the
-/// guard has been shown to miss or catch are checked below as well, so a
-/// rewrite of the scan that goes blind to one fails here.
+/// different models" passed it (review of 10 Oct 2026). Nor only the word
+/// "refuses": the second version matched "refus" alone, so "`--compare`
+/// rejects runs whose catalogs differ" passed it, and so did any sentence
+/// that called it "the comparator" instead of `--compare` (second review, same
+/// day). The misstatements the guard has been shown to miss or catch are
+/// checked below as well, so a rewrite of the scan that goes blind to one
+/// fails here.
 #[test]
 fn the_page_says_compare_leaves_out_what_a_differing_catalog_touches() {
     let page = prose(&read("README.md"));
@@ -949,6 +1013,12 @@ fn the_page_says_compare_leaves_out_what_a_differing_catalog_touches() {
         "`--compare` refuses, when catalogs differ, to pair two different models. Next.",
         "`--compare` refuses to pair two different models, and runs whose catalogs differ. Next.",
         "`--compare` refuses to pair two models and two catalogs. Next.",
+        "`--compare` rejects two runs whose catalogs differ. Next.",
+        "`--compare` will not pair runs whose catalogs differ. Next.",
+        "`--compare` won't pair runs whose catalogs differ. Next.",
+        "`--compare` declines runs whose catalogs differ. Next.",
+        "`--compare` stops when the catalogs differ. Next.",
+        "The comparator refuses runs whose catalogs differ. Next.",
     ] {
         assert!(
             !compare_refusals(misstated).1.is_empty(),
@@ -980,21 +1050,37 @@ fn the_page_says_compare_leaves_out_what_a_differing_catalog_touches() {
 /// How many refusals `prose` attributes to `--compare`, and those that are
 /// about a catalog.
 ///
-/// From each "refus" to the end of its sentence, split at ", and " / "; " into
+/// In every sentence that names `--compare` or "the comparator", from each
+/// verb of refusal to the end of the sentence, split at ", and " / "; " into
 /// clauses. The refusal's own clause may not mention a catalog or a tool at
 /// all; a later clause may, only when it is the one that says what happens
 /// instead ("leaves out", "exclud"). The true sentence is exactly that shape:
 /// "refuses to pair two different models, and when the catalogs differ it
 /// leaves out every case that touches a tool one side lacked".
+///
+/// "stops" and not "stop": the page's `requires` sentence names `eval
+/// --compare` and says it makes the runner "*stop* when the machine lacks a
+/// tool" — the runner, not the comparator, and true. "cannot" is left out for
+/// the same reason: "the comparator cannot say" is about what it reports.
 fn compare_refusals(prose: &str) -> (usize, Vec<String>) {
+    const REFUSING: [&str; 7] = [
+        "refus", "reject", "will not", "won't", "declin", "stops", "not pair",
+    ];
     let about_catalog = |c: &str| c.contains("catalog") || c.contains("tool");
     let says_instead = |c: &str| c.contains("leaves out") || c.contains("exclud");
     let mut refusals = 0;
     let mut wrong = Vec::new();
-    for sentence in prose.split(". ").filter(|s| s.contains("--compare")) {
+    for sentence in prose.split(". ") {
         let lower = sentence.to_lowercase();
+        if !lower.contains("--compare") && !lower.contains("comparator") {
+            continue;
+        }
         let mut rest = lower.as_str();
-        while let Some(at) = rest.find("refus") {
+        while let Some((at, verb)) = REFUSING
+            .iter()
+            .filter_map(|v| rest.find(v).map(|at| (at, *v)))
+            .min()
+        {
             refusals += 1;
             let tail = &rest[at..];
             let mut clauses = tail.split(", and ").flat_map(|c| c.split("; "));
@@ -1004,7 +1090,7 @@ fn compare_refusals(prose: &str) -> (usize, Vec<String>) {
             if misstated {
                 wrong.push(tail.to_string());
             }
-            rest = &rest[at + "refus".len()..];
+            rest = &rest[at + verb.len()..];
         }
     }
     (refusals, wrong)
