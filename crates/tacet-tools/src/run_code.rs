@@ -811,11 +811,6 @@ fn profile() -> &'static str {
 const PARAM_SANDBOX: &str = "SBOX";
 const PARAM_HOME: &str = "HOMEDIR";
 
-/// The home directory the profile closes to reading.
-fn shield_home() -> PathBuf {
-    canonical_home(std::env::var_os("HOME"))
-}
-
 /// Where the home-directory rule points when `HOME` is unusable: the directory
 /// every home lives under. An EMPTY value would make the deny rule match nothing
 /// and quietly open the user's whole home directory.
@@ -1069,26 +1064,27 @@ pub(crate) fn create_script(script: &Path, code: &[u8]) -> std::io::Result<()> {
     file.write_all(code)
 }
 
-/// Runs any program with the given arguments under the shield.
+/// The command `run_program` spawns, built from the RAW `$HOME` value.
 ///
-/// The generalisation of `run` and the shared path of `write_code`'s
-/// verification steps: a syntax check (`node --check f`, `python3 -m
-/// py_compile f`) wants a different command line from running the script
-/// DIRECTLY but still wants THE SAME shield, the same environment cleaning and
-/// the same timeout discipline. Had two separate runners been written, security
-/// fixes would have stayed in one of them.
-pub fn run_program(
+/// WHY THE RAW VALUE COMES IN AS A PARAMETER (review of 10 Oct 2026): the M2
+/// test used to check `canonical_home` on its own, so `run_program` going back
+/// to splicing raw `$HOME` into `HOMEDIR=` would have stayed green on every CI
+/// machine, none of which has a symlinked home. The canonicalisation now
+/// happens HERE, on the path `run_program` takes, and the test drives this
+/// function with a symlinked fixture — `HOME` itself is process-wide and
+/// cannot be changed from a test without breaking the tests beside it.
+fn shielded_command(
     shield: &NetworkShield,
     runtime: &Path,
     program: &Path,
     args: &[OsString],
-    timeout: Duration,
-) -> ToolResult<CodeOutcome> {
+    raw_home: Option<OsString>,
+) -> ToolResult<Command> {
     // FAIL-CLOSED BEFORE THE SHIELD IS BUILT (see `path_is_shield_safe`): if a
     // path cannot be safely represented we do not run at all. Refusing is the
     // natural extension of this file's rule that a shield we cannot set up means
     // the tool does not exist.
-    let home = shield_home();
+    let home = canonical_home(raw_home);
     if !path_is_shield_safe(runtime) || !path_is_shield_safe(&home) {
         return Err(ToolError::SandboxViolation(runtime.to_path_buf()));
     }
@@ -1117,9 +1113,9 @@ pub fn run_program(
 
     // ITS OWN SESSION / PROCESS GROUP. On the timeout path we must be able to
     // signal THE WHOLE TREE, not just the process we spawned: a child left
-    // behind keeps the stdout/stderr pipe ends open (see the join below) and
-    // goes on burning the user's CPU after the tool has already reported
-    // "timed out".
+    // behind keeps the stdout/stderr pipe ends open (see the join in
+    // `run_program`) and goes on burning the user's CPU after the tool has
+    // already reported "timed out".
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -1133,6 +1129,25 @@ pub fn run_program(
             });
         }
     }
+    Ok(command)
+}
+
+/// Runs any program with the given arguments under the shield.
+///
+/// The generalisation of `run` and the shared path of `write_code`'s
+/// verification steps: a syntax check (`node --check f`, `python3 -m
+/// py_compile f`) wants a different command line from running the script
+/// DIRECTLY but still wants THE SAME shield, the same environment cleaning and
+/// the same timeout discipline. Had two separate runners been written, security
+/// fixes would have stayed in one of them.
+pub fn run_program(
+    shield: &NetworkShield,
+    runtime: &Path,
+    program: &Path,
+    args: &[OsString],
+    timeout: Duration,
+) -> ToolResult<CodeOutcome> {
+    let mut command = shielded_command(shield, runtime, program, args, std::env::var_os("HOME"))?;
 
     let start = Instant::now();
     let mut child = command.spawn()?;
@@ -3383,6 +3398,72 @@ Num       RefCount Protocol Flags    Type St Inode Path
         let ghost = root.join("ghost-home");
         assert_eq!(canonical_home(Some(ghost.clone().into_os_string())), ghost);
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 4d-v-b) AND THE COMMAND `run_program` SPAWNS CARRIES IT (review of 10
+    ///         Oct 2026). The test above checks `canonical_home` alone; this
+    ///         one builds the command through `shielded_command` — the path
+    ///         `run_program` takes — with a symlinked raw `$HOME`, for both
+    ///         shields, and reads the home back out of the argv. Splicing the
+    ///         raw value there again turns this red on a CI machine whose own
+    ///         home is not a link.
+    #[cfg(unix)]
+    #[test]
+    fn the_spawned_command_names_the_resolved_home() {
+        let root = temp_dir("home-link-argv");
+        let real = root.join("real-home");
+        std::fs::create_dir_all(&real).expect("fixture");
+        let alias = root.join("alias-home");
+        std::os::unix::fs::symlink(&real, &alias).expect("link");
+        let real = real.canonicalize().expect("resolved");
+        let runtime = temp_dir("home-link-argv-sandbox")
+            .canonicalize()
+            .expect("resolved");
+
+        let argv = |shield: &NetworkShield| -> Vec<OsString> {
+            shielded_command(
+                shield,
+                &runtime,
+                Path::new("/usr/bin/true"),
+                &[],
+                Some(alias.clone().into_os_string()),
+            )
+            .expect("a safe path builds a command")
+            .get_args()
+            .map(OsString::from)
+            .collect()
+        };
+
+        let seatbelt = argv(&NetworkShield::SandboxExec {
+            tool: PathBuf::from("/usr/bin/sandbox-exec"),
+        });
+        let mut want = OsString::from(format!("{PARAM_HOME}="));
+        want.push(&real);
+        assert!(
+            seatbelt.contains(&want),
+            "sandbox-exec was not handed the resolved home: {seatbelt:?}"
+        );
+
+        let bwrap = argv(&NetworkShield::Bwrap {
+            tool: PathBuf::from("/usr/bin/bwrap"),
+        });
+        assert!(
+            bwrap
+                .windows(2)
+                .any(|w| w[0] == "--tmpfs" && Path::new(&w[1]) == real),
+            "bwrap did not cover the resolved home: {bwrap:?}"
+        );
+
+        // Neither command names the link: a rule written with it matches
+        // nothing the kernel resolves.
+        for arg in seatbelt.iter().chain(&bwrap) {
+            assert!(
+                !arg.to_string_lossy().contains("alias-home"),
+                "the symlinked home reached the shield unresolved: {arg:?}"
+            );
+        }
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&runtime).ok();
     }
 
     /// 4d-vi) THE VERDICT DEMANDS EVERY GATE. A probe that never printed counts
