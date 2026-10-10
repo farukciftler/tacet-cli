@@ -170,6 +170,27 @@ jobs:
             gguf_tokenizer::tests::an_out_of_order_vocabulary_is_refused \
             | tee /tmp/gguf.txt
           grep -q "2 passed" /tmp/gguf.txt
+      # AND THE ENGINE'S OWN GUARDS BEHIND `candle`, which need no weights either
+      # and until this step ran nowhere in CI (review of audits L21, L23, T1):
+      # the call watch's lexer and its wiring through `run_loop`, the window
+      # candle can really run, and the marker rules on the checked-in tokenizer
+      # fixture. `candle_engine::` is every test in that module — all 21 of them
+      # build their inputs in memory or from `tests/fixtures`, none opens a model
+      # (measured 10 Oct 2026: 0.06 s). The real-file marker tests stay
+      # `#[ignore]`d and are not run here.
+      #
+      # A FLOOR, NOT AN EXACT COUNT, so adding a guard does not turn this red;
+      # a rename that leaves the filter matching nothing still does.
+      - name: the candle-gated engine guards that need no weights actually run
+        run: |
+          cargo test -p tacet-engine --features candle --lib -- candle_engine:: \
+            | tee /tmp/candle-lib.txt
+          passed=$(grep -Eo 'test result: ok\. [0-9]+ passed' /tmp/candle-lib.txt | grep -Eo '[0-9]+' | head -n1)
+          test "${passed:-0}" -ge 21
+          cargo test -p tacet-engine --features candle --test a_marker_is_not_text \
+            | tee /tmp/marker.txt
+          passed=$(grep -Eo 'test result: ok\. [0-9]+ passed' /tmp/marker.txt | grep -Eo '[0-9]+' | head -n1)
+          test "${passed:-0}" -ge 5
 
   # THE BASELINE IS STILL PAIRABLE. Split from the job above so a red tick names
   # the reason without anybody opening the log: "baseline guard" failing means a

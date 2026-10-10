@@ -1450,6 +1450,15 @@ pub enum Ending {
     /// different events and a report that merges them cannot tell a slow tool
     /// from a stubborn model.
     TimedOut,
+    /// The prompt left the answer less than `MIN_ANSWER` of the window, and
+    /// `TokenCounter::fit` refused it — the shell refuses the same turn and
+    /// sends nothing. Not a model verdict: the model was never asked.
+    ///
+    /// ITS OWN VARIANT because the eval used to truncate and send whatever
+    /// came out, with a generation cap of whatever was left — possibly zero —
+    /// so on the 4096 floor a turn the shell refuses was scored as a turn the
+    /// model got wrong (review of audit L21).
+    Refused,
 }
 
 impl Ending {
@@ -1467,6 +1476,7 @@ impl Ending {
             Ending::CutOff => "cut off",
             Ending::HostFailed => "host failed",
             Ending::TimedOut => "timed out",
+            Ending::Refused => "refused for the window",
         }
     }
 }
@@ -2697,23 +2707,47 @@ pub fn run_selection_case_in(
             if let Some(n) = note {
                 prompt = prompt.with_note(n);
             }
-            // THE SHELL TRUNCATES AND THIS DID NOT, and the floor is what makes
+            // THE TOOLS GO IN BEFORE THE FIT, as they do in the shell. They were
+            // added after `truncate` here, so the budget decision was taken on a
+            // prompt without its tool descriptions — the largest fixed cost in
+            // it — and the eval kept history the shell would have dropped.
+            if !final_turn {
+                prompt = prompt.with_tools(&selected);
+            }
+            // THE SHELL FITS, AND THIS MUST TOO, and the floor is what makes
             // that matter. `context_budget` returns `CONTEXT_BUDGET` — 4096 —
-            // when a model declares nothing or the device cannot afford more, so
-            // the prompt cap on such a machine is 3072. The worst prompt this
-            // suite can build measures 5617. On the measurement box the window
-            // is four times that and this is a no-op; on the floor the shell
-            // would drop old turns and then the guide, and the eval would send
-            // an over-budget prompt instead — measuring a different program on
-            // exactly the machines where the budget bites.
+            // when a model declares nothing or the device cannot afford more,
+            // and every llama-family model on candle runs at 4096 whatever it
+            // declares. The worst prompt this suite can build measures 5617. On
+            // the measurement box the window is four times that and this is a
+            // no-op; on the floor the shell drops old turns, then the guide, and
+            // refuses what still leaves less than `MIN_ANSWER` for the answer.
+            //
+            // `truncate` alone was the second divergence (review of audit L21):
+            // once the generation cap stopped being lifted to the share, an
+            // over-budget prompt here went out with a cap of a few tokens, or
+            // none, on exactly the turns the shell would not send at all. A
+            // refusal is now its own ending, as it is in the shell.
             //
             // The report is traced rather than discarded: a run where the guide
             // was dropped is not the same measurement, and it must not look like
             // one.
-            let truncation = counter.truncate(&mut prompt);
-            if truncation.dropped_turns > 0 || truncation.guide_dropped {
+            let truncation = match counter.fit(&mut prompt) {
+                Ok(truncation) => truncation,
+                Err(e) => {
+                    trace(&format!(
+                        "  turn {}/{} · REFUSED for the window · {e}",
+                        turn + 1,
+                        MAX_TURNS
+                    ));
+                    answer = format!("refused for the window: {e}");
+                    ended = Ending::Refused;
+                    break;
+                }
+            };
+            if truncation.changed() {
                 trace(&format!(
-                    "  turn {}/{} · TRUNCATED · {} turn(s) dropped{}",
+                    "  turn {}/{} · TRUNCATED · {} turn(s) dropped{}{}",
                     turn + 1,
                     MAX_TURNS,
                     truncation.dropped_turns,
@@ -2721,11 +2755,13 @@ pub fn run_selection_case_in(
                         " · the guide was sacrificed"
                     } else {
                         ""
+                    },
+                    if truncation.question_truncated {
+                        " · the question was cut"
+                    } else {
+                        ""
                     }
                 ));
-            }
-            if !final_turn {
-                prompt = prompt.with_tools(&selected);
             }
 
             trace(&format!(

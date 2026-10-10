@@ -617,8 +617,16 @@ pub fn byte_text(b: u64) -> String {
 /// COSTS in KV cache. A window is a memory decision as much as a model one —
 /// qwen3-4b declares 262144, and honouring that literally would ask for tens of
 /// gigabytes of cache. `context_budget` takes the smaller of "what the model
-/// allows" and "what the cache budget affords", and never goes below the 4096
-/// floor every path in this shell was measured against.
+/// allows" and "what the cache budget affords". The 4096 floor holds against
+/// the CACHE budget only: a model that declares less than 4096 gets what it
+/// declares (audit L21), because positions past its own table are not an error,
+/// they are plausible nonsense.
+///
+/// "WHAT THE MODEL ALLOWS" IS WHAT CANDLE CAN RUN, not only what the file
+/// declares: the llama module's rope table is a fixed 4096, so a SmolLM2 file
+/// declaring 8192 runs at 4096 — `CandleEngine::context_length` already says
+/// so, and the file fallback below asks the same question
+/// (`gguf_runnable_context_length`) rather than the declared number.
 ///
 /// THE ENGINE IS ASKED FIRST. `EngineProvider::context_length` is the window read
 /// by the thing that really opened the weights; the file is only re-read when the
@@ -635,7 +643,7 @@ pub fn engine_window(engine: &Arc<dyn EngineProvider>, gguf: &str) -> usize {
     let path = std::path::Path::new(gguf);
     let declared = engine
         .context_length()
-        .or_else(|| tacet_engine::gguf_context_length(path));
+        .or_else(|| tacet_engine::gguf_runnable_context_length(path));
     let per_token = tacet_engine::gguf_kv_bytes_per_token(path);
     let device = match engine.identity().device.as_str() {
         "metal" => tacet_engine::Device::Metal,
@@ -643,6 +651,22 @@ pub fn engine_window(engine: &Arc<dyn EngineProvider>, gguf: &str) -> usize {
         _ => tacet_engine::Device::Cpu,
     };
     tacet_engine::context_budget(declared, per_token, device)
+}
+
+/// The window a GGUF on disk would run in, with no engine open — the
+/// feedback package's `context:` line.
+///
+/// It reads the RUNNABLE window, the same one `engine_window` gets from a
+/// loaded engine: this line used to read the declared one and reported 8192
+/// for a SmolLM2 that runs at 4096, and a bug report quoting the wrong window
+/// sends whoever reads it looking in the wrong place.
+pub fn file_window(gguf: &str) -> usize {
+    let path = std::path::Path::new(gguf);
+    tacet_engine::context_budget(
+        tacet_engine::gguf_runnable_context_length(path),
+        tacet_engine::gguf_kv_bytes_per_token(path),
+        tacet_engine::Device::default(),
+    )
 }
 
 /// Loads the weights WITH THE LOADING INDICATOR UP.

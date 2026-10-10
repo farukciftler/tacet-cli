@@ -55,9 +55,18 @@ fn the_directory_block_cannot_grow_past_its_measured_ceiling() {
     }
     let block = dir_context(&dir.display().to_string()).expect("no block");
     let tokens = TokenCounter::estimate(&block);
+    // THE CEILING MOVES BY THE DIGIT RE-PRICING AND BY NOTHING ELSE. Since
+    // audit L22 a digit is estimated as a whole token rather than 2/5 of one
+    // (the Qwen split gives each its own), and every name here carries three
+    // of them, as do the "(N more not listed)" tail and the temp path. 250 was
+    // set when a digit cost 2/5; each digit now adds the other 3/5. Measured on
+    // macOS, 9 Oct 2026: 267 tokens, inside 250 + 3/5 of its digits.
+    let digits = block.bytes().filter(u8::is_ascii_digit).count();
+    let ceiling = 250 + (digits * 3).div_ceil(5);
     assert!(
-        tokens <= 250,
-        "the directory block costs {tokens} tokens — the comment in `dir_context` promises ~228 at the cap"
+        tokens <= ceiling,
+        "the directory block costs {tokens} tokens against a {ceiling} ceiling — the comment \
+         in `dir_context` promises ~228 at the cap for names without digits"
     );
     // AND IT DOES NOT LIE ABOUT THE REST. A list that silently stops teaches
     // the model that the directory holds only what it can see.
