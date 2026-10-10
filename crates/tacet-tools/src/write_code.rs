@@ -269,8 +269,40 @@ fn auto_executed_name(stem: &str, extension: &str) -> Option<String> {
              in the folder that runs `import {stem}` imports and runs this file instead"
         ));
     }
+    if extension == "py"
+        && PYTHON_M_ENTRY_POINTS
+            .split_ascii_whitespace()
+            .any(|tool| fold_case(tool) == lower)
+    {
+        return Some(format!(
+            "'{stem}' is the name of a tool started with `python -m {stem}`: run in this \
+             folder, that command runs this file instead of the tool"
+        ));
+    }
     None
 }
+
+/// The tools a user starts as `python -m <name>` from a project folder, which a
+/// `<name>.py` in that folder REPLACES: `-m` puts the current directory first
+/// on `sys.path`, so the documented way of running pytest or pip runs the
+/// delivered file, outside the sandbox, with the user's privileges. MEASURED
+/// on 10 Oct 2026 with python 3.12 (Homebrew) by the review and python 3.9.6
+/// (`/usr/bin/python3`) here: a folder holding `pip.py`, `pytest.py`,
+/// `mypy.py`, `black.py`, `ruff.py` and `coverage.py`, each printing a marker,
+/// printed the marker for every `python3 -m <name> --version`. The same
+/// reasoning as `PYTHON_STDLIB` — a name resolved through the folder runs the
+/// delivered file — for names python does not ship.
+///
+/// THE GAP THAT REMAINS, written down so nobody believes it closed: `python -m
+/// x` runs `./x.py` for ANY `x`, and any third-party package name shadows its
+/// `import` the same way (`requests.py` answers the user's `import requests`).
+/// Refusing every name on PyPI is not possible; this list is the commands a
+/// user types out of habit in a project folder, and a package name outside it
+/// is still delivered.
+const PYTHON_M_ENTRY_POINTS: &str = "\
+    pip pip3 pipx pytest setuptools wheel build twine virtualenv coverage mypy black \
+    flake8 pylint ruff isort pyflakes pycodestyle bandit tox nox poetry pdm hatch \
+    IPython jupyter jupyterlab sphinx mkdocs pre_commit";
 
 /// The top-level names of python's standard library, which a `<name>.py` in
 /// the working folder SHADOWS: python puts the script's own directory first
@@ -1070,6 +1102,18 @@ mod tests {
             "cProfile",
             "distutils",
             "annotationlib",
+            // Tools started as `python -m <name>`: run in the folder, the
+            // command runs the delivered file (see `PYTHON_M_ENTRY_POINTS`).
+            "pip",
+            "pytest",
+            "Pytest.py",
+            "setuptools",
+            "mypy",
+            "black",
+            "ruff",
+            "coverage",
+            "IPython",
+            "jupyter",
         ] {
             assert!(
                 auto_executed_name(&safe_stem(name), "py").is_some(),
@@ -1097,6 +1141,9 @@ mod tests {
             "json_report",
             "my_random",
             "typing_speed",
+            // A tool name with something around it is no `-m` target.
+            "pip_notes",
+            "pytest_results",
         ] {
             assert_eq!(
                 auto_executed_name(&safe_stem(name), "py"),
@@ -1104,9 +1151,9 @@ mod tests {
                 "{name:?} is an ordinary name"
             );
         }
-        // A standard-library name shadows nothing as a `.js` file: node never
+        // A python name shadows nothing as a `.js` file: node never
         // resolves a bare `require('json')` to `./json.js`.
-        for name in ["json", "random", "string"] {
+        for name in ["json", "random", "string", "pip", "pytest"] {
             assert_eq!(
                 auto_executed_name(&safe_stem(name), "js"),
                 None,
