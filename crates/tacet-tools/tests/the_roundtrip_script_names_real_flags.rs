@@ -298,6 +298,12 @@ fn the_script_is_executable_and_parses() {
 /// * `STUB_KEEP_HISTORY` (E4): resume keeps the whole file behind a wrong
 ///   parent;
 /// * `STUB_FORK_TOUCHES_ORIGINAL` (E5): a fork also writes to the original;
+/// * `STUB_NOT_READY` (E1): a fresh session answers something other than the
+///   READY it was asked for — the transcripts are where predicted, so E2-E5
+///   still run;
+/// * `STUB_OTHER_PROJECT_DIR` (E1): the project directory name is encoded with
+///   `_` where 2.1.285 wrote `-`, so the sessions land where the script does
+///   not look and E2-E5 cannot run;
 /// * `STUB_NO_CHAIN`: transcripts carry no `parentUuid`, so the script must
 ///   stop after E1 has been paid for.
 const STAND_IN: &str = r#"#!/usr/bin/env bash
@@ -316,7 +322,8 @@ while [ $# -gt 0 ]; do
   shift
 done
 cwd="$(pwd -P)"
-proj="$CLAUDE_CONFIG_DIR/projects/$(printf '%s' "$cwd" | LC_ALL=C sed 's/[^A-Za-z0-9]/-/g')"
+sep=-; [ "${STUB_OTHER_PROJECT_DIR:-0}" = 1 ] && sep=_
+proj="$CLAUDE_CONFIG_DIR/projects/$(printf '%s' "$cwd" | LC_ALL=C sed "s/[^A-Za-z0-9]/$sep/g")"
 mkdir -p "$proj"
 new_id() { uuidgen | tr 'A-Z' 'a-z'; }
 entry() {
@@ -329,6 +336,7 @@ entry() {
 leaf=""
 if [ -z "$resume" ]; then
   sid="$(new_id)"; file="$proj/$sid.jsonl"; answer="READY"
+  [ "${STUB_NOT_READY:-0}" = 1 ] && answer="Hello! How can I help you today?"
 else
   file="$proj/$resume.jsonl"
   [ -f "$file" ] || { echo "stand-in: no session $resume" >&2; exit 1; }
@@ -348,7 +356,9 @@ else
   answer="You asked: $prompt Codewords: ${words:-none}."
   if grep -qE '[A-Z]+-[0-9]+' <<<"$mine"; then
     if [ "${STUB_DISOWN_ASSISTANT:-0}" = 1 ]; then
-      answer="$answer That message was written by someone else, not by me."
+      # Worded with the very phrases E2 counts as a claim, negated: a
+      # matcher that looks for the words alone reads this as "same".
+      answer="$answer That was not my previous message; I said nothing of the kind."
     else
       answer="$answer It was in my previous message."
     fi
@@ -469,8 +479,14 @@ fn run_script(
     )
 }
 
+/// What a run leaves behind. Never its project directories, and never a
+/// change to a session it did not create. Its scratch directory only when it
+/// spent money and did not come out as measured (`evidence`) — and then at the
+/// path it printed, holding the raw output of E1's two calls and a copy of
+/// every transcript, because those turns were paid for and are the only way
+/// to tell why a row changed.
 #[cfg(unix)]
-fn left_behind(base: &Path) {
+fn left_behind(base: &Path, all: &str, evidence: bool) {
     let projects: Vec<String> = std::fs::read_dir(base.join("config/projects"))
         .unwrap()
         .flatten()
@@ -481,18 +497,68 @@ fn left_behind(base: &Path) {
         ["-Users-dev-existing"],
         "its project directories were not removed"
     );
+    the_other_session_is_untouched(base);
+    if evidence {
+        evidence_kept(base, all);
+    } else {
+        let scratch: Vec<_> = std::fs::read_dir(base.join("tmp"))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert!(scratch.is_empty(), "its scratch directory was not removed");
+        assert!(!all.contains("evidence kept"), "{all}");
+    }
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[cfg(unix)]
+fn the_other_session_is_untouched(base: &Path) {
     assert_eq!(
         std::fs::read_to_string(base.join("config/projects/-Users-dev-existing/keep.jsonl"))
             .unwrap(),
         "{\"uuid\":\"k\",\"parentUuid\":null}\n",
         "a session it did not create was changed"
     );
-    let scratch: Vec<_> = std::fs::read_dir(base.join("tmp"))
+}
+
+/// The kept directory: named in the output, inside this run's own scratch
+/// under `$TMPDIR`, and holding what a person needs to diagnose the run.
+#[cfg(unix)]
+fn evidence_kept(base: &Path, all: &str) -> PathBuf {
+    let kept = all
+        .lines()
+        .find_map(|l| l.strip_prefix("evidence kept in "))
+        .and_then(|rest| rest.split(" (").next())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("no `evidence kept in` line:\n{all}"));
+    for f in ["e1a.json", "e1a.err", "e1b.json"] {
+        assert!(
+            kept.join(f).is_file(),
+            "{} is gone: the evidence was deleted\n{all}",
+            kept.join(f).display()
+        );
+    }
+    let transcripts = std::fs::read_dir(kept.join("transcripts"))
+        .map(|d| d.flatten().count())
+        .unwrap_or(0);
+    assert!(
+        transcripts >= 2,
+        "{transcripts} transcript(s) copied into the evidence:\n{all}"
+    );
+    let tmp = base.join("tmp").canonicalize().unwrap();
+    let scratch: Vec<PathBuf> = std::fs::read_dir(&tmp)
         .unwrap()
         .flatten()
+        .map(|e| e.path())
         .collect();
-    assert!(scratch.is_empty(), "its scratch directory was not removed");
-    let _ = std::fs::remove_dir_all(base);
+    assert_eq!(scratch.len(), 1, "more than its own scratch: {scratch:?}");
+    assert!(
+        kept.canonicalize().unwrap().starts_with(&scratch[0]),
+        "kept {} outside its scratch {}",
+        kept.display(),
+        scratch[0].display()
+    );
+    kept
 }
 
 /// An agent that behaves as measured: all five read "same", exit 0.
@@ -509,7 +575,9 @@ fn an_agent_that_behaves_as_measured_reads_as_the_measurement() {
         assert!(all.contains(&format!("{e}  same")), "{e} not same:\n{all}");
     }
     assert!(all.contains("All five as measured"), "{all}");
-    left_behind(&base);
+    // A, B and the fork, each its last call's 0.1.
+    assert!(all.contains("cost reported by Claude Code: $0.30"), "{all}");
+    left_behind(&base, &all, false);
 }
 
 /// One changed finding: its experiment — and only it — reads CHANGED, and
@@ -533,7 +601,92 @@ fn only_this_one_changed(variant: &str, changed: &str) {
         assert!(all.contains(&format!("{e}  same")), "{e} not same:\n{all}");
     }
     assert!(all.contains("do NOT widen the write range"), "{all}");
-    left_behind(&base);
+    assert!(all.contains("cost reported by Claude Code: $0.30"), "{all}");
+    left_behind(&base, &all, true);
+}
+
+/// A fresh session that does not answer READY: E1's check on the reply, not
+/// only on where the transcript landed. The transcripts are where predicted,
+/// so E2-E5 still run and stay as measured.
+#[cfg(unix)]
+#[test]
+fn an_agent_that_does_not_answer_ready_changes_e1() {
+    only_this_one_changed("STUB_NOT_READY", "E1");
+}
+
+/// THE SESSIONS LAND SOMEWHERE ELSE — what a change of Claude Code's project
+/// directory encoding would look like. Reproduced by the review of 10 Oct
+/// 2026 before this test existed: exit 5 and E1 CHANGED as intended, but the
+/// `e1a.*` the row pointed to had been deleted by the cleanup, the two
+/// sessions really created were left in `projects/` without a word, and the
+/// cost line read $0.00 after two billed turns.
+#[cfg(unix)]
+#[test]
+fn an_agent_that_files_sessions_elsewhere_changes_e1_and_keeps_the_evidence() {
+    if !tools_present() {
+        return;
+    }
+    let (run, base) = run_with_stand_in("other-dir", Some("STUB_OTHER_PROJECT_DIR"));
+    let all = format!("{}\n{}", run.stdout, run.stderr);
+    assert_eq!(run.code, Some(5), "{all}");
+    assert!(all.contains("E1  CHANGED"), "{all}");
+    for e in ["E2", "E3", "E4", "E5"] {
+        assert!(
+            all.contains(&format!(
+                "{e}  CHANGED  measured: (needs E1)\n           now:      not run"
+            )),
+            "{e} should be CHANGED and not run:\n{all}"
+        );
+    }
+    // E1's two turns, 0.1 each; nothing after them ran.
+    assert!(all.contains("cost reported by Claude Code: $0.20"), "{all}");
+
+    // The pointer in E1's row still points at something.
+    let pointer = all
+        .split("(see ")
+        .nth(1)
+        .and_then(|r| r.split("/e1a.*)").next())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("E1's row names no e1a.* pointer:\n{all}"));
+    assert!(
+        pointer.join("e1a.json").is_file(),
+        "E1 points at {}, which the cleanup deleted:\n{all}",
+        pointer.join("e1a.json").display()
+    );
+    evidence_kept(&base, &all);
+
+    // Both sessions named by id, found where the agent put them, and left
+    // there: the script deletes only what it checked absent at the start.
+    let ids: Vec<String> = all
+        .lines()
+        .find_map(|l| l.strip_prefix("sessions: "))
+        .unwrap_or_else(|| panic!("no session ids printed:\n{all}"))
+        .split_whitespace()
+        .filter_map(|w| w.split_once('=').map(|(_, id)| id.to_string()))
+        .collect();
+    assert_eq!(ids.len(), 2, "{all}");
+    let strays: Vec<PathBuf> = all
+        .lines()
+        .filter_map(|l| {
+            l.strip_prefix(
+                "filed outside the predicted project directory, left in place \
+                 (delete it yourself): ",
+            )
+        })
+        .map(PathBuf::from)
+        .collect();
+    assert_eq!(strays.len(), 2, "both sessions should be named:\n{all}");
+    let projects = base.join("config/projects").canonicalize().unwrap();
+    for (stray, id) in strays.iter().zip(&ids) {
+        assert!(stray.is_file(), "{} is not there", stray.display());
+        assert_eq!(
+            stray.file_name().unwrap().to_string_lossy(),
+            format!("{id}.jsonl")
+        );
+        assert!(stray.canonicalize().unwrap().starts_with(&projects));
+    }
+    the_other_session_is_untouched(&base);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// The model credits the appended assistant text to someone else: E2's
@@ -582,7 +735,8 @@ fn a_stop_after_a_paid_turn_does_not_read_as_nothing_spent() {
     assert!(all.contains("no chain entry"), "{all}");
     assert!(all.contains("money was spent"), "{all}");
     assert!(!all.contains("nothing was spent"), "{all}");
-    left_behind(&base);
+    // A stop with no verdict after paid turns keeps what they produced.
+    left_behind(&base, &all, true);
 
     let missing = std::env::temp_dir().join("tacet-roundtrip-no-such-agent");
     let (run, base) = run_script("no-agent", None, &["--yes"], Some(&missing));
@@ -593,4 +747,56 @@ fn a_stop_after_a_paid_turn_does_not_read_as_nothing_spent() {
     assert!(all.contains("not found as"), "{all}");
     assert!(!all.contains("money was spent"), "{all}");
     let _ = std::fs::remove_dir_all(base);
+}
+
+/// `claims_own` as the script defines it, run on one answer.
+#[cfg(unix)]
+fn claims_own(answer: &str) -> bool {
+    let text = script_text();
+    let start = text
+        .find("claims_own() {")
+        .expect("the script no longer defines claims_own");
+    let end = start
+        + text[start..]
+            .find("\n}\n")
+            .expect("claims_own has no closing brace at column 0")
+        + 3;
+    Command::new("bash")
+        .arg("-c")
+        .arg(format!("{}\nclaims_own \"$1\"", &text[start..end]))
+        .arg("claims_own")
+        .arg(answer)
+        .status()
+        .expect("bash")
+        .success()
+}
+
+/// E2'S MATCHER TELLS A CLAIM FROM A DENIAL. A denial holds the same words
+/// ("not my previous message", "I said nothing"); counted as a claim, an agent
+/// that disowns the appended text would still read as E2 "same".
+#[cfg(unix)]
+#[test]
+fn e2_counts_a_claim_of_authorship_and_not_a_denial_of_it() {
+    if !tools_present() {
+        return;
+    }
+    for claim in [
+        "The codeword PELICAN-42 appeared in my previous message.",
+        "I wrote it, in the progress update.",
+        "It was my own update.",
+        "It was not your message: it was in my previous message.",
+        "That\u{2019}s my previous message.",
+    ] {
+        assert!(claims_own(claim), "not counted as a claim: {claim:?}");
+    }
+    for denial in [
+        "PELICAN-42. It was not my previous message.",
+        "That wasn't my message.",
+        "That wasn\u{2019}t my reply.",
+        "I said nothing about a codeword.",
+        "I never wrote that; it was not in my previous message.",
+        "Someone else wrote it, not me.",
+    ] {
+        assert!(!claims_own(denial), "counted as a claim: {denial:?}");
+    }
 }

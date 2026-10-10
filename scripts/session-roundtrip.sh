@@ -37,6 +37,16 @@
 # it appends only to transcripts inside them, and at the end it deletes them
 # (keep them with --keep). No existing session is read or written.
 #
+# WHAT IT KEEPS. A run that spent money and did not come out as measured —
+# any experiment CHANGED, or a stop with no verdict — leaves its scratch
+# directory behind and prints its path: the agent's raw JSON and stderr for
+# every call, and a copy of every transcript of this run. Those turns were paid
+# for, and a CHANGED row whose evidence the cleanup already deleted can only
+# be diagnosed by paying for them again. If Claude Code filed a session
+# somewhere other than predicted (E1 CHANGED), the script names it by its id
+# and leaves it where it is: it deletes only the directories it checked absent
+# before the first turn.
+#
 # USAGE
 #   scripts/session-roundtrip.sh          # shows the cost and asks first
 #   scripts/session-roundtrip.sh --yes    # you have already said yes
@@ -125,12 +135,28 @@ for p in "$PROJ_A" "$PROJ_B"; do
   [ ! -e "$p" ] || die "$p already exists; refusing to touch a project directory this run did not create"
 done
 
+# This run's transcripts that Claude Code filed outside PROJ_A/PROJ_B; filled
+# in after E1, read by cleanup.
+STRAY=()
 cleanup() {
+  local status=$?
   if [ "$KEEP" = 1 ]; then
     echo "kept: $SCRATCH $PROJ_A $PROJ_B"
     return
   fi
-  rm -rf "$SCRATCH"
+  # Exit 0 is "as measured" and 64 is "nothing spent": nothing to diagnose.
+  # Anything else after a paid turn is a CHANGED row or a stop with no
+  # verdict, and its evidence is what the money bought.
+  if [ "$SPENT" = 1 ] && [ "$status" != 0 ]; then
+    mkdir "$WORK/transcripts"
+    for p in "$PROJ_A" "$PROJ_B"; do
+      [ -d "$p" ] && cp "$p"/*.jsonl "$WORK/transcripts/" 2>/dev/null
+    done
+    for f in ${STRAY[@]+"${STRAY[@]}"}; do cp "$f" "$WORK/transcripts/"; done
+    echo "evidence kept in $WORK (raw JSON and stderr of every call, transcripts/)"
+  else
+    rm -rf "$SCRATCH"
+  fi
   # Only what this run created: both names were checked absent above and
   # carry the mktemp suffix, so no other session can live under them.
   case "$PROJ_A" in "$CFG/projects/"*tacet-roundtrip*) rm -rf "$PROJ_A" ;; esac
@@ -226,9 +252,24 @@ row() {
 has() { grep -qiF -- "$2" <<<"$1"; }
 # E2's finding is that the model claims the appended assistant text as its
 # own; the 9 Oct answer said "the update appeared in my previous message".
-# First-person authorship in any of the usual phrasings counts.
+# First-person authorship in any of the usual phrasings counts — unless it is
+# denied: "it was not my previous message" and "I said nothing about it" hold
+# the same words. A negation up to two words before the phrase, or "nothing" /
+# "no" / "none" right after it, discards that occurrence. A false "same" here
+# would only keep the conservative finding (never write the assistant role) in
+# place, but a matcher that cannot tell a claim from a denial measures nothing.
 claims_own() {
-  grep -qiE '(^|[^a-z])(my (own |previous |earlier |last |prior )?(message|response|reply|update|answer|turn)|i (wrote|mentioned|said|reported|shared|gave|provided|posted|noted|stated))([^a-z]|$)' <<<"$1"
+  perl -0777 -ne '
+    $_ = lc;
+    while (/(?<![a-z])(my (?:own |previous |earlier |last |prior )?(?:message|response|reply|update|answer|turn)|i (?:wrote|mentioned|said|reported|shared|gave|provided|posted|noted|stated))(?![a-z])/g) {
+      my $before = substr($_, 0, $-[0]);
+      my $after = substr($_, $+[0]);
+      next if $before =~ /(?:\bnot|\bnever|\bno|n(?:\x27|\xe2\x80\x99)t)(?:\s+\S+){0,2}\s*$/;
+      next if $after =~ /^\s+(?:nothing|none|no)\b/;
+      exit 0;
+    }
+    exit 1;
+  ' <<<"$1"
 }
 
 # ---- E1: a throwaway session lands where the reader looks ----------------
@@ -242,9 +283,18 @@ if [ -n "$A" ] && [ -n "$B" ] && inside_scratch "$A_FILE" && inside_scratch "$B_
   && has "$(field e1a result)" READY; then
   row E1 same "projects/<enc>/<id>.jsonl, ~23 lines" "$(wc -l <"$A_FILE" | tr -d ' ') lines in $(basename "$PROJ_A")"
 else
-  row E1 CHANGED "projects/<enc>/<id>.jsonl" "no transcript where expected (see $WORK/e1a.*)"
-  echo "E1 failed; the rest depends on it." >&2
+  row E1 CHANGED "projects/<enc>/<id>.jsonl" "no transcript where expected, or no READY (see $WORK/e1a.*)"
 fi
+
+# A session filed somewhere else is still this run's, and still on the
+# person's account: name it, so it can be found and deleted. Only a session id
+# shaped like one is looked up — the id goes into a find pattern.
+for id in "$A" "$B"; do
+  [[ "$id" =~ ^[0-9A-Fa-f-]{36}$ ]] || continue
+  while IFS= read -r f; do
+    [ -n "$f" ] && ! inside_scratch "$f" && STRAY+=("$f")
+  done <<<"$(find "$CFG/projects" -mindepth 2 -maxdepth 2 -name "$id.jsonl" 2>/dev/null)"
+done
 
 if [ -n "$A" ] && [ -n "$B" ] && inside_scratch "$A_FILE" && inside_scratch "$B_FILE"; then
   # ---- E2: an assistant-role entry is loaded as the model's own ----------
@@ -292,14 +342,25 @@ if [ -n "$A" ] && [ -n "$B" ] && inside_scratch "$A_FILE" && inside_scratch "$B_
     row E5 CHANGED "new id, OSPREY-7, original sha256 unchanged" "id '$F', sha256 ${before:0:16} -> ${after:0:16}: $ans"
   fi
 else
+  echo "E1 found no transcript where expected; E2-E5 depend on it and were not run." >&2
   for e in E2 E3 E4 E5; do row "$e" CHANGED "(needs E1)" "not run"; done
 fi
 
 # ---- E7: what it cost ------------------------------------------------------
 # total_cost_usd was cumulative per session when measured, so a session's
-# cost is its last call's figure.
+# cost is the figure of the LAST call that reported one: A is e4, else e2,
+# else e1a; B is e3, else e1b; the fork e5 is a session of its own. Summing
+# only e4+e3+e5 printed $0.00 after E1's two billed turns whenever E1 stopped
+# the run — a false figure from the script whose point is to account for it.
 cost() { field "$1" total_cost_usd; }
-TOTAL="$(printf '%s\n' "$(cost e4)" "$(cost e5)" "$(cost e3)" | awk '{ s += $1 } END { printf "%.2f", s }')"
+last_cost() {
+  local l c
+  for l in "$@"; do
+    c="$(cost "$l")"
+    [ -n "$c" ] && { printf '%s\n' "$c"; return; }
+  done
+}
+TOTAL="$(printf '%s\n' "$(last_cost e4 e2 e1a)" "$(last_cost e3 e1b)" "$(cost e5)" | awk '{ s += $1 } END { printf "%.2f", s }')"
 
 echo
 echo "Claude Code $VERSION — session round-trip, $(date -u +%Y-%m-%dT%H:%MZ)"
@@ -311,6 +372,10 @@ for r in "${ROWS[@]}"; do
 done
 echo
 echo "cost reported by Claude Code: \$$TOTAL (measured run: about \$1)"
+echo "sessions: a=${A:-(none reported)} b=${B:-(none reported)}"
+for f in ${STRAY[@]+"${STRAY[@]}"}; do
+  echo "filed outside the predicted project directory, left in place (delete it yourself): $f"
+done
 if [ "$DIFFER" = 0 ]; then
   echo "All five as measured. $VERSION may join the write range in"
   echo "crates/tacet-tools/src/sessions/version.rs (and the ADR's table) — with this output as the measurement."
