@@ -2048,13 +2048,10 @@ mod tests {
         );
     }
 
-    /// THE POINT OF THE WHOLE CHANGE: a name that is not `web-search` reaches an
-    /// install flow instead of a rejection.
-    ///
-    /// It is measured through the definition table rather than by calling
-    /// `install`, because installing writes to the machine's real registry — a
-    /// test that did that would change the user's configuration and would make
-    /// every other test in this file depend on the order it ran in.
+    /// RG-17: of the lists an install asks for, only `agent-sessions`'
+    /// folders are pre-filled from what exists on this machine. Every other
+    /// list GRANTS something, and a grant the user did not type is one they
+    /// did not give.
     #[test]
     fn only_the_session_folders_have_a_machine_default() {
         use tacet_web::addon::{
@@ -2083,6 +2080,13 @@ mod tests {
         assert!(tacet_web::addon::definition(AGENT_SESSIONS).is_some());
     }
 
+    /// THE POINT OF THE WHOLE CHANGE: a name that is not `web-search` reaches an
+    /// install flow instead of a rejection.
+    ///
+    /// It is measured through the definition table rather than by calling
+    /// `install`, because installing writes to the machine's real registry — a
+    /// test that did that would change the user's configuration and would make
+    /// every other test in this file depend on the order it ran in.
     #[test]
     fn five_more_addons_can_be_installed_not_just_web_search() {
         for name in [

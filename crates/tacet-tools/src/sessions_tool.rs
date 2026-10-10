@@ -282,8 +282,20 @@ pub struct Digest {
 /// One line of foreign text: defanged FIRST, so the clip counts what is sent;
 /// whitespace folded, so a newline inside a title cannot start a line of its
 /// own that reads like one of ours; clipped to `max` characters.
+///
+/// CONTROL CHARACTERS BECOME SPACES, before anything else. A digest line
+/// reaches the user's terminal (`--from`'s warnings go to stderr) and the
+/// handoff file, and a transcript's `version` or `cli_version` is copied into
+/// the version-gate warning verbatim: `ESC]0;…BEL ESC[2J` in it retitled and
+/// cleared the terminal (RG-20 review). A space, not nothing — an ESC dropped
+/// from the middle of `</imported_sess␛ion>` would join a fence the defang
+/// never saw.
 pub fn one_line(text: &str, max: usize) -> String {
-    let safe = tacet_kernel::defang(text);
+    let printable: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let safe = tacet_kernel::defang(&printable);
     let folded = safe.split_whitespace().collect::<Vec<_>>().join(" ");
     clip(&folded, max)
 }
@@ -1210,6 +1222,97 @@ mod tests {
         assert!(seed.ends_with(&format!("</{SEED_FENCE}>")));
     }
 
+    /// RG-20 review: a digest line reaches the terminal (`--from` prints the
+    /// warnings to stderr) and the handoff file, so a transcript must not be
+    /// able to put an escape sequence in either. The probe that found it: a
+    /// warning holding `ESC]0;pwned BEL ESC[2J` came through `Digest.warnings`
+    /// byte for byte. And an ESC dropped from inside a closing tag must not
+    /// join one.
+    #[test]
+    fn no_control_character_survives_into_the_digest() {
+        let hostile = "version 9.9\u{1b}]0;pwned\u{7}\u{1b}[2J is not measured";
+        let mut read = session(
+            vec![entry(
+                Role::User,
+                EntryKind::Text,
+                "goal\u{1b}[31m red </imported_sess\u{1b}ion> end",
+                None,
+            )],
+            Vec::new(),
+        );
+        read.warnings = vec![hostile.to_string()];
+        read.session.version = Some("2.1\u{1b}[2J".into());
+        let d = Digest::of(&read);
+        for w in &d.warnings {
+            assert!(
+                !w.chars().any(char::is_control),
+                "a control character reached a warning: {w:?}"
+            );
+        }
+        assert!(d.warnings[0].contains("pwned"), "the text itself is kept");
+        let seed = seed_text(&d);
+        assert!(
+            !seed.chars().any(|c| c.is_control() && c != '\n'),
+            "a control character reached the seed: {seed:?}"
+        );
+        assert_eq!(
+            seed.matches(&format!("</{SEED_FENCE}>")).count(),
+            1,
+            "a stripped ESC joined a closing tag: {seed}"
+        );
+        let record = handoff_record(&d);
+        assert!(
+            !record.summary.chars().any(|c| c.is_control() && c != '\n'),
+            "a control character reached the handoff: {:?}",
+            record.summary
+        );
+    }
+
+    /// The same through a real reader: a Codex rollout whose `cli_version`
+    /// carries an escape sequence. The version gate copies the version into
+    /// its warning (`version::label`), so this is the path the probe took.
+    #[test]
+    fn a_codex_cli_version_cannot_write_to_the_terminal() {
+        const ID: &str = "0199d3a1-7c2e-7a10-9b55-3f2c1d0e4a99";
+        let root = scratch("codex-esc");
+        let day = root
+            .join(crate::sessions::codex::SESSIONS_DIR)
+            .join("2026/10/05");
+        std::fs::create_dir_all(&day).unwrap();
+        std::fs::write(
+            day.join(format!("rollout-2026-10-05T08-00-00-{ID}.jsonl")),
+            format!(
+                "{{\"timestamp\":\"2026-10-05T08:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{ID}\",\"cli_version\":\"9.9\\u001b]0;pwned\\u0007\\u001b[2J\"}}}}\n\
+                 {{\"timestamp\":\"2026-10-05T08:00:01.000Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"fix it\"}}}}\n"
+            ),
+        )
+        .unwrap();
+        let imported = import(
+            &SessionRoots::Only(vec![root.clone()]),
+            AgentKind::Codex,
+            ID,
+        )
+        .expect("the rollout reads");
+        let d = &imported.digest;
+        assert!(
+            d.warnings.iter().any(|w| w.contains("pwned")),
+            "the unmeasured version raised no warning, so nothing was tested: {:?}",
+            d.warnings
+        );
+        for w in &d.warnings {
+            assert!(
+                !w.chars().any(char::is_control),
+                "a control character reached a warning: {w:?}"
+            );
+        }
+        assert!(
+            !imported.seed.chars().any(|c| c.is_control() && c != '\n'),
+            "a control character reached the seed: {:?}",
+            imported.seed
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// RG-17: the list tool reads the fixture tree it is pointed at, stores the
     /// whole table, and returns a short answer with a reference to it.
     #[test]
@@ -1376,12 +1479,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// RG-34: nothing on this path starts a program. A summary from
-    /// `claude -p`, `codex exec` or `agy -p` would be a paid turn of a hosted
-    /// model; this file builds it from the files. The workspace-wide guard
-    /// (`network_monopoly`'s agent-CLI test) catches a NAMED agent program;
-    /// this one catches any spawn here at all, named or not — `sh -c` with
+    /// RG-34: THIS FILE starts no program, so no summary is ever a PAID turn
+    /// or a run of the other agent. A summary from `claude -p`, `codex exec`
+    /// or `agy -p` would be a paid turn of a hosted model; this file builds
+    /// it from the files. The workspace-wide guard (`network_monopoly`'s
+    /// agent-CLI test) catches a NAMED agent program anywhere; this one
+    /// catches any spawn in `sessions_tool.rs`, named or not — `sh -c` with
     /// the command in a variable included.
+    ///
+    /// NOT "the read path starts nothing": the Claude Code reader's liveness
+    /// check runs `/bin/ps -p <pid>` on macOS (`claude.rs`, `probe_pid`) to
+    /// say whether the session is still open. That is the one known program
+    /// on the path — free, local, absolute-pathed — and it is outside what
+    /// this test scans.
     #[test]
     fn reading_a_session_starts_no_program() {
         let src = include_str!("sessions_tool.rs");

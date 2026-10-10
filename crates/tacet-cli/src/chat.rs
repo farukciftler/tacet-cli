@@ -685,22 +685,13 @@ pub fn chat(run: ChatRun) -> ExitCode {
                             if moved != dir {
                                 dir = moved;
                                 // The folder is part of the context and of the
-                                // system text; both are rebuilt, and the flags
-                                // the old context carried are put back on the
-                                // new one before anything can run.
-                                let tainted = ctx.session_tainted();
-                                let outside = ctx.saw_external_content();
-                                ctx = session_context(
+                                // system text; both are rebuilt.
+                                ctx = context_in(
+                                    &ctx,
                                     Arc::clone(&store) as Arc<dyn CoreDataStore>,
                                     dir.as_str(),
                                     Arc::clone(&traces) as Arc<dyn Reporter>,
                                 );
-                                if tainted {
-                                    ctx.taint();
-                                }
-                                if outside {
-                                    ctx.mark_external_content();
-                                }
                                 dir_block = dir_context(&dir);
                                 system = system_text(dir_block.as_ref());
                             }
@@ -1858,6 +1849,31 @@ fn session_context(
         .with_cancel_token(tacet_kernel::context::CancelToken::watching(&CANCEL))
 }
 
+/// The context for a new working folder, carrying what the old one knew.
+///
+/// THE FLAGS ARE PUT BACK BEFORE ANYTHING CAN RUN. A context is where a tool
+/// reads whether the session holds personal data or outside text; a fresh one
+/// says "clean". `/resume-from` moving the folder in the middle of a session
+/// that a pipe, a replay, a note or an earlier tool had already tainted would
+/// otherwise hand the next turn a clean context — the H2-b hole reopened by a
+/// `cd`. `mark_imported` sets both flags again right after, but only for the
+/// import; this keeps whatever set them before.
+fn context_in(
+    old: &ToolContext,
+    store: Arc<dyn CoreDataStore>,
+    dir: impl Into<std::path::PathBuf>,
+    reporter: Arc<dyn Reporter>,
+) -> ToolContext {
+    let mut ctx = session_context(store, dir, reporter);
+    if old.session_tainted() {
+        ctx.taint();
+    }
+    if old.saw_external_content() {
+        ctx.mark_external_content();
+    }
+    ctx
+}
+
 /// Ctrl-C AS A SIGNAL — the half of audit M4 the key thread cannot reach.
 ///
 /// On a terminal the turn indicator holds raw mode, ISIG is off, and Ctrl-C
@@ -2122,38 +2138,52 @@ fn announce_continuation(
     color: &Color,
     human: bool,
 ) {
-    let d = &imported.digest;
+    for (code, line) in continuation_notice(&imported.digest, human) {
+        eprintln!("{}", color.paint(code, &line));
+    }
+}
+
+/// The lines `announce_continuation` prints, with their colour.
+///
+/// EVERY LINE IS STRIPPED OF CONTROL CHARACTERS HERE TOO, not only in
+/// `one_line`. The warnings are the reader's, and a reader copies the
+/// transcript's own `version` into them: the review's probe put
+/// `ESC]0;pwned BEL ESC[2J` there and it reached stderr byte for byte. The
+/// digest is clean today; this is the line that keeps a future field that
+/// skips `one_line` off the terminal, the way `print_continuable` keeps titles
+/// off it.
+fn continuation_notice(
+    d: &tacet_tools::sessions_tool::Digest,
+    human: bool,
+) -> Vec<(&'static str, String)> {
+    let printable = |s: String| -> String { s.chars().filter(|c| !c.is_control()).collect() };
+    let mut lines = Vec::new();
     if human {
-        eprintln!(
-            "{}",
-            color.paint(
-                DIM,
-                &format!(
-                    "(continuing {} session {} — a summary of its {} entries goes in front of \
-                     your next message; it counts as personal data and outside text, so \
-                     outbound and host-acting tools will ask first)",
-                    d.agent.display_name(),
-                    d.id,
-                    d.entries
-                )
-            )
-        );
+        lines.push((
+            DIM,
+            printable(format!(
+                "(continuing {} session {} — a summary of its {} entries goes in front of \
+                 your next message; it counts as personal data and outside text, so \
+                 outbound and host-acting tools will ask first)",
+                d.agent.display_name(),
+                d.id,
+                d.entries
+            )),
+        ));
     }
     for w in &d.warnings {
-        eprintln!("{}", color.paint(YELLOW, &format!("({w})")));
+        lines.push((YELLOW, printable(format!("({w})"))));
     }
     if d.live {
-        eprintln!(
-            "{}",
-            color.paint(
-                YELLOW,
-                &format!(
-                    "({} still has this session open; what is read may already be behind it)",
-                    d.agent.display_name()
-                )
-            )
-        );
+        lines.push((
+            YELLOW,
+            format!(
+                "({} still has this session open; what is read may already be behind it)",
+                d.agent.display_name()
+            ),
+        ));
     }
+    lines
 }
 
 /// `/resume-from` with no argument: the sessions that could be continued, as
@@ -3362,6 +3392,76 @@ mod continuation_tests {
         );
         let _ = std::fs::remove_dir_all(&here);
         let _ = std::fs::remove_dir_all(&there);
+    }
+
+    /// RG-20 review: `/resume-from` that moves the folder builds a new
+    /// context, and a new context says "clean". Each flag the old one held is
+    /// carried, separately — a session tainted by a pipe but never shown a
+    /// page must not come out marked as outside text, nor the reverse lose
+    /// its mark. The folder binary test cannot reach this: the move needs a
+    /// terminal to ask on.
+    #[test]
+    fn a_new_folder_keeps_the_flags_the_session_had() {
+        let there = std::env::temp_dir().join("tacet-context-in");
+        let build = |old: &ToolContext| {
+            context_in(
+                old,
+                Arc::new(SharedStore::new()) as Arc<dyn CoreDataStore>,
+                there.clone(),
+                Arc::new(tacet_kernel::SilentReporter) as Arc<dyn Reporter>,
+            )
+        };
+
+        let clean = build(&context());
+        assert_eq!(clean.working_dir, there, "the folder did not move");
+        assert!(!clean.session_tainted() && !clean.saw_external_content());
+
+        let mut tainted = context();
+        tainted.taint();
+        let moved = build(&tainted);
+        assert!(moved.session_tainted(), "the move dropped the taint");
+        assert!(!moved.saw_external_content());
+
+        let mut outside = context();
+        outside.mark_external_content();
+        let moved = build(&outside);
+        assert!(
+            moved.saw_external_content(),
+            "the move dropped the outside-text mark"
+        );
+        assert!(!moved.session_tainted());
+    }
+
+    /// RG-20 review: what `--from` and `/resume-from` print on stderr holds no
+    /// control character, whatever the digest carries — built here past
+    /// `one_line`, the way a future field that skipped it would arrive.
+    #[test]
+    fn the_continuation_notice_cannot_drive_the_terminal() {
+        let d = tacet_tools::sessions_tool::Digest {
+            agent: tacet_tools::sessions::AgentKind::Codex,
+            id: "abc\u{1b}[2J".into(),
+            cwd: None,
+            updated: None,
+            version: None,
+            live: true,
+            goal: None,
+            last_ask: None,
+            plan: Vec::new(),
+            files: Vec::new(),
+            steps: Vec::new(),
+            warnings: vec!["version 9.9\u{1b}]0;pwned\u{7}\u{1b}[2J is not measured".into()],
+            entries: 3,
+        };
+        let lines = continuation_notice(&d, true);
+        assert_eq!(lines.len(), 3, "intro, the warning, the live note");
+        for (_, line) in &lines {
+            assert!(
+                !line.chars().any(char::is_control),
+                "a control character reaches stderr: {line:?}"
+            );
+        }
+        assert!(lines[1].1.contains("pwned"), "the warning itself is kept");
+        assert_eq!(continuation_notice(&d, false).len(), 2);
     }
 
     /// The in-shell verb is in the command list the `/` popup and `/help`

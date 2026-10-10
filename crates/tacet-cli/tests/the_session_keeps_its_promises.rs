@@ -13,6 +13,11 @@
 //!   session, so the approval gate in front of every outbound tool stayed
 //!   open. `shell` is one of those tools (`EXTERNAL_TOOLS`), and with nobody
 //!   to ask the gate answers no: "not sent" where the call used to run.
+//! * RG-20. A session continued from another agent (`--from`, `/resume-from`)
+//!   is the user's own work and text another program wrote: it taints from
+//!   the start, through the same gate. The library function that marks it had
+//!   a unit test; nothing checked that `chat` called it, and with the call
+//!   disabled every test stayed green.
 //! * AUDIT L29. A chain of `--continue` runs kept only its last link.
 //! * AUDIT L27 / RG-32. The receipt log kept every chip's words and
 //!   `sessions --purge` left it behind.
@@ -22,6 +27,9 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+
+use tacet_tools::sessions::AgentKind;
+use tacet_web::addon;
 
 struct Scratch(PathBuf);
 
@@ -54,6 +62,10 @@ fn tacet(scratch: &Scratch) -> Command {
         .env_remove("TACET_MODEL")
         .env_remove("TACET_TOKENIZER")
         .env_remove("TACET_TRACE_DUMP")
+        // The agent-session readers fall back to these before the registry;
+        // removed so no test here can look at a real agent's folder.
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("CODEX_HOME")
         .env("HOME", scratch.home())
         .env("TACET_HOME", scratch.home())
         .current_dir(scratch.work());
@@ -206,6 +218,84 @@ fn an_injected_memory_note_taints_the_turn_it_enters() {
         "the note never reached the prompt, so there was nothing to taint:\n{all}"
     );
     assert_refused(&all, "memory injection");
+}
+
+/// The Claude Code session in the readers' own fixture tree.
+const CLAUDE_SESSION: &str = "11111111-0000-4000-8000-111111111111";
+
+fn claude_reference() -> String {
+    format!("{}:{CLAUDE_SESSION}", AgentKind::ClaudeCode.slug())
+}
+
+/// Opens `agent-sessions` beside the shell addon `install_echo` wrote, with
+/// the readers' fixture tree as its only folder — built from the slug, so no
+/// literal here names an agent program (`network_monopoly`).
+fn open_agent_sessions(scratch: &Scratch) {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../tacet-tools/tests/fixtures/sessions")
+        .join(AgentKind::ClaudeCode.slug())
+        .canonicalize()
+        .expect("the fixture tree exists");
+    let path = scratch.home().join("addons.json");
+    let mut record = addon::read_from_path(&path).expect("the shell addon's registry");
+    record.add(
+        addon::Addon::new(addon::AGENT_SESSIONS, addon::AGENT_SESSIONS)
+            .with_setting(addon::ROOTS_KEY, fixtures.display().to_string()),
+    );
+    addon::write_to_path(&path, &record).expect("the registry is written");
+}
+
+/// RG-20, `--from`. The import is the only personal input: no pipe, no
+/// `--session`, no note. RED BEFORE THE FIX (the review broke the call to
+/// `mark_imported` on this path): `exit 0`.
+#[test]
+fn an_imported_agent_session_taints_the_session_from_the_start() {
+    let s = Scratch::new("from");
+    install_echo(&s);
+    open_agent_sessions(&s);
+    let mut c = tacet(&s);
+    echo_turn(&mut c);
+    c.args(["--from", &claude_reference(), "--message", "go on"]);
+    let all = text(&run(c, None));
+    assert!(
+        all.contains("continuing Claude Code session"),
+        "the session was not imported, so nothing was there to taint:\n{all}"
+    );
+    assert_refused(&all, "--from");
+}
+
+/// RG-20, `/resume-from` inside the shell — the handler that changes the
+/// session in place, which had no test at all. Messages on a pipe (nobody to
+/// ask, the same as the memory test): first the CONTROL, a plain message
+/// whose echo runs; then the same session continues another agent's work and
+/// the next message's echo must be refused. RED BEFORE THE FIX: the second
+/// echo ran.
+#[test]
+fn resume_from_in_the_shell_taints_the_turns_after_it() {
+    let s = Scratch::new("resume-from");
+    install_echo(&s);
+    open_agent_sessions(&s);
+
+    let mut control = tacet(&s);
+    echo_turn(&mut control);
+    assert_ran(&text(&run(control, Some("say something\n"))), "piped shell");
+
+    let mut c = tacet(&s);
+    echo_turn(&mut c);
+    c.arg("--show-prompt");
+    let all = text(&run(
+        c,
+        Some(&format!("/resume-from {}\nwhat next\n", claude_reference())),
+    ));
+    assert!(
+        all.contains("continuing Claude Code session"),
+        "/resume-from did not import, so nothing was there to taint:\n{all}"
+    );
+    assert!(
+        all.contains("Goal (first request): Fix the date rollover"),
+        "the summary never reached the next question's prompt:\n{all}"
+    );
+    assert_refused(&all, "/resume-from");
 }
 
 /// L29: three `--continue` runs; the third sees all four earlier turns.
