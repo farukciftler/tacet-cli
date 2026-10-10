@@ -31,7 +31,11 @@ In scope:
 
 1. **List and read** sessions from local files. Claude Code:
    `$CLAUDE_CONFIG_DIR or ~/.claude/projects/<enc>/<id>.jsonl` and
-   `~/.claude/sessions/<pid>.json` for liveness. Codex:
+   `~/.claude/sessions/<pid>.json` for liveness, with that pid checked by
+   `/bin/ps -p` on macOS and `/proc/<pid>` on Linux (std has no `kill(pid, 0)`,
+   and on macOS 26.5.2 `ps -p` exits 1 for a free pid and 0 for a root-owned
+   one that `kill -0` would report as dead; an unknown answer counts as live).
+   Codex:
    `$CODEX_HOME or ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`,
    `archived_sessions/`, `session_index.jsonl`. Antigravity: the three roots
    under `~/.gemini/`, `brain/<id>/.system_generated/logs/transcript_full.jsonl`
@@ -127,7 +131,10 @@ after the round-trip script (RG-29) passes on it.
 
 * **zstd:** Codex may compress rollouts older than seven days to `.jsonl.zst`
   (behind a flag that is off today). Such a file is **refused** with a message
-  that tells the user to run `zstd -d`; it is not silently skipped. A test
+  that tells the user to run `zstd -d`; it is not silently skipped. It is
+  still listed, titled with that advice, and once a decompressed `.jsonl`
+  exists next to it (or in the other session tree) that file is the one read.
+  A test
   holds `Cargo.lock` free of `zstd`, `ruzstd`, `prost`, `protobuf`,
   `rusqlite`, `libsqlite3-sys` and `sqlx`, so the refusal stays a decision.
 * **protobuf:** Antigravity's `conversations/<id>.db` is SQLite with
@@ -261,3 +268,6 @@ documented access.
   only after someone measures it — slower than the agents release, on purpose.
 * Codex support is fixture-tested and unverified against a real install until
   someone with Codex installed runs the corpus and the round-trip script.
+* A paginated Codex fork does not copy its parent's lines; the reader follows
+  `session_meta.history_base` to the prefix rollout (at most 8 links) and
+  reports a prefix it could not read instead of failing.

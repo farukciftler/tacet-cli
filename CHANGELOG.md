@@ -61,6 +61,19 @@ go out under one version per crate, with the bumps named in both lists.
   the MCP start-up report print are made into one line, with escapes removed
   (M13, M14). `tacet mcp try` sends the same OAuth token the chat would (L10).
 
+**New, additive (not reachable until the `agent-sessions` addon, RG-17):**
+
+* `tacet-tools`: `sessions::claude` — `ClaudeSource` (a `SessionSource` for
+  Claude Code), `ClaudeRead`, `pid_alive`, `project_dir_name`,
+  `project_dir_matches`, `LIST_TAIL_BYTES`, `MAX_TRANSCRIPT_BYTES`,
+  `CONFIG_DIR_VAR` (RG-08, RG-09, RG-10).
+* `tacet-tools`: `sessions::codex` — `CodexSource`, a `SessionSource` for Codex
+  CLI rollouts, written from openai/codex's source and fixture-tested only;
+  a `.jsonl.zst` rollout is listed and refused with the `zstd -d` advice
+  (RG-11, RG-12, RG-13).
+
+---
+
 ## Unreleased — the audit of 9 Oct 2026, wave 1
 
 Nothing below is published yet. When it is, the crates whose public API changed
