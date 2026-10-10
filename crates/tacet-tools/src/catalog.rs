@@ -59,6 +59,10 @@ pub struct AddonGates {
     pub db: bool,
     pub clipboard: bool,
     pub http: bool,
+    /// `sessions_list` and `session_read` (RG-17). Added AFTER the five above
+    /// and closed by `Default` like them, so every call site written before it
+    /// existed builds a catalog without it.
+    pub agent_sessions: bool,
 }
 
 impl AddonGates {
@@ -76,6 +80,7 @@ impl AddonGates {
             db: true,
             clipboard: true,
             http: true,
+            agent_sessions: true,
         }
     }
 
@@ -100,7 +105,7 @@ impl AddonGates {
     /// tool name, a name misspelled in that table would make the tool "belong
     /// to no addon" and it would be added ungated — fail-open again.
     ///
-    /// FIVE READS OF THE REGISTRY, not one. `is_open` reads the file itself and
+    /// SIX READS OF THE REGISTRY, not one. `is_open` reads the file itself and
     /// that is accepted: the file is under a kilobyte and this runs once per
     /// session. The cost is that an edit landing mid-read can be seen by some
     /// questions and not others; the worst outcome is one tool's presence
@@ -114,6 +119,7 @@ impl AddonGates {
             db: addon::is_open(addon::DB),
             clipboard: addon::is_open(addon::CLIPBOARD),
             http: addon::is_open(addon::HTTP),
+            agent_sessions: addon::is_open(addon::AGENT_SESSIONS),
         }
     }
 }
@@ -385,6 +391,26 @@ pub fn production_catalog_gated(
     // them run identically on every machine.
     c.add(Arc::new(SearchFilterTool));
     c.add(Arc::new(MessageIntentTool));
+
+    // THE OTHER AGENTS' SESSIONS, BEHIND THEIR OWN GATE AND AFTER EVERYTHING
+    // (RG-17). Last by the order rule above: neither tool is ever the right
+    // answer to a message that names no session and no agent, so on a hintless
+    // request they are the first the budget drops. Appended rather than
+    // inserted, so no tool already measured moves.
+    //
+    // NO DISCOVERY STEP, unlike `db` or `clipboard`: the tools need no binary,
+    // and a machine with no session folder is answered "no session found" by
+    // the tool itself. So an open gate always means both tools, which is what
+    // lets the tests below assert presence and not only absence.
+    //
+    // THE ROOTS ARE READ WHEN A TOOL RUNS (`SessionRoots::Registry`), not here:
+    // building a catalog — every unit test and the eval do it — must not read
+    // the user's registry for anything but the gates.
+    if gates.agent_sessions {
+        for tool in crate::sessions_tool::tools(crate::sessions_tool::SessionRoots::Registry) {
+            c.add(tool);
+        }
+    }
 
     (c, state, diagnosis)
 }
@@ -707,7 +733,7 @@ mod tests {
     /// carrying it, instead of the move happening in a place no measurement
     /// watches. `db_write_is_never_in_the_production_catalog` below states the
     /// same absence directly.
-    const ADDON_TOOLS: [&str; 7] = [
+    const ADDON_TOOLS: [&str; 9] = [
         "web_search",
         "web_fetch",
         "shell",
@@ -715,7 +741,87 @@ mod tests {
         "db_write",
         "clipboard",
         "http",
+        "sessions_list",
+        "session_read",
     ];
+
+    /// THE DEFAULT CATALOG, BY NAME AND IN ORDER (RG-17). The count test below
+    /// catches a tool joining or leaving; this one says WHICH, and catches a
+    /// swap a count cannot see — the `agent-sessions` tools standing in for
+    /// two that went missing would leave every count green.
+    ///
+    /// The three conditional entries are conditional on the machine, not on an
+    /// addon, and they are asked the same way `the_catalog_is_larger_than_the_
+    /// router_budget` asks: `run_code`/`write_code` exactly when the shield
+    /// state exists, `calendar` exactly on macOS.
+    fn default_names(shielded: bool) -> Vec<&'static str> {
+        let mut names = vec![
+            "calculate",
+            "time",
+            "read_document",
+            "create_document",
+            "edit_document",
+            "find_file",
+        ];
+        if cfg!(target_os = "macos") {
+            names.push("calendar");
+        }
+        if shielded {
+            names.extend(["run_code", "write_code"]);
+        }
+        names.extend([
+            "git",
+            "remember",
+            "archive",
+            "checksum",
+            "search_filter",
+            "message_intent",
+        ]);
+        names
+    }
+
+    #[test]
+    fn the_default_catalog_is_unchanged_by_name() {
+        let (c, state) = gated(AddonGates::closed());
+        assert_eq!(c.names(), default_names(state.is_some()));
+    }
+
+    /// RG-17: the two session tools exist ONLY behind their own gate, and
+    /// opening it adds exactly them, at the end, moving nothing.
+    #[test]
+    fn the_session_tools_appear_only_when_their_addon_is_open() {
+        let (closed, state) = gated(AddonGates::closed());
+        for name in ["sessions_list", "session_read"] {
+            assert!(
+                closed.find(name).is_none(),
+                "{name} is in a catalog no addon was installed for"
+            );
+        }
+        let (open, _) = gated(AddonGates {
+            agent_sessions: true,
+            ..AddonGates::closed()
+        });
+        let mut expected = default_names(state.is_some());
+        expected.extend(["sessions_list", "session_read"]);
+        assert_eq!(
+            open.names(),
+            expected,
+            "opening agent-sessions must append its two tools and change nothing else"
+        );
+        // And the table that explains the gate names the same two tools.
+        assert_eq!(
+            tacet_web::addon::definition(tacet_web::addon::AGENT_SESSIONS)
+                .map(|d| d.tools.to_vec()),
+            Some(vec!["sessions_list", "session_read"])
+        );
+        // Measurement mode never holds them: the eval's catalog is the
+        // machine-independent one, and these read the user's own history.
+        let store = Arc::new(SharedStore::new());
+        let memory = SharedMemory::in_memory();
+        let (measured, _, _) = production_catalog(&store, &memory, Some(0));
+        assert!(measured.find("sessions_list").is_none());
+        assert!(measured.find("session_read").is_none());
+    }
 
     /// ABSENCE, MEASURED WHERE IT IS DETERMINISTIC.
     ///
@@ -770,32 +876,39 @@ mod tests {
     /// tested here anyway: a tool must never appear ungated.
     #[test]
     fn opening_one_gate_does_not_open_another() {
-        let cases: [(&str, AddonGates); 4] = [
+        let cases: [(&[&str], AddonGates); 5] = [
             (
-                "shell",
+                &["shell"],
                 AddonGates {
                     shell: true,
                     ..AddonGates::closed()
                 },
             ),
             (
-                "db",
+                &["db"],
                 AddonGates {
                     db: true,
                     ..AddonGates::closed()
                 },
             ),
             (
-                "clipboard",
+                &["clipboard"],
                 AddonGates {
                     clipboard: true,
                     ..AddonGates::closed()
                 },
             ),
             (
-                "http",
+                &["http"],
                 AddonGates {
                     http: true,
+                    ..AddonGates::closed()
+                },
+            ),
+            (
+                &["sessions_list", "session_read"],
+                AddonGates {
+                    agent_sessions: true,
                     ..AddonGates::closed()
                 },
             ),
@@ -803,12 +916,12 @@ mod tests {
         for (opened, gates) in cases {
             let (c, _) = gated(gates);
             for name in ADDON_TOOLS {
-                if name == opened {
+                if opened.contains(&name) {
                     continue;
                 }
                 assert!(
                     c.find(name).is_none(),
-                    "opening `{opened}` also brought `{name}` into the catalog"
+                    "opening `{opened:?}` also brought `{name}` into the catalog"
                 );
             }
         }
@@ -840,7 +953,14 @@ mod tests {
         let store = Arc::new(SharedStore::new());
         let memory = SharedMemory::in_memory();
         let (c, _, _) = production_catalog_with(&store, &memory, None, true);
-        for name in ["shell", "db", "clipboard", "http"] {
+        for name in [
+            "shell",
+            "db",
+            "clipboard",
+            "http",
+            "sessions_list",
+            "session_read",
+        ] {
             assert!(
                 c.find(name).is_none(),
                 "{name} appeared through the web-only helper"
@@ -897,6 +1017,8 @@ mod tests {
             (gates.db, "db"),
             (gates.clipboard, "clipboard"),
             (gates.http, "http"),
+            (gates.agent_sessions, "sessions_list"),
+            (gates.agent_sessions, "session_read"),
         ] {
             assert!(
                 open || production.find(name).is_none(),

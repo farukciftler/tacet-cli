@@ -36,13 +36,17 @@ use tacet_tools::memory::SharedMemory;
 /// than derived, because the derivation would be "build the catalog twice and
 /// diff" — which cannot distinguish an addon tool from one this machine simply
 /// cannot carry, and would go green on a machine with no sqlite3 either way.
-const BEHIND_AN_ADDON: [&str; 6] = [
+const BEHIND_AN_ADDON: [&str; 8] = [
     "web_search",
     "web_fetch",
     "db",
     "clipboard",
     "http",
     "shell",
+    // `agent-sessions` (RG-17): another agent's history is the last thing a
+    // "with nothing installed" line may advertise.
+    "sessions_list",
+    "session_read",
 ];
 
 fn repo_root() -> PathBuf {

@@ -275,6 +275,7 @@ fn main() -> ExitCode {
         json: false,
         continue_session: false,
         session_id: None,
+        from: None,
         temperature: None,
         seed: None,
     });
@@ -289,6 +290,7 @@ fn main() -> ExitCode {
             json,
             continue_session,
             session_id,
+            from,
             temperature,
             seed,
         } => {
@@ -317,6 +319,7 @@ fn main() -> ExitCode {
                 json,
                 continue_session,
                 session_id,
+                from,
                 sampling,
             })
         }
