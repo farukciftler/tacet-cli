@@ -190,10 +190,14 @@ nobody measured a write (`version::KNOWN` in
 | `tacet handoff tasks antigravity <id> --set "Title=completed" --experimental-write-task-md` | the checkbox character of the named `task.md` items, and `updatedAt` in `task.md.metadata.json` | the flag; an open conversation (database `-wal`, a running step) or a running Antigravity process; only `[ ]`, `[/]`, `[x]`; a title that matches no item or several is refused; when the conversation's folder is a git repository (the CLI root's are), the question says Antigravity's automatic "jetski Snapshot" commits will record the change in that folder's history, where it stays after the box is changed back | **refused for every version** until the GUI is verified by hand to re-read the file; Antigravity's terms (§6) forbid third-party access, and the command prints that warning |
 
 `note codex --program` is the one place Tacet starts another agent's CLI. It
-is a command you type, not a tool the model has: the model cannot reach it,
-and `cargo test -p tacet-cli --test network_monopoly` fails if anything but
-`tacet handoff` calls the function that starts the app-server
-(`AGENT_CLI_USER_COMMANDS` there). That is why it is not one of the external
+is a command you type, not a tool the model has. What
+`cargo test -p tacet-cli --test network_monopoly` holds of that
+(`AGENT_CLI_USER_COMMANDS` there): only `tacet handoff` names the function
+that starts the app-server; only the command-line dispatch (`main.rs`,
+`cli.rs`) names `tacet handoff`'s module or its job type; and none of those
+files implements a model tool. A wrapper function in `main.rs` that a tool
+calls by another name is a third level the scan does not follow; review
+catches that one. That is why it is not one of the external
 tools behind the approval gate — that gate asks about a model's tool call,
 and here there is none; the y/N above, which names the binary and says it
 can reach the network, is the consent.

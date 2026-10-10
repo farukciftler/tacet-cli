@@ -206,6 +206,21 @@ enum Installed {
 /// The largest settings file `install` edits.
 const MAX_SETTINGS_BYTES: u64 = 1 << 20;
 
+/// The settings file as it is now: `None` when there is none, an error when
+/// the path is not something `install` should edit.
+fn read_settings(path: &Path) -> Result<Option<String>, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if !meta.is_file() => Err(format!("{} is not a regular file", path.display())),
+        Ok(meta) if meta.len() > MAX_SETTINGS_BYTES => {
+            Err(format!("{} is larger than a settings file", path.display()))
+        }
+        Ok(_) => std::fs::read_to_string(path)
+            .map(Some)
+            .map_err(|e| format!("{}: {e}", path.display())),
+        Err(_) => Ok(None),
+    }
+}
+
 /// Adds the hook entry to the settings file at `path`, after `confirm`.
 ///
 /// READ OUTSIDE THE SESSION READERS' GATE, ON PURPOSE. `sessions::secrets`
@@ -220,18 +235,7 @@ fn install_into(
     command: &str,
     confirm: &dyn Confirm,
 ) -> Result<Installed, String> {
-    let existing = match std::fs::symlink_metadata(path) {
-        Ok(meta) if !meta.is_file() => {
-            return Err(format!("{} is not a regular file", path.display()));
-        }
-        Ok(meta) if meta.len() > MAX_SETTINGS_BYTES => {
-            return Err(format!("{} is larger than a settings file", path.display()));
-        }
-        Ok(_) => {
-            Some(std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?)
-        }
-        Err(_) => None,
-    };
+    let existing = read_settings(path)?;
     let (text, changed) = writeback::merge_hook(existing.as_deref(), agent, command)
         .map_err(|why| format!("{} was not changed: {why}", path.display()))?;
     if !changed {
@@ -265,6 +269,22 @@ fn install_into(
     if !confirm.confirm(&q) {
         return Err("not written: declined".into());
     }
+    // THE TEXT WAS MERGED BEFORE THE QUESTION, so it is written only if the
+    // file is still what it was merged from. Claude Code rewrites its own
+    // settings.json (/config, /model) and a person can take as long as they
+    // like to answer: writing the stale merge would silently drop whatever
+    // landed meanwhile, and "the rest of the file is kept" would be false.
+    // Measured in review: a write during the question (`"model":"opus"`) was
+    // gone from the file afterwards, kept only in the backup. The same check
+    // `antigravity::update_impl` makes on task.md. What is left is the gap
+    // between this read and the rename below, microseconds against the
+    // seconds a person takes to answer.
+    if read_settings(path)? != existing {
+        return Err(format!(
+            "{} changed while the question was on screen; nothing written",
+            path.display()
+        ));
+    }
     let backup = if existing.is_some() {
         let b = path.with_file_name(format!(
             "{}.tacet-backup-{}",
@@ -290,7 +310,15 @@ fn install_into(
             .unwrap_or_default(),
         std::process::id()
     ));
-    std::fs::write(&temp, text).map_err(|e| format!("{}: {e}", temp.display()))?;
+    // OPENED 0600 BEFORE THE BYTES LAND, then given the original's mode.
+    // `fs::write` creates at 0666 & ~umask (0644 here), and the merged text
+    // carries the WHOLE settings file, API key included when it holds one:
+    // until the chmod it was readable by every user on the machine. A file
+    // that did not exist stays 0600.
+    tacet_kernel::fs::write_private(&temp, text.as_bytes()).map_err(|e| {
+        let _ = std::fs::remove_file(&temp);
+        format!("{}: {e}", temp.display())
+    })?;
     if let Ok(meta) = std::fs::metadata(path) {
         let _ = std::fs::set_permissions(&temp, meta.permissions());
     }
@@ -662,6 +690,65 @@ mod tests {
             install_into(&fresh, AgentKind::Codex, &cmd, &yes).unwrap(),
             Installed::Written { backup: None }
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Answers yes, after rewriting the file the way Claude Code's /model
+    /// does while the question is on screen.
+    struct EditsWhileAsking(PathBuf, &'static str);
+
+    impl Confirm for EditsWhileAsking {
+        fn confirm(&self, _: &Question) -> bool {
+            std::fs::write(&self.0, self.1).unwrap();
+            true
+        }
+    }
+
+    /// RG-21 review: the merge was computed before the question, so a write
+    /// made while it was on screen must stop the install rather than be
+    /// overwritten by the stale merge — for an existing file and for one that
+    /// appeared meanwhile.
+    #[test]
+    fn install_refuses_a_settings_file_that_changed_while_it_asked() {
+        let dir = scratch("install-race");
+        let settings = dir.join("settings.json");
+        std::fs::write(&settings, r#"{"theme":"dark"}"#).unwrap();
+        let cmd = writeback::hook_command("/opt/tacet", AgentKind::ClaudeCode);
+        let edited = r#"{"theme":"dark","model":"opus"}"#;
+        let asker = EditsWhileAsking(settings.clone(), edited);
+        let err = install_into(&settings, AgentKind::ClaudeCode, &cmd, &asker).unwrap_err();
+        assert!(err.contains("changed while the question"), "{err}");
+        assert_eq!(std::fs::read_to_string(&settings).unwrap(), edited);
+        let fresh = dir.join("appeared.json");
+        let asker = EditsWhileAsking(fresh.clone(), r#"{"model":"opus"}"#);
+        let err = install_into(&fresh, AgentKind::ClaudeCode, &cmd, &asker).unwrap_err();
+        assert!(err.contains("changed while the question"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(&fresh).unwrap(),
+            r#"{"model":"opus"}"#
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// RG-21 review: the temp file holds the whole settings file, so it is
+    /// created 0600, not at the umask's 0644; a new settings file keeps
+    /// that, an existing one keeps its owner's mode.
+    #[cfg(unix)]
+    #[test]
+    fn install_never_writes_the_settings_text_world_readable() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = scratch("install-mode");
+        let cmd = writeback::hook_command("/opt/tacet", AgentKind::ClaudeCode);
+        let yes = Scripted(true, Cell::new(0));
+        let fresh = dir.join("settings.json");
+        install_into(&fresh, AgentKind::ClaudeCode, &cmd, &yes).unwrap();
+        assert_eq!(mode(&fresh), 0o600, "a new settings file was not private");
+        let owned = dir.join("owned.json");
+        std::fs::write(&owned, r#"{"theme":"dark"}"#).unwrap();
+        std::fs::set_permissions(&owned, std::fs::Permissions::from_mode(0o640)).unwrap();
+        install_into(&owned, AgentKind::ClaudeCode, &cmd, &yes).unwrap();
+        assert_eq!(mode(&owned), 0o640, "the owner's mode was not kept");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -25,7 +25,7 @@
 //!    `nix`, `rustix`, the Windows bindings) declared under any name or
 //!    reached with its socket feature on, no libc socket call reached through
 //!    one of them under any name the file gives it, and no foreign function
-//!    outside a three-name allow-list (`EXTERN_FNS`), in any file a
+//!    outside a five-name allow-list (`EXTERN_FNS`), in any file a
 //!    crate COMPILES (its whole directory, `build.rs`, and whatever `#[path]`,
 //!    `include!` and the manifest's target paths point rustc at), read by a
 //!    lexer that decodes string literals the way rustc does; every crate cargo
@@ -214,8 +214,10 @@ const AGENT_CLIS: &[&str] = &["claude", "codex", "agy", "antigravity", "gemini"]
 /// tool and goes in `AGENT_CLI_USER_COMMANDS` instead.
 const AGENT_CLI_SPAWNERS: &[(&str, &str)] = &[];
 
-/// `(spawn file, the function that spawns, the one file allowed to call it,
-/// why)`: an agent CLI started by a person, not by the model.
+/// An agent CLI started by a person, not by the model: the spawn file, the
+/// function that spawns, the one file allowed to call it, the identifiers
+/// that reach that file from outside it and the only files that may write
+/// them, and why.
 ///
 /// WHY NOT AN `EXTERNAL_TOOLS` ENTRY. That list names model tools: the
 /// approval gate fires when the model calls one, and a name with no tool
@@ -224,17 +226,40 @@ const AGENT_CLI_SPAWNERS: &[(&str, &str)] = &[];
 /// involved, the binary is the path the user typed (resolved, never looked up
 /// on PATH), and the y/N names that file and says it can reach the network.
 /// What makes that safe is that the model cannot get there, so that is what
-/// `an_agent_cli_a_person_starts_is_reached_only_from_its_command` checks:
-/// the function is named as code in the spawn file and the one caller and
-/// nowhere else in the workspace, the caller is no `impl Tool`, and every
-/// variable spawn under `src/sessions/` has a row here.
-const AGENT_CLI_USER_COMMANDS: &[(&str, &str, &str, &str)] = &[(
-    "tacet-tools/src/sessions/writeback/codex.rs",
-    "inject_via_app_server",
-    "tacet-cli/src/handoff_cmd.rs",
-    "`tacet handoff note codex --program <path>` (RG-23): the user's binary as `app-server`, \
-     after a y/N naming it; `thread/inject_items` starts no model turn",
-)];
+/// `an_agent_cli_a_person_starts_is_reached_only_from_its_command` checks,
+/// TWO LEVELS DEEP: the function is named as code in the spawn file and the
+/// one caller and nowhere else in the workspace; and the caller's own way in
+/// (its module, `handoff_cmd`, and the job it is handed, `HandoffJob`) is
+/// named only in the caller and in the dispatch files (`main.rs`, `cli.rs`);
+/// and none of those files implements a `Tool`.
+///
+/// ONE LEVEL WAS NOT ENOUGH, measured in the review of 10 Oct 2026: an
+/// unregistered `impl Tool` whose `call` ran `crate::handoff_cmd::run(
+/// HandoffJob::Note { .. })` named neither `inject_via_app_server` nor the
+/// word `codex`, and the guard stayed green (32 passed). What it still does
+/// not follow is a third level: a wrapper function in `main.rs` that a tool
+/// elsewhere calls by the wrapper's name. `main.rs` is a dispatch file, so
+/// that wrapper is the review's to catch, not this scan's.
+const AGENT_CLI_USER_COMMANDS: &[UserCommand] = &[UserCommand {
+    spawn: "tacet-tools/src/sessions/writeback/codex.rs",
+    func: "inject_via_app_server",
+    caller: "tacet-cli/src/handoff_cmd.rs",
+    entries: &["handoff_cmd", "HandoffJob"],
+    dispatch: &["tacet-cli/src/main.rs", "tacet-cli/src/cli.rs"],
+    why: "`tacet handoff note codex --program <path>` (RG-23): the user's binary as `app-server`, \
+          after a y/N naming it; `thread/inject_items` starts no model turn",
+}];
+
+/// One row of `AGENT_CLI_USER_COMMANDS`.
+struct UserCommand {
+    spawn: &'static str,
+    func: &'static str,
+    caller: &'static str,
+    entries: &'static [&'static str],
+    dispatch: &'static [&'static str],
+    #[allow(dead_code)] // the reviewer's sentence; read by people, not by the scan
+    why: &'static str,
+}
 
 /// The npm packages the agent CLIs ship as. `npx @anthropic-ai/claude-code -p`
 /// runs `claude` without the word `claude` ever being a program name.
@@ -2111,16 +2136,15 @@ fn agent_clis_are_spawned_only_behind_the_approval_gate() {
 /// true: the spawning function is named, as code, in its own file and in the
 /// one subcommand that calls it and in no other file of the workspace (a model
 /// tool that called it, a `pub use` that re-exported it, an alias that renamed
-/// it, each has to write the name); that subcommand implements no `Tool`; and
-/// a variable spawn under `src/sessions/` — where every agent write-back lives
-/// — has a row here, or it is red.
+/// it, each has to write the name); the subcommand's module and job type are
+/// named only by it and the dispatch files, so a tool that runs the
+/// subcommand instead of the function is red too; none of those files
+/// implements a `Tool`; and a variable spawn under `src/sessions/` — where
+/// every agent write-back lives — has a row here, or it is red.
 #[test]
 fn an_agent_cli_a_person_starts_is_reached_only_from_its_command() {
-    let rows: Vec<(&str, &str, &str)> = AGENT_CLI_USER_COMMANDS
-        .iter()
-        .map(|(spawn, func, caller, _)| (*spawn, *func, *caller))
-        .collect();
-    let problems = user_command_problems(&crates_dir(), &rows, RUNTIME_SPAWN_SITES);
+    let problems =
+        user_command_problems(&crates_dir(), AGENT_CLI_USER_COMMANDS, RUNTIME_SPAWN_SITES);
     assert!(
         problems.is_empty(),
         "an agent CLI a person starts can be reached some other way:\n  {}",
@@ -2128,36 +2152,42 @@ fn an_agent_cli_a_person_starts_is_reached_only_from_its_command() {
     );
 }
 
-/// What is wrong with `rows` — `(spawn file, function, caller file)` — in the
-/// workspace at `crates`, given the variable-spawn rows `spawn_sites`.
+/// What is wrong with `rows` in the workspace at `crates`, given the
+/// variable-spawn rows `spawn_sites`.
 fn user_command_problems(
     crates: &Path,
-    rows: &[(&str, &str, &str)],
+    rows: &[UserCommand],
     spawn_sites: &[(&str, &str)],
 ) -> Vec<String> {
     use rust_lex::Kind;
     let mut problems = Vec::new();
     let mut defined = vec![false; rows.len()];
     let mut called = vec![false; rows.len()];
+    // Per row, per entry: written by the caller or a dispatch file at all.
+    // An entry nobody writes (a renamed module) would make its check vacuous.
+    let mut entered: Vec<Vec<bool>> = rows.iter().map(|r| vec![false; r.entries.len()]).collect();
     for (name, manifest) in manifests_in(crates) {
         for file in scanned_files(&crates.join(&name), &manifest) {
             let shown = file.to_string_lossy().replace('\\', "/");
             let text = std::fs::read_to_string(&file).unwrap_or_default();
             let toks = rust_lex::tokens(&text);
-            for (i, (spawn, func, caller)) in rows.iter().enumerate() {
-                let hits: Vec<usize> = toks
-                    .iter()
-                    .filter(|t| t.kind == Kind::Ident && t.text == *func)
+            let is_tool = toks
+                .windows(2)
+                .any(|w| w[0].text == "Tool" && w[1].text == "for");
+            let lines_of = |ident: &str| -> Vec<usize> {
+                toks.iter()
+                    .filter(|t| t.kind == Kind::Ident && t.text == ident)
                     .map(|t| t.line)
-                    .collect();
+                    .collect()
+            };
+            for (i, row) in rows.iter().enumerate() {
+                let (spawn, func, caller) = (row.spawn, row.func, row.caller);
+                let hits = lines_of(func);
                 if shown.ends_with(spawn) {
                     defined[i] |= !hits.is_empty();
                 } else if shown.ends_with(caller) {
                     called[i] |= !hits.is_empty();
-                    if toks
-                        .windows(2)
-                        .any(|w| w[0].text == "Tool" && w[1].text == "for")
-                    {
+                    if is_tool {
                         problems.push(format!(
                             "{caller} implements a model `Tool`, so the model could reach `{func}`"
                         ));
@@ -2170,10 +2200,48 @@ fn user_command_problems(
                         ));
                     }
                 }
+                // One level up: who may name the caller's way in.
+                let dispatch = row.dispatch.iter().any(|d| shown.ends_with(d));
+                for (j, entry) in row.entries.iter().enumerate() {
+                    let hits = lines_of(entry);
+                    if shown.ends_with(caller) {
+                        entered[i][j] |= !hits.is_empty();
+                    } else if dispatch {
+                        entered[i][j] |= !hits.is_empty();
+                        if is_tool && !hits.is_empty() {
+                            problems.push(format!(
+                                "{}: names `{entry}` and implements a model `Tool`, so the model \
+                                 could reach {caller} and through it `{func}`",
+                                file.display()
+                            ));
+                        }
+                    } else {
+                        for line in hits {
+                            problems.push(format!(
+                                "{}:{line}: names `{entry}`, the way into {caller}, which only \
+                                 {} may",
+                                file.display(),
+                                row.dispatch.join(" and ")
+                            ));
+                        }
+                    }
+                }
             }
         }
     }
-    for (i, (spawn, func, caller)) in rows.iter().enumerate() {
+    for (i, row) in rows.iter().enumerate() {
+        for (j, entry) in row.entries.iter().enumerate() {
+            if !entered[i][j] {
+                problems.push(format!(
+                    "neither {} nor {} names `{entry}`; the row is stale",
+                    row.caller,
+                    row.dispatch.join(" nor ")
+                ));
+            }
+        }
+    }
+    for (i, row) in rows.iter().enumerate() {
+        let (spawn, func, caller) = (row.spawn, row.func, row.caller);
         if !defined[i] {
             problems.push(format!(
                 "{spawn} no longer names `{func}`; the row is stale"
@@ -2184,14 +2252,14 @@ fn user_command_problems(
                 "{caller} no longer calls `{func}`; the row is stale"
             ));
         }
-        if !spawn_sites.iter().any(|(s, _)| s == spawn) {
+        if !spawn_sites.iter().any(|(s, _)| *s == spawn) {
             problems.push(format!(
                 "{spawn} has no RUNTIME_SPAWN_SITES row saying where its program comes from"
             ));
         }
     }
     for (site, _) in spawn_sites {
-        if site.contains("/src/sessions/") && !rows.iter().any(|(spawn, _, _)| spawn == site) {
+        if site.contains("/src/sessions/") && !rows.iter().any(|r| r.spawn == *site) {
             problems.push(format!(
                 "{site} starts a program under src/sessions/ and is neither a model tool in \
                  AGENT_CLI_SPAWNERS nor a user command in AGENT_CLI_USER_COMMANDS"
@@ -3044,11 +3112,22 @@ fn an_agent_cli_a_person_starts_is_red_once_the_model_can_reach_it() {
         "tacet-cli/src/handoff_cmd.rs",
         "fn run() { codex::inject_via_app_server(\"/opt/codex\"); } // inject_via_app_server\n",
     );
-    let rows = [(
-        "tacet-tools/src/sessions/writeback/codex.rs",
-        "inject_via_app_server",
-        "tacet-cli/src/handoff_cmd.rs",
-    )];
+    ws.write(
+        "tacet-cli/src/main.rs",
+        "mod handoff_cmd;\nfn main() { match c { Command::Handoff { job } => handoff_cmd::run(job) } }\n",
+    );
+    ws.write(
+        "tacet-cli/src/cli.rs",
+        "pub enum HandoffJob { Note { agent: String } }\n",
+    );
+    let rows = [UserCommand {
+        spawn: "tacet-tools/src/sessions/writeback/codex.rs",
+        func: "inject_via_app_server",
+        caller: "tacet-cli/src/handoff_cmd.rs",
+        entries: &["handoff_cmd", "HandoffJob"],
+        dispatch: &["tacet-cli/src/main.rs", "tacet-cli/src/cli.rs"],
+        why: "a test",
+    }];
     let sites = [("tacet-tools/src/sessions/writeback/codex.rs", "a test")];
     // As shipped: one definition, one caller, the name in a comment elsewhere
     // is not a call.
@@ -3066,6 +3145,52 @@ fn an_agent_cli_a_person_starts_is_red_once_the_model_can_reach_it() {
     let p = user_command_problems(&ws.0, &rows, &sites);
     assert!(p.iter().any(|m| m.contains("handoff_tool.rs:2")), "{p:#?}");
     std::fs::remove_file(ws.0.join("tacet-tools/src/handoff_tool.rs")).unwrap();
+
+    // A model tool that runs the SUBCOMMAND instead of the function: it names
+    // neither `inject_via_app_server` nor `codex` (review of 10 Oct 2026,
+    // green under the one-level check).
+    ws.write(
+        "tacet-cli/src/zz_probe.rs",
+        "impl Tool for HandoffProbe { fn call(&self) {\n crate::handoff_cmd::run(crate::cli::HandoffJob::Note { agent, program: Some(program) }); } }\n",
+    );
+    let p = user_command_problems(&ws.0, &rows, &sites);
+    assert!(
+        p.iter()
+            .any(|m| m.contains("zz_probe.rs:2: names `handoff_cmd`")),
+        "{p:#?}"
+    );
+    assert!(
+        p.iter()
+            .any(|m| m.contains("zz_probe.rs:2: names `HandoffJob`")),
+        "{p:#?}"
+    );
+    std::fs::remove_file(ws.0.join("tacet-cli/src/zz_probe.rs")).unwrap();
+
+    // The same tool written into a dispatch file, where naming is allowed.
+    ws.write(
+        "tacet-cli/src/main.rs",
+        "mod handoff_cmd;\nimpl Tool for HandoffProbe { fn call(&self) { handoff_cmd::run(job) } }\n",
+    );
+    let p = user_command_problems(&ws.0, &rows, &sites);
+    assert!(
+        p.iter()
+            .any(|m| m.contains("main.rs: names `handoff_cmd` and implements")),
+        "{p:#?}"
+    );
+
+    // The module renamed: an entry no file writes is a stale row, not a pass.
+    ws.write("tacet-cli/src/main.rs", "mod handoff;\nfn main() {}\n");
+    let p = user_command_problems(&ws.0, &rows, &sites);
+    assert!(
+        p.iter()
+            .any(|m| m.contains("names `handoff_cmd`; the row is stale")),
+        "{p:#?}"
+    );
+    ws.write(
+        "tacet-cli/src/main.rs",
+        "mod handoff_cmd;\nfn main() { match c { Command::Handoff { job } => handoff_cmd::run(job) } }\n",
+    );
+    assert!(user_command_problems(&ws.0, &rows, &sites).is_empty());
 
     // A re-export under another name is still the name, written once.
     ws.write(

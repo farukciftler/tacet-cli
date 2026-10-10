@@ -19,6 +19,40 @@ releases to follow.
 
 ---
 
+## Unreleased — the audit of 9 Oct 2026, wave 5
+
+Not published, and kept apart from waves 1 to 4 so a reader can tell which
+round a line belongs to. `tacet_tools::sessions::writeback` is new public API
+in `tacet-tools`; nothing existing changed shape.
+
+**Added:**
+
+* `tacet handoff` (`hook`, `install`, `show`, `update`, `note`, `tasks`): Tacet's
+  progress reported back to the agent a session came from (RG-21 to RG-27,
+  RG-31). Every write into another agent's files asks y/N first, and with
+  nobody at the terminal the answer is no. Codex rollout appends and
+  Antigravity `task.md` writes are refused on every version until a write is
+  measured; see `docs/agent-handoff.md` for what is measured and what is not.
+* `tacet handoff note codex <id> --program <path>` is the one place Tacet
+  starts another agent's CLI: the binary at the path you give, as
+  `app-server`, after a y/N naming the resolved file. No model turn is
+  started. The network-monopoly test now holds that no model tool can reach
+  it (RG-23, RG-33).
+
+**Fixed (before it shipped):**
+
+* `tacet handoff install --path` merged the hook into the settings file
+  before asking, then wrote that merge after the yes. A change made while the
+  question was on screen (Claude Code rewrites its own `settings.json` on
+  `/model`) was lost. It now re-reads the file after the yes and writes
+  nothing if it changed. The temporary file is created 0600 rather than at
+  the umask's 0644, so a settings file holding an API key is never briefly
+  world-readable (RG-21).
+* The guard that the Codex app-server is reached only from `tacet handoff`
+  checked only who names the spawning function. A model tool that ran the
+  `handoff` subcommand itself passed it. The guard now also checks who names
+  the subcommand's module and job type (RG-23).
+
 ## Unreleased — the audit of 9 Oct 2026, wave 4
 
 Not published, and kept apart from waves 1 to 3 so a reader can tell which
