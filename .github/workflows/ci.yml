@@ -33,6 +33,14 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        # THE WHOLE HISTORY, because tests read it: the README's model table
+        # is dated by the commit that first held its rows, and the replaced
+        # 3090 run by `git rev-list --count`. The default depth of 1 made that
+        # one commit "introduce" every row, and the date test went red on all
+        # three platforms (review of 10 Oct 2026). The tests now refuse a
+        # shallow clone outright rather than measure it.
+        with:
+          fetch-depth: 0
       # `stable` IS A BRANCH of dtolnay/rust-toolchain, not a tag, so the pin is
       # that branch's head on 10 Oct 2026 and the toolchain is named explicitly
       # — a SHA carries no toolchain name for the action to infer one from.
@@ -59,7 +67,7 @@ jobs:
       # which is `#[cfg(target_os = "macos")]` and does not compile here at all —
       # and fails if this line disagrees with them.
       #
-      # One `apt-get install` is what makes those 22 real, which is why this
+      # One `apt-get install` is what makes those 24 real, which is why this
       # lives in the existing matrix job rather than in a fourth job: it needs no
       # second cold Rust build and no second cache key.
       # The cost is entirely test time — the newly-enabled tests carry 20-25 s

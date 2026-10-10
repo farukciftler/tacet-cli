@@ -806,4 +806,145 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    // --- The refusals `append_note` documents, each driven (RG-21 review of
+    // 10 Oct 2026: each of these could be replaced by `if false` with the
+    // whole suite green). Every one leaves the file byte-identical.
+
+    /// Another agent appending while the question is on screen: the length
+    /// after `confirm` is not the length read, so nothing is written — the
+    /// note would otherwise follow (or be glued onto) the other writer's line.
+    #[test]
+    fn a_transcript_that_changes_while_asking_is_not_written() {
+        let (root, path) = root_with("2.1.285");
+        let src = ClaudeSource::with_probe(dead);
+        let writer = AppendsWhileAsking { path: path.clone() };
+        let r = append_note(&src, &root, ID, &note(), None, &writer);
+        match r {
+            Err(WriteError::Refused(why)) => {
+                assert!(why.contains("changed since it was read"), "{why}")
+            }
+            other => panic!("a note was written over a changed transcript: {other:?}"),
+        }
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            after.ends_with("{\"type\":\"summary\",\"summary\":\"later\"}\n"),
+            "the other writer's line is not the last one: {after}"
+        );
+        assert!(!after.contains("OSPREY-7"), "the note was written: {after}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A chain the reader had to step over something to rebuild — here a
+    /// parent that is not in the file, the corpus's orphan shape — is one a
+    /// note could be chained onto without the agent loading it.
+    #[test]
+    fn a_chain_that_did_not_rebuild_cleanly_is_refused() {
+        let (root, path) = root_with("2.1.285");
+        let text = std::fs::read_to_string(&path).unwrap().replacen(
+            "\"parentUuid\":null",
+            "\"parentUuid\":\"u9999999-0000-4000-8000-000000000000\"",
+            1,
+        );
+        std::fs::write(&path, &text).unwrap();
+        let ask = Answer::yes();
+        let r = append_note(
+            &ClaudeSource::with_probe(dead),
+            &root,
+            ID,
+            &note(),
+            None,
+            &ask,
+        );
+        match r {
+            Err(WriteError::Refused(why)) => {
+                assert!(why.contains("did not rebuild cleanly"), "{why}")
+            }
+            other => panic!("a torn chain was written to: {other:?}"),
+        }
+        assert!(ask.asked.borrow().is_empty(), "asked about a refused write");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The last line is valid JSON but has no newline: a writer mid-line, or
+    /// a crash. The note would be glued onto it. (The older case above ends
+    /// in a fragment the reader cannot parse, so the chain check refused it
+    /// first and this one was never reached.)
+    #[test]
+    fn an_unfinished_last_line_is_refused() {
+        let (root, path) = root_with("2.1.285");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let text = text.trim_end_matches('\n').to_string();
+        std::fs::write(&path, &text).unwrap();
+        let r = append_note(
+            &ClaudeSource::with_probe(dead),
+            &root,
+            ID,
+            &note(),
+            None,
+            &Answer::yes(),
+        );
+        match r {
+            Err(WriteError::Refused(why)) => assert!(why.contains("unfinished"), "{why}"),
+            other => panic!("a note was glued onto an unfinished line: {other:?}"),
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A file named for one session whose chain is another's.
+    #[test]
+    fn a_leaf_of_another_session_is_refused() {
+        const OTHER: &str = "c0de0002-0000-4000-8000-000000000002";
+        let (root, path) = root_with("2.1.285");
+        let text = std::fs::read_to_string(&path).unwrap().replace(ID, OTHER);
+        std::fs::write(&path, &text).unwrap();
+        let r = append_note(
+            &ClaudeSource::with_probe(dead),
+            &root,
+            ID,
+            &note(),
+            None,
+            &Answer::yes(),
+        );
+        match r {
+            Err(WriteError::Refused(why)) => {
+                assert!(why.contains("another session's chain"), "{why}")
+            }
+            other => panic!("another session's chain was written to: {other:?}"),
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `verify`'s first two checks, each on its own: the session reading from
+    /// another file than the one written, and a leaf that is not the note.
+    /// Only the third (`reaches`) was driven, by the wrong-parent test.
+    #[test]
+    fn the_check_after_a_write_sees_another_file_and_another_leaf() {
+        let (root, path) = root_with("2.1.285");
+        let src = ClaudeSource::with_probe(dead);
+        const LEAF: &str = "u0000002-0000-4000-8000-000000000000";
+        const FIRST: &str = "u0000001-0000-4000-8000-000000000000";
+        let elsewhere = path.with_file_name("elsewhere.jsonl");
+        let e = verify(&src, &root, ID, &elsewhere, FIRST, LEAF).unwrap_err();
+        assert!(e.contains("not the file written"), "{e}");
+        let e = verify(
+            &src,
+            &root,
+            ID,
+            &path,
+            FIRST,
+            "u0000009-0000-4000-8000-000000000000",
+        )
+        .unwrap_err();
+        assert!(
+            e.contains("is not the note") || e.contains("not the note"),
+            "{e}"
+        );
+        // And the file as it is passes, so the two refusals are the checks.
+        verify(&src, &root, ID, &path, FIRST, LEAF).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

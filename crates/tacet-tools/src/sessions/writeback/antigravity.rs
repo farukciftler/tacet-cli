@@ -541,4 +541,44 @@ mod tests {
         assert_eq!(n, 1);
         assert!(text.ends_with("- [x] blocked one (blocked: x)\n"), "{text}");
     }
+
+    /// Antigravity (or the user) editing task.md while the question is on
+    /// screen. Replacing the re-read with `if false` kept the suite green
+    /// (RG-21 review of 10 Oct 2026); the write would then replace their edit
+    /// with a version made from the text before it.
+    struct EditsWhileAsking(PathBuf);
+
+    impl Confirm for EditsWhileAsking {
+        fn confirm(&self, _: &Question) -> bool {
+            let mut text = std::fs::read_to_string(&self.0).unwrap();
+            text.push_str("- [ ] Added by the agent meanwhile\n");
+            std::fs::write(&self.0, text).unwrap();
+            true
+        }
+    }
+
+    #[test]
+    fn a_task_md_that_changes_while_asking_is_not_written() {
+        let root = root();
+        let path = root.join("brain").join(ID).join("task.md");
+        let r = update_impl(
+            &root,
+            ID,
+            &[set("Handle DST", Status::Completed)],
+            true,
+            &quiet,
+            &EditsWhileAsking(path.clone()),
+            false,
+        );
+        assert!(
+            matches!(r, Err(WriteError::Refused(ref w)) if w.contains("changed while the question")),
+            "{r:?}"
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            text,
+            format!("{TASK_MD}- [ ] Added by the agent meanwhile\n")
+        );
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
 }

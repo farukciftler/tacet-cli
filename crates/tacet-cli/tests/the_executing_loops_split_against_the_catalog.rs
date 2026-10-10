@@ -138,3 +138,116 @@ fn every_executing_loop_gates_the_call_on_the_split() {
          executor when `generation.executable` is false: {ungated:#?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The shell's gate, on the binary
+// ---------------------------------------------------------------------------
+//
+// THE SOURCE GUARD ABOVE COUNTS A LINE, NOT WHAT IT DOES. A review changed
+// chat.rs's `if last_pass || !generation.executable` to `&&` and every
+// tacet-cli test stayed green, both above included: the line still held the
+// text. Under that mutation the shell ran a call the model declined inside its
+// reasoning on every pass but the last. The eval runner's copy has a
+// behavioural test (`runner::tests::a_call_declined_inside_the_thinking_does_not_run`);
+// this is the shell's, through `tacet chat` on the scripted engine with
+// `shell`/`echo` installed in a temp home.
+
+use std::io::Write;
+use std::process::{Command, Stdio};
+
+struct Home(PathBuf);
+
+impl Home {
+    fn new(tag: &str) -> Self {
+        let p = std::env::temp_dir().join(format!("tacet-h5-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(p.join("work")).expect("a temp directory");
+        Home(p)
+    }
+}
+
+impl Drop for Home {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn tacet(home: &Home) -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_tacet"));
+    c.env_remove("XDG_CONFIG_HOME")
+        .env_remove("TACET_MODEL")
+        .env_remove("TACET_TOKENIZER")
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("CODEX_HOME")
+        .env("HOME", &home.0)
+        .env("TACET_HOME", &home.0)
+        .current_dir(home.0.join("work"))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    c
+}
+
+fn output(mut c: Command, stdin: &str) -> String {
+    c.stdin(Stdio::piped());
+    let mut child = c.spawn().expect("the tacet binary runs");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(stdin.as_bytes())
+        .expect("feeds stdin");
+    let out = child.wait_with_output().expect("tacet finishes");
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+}
+
+fn chat_with(home: &Home, first_pass: &str) -> String {
+    let mut c = tacet(home);
+    c.args(["chat", "--engine", "fake", "--script", first_pass])
+        .args(["--script", "Nothing to run."])
+        .args(["--message", "should anything run?"])
+        .stdin(Stdio::null());
+    let out = c.output().expect("the tacet binary runs");
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+}
+
+const CALL: &str = r#"{"name":"shell","arguments":{"command":"echo","args":["H5PROBE"]}}"#;
+
+#[test]
+fn the_shell_does_not_run_a_call_declined_inside_the_thinking() {
+    let home = Home::new("declined");
+    let mut c = tacet(&home);
+    c.args(["addon", "install", "shell"]);
+    let installed = output(c, "echo\n\ny\n");
+    assert!(
+        installed.contains("the `shell` tool is in the catalog"),
+        "the shell addon did not install:\n{installed}"
+    );
+
+    // THE CONTROL: the same call, written as the answer, runs — so a quiet
+    // run below is the gate and not a shell that never ran anything.
+    let control = chat_with(&home, CALL);
+    assert!(
+        control.contains("exit 0"),
+        "the control call did not run, so the refusal below proves nothing:\n{control}"
+    );
+
+    // The review's shape for `web_search`, with `shell`: a key=value call
+    // inside the reasoning, turned down in the same sentence. (A JSON call
+    // with prose after it is not parsed at all, so it would prove nothing.)
+    let declined = chat_with(
+        &home,
+        r#"<think>I could write <tool_call>shell command="echo" but I will not.</think>Nothing to run."#,
+    );
+    assert!(
+        !declined.contains("exit 0"),
+        "a call the model declined inside <think> ran (audit H5):\n{declined}"
+    );
+}

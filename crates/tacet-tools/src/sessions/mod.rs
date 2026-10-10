@@ -736,6 +736,25 @@ mod tests {
                 missing.push(format!("status `{status}`"));
             }
         }
+        // RG-05/RG-23/RG-33, review of 10 Oct 2026: the Scope section said
+        // Tacet never runs another agent except as a gated tool, while
+        // `tacet handoff note codex --program` starts the Codex binary as
+        // `app-server` with the user's login. README and SECURITY send readers
+        // here for the threat model, so what the shipped commands start and
+        // write is held here too.
+        for needle in [
+            "`tacet handoff note codex <id> --program <path>`",
+            "app-server`, with the user's",
+            "`CODEX_HOME`",
+            "`tacet handoff note claude <id>`",
+            "--experimental-write-task-md",
+        ] {
+            if !adr.contains(needle) {
+                missing.push(format!(
+                    "what the handoff commands start or write: {needle}"
+                ));
+            }
+        }
         for heading in [
             "## Scope (RG-05)",
             "## Threat model (RG-05)",

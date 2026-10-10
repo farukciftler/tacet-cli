@@ -103,6 +103,20 @@ fn the_claude_hook_prints_session_start_json_and_never_fails() {
         "{ctx}"
     );
     assert!(ctx.contains("not an instruction from the user"), "{ctx}");
+    // RG-21 review of 10 Oct 2026: the report-back command names this binary
+    // by the canonical path the hook entry runs, not a bare `tacet` that is
+    // "command not found" wherever the absolute path was the point.
+    let bin = std::fs::canonicalize(env!("CARGO_BIN_EXE_tacet")).expect("the binary");
+    assert!(
+        ctx.contains(&format!(
+            "{} handoff update {slug} {SESSION}",
+            bin.display()
+        )) || ctx.contains(&format!(
+            "'{}' handoff update {slug} {SESSION}",
+            bin.display()
+        )),
+        "the context does not name the binary the hook runs: {ctx}"
+    );
     assert!(v["systemMessage"].is_string());
 
     for stdin in [
@@ -288,4 +302,50 @@ fn a_note_with_nobody_to_ask_writes_nothing() {
         "the transcript was written"
     );
     assert_eq!(listing(path.parent().unwrap()), names, "a file was added");
+}
+
+/// RG-22, review of 10 Oct 2026: `handoff note` finds a session through the
+/// folders the `agent-sessions` addon records — the ones `chat --from` and the
+/// session tools read — and not only through each agent's default. With the
+/// addon naming a folder and no `~/.claude`, `chat --from` worked and `note`
+/// said "no Claude Code session … under the known folders". Here it reaches
+/// the question (and, with nobody to ask, the refusal of it) without
+/// `--root`.
+#[test]
+fn a_note_finds_the_session_in_the_addons_folders() {
+    use tacet_web::addon::{AGENT_SESSIONS, Addon, ROOTS_KEY, Record};
+    let s = Scratch::new("note-registry");
+    handoff::write(&s.handoff_dir(), &record(AgentKind::ClaudeCode)).expect("record");
+    let (root, path) = claude_root(&s);
+    let mut registry = Record::empty();
+    registry.add(
+        Addon::new(AGENT_SESSIONS, AGENT_SESSIONS)
+            .with_setting(ROOTS_KEY, root.display().to_string()),
+    );
+    tacet_web::addon::write_to_path(&s.0.join("addons.json"), &registry).expect("registry");
+    let before = std::fs::read(&path).unwrap();
+    let out = tacet(
+        &s,
+        &["handoff", "note", AgentKind::ClaudeCode.slug(), SESSION],
+        "",
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !err.contains("no Claude Code session"),
+        "the addon's folder was not looked in: {err}"
+    );
+    assert!(err.contains("declined"), "{err}");
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+
+    // And without the addon's folder, the error says where it looked and how
+    // to name another folder.
+    std::fs::remove_file(s.0.join("addons.json")).unwrap();
+    let out = tacet(
+        &s,
+        &["handoff", "note", AgentKind::ClaudeCode.slug(), SESSION],
+        "",
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("no Claude Code session"), "{err}");
+    assert!(err.contains("--root"), "{err}");
 }

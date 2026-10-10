@@ -473,6 +473,16 @@ const RUNTIME_SPAWN_SITES: &[(&str, &str)] = &[
          with a hook event on stdin (RG-21/23/25); no agent program is run",
     ),
     (
+        "tacet-cli/tests/the_executing_loops_split_against_the_catalog.rs",
+        "`env!(\"CARGO_BIN_EXE_tacet\")`, the binary under test, on the scripted engine with \
+         `shell`/`echo` installed in a temp home (audit H5, the shell's thinking-split gate)",
+    ),
+    (
+        "tacet-cli/tests/the_smoke_check_names_real_flags.rs",
+        "`env!(\"CARGO_BIN_EXE_tacet\")`, the binary under test, as `chat --help` — the \
+         parser's own list of flags; nothing else runs",
+    ),
+    (
         "tacet-cli/tests/the_readme_quotes_the_baselines.rs",
         "`env!(\"CARGO_BIN_EXE_tacet\")`, the binary under test, as `eval --compare` over \
          two committed baselines (audit D1); no model is loaded and no socket opened",

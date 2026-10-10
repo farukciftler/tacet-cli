@@ -52,7 +52,7 @@ use crate::data_store::Table;
 use crate::sessions::antigravity::AntigravitySource;
 use crate::sessions::claude::ClaudeSource;
 use crate::sessions::codex::CodexSource;
-use crate::sessions::handoff::{self, HandoffError, HandoffRecord, HandoffTask};
+use crate::sessions::handoff::{self, HandoffError, HandoffRecord};
 use crate::sessions::model::{self, iso_utc, validate_id};
 use crate::sessions::{
     AgentKind, AgentSession, Entry, EntryKind, Role, SessionError, SessionSource, SessionSummary,
@@ -436,17 +436,27 @@ impl Digest {
         // Shown relative to the session's own directory when they are under it:
         // the user knows the project, and the prefix is characters the budget
         // would rather spend on the next item.
-        let files = touched_files(&s.entries)
-            .into_iter()
-            .map(|f| match &s.cwd {
+        //
+        // DEDUPLICATED AFTER THE STRIP, not only before it (review of 10 Oct
+        // 2026, RG-16): Antigravity's `view_file` names
+        // `/Users/dev/src/rollover app/src/scheduler.rs` and its
+        // `replace_file_content` names `src/scheduler.rs` — two strings for
+        // one file until the cwd comes off, and then "Files touched:
+        // src/scheduler.rs, src/scheduler.rs" spent a slot and the budget on
+        // a repeat. The most recent mention keeps its place, as in `push_file`.
+        let mut files: Vec<String> = Vec::new();
+        for f in touched_files(&s.entries) {
+            let shown = match &s.cwd {
                 Some(cwd) => Path::new(&f)
                     .strip_prefix(cwd)
                     .map(|r| r.display().to_string())
                     .unwrap_or(f),
                 None => f,
-            })
-            .map(|f| one_line(&f, FILE_CHARS))
-            .collect();
+            };
+            let shown = one_line(&shown, FILE_CHARS);
+            files.retain(|seen| seen != &shown);
+            files.push(shown);
+        }
         Digest {
             agent: s.agent,
             id: s.id.clone(),
@@ -588,30 +598,18 @@ pub fn transcript_text(session: &AgentSession) -> String {
 // ---------------------------------------------------------------------------
 
 /// The fence a seeded summary is put in. Not one of the prompt's own fences
-/// (`tacet_kernel::defang::FENCE_NAMES`), so it is neutralised here: a summary
-/// that contained the closing tag would end the fence early and speak, after
-/// it, as the user.
+/// (`tacet_kernel::defang::FENCE_NAMES`) but a data fence
+/// (`DATA_FENCE_NAMES`), so it is neutralised here: a summary that contained
+/// the closing tag would end the fence early and speak, after it, as the user.
 pub const SEED_FENCE: &str = "imported_session";
 
-/// `<imported_session` and `</imported_session`, in any case, get a space
-/// after the `<` — the same treatment the kernel's defang gives its own
-/// fences, for the one fence it does not know.
+/// Every data fence's opening and closing tag, in any case, gets a space after
+/// the `<`. ALL OF THEM, not only `imported_session`: on a `--from` run with a
+/// pipe, the seed and `<stdin>` sit in the same question, and a transcript
+/// closing the other one is the same forgery (review of 10 Oct 2026). The rule
+/// lives in the kernel; this used to be a private copy of it for one name.
 fn neutralise_fence(text: &str) -> String {
-    let lower = text.to_ascii_lowercase();
-    let mut out = String::with_capacity(text.len() + 8);
-    let mut i = 0;
-    while i < text.len() {
-        let rest = &lower[i..];
-        let hit = rest.starts_with(&format!("<{SEED_FENCE}"))
-            || rest.starts_with(&format!("</{SEED_FENCE}"));
-        let ch = text[i..].chars().next().unwrap_or(' ');
-        out.push(ch);
-        if hit {
-            out.push(' ');
-        }
-        i += ch.len_utf8();
-    }
-    out
+    tacet_kernel::neutralise_data_fences(text)
 }
 
 /// A session read for continuing here.
@@ -702,20 +700,16 @@ pub enum HandoffStart {
 /// tasks, and the last request as what comes next.
 pub fn handoff_record(d: &Digest) -> HandoffRecord {
     let mut record = HandoffRecord::new(d.agent, &d.id);
-    record.summary = d.render(SUMMARY_BUDGET);
-    record.tasks = d
-        .plan
-        .iter()
-        .enumerate()
-        .map(|(i, (status, title))| HandoffTask {
-            id: (i + 1).to_string(),
-            title: title.clone(),
-            status: *status,
-            note: String::new(),
-            updated_at: None,
-        })
-        .take(handoff::MAX_TASKS)
-        .collect();
+    // LABELLED AS FOUND, AND NO TASKS (review of 10 Oct 2026, RG-27). This
+    // filled `summary` with the digest and `tasks` with the agent's own plan,
+    // stamped `by: tacet`, and nothing updates the record after Tacet's turns:
+    // `tacet handoff note` then told Claude "Tacet worked on this session and
+    // reports its progress" above Claude's own "assistant: Tests added.", and
+    // the hook presented its "Fixed: the rollover now carries the month." as
+    // Tacet's report — the misattribution E2/E3 measured, written into the
+    // agent's own model context. The plan is the agent's and it has it; tasks
+    // are what somebody reports through `tacet handoff update`.
+    record.summary = format!("{}\n{}", found_label(d.agent), d.render(SUMMARY_BUDGET));
     record.next = d
         .last_ask
         .as_ref()
@@ -723,6 +717,15 @@ pub fn handoff_record(d: &Digest) -> HandoffRecord {
         .map(|a| clip(&format!("continue in Tacet: {a}"), handoff::MAX_LINE_CHARS))
         .unwrap_or_default();
     record
+}
+
+/// The line a started record's summary opens with: whose work it describes.
+pub fn found_label(agent: AgentKind) -> String {
+    format!(
+        "The session as Tacet found it when the user continued it in Tacet — {}'s own \
+         work, not Tacet's:",
+        agent.display_name()
+    )
 }
 
 /// Starts the handoff file for a continuation (RG-07, RG-20) — and never
@@ -1517,6 +1520,42 @@ mod tests {
         );
     }
 
+    /// RG-16 review of 10 Oct 2026, on the fixture it was reproduced on: an
+    /// absolute and a relative path to one file are one entry once the
+    /// session's cwd is stripped — not "Files touched: src/scheduler.rs,
+    /// src/scheduler.rs".
+    #[test]
+    fn a_file_named_absolute_and_relative_is_listed_once() {
+        let read = read_session(
+            &SessionRoots::Only(vec![
+                fixtures(AgentKind::Antigravity).join("antigravity-ide"),
+            ]),
+            AgentKind::Antigravity,
+            "7f3c2a10-5b6e-4c1d-9a8f-0e1d2c3b4a01",
+        )
+        .unwrap();
+        let raw = touched_files(&read.session.entries);
+        assert!(
+            raw.iter()
+                .filter(|f| f.ends_with("src/scheduler.rs"))
+                .count()
+                >= 2,
+            "the fixture no longer names the file two ways, so this proves nothing: {raw:?}"
+        );
+        let d = Digest::of(&read);
+        assert_eq!(
+            d.files.iter().filter(|f| *f == "src/scheduler.rs").count(),
+            1,
+            "{:?}",
+            d.files
+        );
+        let text = d.render(SUMMARY_BUDGET);
+        assert!(
+            !text.contains("src/scheduler.rs, src/scheduler.rs"),
+            "{text}"
+        );
+    }
+
     /// RG-20: a continuation starts the handoff record — once. A record that
     /// is already there (another agent may have written progress into it) is
     /// kept, and a forged one is refused rather than overwritten.
@@ -1542,6 +1581,29 @@ mod tests {
         .unwrap();
         assert!(record.summary.contains("Fix the date rollover"));
         assert_eq!(record.by, "tacet");
+        // RG-27 review: what Tacet found is labelled as the other agent's, and
+        // the agent's own plan is not handed back to it as Tacet's tasks.
+        assert!(
+            record
+                .summary
+                .starts_with(&found_label(AgentKind::ClaudeCode)),
+            "{}",
+            record.summary
+        );
+        assert!(record.tasks.is_empty(), "{:?}", record.tasks);
+        // A session WITH a plan — Antigravity's task.md — starts no tasks
+        // either; the fixture's plan is checked first, or this proves nothing.
+        let ag = read_session(
+            &SessionRoots::Only(vec![
+                fixtures(AgentKind::Antigravity).join("antigravity-ide"),
+            ]),
+            AgentKind::Antigravity,
+            "7f3c2a10-5b6e-4c1d-9a8f-0e1d2c3b4a01",
+        )
+        .unwrap();
+        let ag = Digest::of(&ag);
+        assert!(!ag.plan.is_empty(), "the fixture has no plan to leave out");
+        assert!(handoff_record(&ag).tasks.is_empty());
 
         // Progress written back by the other agent survives a second start.
         let mut progressed = record.clone();

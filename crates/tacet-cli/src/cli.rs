@@ -298,11 +298,12 @@ pub enum Command {
     /// third what it CAN DO.
     ///
     /// CLOSED BY DEFAULT. On a fresh install NONE of the addon tools are in the
-    /// catalog — not `web_search`/`web_fetch`, not `shell`, `http`, `db` or
-    /// `clipboard`; the "data does not leave the device" default is applied not
-    /// as a setting but as the ABSENCE of the tool.
+    /// catalog — not `web_search`/`web_fetch`, not `shell`, `http`, `db`,
+    /// `clipboard` or the agent-session readers; the "data does not leave the
+    /// device" default is applied not as a setting but as the ABSENCE of the
+    /// tool.
     ///
-    /// THE SIX NAMES ARE THIS BUILD'S WHOLE LIST. Third-party extension is MCP
+    /// THE SEVEN NAMES ARE THIS BUILD'S WHOLE LIST. Third-party extension is MCP
     /// (`mcp.json` in the config directory), not this command.
     Addon {
         #[command(subcommand)]
@@ -568,10 +569,11 @@ pub enum AddonJob {
         #[arg(long)]
         json: bool,
     },
-    /// Installs an addon: web-search, shell, workspace, http, db, clipboard.
+    /// Installs an addon: agent-sessions, web-search, shell, workspace, http, db,
+    /// clipboard.
     ///
     /// A FLAGLESS CALL ASKS its questions; the flags are for scripts and skip
-    /// them. `tacet addon list` prints the six names with a line each.
+    /// them. `tacet addon list` prints the seven names with a line each.
     Install {
         /// The addon name (`tacet addon list` prints them).
         name: String,
@@ -685,6 +687,41 @@ mod command_line {
     use super::*;
     use crate::config;
     use clap::CommandFactory;
+
+    /// RG-17 review of 10 Oct 2026: the help the user is told to read names
+    /// every addon this build can install, and counts them right. It said
+    /// "six" and listed six after `agent-sessions` made seven, while
+    /// `tacet addon list` printed seven.
+    #[test]
+    fn the_addon_help_names_every_addon_and_counts_them() {
+        let mut shell = Shell::command();
+        let addon = shell.find_subcommand_mut("addon").expect("addon");
+        let addon_help = addon.render_long_help().to_string();
+        let install = addon
+            .find_subcommand_mut("install")
+            .expect("addon install")
+            .render_long_help()
+            .to_string();
+        let names: Vec<&str> = tacet_web::addon::DEFINITIONS
+            .iter()
+            .map(|d| d.name)
+            .collect();
+        for name in &names {
+            assert!(
+                install.contains(&format!("{name},")) || install.contains(&format!("{name}.")),
+                "`tacet addon install --help` does not name {name}:\n{install}"
+            );
+        }
+        let count = [
+            "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+        ][names.len()];
+        for help in [&addon_help, &install] {
+            assert!(
+                help.to_lowercase().contains(&format!("the {count} names")),
+                "the help does not say there are {count} addons:\n{help}"
+            );
+        }
+    }
 
     /// The argument table is a contract with everyone's muscle memory, and clap
     /// only notices a broken one at RUN time — a conflicting flag or a bad

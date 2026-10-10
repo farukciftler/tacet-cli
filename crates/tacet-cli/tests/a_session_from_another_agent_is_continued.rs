@@ -252,3 +252,82 @@ fn an_open_addon_puts_both_readers_in_the_catalog_and_a_closed_one_does_not() {
         );
     }
 }
+
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).expect("a folder");
+    for e in std::fs::read_dir(from)
+        .expect("the fixture folder")
+        .flatten()
+    {
+        let target = to.join(e.file_name());
+        if e.path().is_dir() {
+            copy_tree(&e.path(), &target);
+        } else {
+            std::fs::copy(e.path(), &target).expect("a fixture file");
+        }
+    }
+}
+
+/// RG-17, review of 10 Oct 2026: an empty answer to the roots question
+/// recorded the folders that existed AT INSTALL. With only `~/.claude` there,
+/// the record said `roots: ~/.claude`, and a Codex home that appeared later
+/// was never read — `--from codex:<id>` failed with "no Codex CLI session".
+/// Through the installer the user runs, then the continuation they run.
+#[test]
+fn an_agent_installed_after_the_addon_is_still_read() {
+    use std::io::Write;
+    let scratch = Scratch::new("roots-later");
+    std::fs::create_dir_all(scratch.0.join(".claude")).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tacet"))
+        .args(["addon", "install", AGENT_SESSIONS])
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("CODEX_HOME")
+        .env("HOME", &scratch.0)
+        .env("TACET_HOME", &scratch.0)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the tacet binary runs");
+    child.stdin.take().unwrap().write_all(b"\ny\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "the install failed:\n{stdout}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The folder found today is SHOWN on the approval screen...
+    assert!(
+        stdout.contains(&scratch.0.join(".claude").display().to_string()),
+        "the approval screen did not name the folder it found:\n{stdout}"
+    );
+    // ...and not recorded.
+    let record = tacet_web::addon::read_from_path(&scratch.0.join("addons.json"))
+        .expect("the registry was written");
+    let addon = record.find(AGENT_SESSIONS).expect("the addon is recorded");
+    assert!(
+        addon.values(ROOTS_KEY).is_empty(),
+        "an empty answer recorded {:?}",
+        addon.values(ROOTS_KEY)
+    );
+
+    let codex = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../tacet-tools/tests/fixtures/sessions")
+        .join(AgentKind::Codex.slug())
+        .join("home");
+    copy_tree(&codex, &scratch.0.join(".codex"));
+    let out = chat(
+        &scratch,
+        &format!(
+            "{}:0199d3a1-7c2e-7a10-9b55-3f2c1d0e4a03",
+            AgentKind::Codex.slug()
+        ),
+    );
+    assert!(
+        out.status.success(),
+        "a Codex home added after the install was not read:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

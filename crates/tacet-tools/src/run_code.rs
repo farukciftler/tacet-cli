@@ -2983,16 +2983,48 @@ mod tests {
         (total, macos_only)
     }
 
+    /// H7, review of 10 Oct 2026: SECURITY.md's statement of the socket gap
+    /// names both limits of the scan, read from the constants. It named the
+    /// depth and not the entry budget, so a container's socket at depth 1 of
+    /// a 5,000-entry working folder — unshadowed, reachable — read as covered,
+    /// and a reporter could have been told it was out of scope.
+    #[test]
+    fn security_states_both_limits_of_the_socket_scan() {
+        let security = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../SECURITY.md"),
+        )
+        .expect("SECURITY.md");
+        let security = security.split_whitespace().collect::<Vec<_>>().join(" ");
+        let budget = SOCKET_SCAN_BUDGET.to_string();
+        let (head, tail) = budget.split_at(budget.len() - 3);
+        let budget = format!("{head},{tail}");
+        let depth = ["zero", "one", "two", "three", "four"][SOCKET_SCAN_DEPTH];
+        for claim in [
+            format!("up to {depth} levels deep"),
+            format!("within the first {budget} entries"),
+            format!("deeper than {depth} levels, past an entry budget"),
+        ] {
+            assert!(
+                security.contains(&claim),
+                "SECURITY.md does not say {claim:?}; the scan is {SOCKET_SCAN_DEPTH} levels \
+                 and {SOCKET_SCAN_BUDGET} entries per root"
+            );
+        }
+    }
+
     /// 4b-iii) THE NUMBER IN THE PROSE IS THE NUMBER IN THE SOURCE.
     ///
     /// "TWENTY-FOUR tests go back to skipping" was written in four places and
-    /// branded COUNTED rather than estimated. It was wrong: the real figure on
-    /// Linux is 22 (14 here after excluding the macOS-only
+    /// branded COUNTED rather than estimated. It was wrong at the time: the
+    /// figure on Linux was then 22 (14 here after excluding the macOS-only
     /// `the_clipboard_is_really_cut`, 8 in write_code.rs). A number a reader is
     /// told was counted is the one number that must not be off, so it is no
     /// longer typed anywhere without this test deriving it from the source and
-    /// checking the four documents that quote it. Add a sandbox test tomorrow
-    /// and this goes red naming the figure to move.
+    /// checking the documents that quote it — this comment included, which is
+    /// why it names no current figure. Add a sandbox test tomorrow and this
+    /// goes red naming the figure to move. (The review of 10 Oct 2026 found
+    /// ci.yml saying "those 22 real" fourteen lines under "24 on Linux": only
+    /// the first spelling was checked.)
     #[test]
     fn the_skip_count_the_documents_quote_is_the_count_in_the_source() {
         let (run_total, run_macos) = skipping_tests(include_str!("run_code.rs"));
@@ -3015,8 +3047,9 @@ mod tests {
             .and_then(Path::parent)
             .expect("the workflow lives under .github/workflows")
             .to_path_buf();
-        let claims: [(&str, String); 6] = [
+        let claims: [(&str, String); 7] = [
             (".github/workflows/ci.yml", format!("{total} on Linux")),
+            (".github/workflows/ci.yml", format!("those {total} real")),
             (
                 ".github/workflows/ci.yml",
                 format!("{run_linux} in run_code.rs"),

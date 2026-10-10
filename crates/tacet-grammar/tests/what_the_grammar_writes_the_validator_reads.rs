@@ -179,6 +179,57 @@ fn a_field_with_no_possible_value_is_never_offered() {
     );
 }
 
+/// M15, one level further down (review of 10 Oct 2026). The test above
+/// covers a dead field directly in the root; the rule that makes an OBJECT
+/// dead when one of its REQUIRED fields is (`inhabited = false` in `add`) was
+/// held by nothing — set to `true`, every test passed and the optional key
+/// `opt` below was offered: the model could open it and strand inside, with no
+/// value its required `dead` child could take.
+#[test]
+fn an_optional_object_with_a_dead_required_field_is_never_offered() {
+    let nothing = ArgSchema {
+        kind: SchemaKind::Choice { choices: vec![] },
+        description: None,
+    };
+    let schema = ArgSchema::object(vec![
+        Field::new(
+            "opt",
+            ArgSchema::object(vec![Field::new("dead", nothing).required()]),
+        ),
+        Field::new("kept", ArgSchema::bool()),
+    ]);
+    let grammar = Grammar::compile(&schema);
+    let mut state = grammar.state();
+    state.advance(r#"{""#).expect("a key may start");
+    let allowed: Vec<char> = state.allowed_prefixes().chars().collect();
+    assert!(
+        !allowed.contains(&'o'),
+        "the dead object's key opened: {allowed:?}"
+    );
+    assert!(allowed.contains(&'k'));
+    assert!(accepts(&schema, r#"{"kept":true}"#));
+}
+
+/// M15: EVERY control character in a literal is escaped, C1 and DEL included
+/// — `json_body`'s comment says a literal must not be the one place a raw C1
+/// `CSI` (U+009B) can reach the output. Narrowed to the C0 range JSON
+/// requires, every test passed while the grammar accepted the raw byte (review
+/// of 10 Oct 2026).
+#[test]
+fn a_c1_or_del_in_a_choice_is_written_escaped_never_raw() {
+    for (raw, escaped) in [("a\u{9b}b", "a\\u009bb"), ("a\u{7f}b", "a\\u007fb")] {
+        let schema = ArgSchema::object(vec![Field::new("v", ArgSchema::choice([raw])).required()]);
+        assert!(
+            !accepts(&schema, &format!(r#"{{"v":"{raw}"}}"#)),
+            "{raw:?} was accepted raw"
+        );
+        let written = format!(r#"{{"v":"{escaped}"}}"#);
+        assert!(accepts(&schema, &written), "{written} was refused");
+        let back: serde_json::Value = serde_json::from_str(&written).unwrap();
+        assert_eq!(back["v"], raw, "the escape does not decode to the choice");
+    }
+}
+
 // --------------------------------------------------------------- M16: numbers
 
 fn number_field(schema: ArgSchema) -> ArgSchema {

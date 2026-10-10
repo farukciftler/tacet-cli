@@ -31,9 +31,12 @@ not send their data anywhere. Anything that breaks one of those is in scope:
   `$XDG_RUNTIME_DIR`, `/tmp/.X11-unix`), the LXD, Incus, Multipass and MicroK8s
   API sockets, `$SSH_AUTH_SOCK`, every socket `/proc/net/unix` lists as bound
   in the host's network namespace, and sockets up to two levels deep in
-  `/tmp`, `$TMPDIR` and a working folder outside `$HOME`. A socket bound in
-  another network namespace (a container's) in a place none of those names is
-  still reachable; a report naming one that matters is in scope.
+  `/tmp`, `$TMPDIR` and a working folder outside `$HOME` — within the first
+  4,096 entries of each of those three. A socket bound in another network
+  namespace (a container's) is still reachable when it sits deeper than two
+  levels, past an entry budget (a `/tmp` or a working folder with more than
+  4,096 entries in those two levels), or in a place none of those names; a
+  report naming one that matters is in scope.
 * **Path escape.** Every tool that touches the filesystem resolves through
   `sandbox_path`. Reaching a file outside the working directory and the
   registered workspace roots — through a symlink, a `..`, a device path, a
@@ -43,7 +46,8 @@ not send their data anywhere. Anything that breaks one of those is in scope:
   `ureq`. A path that gets user data onto the network through any other route is
   a vulnerability — with one stated exception: `tacet handoff note codex
   <id> --program <path>`, a command you type, starts the Codex binary you named
-  as `codex app-server` after a y/N that says it runs with your Codex login and
+  as `codex app-server` — on the Codex home whose writer lock it checked, which
+  must hold the thread — after a y/N that says it runs with your Codex login and
   can reach the network. That one is in scope only if a model can reach it or
   it runs without the question. So is a path that bypasses the approval gate
   in front of an outbound tool once the session has touched personal data.

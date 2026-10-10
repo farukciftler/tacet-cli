@@ -113,9 +113,10 @@ pub const HOSTS_KEY: &str = "hosts";
 /// roots are handed to them and to nothing else.
 ///
 /// EMPTY MEANS EACH AGENT'S OWN DEFAULT (`$CLAUDE_CONFIG_DIR` or `~/.claude`,
-/// `$CODEX_HOME` or `~/.codex`, the three `~/.gemini/antigravity*`). The
-/// install fills the list with the ones that exist on this machine, so the
-/// approval screen names the folders that will be read rather than a rule.
+/// `$CODEX_HOME` or `~/.codex`, the three `~/.gemini/antigravity*`), looked
+/// up each time a session is read. The install SHOWS the ones that exist on
+/// the approval screen and records none of them: a recorded snapshot hid every
+/// agent installed afterwards (review of 10 Oct 2026).
 pub const ROOTS_KEY: &str = "roots";
 
 /// The database files that may be WRITTEN (`db`).
@@ -707,7 +708,7 @@ pub const DEFINITIONS: &[Definition] = &[
                   never starts the other agent or its model — reading a session costs nothing.",
         settings: &[Setting {
             key: ROOTS_KEY,
-            prompt: "session folders to read (optional — empty means the ones found on this machine)",
+            prompt: "session folders to read (optional — empty means each agent's own folder)",
             help: "one absolute path per line: /Users/you/.claude (empty = each agent's own folder)",
             shape: Shape::Directory,
             many: true,

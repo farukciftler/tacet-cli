@@ -801,6 +801,32 @@ fn a_refusal_of_both_thinking_tags_cites_the_executor() {
     );
 }
 
+/// H5 / D19 / L25, review of 10 Oct 2026: the CHANGELOG says what the README
+/// says about a call carrying both thinking tags. Waves 1–6 ship together, and
+/// wave 1's H5 line said every such call "is refused, not edited" while the
+/// README and wave 6 said a grammar call runs as written — the release notes
+/// contradicted themselves, and the wrong half described a write that happens.
+#[test]
+fn the_changelog_agrees_that_a_proven_call_with_both_tags_runs() {
+    let changelog = read("CHANGELOG.md")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        !changelog.contains("in its values is refused, not edited"),
+        "CHANGELOG still says every call with both thinking tags is refused; a grammar \
+         call runs as written (thinking::tests::a_proven_split_has_one_reading)"
+    );
+    let h5 = changelog
+        .split("* ")
+        .find(|bullet| bullet.contains("(H5)") && bullet.contains("thinking split"))
+        .expect("wave 1's H5 bullet");
+    assert!(
+        h5.contains("runs exactly as written") && h5.contains("a_proven_split_has_one_reading"),
+        "wave 1's H5 bullet does not say a grammar call with both tags runs as written: {h5}"
+    );
+}
+
 /// D12: "the last publish" is the newest one the CHANGELOG records for
 /// `tacet-cli`.
 ///

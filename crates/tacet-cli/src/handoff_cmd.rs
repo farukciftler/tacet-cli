@@ -13,15 +13,15 @@ use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use tacet_tools::sessions::antigravity::AntigravitySource;
 use tacet_tools::sessions::claude::ClaudeSource;
 use tacet_tools::sessions::codex::CodexSource;
 use tacet_tools::sessions::handoff::{self, HandoffRecord, HandoffTask, Status};
-use tacet_tools::sessions::model::{AgentKind, SessionSource, iso_utc, now_epoch, validate_id};
+use tacet_tools::sessions::model::{AgentKind, SessionError, iso_utc, now_epoch, validate_id};
 use tacet_tools::sessions::writeback::{
     self, Confirm, Question, WriteError, antigravity as ag_write, claude as claude_write,
     codex as codex_write,
 };
+use tacet_tools::sessions_tool::SessionRoots;
 
 use crate::cli::HandoffJob;
 use crate::ui::{self, BOLD, Color, DIM, YELLOW};
@@ -136,7 +136,7 @@ fn hook(agent: &str) {
     {
         return;
     }
-    if let Some(out) = writeback::hook_response(agent, &dir, &input) {
+    if let Some(out) = writeback::hook_response(agent, &dir, &input, &tacet_bin()) {
         println!("{out}");
     }
 }
@@ -470,16 +470,35 @@ fn note_for(agent: AgentKind, id: &str) -> Result<String, String> {
     Ok(writeback::note_text(&record))
 }
 
-/// The roots to try: the one named, else the agent's own defaults.
+/// The roots to try: the one named, else the ones `chat --from` and the
+/// session tools read — the `agent-sessions` addon's folders when it records
+/// any, each agent's own defaults when it does not.
+///
+/// THE SAME RESOLUTION AS THE READERS (review of 10 Oct 2026, RG-22). This
+/// used each agent's defaults only, so with the addon pointed at
+/// `<tmp>/data/claude` and no `~/.claude`, `chat --from` continued a session
+/// and started its record, the hook answered for it, and `handoff note` then
+/// said "no Claude Code session … under the known folders" — for the session
+/// the other two had just found.
 fn roots(agent: AgentKind, root: Option<&Path>) -> Vec<PathBuf> {
     if let Some(r) = root {
         return vec![r.to_path_buf()];
     }
-    match agent {
-        AgentKind::ClaudeCode => ClaudeSource::new().default_roots(),
-        AgentKind::Codex => CodexSource.default_roots(),
-        AgentKind::Antigravity => AntigravitySource.default_roots(),
-    }
+    SessionRoots::Registry.for_agent(agent)
+}
+
+/// The folders, for an error that says where it looked and how to look
+/// elsewhere.
+fn looked_in(roots: &[PathBuf]) -> String {
+    let shown: Vec<String> = roots.iter().map(|r| r.display().to_string()).collect();
+    format!(
+        "looked in: {}; pass --root <folder> to name another",
+        if shown.is_empty() {
+            "(no folder)".to_string()
+        } else {
+            shown.join(", ")
+        }
+    )
 }
 
 fn shown(e: WriteError) -> String {
@@ -503,10 +522,14 @@ fn note(
             }
             let text = note_for(agent, id)?;
             let source = ClaudeSource::new();
-            let root = roots(agent, root)
-                .into_iter()
+            let tried = roots(agent, root);
+            let root = tried
+                .iter()
                 .find(|r| source.locate(r, id).is_ok())
-                .ok_or_else(|| format!("no Claude Code session {id} under the known folders"))?;
+                .cloned()
+                .ok_or_else(|| {
+                    format!("no Claude Code session {id} found ({})", looked_in(&tried))
+                })?;
             if fork {
                 let f = claude_write::fork_with_note(&source, &root, id, &text, &TerminalConfirm)
                     .map_err(shown)?;
@@ -535,7 +558,21 @@ fn note(
                 return Err("--fork is for Claude Code".into());
             }
             let text = note_for(agent, id)?;
-            let home = roots(agent, root).into_iter().next();
+            // The Codex home the thread is in — not merely the first folder:
+            // the registry's list is every agent's, and its first entry may
+            // be `~/.claude`. Its writer lock is checked there and the
+            // app-server is started on it (`inject_via_app_server`).
+            let tried = roots(agent, root);
+            let home = tried
+                .iter()
+                .find(|r| {
+                    !matches!(
+                        CodexSource.read_rollout(r, id),
+                        Err(SessionError::NotFound { .. })
+                    )
+                })
+                .or_else(|| tried.first())
+                .cloned();
             match (program, append_rollout) {
                 (Some(_), true) => Err("give --program or --append-rollout, not both".into()),
                 (Some(program), false) => {
@@ -600,10 +637,17 @@ fn tasks(
             status,
         });
     }
-    let root = roots(agent, root)
-        .into_iter()
+    let tried = roots(agent, root);
+    let root = tried
+        .iter()
         .find(|r| r.join("brain").join(id).is_dir())
-        .ok_or_else(|| format!("no Antigravity conversation {id} under the known folders"))?;
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "no Antigravity conversation {id} found ({})",
+                looked_in(&tried)
+            )
+        })?;
     let done = ag_write::update_task_md(
         &root,
         id,

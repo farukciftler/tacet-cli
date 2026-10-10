@@ -109,7 +109,7 @@ looking at what the model is actually sent.
 | Name | a tool that isn't in the catalog — the model cannot invent a callable |
 | Schema | arguments that don't validate, even if the grammar was bypassed |
 | Approval | outbound data in a session that has touched personal data; any `shell` or `db_write` call once the session has read text from outside the machine (a web page, an HTTP or MCP answer, an imported transcript); every call to an MCP server marked `always_ask` — and with nobody at a terminal to ask, the answer is no |
-| Cancel | the rest of the turn, the moment you press ctrl-c — `shell` and `run_code` end their process group within about a second; any other tool that has not stopped after 3 s is abandoned rather than waited for, and the turn says so (whatever that tool was doing may still finish on its own thread). The press arrives two ways. With no turn indicator (`--json`, or stdout piped) it is a signal, driven at the binary by `cargo test -p tacet-cli --test ctrl_c_reaches_the_running_tool` — run on macOS (10 Oct 2026), not yet on Linux, and on Windows that path is not wired. At a terminal it is a key the indicator reads; that, and the 3 s abandonment, are unit tests — `cargo test -p tacet-cli --bin tacet ui::tests::ctrl_c_marks_the_cancellation_and_other_keys_are_swallowed` and `cargo test -p tacet-tools --lib executor::guarded::a_cancelled_tool_that_will_not_stop_is_abandoned_after_the_grace` — not a key pressed at a real terminal, on any platform |
+| Cancel | the rest of the turn, the moment you press ctrl-c — `shell` and `run_code` end their process group within about a second, and `git` kills the `git` it started (the call's 120 s deadline stops it the same way); any other tool that has not stopped after 3 s is abandoned rather than waited for, and the turn says it was left running, not that it stopped (whatever that tool was doing may still finish on its own thread). The press arrives two ways. With no turn indicator (`--json`, or stdout piped) it is a signal, driven at the binary by `cargo test -p tacet-cli --test ctrl_c_reaches_the_running_tool` — run on macOS (10 Oct 2026), not yet on Linux, and on Windows that path is not wired. At a terminal it is a key the indicator reads; that, and the 3 s abandonment, are unit tests — `cargo test -p tacet-cli --bin tacet ui::tests::ctrl_c_marks_the_cancellation_and_other_keys_are_swallowed` and `cargo test -p tacet-tools --lib executor::guarded::a_cancelled_tool_that_will_not_stop_is_abandoned_after_the_grace` — not a key pressed at a real terminal, on any platform |
 
 **Bulk data never enters the model.** A tool that reads a 40 000-row spreadsheet puts the data in a store and hands the model a short summary plus a reference. The next tool that needs it fetches it by reference. The context window is a budget, not a bottleneck.
 
@@ -300,7 +300,7 @@ tacet addon close shell          # keep the config, take the tool away
 | `http` | `http` | only the exact hosts you list, HTTPS only, no redirects |
 | `db` | `db`, and `db_write` only if you list a file and the session is at a terminal | read-only SQLite by default, over the `sqlite3` binary already on your machine |
 | `clipboard` | `clipboard` | reads and writes the system clipboard |
-| `agent-sessions` | `sessions_list`, `session_read`; `tacet chat --from <agent>:<id>` and `/resume-from` | read-only: the Claude Code, Codex and Antigravity session folders the install names, credentials refused by name; no network, and the other agent and its model are never run. Reporting back is `tacet handoff`, which needs no addon — see [Other agents' sessions](#other-agents-sessions) |
+| `agent-sessions` | `sessions_list`, `session_read`; `tacet chat --from <agent>:<id>` and `/resume-from` | read-only: each agent's own session folder for Claude Code, Codex and Antigravity — looked up when a session is read, so an agent installed later is found — or only the folders the install names, if you name any; credentials refused by name; no network, and the other agent and its model are never run. Reporting back is `tacet handoff`, which needs no addon — see [Other agents' sessions](#other-agents-sessions) |
 
 Two things worth knowing before you install `shell`:
 
@@ -461,7 +461,10 @@ above.
 
 **How it reports back.** Continuing a session starts a *handoff record*,
 `<config>/handoff/<agent>-<id>.json` with a rendered `.md` twin, which Tacet and
-the other agents update through `tacet handoff update`. Getting it to the other
+the other agents update through `tacet handoff update`. It starts with the
+session as Tacet found it, labelled as the other agent's own work, and no
+tasks: what it reports as progress is only what `tacet handoff update` has
+written since. Getting it to the other
 agent has two paths, and the first is the one to use:
 
 * **The agent's own hook** (`tacet handoff install claude|codex|antigravity`).
@@ -637,9 +640,12 @@ resume from. `scripts/nightly-eval.sh` picks the directory for you, under
 
 Qwen3-4B-Instruct-2507 Q4_K_M on Metal, 184 cases in both languages, **47.7 min**
 — the weights `tacet models download qwen3-4b` fetches, pinned by digest, with
-the fingerprint recorded in the baseline. Re-measured 6 Sep 2026 on this commit,
-and the baseline in `crates/tacet-eval/baselines/` is that run, with `wall_ms`
-populated, so the wall clock is re-derivable rather than remembered.
+the fingerprint recorded in the baseline. Measured 6 Sep 2026 and committed in
+e9787ba; the baseline in `crates/tacet-eval/baselines/` is that run, with
+`wall_ms` populated, so the wall clock is re-derivable rather than remembered. It
+has not been re-run since the eval started building each pass's prompt the way
+the shell does (audit M22, M23, October 2026), so today's code may score these
+weights differently.
 
 **These numbers are LOWER than the ones this page carried this morning, and the
 drop is the instrument getting more honest rather than the model getting worse.**
@@ -780,7 +786,7 @@ wins nothing, because one stream already saturates the card (measured — two st
 scales, and `cargo run --release --example batch_decode --features candle,cuda`
 measures where it stops: 124 tok/s at batch 1, 504 at batch 32 on that card.
 
-**Turkish scores higher than English** — 61/69 against 96/115 — which is the
+**Turkish scores higher than English** — 61/69 against 99/115 — which is the
 opposite of what the effort spent on Turkish defects would suggest, and it is only
 visible because the two now run together. The routing eval always measured both;
 this one measured one language at a time and never both, so the expensive
@@ -792,8 +798,11 @@ tool on "thanks, that's all" is worse than no assistant, and that is the failure
 this number rules out.
 
 **The failures, because a score without a diagnosis is a number to be proud of
-rather than one to act on.** Twenty-seven of the 184 cases failed, and they are
-not scattered. Counted off the baseline itself:
+rather than one to act on.** This diagnosis is of the run before the one in the
+table: the baseline as first committed in 3c2c3e4 (4 Sep 2026), which the
+corrected scoring replaced two days later, and it is the run the fix below was
+made against. Twenty-seven of its 184 cases failed (the table's run: 24), and
+they are not scattered. Counted off that file:
 
 | | |
 |---|---|

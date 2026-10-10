@@ -100,6 +100,88 @@ fn require(page: &str, want: &str, why: &str) {
     );
 }
 
+/// (Turkish passed, Turkish cases, English passed, English cases, failed) of
+/// a selection report — a case is Turkish when its name starts `tr-`.
+fn language_split(v: &Value) -> (usize, usize, usize, usize, usize) {
+    let cases = v["cases"].as_array().expect("the report lists its cases");
+    let (mut tp, mut tn, mut ep, mut en) = (0, 0, 0, 0);
+    for c in cases {
+        let passed = c["passed"].as_bool().expect("each case says if it passed");
+        if c["name"].as_str().unwrap_or("").starts_with("tr-") {
+            tn += 1;
+            tp += passed as usize;
+        } else {
+            en += 1;
+            ep += passed as usize;
+        }
+    }
+    (tp, tn, ep, en, tn + en - tp - ep)
+}
+
+/// D1–D5 / RG-36, review of 10 Oct 2026. The language split and the failure
+/// diagnosis under the Metal table said "counted off the baseline itself" and
+/// were not: the page had "61/69 against 96/115" and "Twenty-seven of the 184
+/// cases failed", the committed file holds 99/115 English and 24 failures, and
+/// the diagnosis's own strings (`constraint rejected the token: 32`,
+/// `find_filepattern`) are in no file in the tree. They are the baseline as
+/// first committed in 3c2c3e4, which the corrected scoring replaced; the page
+/// now says so, and this reads both files back.
+#[test]
+fn the_language_split_and_the_failure_diagnosis_are_their_files() {
+    let page = readme();
+    let (tp, tn, ep, en, failed) = language_split(&report("qwen3-4b-both.json"));
+    require(
+        &page,
+        &format!("{tp}/{tn} against {ep}/{en}"),
+        "the Turkish/English split of the committed Metal baseline",
+    );
+    require(
+        &page,
+        &format!("(the table's run: {failed})"),
+        "the committed baseline's failure count, beside the diagnosed run's",
+    );
+    const DIAGNOSED: &str = "3c2c3e4";
+    let paragraph = page
+        .split("\n\n")
+        .map(folded)
+        .find(|p| p.contains("This diagnosis is of the run before the one in the table"))
+        .expect("the diagnosis names the run it was counted from");
+    assert!(paragraph.contains(DIAGNOSED), "{paragraph}");
+    if !has_history(&repo_root()) {
+        eprintln!("no git history here: the diagnosed run's counts were NOT checked");
+        return;
+    }
+    let out = Command::new("git")
+        .args([
+            "show",
+            &format!("{DIAGNOSED}:crates/tacet-eval/baselines/qwen3-4b-both.json"),
+        ])
+        .current_dir(repo_root())
+        .output()
+        .expect("git runs");
+    assert!(out.status.success(), "{DIAGNOSED} holds no Metal baseline");
+    let raw = String::from_utf8_lossy(&out.stdout);
+    let old: Value = serde_json::from_str(&raw).expect("the old baseline is JSON");
+    let (.., old_failed) = language_split(&old);
+    const WORDS: [(usize, &str); 3] = [(24, "Twenty-four"), (27, "Twenty-seven"), (30, "Thirty")];
+    let word = WORDS
+        .iter()
+        .find(|(n, _)| *n == old_failed)
+        .map(|(_, w)| *w)
+        .unwrap_or_else(|| panic!("{old_failed} failures; give the test its word"));
+    assert!(
+        paragraph.contains(&format!("{word} of its 184 cases failed")),
+        "{DIAGNOSED}'s baseline has {old_failed} failures: {paragraph}"
+    );
+    for quoted in ["constraint rejected the token: 32", "find_filepattern"] {
+        require(&page, quoted, "the diagnosis quotes the run it counted");
+        assert!(
+            raw.contains(quoted),
+            "the page quotes {quoted:?} from {DIAGNOSED}'s baseline, which does not hold it"
+        );
+    }
+}
+
 /// The Metal block under "What it scores" is `qwen3-4b-both.json`, axis by axis.
 #[test]
 fn the_metal_table_is_the_metal_baseline() {
@@ -280,6 +362,9 @@ fn durations<'a>(words: &'a [&'a str]) -> Vec<Duration<'a>> {
 /// The first 3090 run's wall clock in seconds, from the report as it was
 /// committed at `sha` — or None where there is no git history to read it from.
 fn wall_s_at(sha: &str, file: &str) -> Option<f64> {
+    if !has_history(&repo_root()) {
+        return None;
+    }
     let out = Command::new("git")
         .args(["show", &format!("{sha}:crates/tacet-eval/baselines/{file}")])
         .current_dir(repo_root())
@@ -661,20 +746,27 @@ fn the_replaced_3090_run_is_as_many_commits_back_as_the_page_says() {
         );
     }
 
-    let counted = Command::new("git")
+    if !has_history(&repo_root()) {
+        eprintln!("no git history here: the commit count on the page was NOT checked");
+        return;
+    }
+    // With the history there, a count git cannot give is a failure: the two
+    // commits the page names are not in it.
+    let out = Command::new("git")
         .args(["rev-list", "--count", &format!("{FIRST}..{REPLACEMENT}")])
         .current_dir(repo_root())
-        .output();
-    let n: usize = match counted {
-        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
-            .trim()
-            .parse()
-            .expect("git rev-list --count prints a number"),
-        _ => {
-            eprintln!("no git history here: the commit count on the page was NOT checked");
-            return;
-        }
-    };
+        .output()
+        .expect("git runs");
+    assert!(
+        out.status.success(),
+        "D1: git cannot count {FIRST}..{REPLACEMENT} — the page names commits this \
+         history does not hold: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let n: usize = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .expect("git rev-list --count prints a number");
     const WORDS: [&str; 11] = [
         "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
     ];
@@ -841,9 +933,58 @@ fn the_model_table_is_one_table_whose_scores_are_their_counts() {
     }
 }
 
-/// The commit that first put `line` into README.md, as (full sha, "YYYY-MM-DD"
-/// in the author's zone) — or None without the history to search.
-fn first_commit_holding(line: &str) -> Option<(String, String)> {
+/// What the clone at `dir` can say about its own past.
+#[derive(Debug, PartialEq)]
+enum History {
+    /// A repository with its whole history.
+    Full,
+    /// No repository at all — a source tarball, a vendored copy.
+    Absent,
+    /// A repository cut off at some depth, as `actions/checkout` makes by
+    /// default.
+    Shallow,
+}
+
+fn history_at(dir: &Path) -> History {
+    match Command::new("git")
+        .args(["rev-parse", "--is-shallow-repository"])
+        .current_dir(dir)
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            if String::from_utf8_lossy(&out.stdout).trim() == "true" {
+                History::Shallow
+            } else {
+                History::Full
+            }
+        }
+        _ => History::Absent,
+    }
+}
+
+/// Whether the history-reading checks can run here. A tarball skips them and
+/// says so; A SHALLOW CLONE FAILS. It is not "no history": its one commit
+/// holds every row, so "the commit that first held them" comes out as HEAD,
+/// and the date test went red on CI's depth-1 checkout on all three
+/// platforms while the commit-count test skipped silently (review of
+/// 10 Oct 2026). CI's test job fetches the whole history now; a shallow clone
+/// anywhere else is told to do the same.
+fn has_history(dir: &Path) -> bool {
+    match history_at(dir) {
+        History::Full => true,
+        History::Absent => false,
+        History::Shallow => panic!(
+            "this clone is shallow, so the README's dates and commit counts cannot be \
+             read from it: run `git fetch --unshallow` (CI: `fetch-depth: 0`)"
+        ),
+    }
+}
+
+/// The commit that first put `line` into README.md in the repository at
+/// `dir`, as (full sha, "YYYY-MM-DD" in the author's zone) — or None when no
+/// commit holds it. Call `has_history` first: in a shallow clone this
+/// answers HEAD for every line, and with no repository it answers None.
+fn first_commit_holding_at(dir: &Path, line: &str) -> Option<(String, String)> {
     let out = Command::new("git")
         .args([
             "log",
@@ -855,7 +996,7 @@ fn first_commit_holding(line: &str) -> Option<(String, String)> {
             "--",
             "README.md",
         ])
-        .current_dir(repo_root())
+        .current_dir(dir)
         .output()
         .ok()?;
     if !out.status.success() {
@@ -867,6 +1008,67 @@ fn first_commit_holding(line: &str) -> Option<(String, String)> {
         .to_string();
     let (sha, date) = first.split_once(' ')?;
     Some((sha.to_string(), date.to_string()))
+}
+
+/// The review's two holes, on a two-commit repository built here: a depth-1
+/// clone of it is told apart from a full one (where it had dated every row by
+/// HEAD), and a line no commit holds is `None` in a history that is there —
+/// which `the_model_table_is_dated_by_the_commit_that_first_held_its_rows`
+/// now fails on instead of printing "no git history here".
+#[test]
+fn a_shallow_clone_is_refused_and_an_uncommitted_row_is_not_a_missing_history() {
+    let base = std::env::temp_dir().join(format!("tacet-readme-history-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let full = base.join("full");
+    std::fs::create_dir_all(&full).unwrap();
+    let git = |dir: &Path, args: &[&str]| {
+        let out = Command::new("git")
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .expect("git runs");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    git(&full, &["init", "-q"]);
+    std::fs::write(full.join("README.md"), "| row one |\n").unwrap();
+    git(&full, &["add", "README.md"]);
+    git(
+        &full,
+        &["commit", "-q", "-m", "one", "--date=2026-09-05T12:00:00"],
+    );
+    std::fs::write(full.join("README.md"), "| row one |\n| row two |\n").unwrap();
+    git(&full, &["commit", "-q", "-am", "two"]);
+    let url = format!("file://{}", full.display());
+    git(&base, &["clone", "-q", "--depth", "1", &url, "shallow"]);
+
+    assert_eq!(history_at(&full), History::Full);
+    assert_eq!(history_at(&base.join("shallow")), History::Shallow);
+    assert!(
+        std::panic::catch_unwind(|| has_history(&base.join("shallow"))).is_err(),
+        "a shallow clone was measured"
+    );
+    let first = first_commit_holding_at(&full, "| row one |").expect("committed");
+    let head = first_commit_holding_at(&full, "| row two |").expect("committed");
+    assert_ne!(
+        first.0, head.0,
+        "row one is dated by the commit that added it"
+    );
+    assert_eq!(first_commit_holding_at(&full, "| never committed |"), None);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// D4 (review): the model table's rows are dated by the commit that first held
@@ -885,15 +1087,24 @@ fn the_model_table_is_dated_by_the_commit_that_first_held_its_rows() {
     let page = readme();
     let lines = model_table_lines(&page);
     assert_eq!(lines.len(), 4, "the model table has four rows");
+    if !has_history(&repo_root()) {
+        eprintln!("no git history here: the model table's date was NOT checked");
+        return;
+    }
     let mut firsts = Vec::new();
     for line in &lines {
-        match first_commit_holding(line) {
-            Some(first) => firsts.push(first),
-            None => {
-                eprintln!("no git history here: the model table's date was NOT checked");
-                return;
-            }
-        }
+        // NOT A SKIP (review of 10 Oct 2026). With the history there, a row
+        // no commit holds is an edit to a hand-recorded measurement — which
+        // is exactly when the pre-commit gate runs, and it used to print "no
+        // git history here" and pass. Nobody can re-run these rows (rented
+        // card, no report kept); a changed one is a new claim with no date.
+        let first = first_commit_holding_at(&repo_root(), line).unwrap_or_else(|| {
+            panic!(
+                "D4: no commit holds the model-table row {line:?} — a hand-recorded row \
+                 was edited; restore it, or replace the table with a committed report"
+            )
+        });
+        firsts.push(first);
     }
     // ISO dates sort as strings; the latest is the earliest day all four existed.
     let (sha, date) = firsts

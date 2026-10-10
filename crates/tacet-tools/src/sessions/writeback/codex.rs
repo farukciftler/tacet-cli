@@ -38,7 +38,7 @@ use serde_json::{Value, json};
 
 use super::{Confirm, Question, WriteError, io_error, new_uuid, now_iso_ms};
 use crate::sessions::codex::{CodexSource, HistoryMode, READ_CAP, is_live};
-use crate::sessions::model::{AgentKind, Role, validate_id};
+use crate::sessions::model::{AgentKind, Role, SessionError, validate_id};
 use crate::sessions::{secrets, version};
 
 /// How long the app-server gets to answer each request.
@@ -179,6 +179,13 @@ pub fn inject(server: &mut AppServer<'_>, thread_id: &str, note: &str) -> Result
 /// take the thread over from it. With no home, or a home that is not a
 /// folder, a held lock cannot be ruled out, and that is refused too — every
 /// other writer here fails closed when it cannot see the other writer.
+///
+/// THE SERVER IS STARTED ON THAT SAME HOME (`CODEX_HOME=root`), and the
+/// thread must be found under it. It used to inherit the environment, so it
+/// resumed the thread in `$CODEX_HOME` or `~/.codex` while the lock checked
+/// was `--root`'s: with the lock held in `~/.codex`, `--root /tmp/empty`
+/// passed the check and the note went to the locked thread (reproduced with a
+/// stand-in server that logged its environment, review of 10 Oct 2026).
 pub fn inject_via_app_server(
     program: &Path,
     root: Option<&Path>,
@@ -212,8 +219,18 @@ pub fn inject_via_app_server(
             "a Codex process holds thread {thread_id} (thread-writer-locks/{thread_id}.lock)"
         )));
     }
+    // Any answer but "not found" names a rollout under `root`: a compressed
+    // one is refused by the APPEND's gate, and is the server's to read.
+    if let Err(SessionError::NotFound { .. }) = CodexSource.read_rollout(root, thread_id) {
+        return Err(WriteError::Refused(format!(
+            "no Codex thread {thread_id} under {}; the lock checked there would say nothing \
+             about the thread the server would open",
+            root.display()
+        )));
+    }
     let mut lines = vec![
         format!("program: {} app-server", program.display()),
+        format!("the server's home: {} (CODEX_HOME)", root.display()),
         "it runs with YOUR Codex login and can reach the network; Tacet starts no model turn \
          — `thread/inject_items` adds the note to the thread's history"
             .into(),
@@ -228,7 +245,7 @@ pub fn inject_via_app_server(
     if !confirm.confirm(&q) {
         return Err(WriteError::Declined);
     }
-    run_app_server(&program, thread_id, note, timeout)
+    run_app_server(&program, root, thread_id, note, timeout)
 }
 
 /// The absolute file `program` names, or a refusal.
@@ -260,6 +277,7 @@ fn resolve_program(program: &Path) -> Result<PathBuf, WriteError> {
 
 fn run_app_server(
     program: &Path,
+    home: &Path,
     thread_id: &str,
     note: &str,
     timeout: Duration,
@@ -270,6 +288,9 @@ fn run_app_server(
     // (`resolve_program`), so no PATH search happens here.
     let mut child = Command::new(program)
         .arg("app-server")
+        // The home whose writer lock was checked and whose rollout was found:
+        // inherited, the server would open `$CODEX_HOME` or `~/.codex`.
+        .env("CODEX_HOME", home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -868,10 +889,13 @@ mod tests {
     fn the_note_reaches_a_stand_in_app_server_only_after_a_yes() {
         use std::os::unix::fs::PermissionsExt;
         let dir = scratch();
+        legacy(&dir);
         let log = dir.join("received.log");
+        let env_log = dir.join("env.log");
         let script = dir.join("fake-app-server");
         let body = r#"#!/bin/sh
 [ "$1" = "app-server" ] || exit 64
+printf '%s\n' "$CODEX_HOME" > "$ENVLOG"
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "$LOG"
   id=$(printf '%s' "$line" | sed -n 's/^{"id":\([0-9][0-9]*\),.*/\1/p')
@@ -880,7 +904,8 @@ while IFS= read -r line; do
   printf '{"id":%s,"result":{}}\n' "$id"
 done
 "#
-        .replace("\"$LOG\"", &format!("'{}'", log.display()));
+        .replace("\"$LOG\"", &format!("'{}'", log.display()))
+        .replace("\"$ENVLOG\"", &format!("'{}'", env_log.display()));
         std::fs::write(&script, body).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
@@ -922,6 +947,13 @@ done
         assert_eq!(
             got[3]["params"]["items"][0]["content"][0]["text"],
             note().as_str()
+        );
+        // RG-23 review: the server runs on the home whose lock was checked,
+        // not on whatever `$CODEX_HOME` or `~/.codex` this process has.
+        assert_eq!(
+            std::fs::read_to_string(&env_log).unwrap().trim(),
+            dir.display().to_string(),
+            "the app-server was started on another Codex home than the one checked"
         );
 
         // A held writer lock stops it before anything starts.
@@ -986,6 +1018,7 @@ done
     fn the_question_names_the_resolved_binary() {
         use std::os::unix::fs::PermissionsExt;
         let dir = scratch();
+        legacy(&dir);
         let real = dir.join("real-codex");
         std::fs::write(&real, "#!/bin/sh\nexit 0\n").unwrap();
         std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1047,5 +1080,126 @@ done
         }
         assert!(!log.exists(), "the server was started without a lock check");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// RG-23 review: a `--root` that does not hold the thread is refused
+    /// before anything is asked or started — its lock says nothing about the
+    /// thread a server would open somewhere else.
+    #[cfg(unix)]
+    #[test]
+    fn a_home_without_the_thread_is_refused_before_anything_starts() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch();
+        let log = dir.join("started.log");
+        let script = dir.join("fake-app-server");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\nexit 0\n", log.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let ask = yes();
+        let r = inject_via_app_server(
+            &script,
+            Some(&dir),
+            LEGACY,
+            &note(),
+            &ask,
+            Duration::from_secs(10),
+        );
+        assert!(
+            matches!(r, Err(WriteError::Refused(ref w)) if w.contains("no Codex thread")),
+            "{r:?}"
+        );
+        assert_eq!(*ask.1.borrow(), 0, "asked about a thread that is not there");
+        assert!(!log.exists(), "the server was started");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `--program` naming a folder: it canonicalizes, and it is not a file.
+    #[test]
+    fn a_program_that_is_not_a_file_is_refused_before_anything_is_asked() {
+        let dir = scratch();
+        legacy(&dir);
+        let ask = yes();
+        let r = inject_via_app_server(
+            &dir.join("sessions"),
+            Some(&dir),
+            LEGACY,
+            &note(),
+            &ask,
+            Duration::from_secs(10),
+        );
+        assert!(
+            matches!(r, Err(WriteError::Refused(ref w)) if w.contains("is not a file")),
+            "{r:?}"
+        );
+        assert_eq!(*ask.1.borrow(), 0, "asked about a folder as a program");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Codex appending while the question is on screen (RG-21 review of
+    /// 10 Oct 2026: replacing the length check with `if false` kept the
+    /// suite green). Nothing of ours is written after the other line.
+    struct AppendsWhileAsking(PathBuf);
+
+    impl Confirm for AppendsWhileAsking {
+        fn confirm(&self, _: &Question) -> bool {
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&self.0)
+                .unwrap();
+            let line = json!({"timestamp":"2026-10-01T09:16:00.000Z","type":"event_msg",
+                              "payload":{"type":"token_count","info":null}});
+            writeln!(f, "{line}").unwrap();
+            true
+        }
+    }
+
+    #[test]
+    fn a_rollout_that_changes_while_asking_is_not_written() {
+        let root = scratch();
+        let path = legacy(&root);
+        let r = append_impl(
+            &root,
+            LEGACY,
+            &note(),
+            &AppendsWhileAsking(path.clone()),
+            false,
+            None,
+        );
+        assert!(
+            matches!(r, Err(WriteError::Refused(ref w)) if w.contains("changed since it was read")),
+            "{r:?}"
+        );
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !after.contains("KESTREL-3"),
+            "the note was written: {after}"
+        );
+        let last = after.lines().last().unwrap_or("");
+        assert!(
+            last.contains("token_count"),
+            "the other writer's line is not last: {after}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A last line that is a whole rollout line but has no newline yet: the
+    /// pair would be glued onto it.
+    #[test]
+    fn an_unfinished_last_line_of_a_rollout_is_refused() {
+        let root = scratch();
+        let path = legacy(&root);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let text = text.trim_end_matches('\n').to_string();
+        std::fs::write(&path, &text).unwrap();
+        let r = append_impl(&root, LEGACY, &note(), &yes(), false, None);
+        assert!(
+            matches!(r, Err(WriteError::Refused(ref w)) if w.contains("unfinished")),
+            "{r:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

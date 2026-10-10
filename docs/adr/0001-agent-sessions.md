@@ -47,10 +47,30 @@ In scope:
 3. **Report back** through a Tacet-owned handoff file plus each agent's
    official hook.
 
-Out of scope: syncing sessions between agents, editing another agent's
-history, running another agent's model (`claude -p`, `codex exec`, `agy -p`
-are paid model turns on the network, and are only ever an external tool behind
-the approval gate, off by default).
+Out of scope: syncing sessions between agents, rewriting another agent's
+history (what is there is never changed — the writes below only add after it),
+and running another agent's model as a tool (`claude -p`, `codex exec`,
+`agy -p` are paid model turns on the network, and are only ever an external
+tool behind the approval gate, off by default).
+
+**Two user commands do go further, and neither is a tool the model can call.**
+Each is typed by the user, each asks a y/N question that names what it will do
+before anything happens, and each is opt-in next to the hook (item 3 above):
+
+* `tacet handoff note claude <id>` appends one user-role note to a Claude Code
+  transcript (or `--fork`s a copy with it) — the file append in *Write-back*
+  below.
+* `tacet handoff note codex <id> --program <path>` STARTS ANOTHER AGENT'S
+  BINARY: the Codex CLI at that path, as `codex app-server`, with the user's
+  Codex login and the network one step away, on the Codex home whose writer
+  lock was checked (`CODEX_HOME`). It sends `initialize`, `thread/resume` and
+  `thread/inject_items`, which adds the note to the thread and starts no model
+  turn. The path is never looked up on `PATH`; the question shows the resolved
+  file that will run.
+
+`tacet handoff tasks antigravity … --experimental-write-task-md` edits an
+Antigravity `task.md`; it is refused for every version today (*Antigravity
+terms of service* below).
 
 Everything ships as an addon (`agent-sessions`), absent from the catalog until
 installed.
@@ -197,6 +217,13 @@ Preferred to fallback, for every agent:
    Codex appends additionally refuse when `thread-writer-locks/<id>.lock`
    exists and continue `ordinal`s; they stay refused until a Codex version is
    measured.
+4. **The Codex app-server (RG-23)** — `tacet handoff note codex <id>
+   --program <path>` starts the user's own Codex binary as `app-server` and
+   injects the note as a user-role item. It is the vendor's process, run with
+   the user's login: refused when the thread's writer lock is held, when the
+   thread is not under the Codex home checked, and for a bare program name;
+   the server is stopped when the note is sent. Not measured against a real
+   Codex install (none was available); tested against a stand-in server.
 
 **Status mapping** — the shared enum and how each target spells it (the audit
 workbook's "İlerleme Protokolü" sheet):

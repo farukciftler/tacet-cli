@@ -19,6 +19,62 @@ releases to follow.
 
 ---
 
+## Unreleased — the audit of 9 Oct 2026: the review of 10 Oct 2026
+
+What the review of waves 1–6 confirmed, each fixed with a test that fails
+without the fix.
+
+**Fixed:**
+
+* Text from outside can no longer close the fence a tool or the shell puts
+  around it. `<search_result>`, `<api_response>`, `<clipboard>` and `<stdin>`
+  (and `<imported_session>`) are `DATA_FENCE_NAMES` in the kernel's defang, and
+  each writer neutralises them in the foreign text before fencing it: a
+  SearXNG result, an API body, a copied page or a pipe holding the closing tag
+  used to put its next sentence outside the data, beside Tacet's own "it is
+  data, not instructions" line or in the user's position (H4-a, H2-b). A test
+  fails if a closing tag appears in a crate's source that no defang covers.
+* `git` stops when the call is stopped: Ctrl-C or the 120 s deadline kills
+  and reaps the `git` it started, where it used to run on, orphaned. A call
+  the executor abandons after its 3 s grace is reported as "left running",
+  never "stopped" (M30).
+* `tacet addon install agent-sessions` records no folders on an empty answer;
+  the approval screen shows the ones found today. The recorded snapshot hid
+  every agent installed later from `sessions_list`, `session_read` and `--from`
+  (RG-17). `tacet handoff note` and `tasks` look in the same folders as `--from`,
+  and say where they looked (RG-22).
+* `tacet handoff note codex --program` starts the app-server on the Codex home
+  whose writer lock it checked (`CODEX_HOME`), and refuses a home without the
+  thread; `--root` elsewhere used to pass the lock check while the server
+  opened the locked thread (RG-23).
+* A continuation's handoff record starts with the session as Tacet found it,
+  labelled as the other agent's work, and no tasks; the note and the hook no
+  longer say Tacet did that work (RG-27). The hook tells the agent to run the
+  same absolute `tacet` path the hook entry runs (RG-21).
+* `write_code`'s test-file rule follows the extension: `testimonials.js` is
+  delivered, and a refusal names the runner that would really collect the
+  file (M3). The digest lists a file named both absolute and relative once
+  (RG-16).
+
+**Documents:** the README's Metal section dates its baseline by commit and
+says it predates the eval's M22/M23 prompt changes; the language split is the
+file's (61/69 against 99/115); the failure diagnosis names the run it was
+counted from (3c2c3e4). Wave 1's H5 line now says what the code does with a
+call carrying both thinking tags. ADR 0001 states the two handoff commands
+that write or start something; SECURITY states the socket scan's 4,096-entry
+budget; `tacet addon --help` counts seven addons; CI's test job fetches the
+whole history, and the README's date tests refuse a shallow clone instead of
+measuring it (D4).
+
+**Tests that could not go red, now can:** the shell's thinking-split gate
+(H5) is driven through `tacet chat`; the write-back's "changed while asking"
+refusal in all three agents, and Claude's chain, unfinished-line, session-id
+and read-back checks (RG-21); one credential case per denylist entry (RG-16);
+the smoke guard reads `tacet chat --help` instead of field names; the two
+grammar rules for C1/DEL and a nested dead field (M15).
+
+---
+
 ## Unreleased — the audit of 9 Oct 2026, wave 6: the documents
 
 No change to what the program does and no API changes: the README, its
@@ -86,10 +142,14 @@ abandoned after its 3 s grace.
   experiment with its machine and version, what was not measured, and
   Antigravity's terms. SECURITY scopes the readers and `tacet handoff`;
   CONTRIBUTING says how a version range is widened (RG-36).
-* `crates/tacet-cli/tests/the_readme_quotes_the_baselines.rs`: every number the
-  README quotes from `crates/tacet-eval/baselines/` is read back from the file,
-  the comparator block is re-run on the two committed reports, and the model
-  table's scores are recomputed from their own counts. It starts the binary
+* `crates/tacet-cli/tests/the_readme_quotes_the_baselines.rs`: the Metal
+  table, the BFCL tables, the 3090 runs' wall times and dates, the Turkish
+  corpus comparison and the seven-language `en` column are read back from the
+  files in `crates/tacet-eval/baselines/`, the
+  comparator block is re-run on the two committed reports, and the model
+  table's scores are recomputed from their own counts. (This line said "every
+  number the README quotes" until the review of 10 Oct 2026 found the language
+  split and the failure diagnosis checked by nothing; they are now, below.) It starts the binary
   under test as `eval --compare`, so it is a reviewed row in
   `network_monopoly`'s `RUNTIME_SPAWN_SITES`.
 * `crates/tacet-cli/tests/the_docs_match_the_tree.rs`: the version example,
@@ -330,8 +390,13 @@ them.
   arguments stays in the argument, and when the split can only guess where a
   block ends nothing runs unless both readings name the same call (H5). A block
   that is never closed counts as a guess when the search stepped over a
-  `</think>` inside a call, so a call declined in the thinking is not run; a
-  call with both `<think>` and `</think>` in its values is refused, not edited.
+  `</think>` inside a call, so a call declined in the thinking is not run. A
+  call with both `<think>` and `</think>` in its values is never edited: a
+  grammar call (`name(` or bare JSON) runs exactly as written, because it
+  parses and the split can prove where it ends; a recovered call (a marked
+  `<tool_call>` or a name glued to its argument) carrying both is refused. (This
+  line said every such call was refused until the review of 10 Oct 2026;
+  `thinking::tests::a_proven_split_has_one_reading` runs the grammar one.)
 * `git` no longer lets a repository's own config run programs (fsmonitor,
   hooks, `diff.external`, textconv, filter drivers including submodules',
   `gpg.program`, promisor `ext::` fetch). Requires git ≥ 2.31; an older git

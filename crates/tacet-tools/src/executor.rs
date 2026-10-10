@@ -1511,20 +1511,33 @@ impl ToolExecutor {
                 // for a screen before it is kept even for the detail view.
                 tacet_mcp::safe_for_screen(&message),
             ),
+            // "LEFT RUNNING", NOT "STOPPED": an abandoned call is one that did
+            // NOT come back after it was told to stop, so nothing here knows it
+            // stopped. Saying "was stopped" claimed a stop that never happened
+            // — `git` (before it read the token) kept its child running for
+            // the rest of the session under that chip (audit M30, review of
+            // 10 Oct 2026). A tool that does stop returns its own outcome
+            // within `ABANDON_GRACE` and never reaches this branch.
             LostCall::TimedOut(deadline) => (
                 ExecutionReason::ToolFailed,
                 tacet_kernel::ERROR_MODEL_TEXT.to_string(),
                 format!(
-                    "{name} did not finish in {}s and was stopped",
+                    "{name} did not finish in {}s and was left running",
                     deadline.as_secs()
                 ),
-                format!("no answer within {} ms", deadline.as_millis()),
+                format!(
+                    "no answer within {} ms; told to stop, it had not come back {} s later and \
+                     was left running on its own thread",
+                    deadline.as_millis(),
+                    ABANDON_GRACE.as_secs()
+                ),
             ),
             LostCall::Cancelled => (
                 ExecutionReason::Cancelled,
                 CANCEL_MODEL_TEXT.to_string(),
-                format!("{name} · stopped"),
-                "the tool did not stop when asked and was left behind".to_string(),
+                format!("{name} · left running"),
+                "the tool did not stop when asked and was left running on its own thread"
+                    .to_string(),
             ),
         };
         // THE CHIP IS DRAWN HERE because the tool's own never will be finished:
@@ -3735,11 +3748,15 @@ mod guarded {
             "the turn waited {took:?} for a tool that was not coming back"
         );
         assert_eq!(out.reason, ExecutionReason::ToolFailed);
+        // M30, review of 10 Oct 2026: the tool is still sleeping on its
+        // thread, so the chip may not say it was stopped.
         assert!(
-            matches!(&out.state, ToolState::Failed(why) if why.contains("did not finish")),
+            matches!(&out.state, ToolState::Failed(why)
+                if why.contains("did not finish") && why.ends_with("was left running")),
             "{:?}",
             out.state
         );
+        assert!(!out.chip_text.contains("stopped"), "{}", out.chip_text);
         assert!(!executor.retry_safe());
     }
 
@@ -3874,8 +3891,10 @@ mod guarded {
             "the turn waited {took:?} for a stopped tool that was not coming back"
         );
         assert_eq!(out.reason, ExecutionReason::Cancelled);
+        // Was "· stopped" until the M30 review of 10 Oct 2026: `Deaf` is still
+        // running when the turn moves on, so the chip says that instead.
         assert!(
-            matches!(&out.state, ToolState::Failed(why) if why.ends_with("· stopped")),
+            matches!(&out.state, ToolState::Failed(why) if why.ends_with("· left running")),
             "{:?}",
             out.state
         );

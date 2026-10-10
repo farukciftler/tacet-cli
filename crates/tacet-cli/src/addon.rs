@@ -469,6 +469,8 @@ fn install_generic(
     }
 
     let mut collected: Vec<(&'static str, String)> = Vec::new();
+    // Defaults SHOWN on the approval screen and NOT recorded (see below).
+    let mut shown_defaults: Vec<(&'static str, Vec<String>)> = Vec::new();
     for spec in def.settings {
         let raw = match &value {
             Some(v) => {
@@ -522,18 +524,20 @@ fn install_generic(
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
             .collect();
-        // AN EMPTY ANSWER MAY HAVE A MACHINE DEFAULT, and if it does it is
-        // RECORDED rather than left implicit: the approval screen below then
-        // names the folders that will be read, not a rule about where they
-        // might be. Only one setting has such a default today, and it is a
-        // READ list — nothing here may default a list that grants a write.
+        // AN EMPTY ANSWER MAY HAVE A MACHINE DEFAULT, and it is SHOWN, NOT
+        // RECORDED. It used to be recorded, and a snapshot of the folders that
+        // existed at install hid every agent installed later: with only
+        // `~/.claude` present the record said `roots: ~/.claude`, the readers
+        // took that list for every agent, and a Codex session copied in
+        // afterwards was "not found" by `sessions_list` and `--from` alike
+        // (reproduced in review, 10 Oct 2026). Left empty, the readers ask each
+        // agent for its own folder every time — `$CODEX_HOME` set next week
+        // included. Only one setting has such a default, and it is a READ
+        // list — nothing here may default a list that grants a write.
         if values.is_empty() {
-            values = found_on_this_machine(def.name, spec.key);
-            if !values.is_empty() {
-                println!(
-                    "{}",
-                    color.paint(DIM, "  none given — the ones found on this machine:")
-                );
+            let found = found_on_this_machine(def.name, spec.key);
+            if !found.is_empty() {
+                shown_defaults.push((spec.key, found));
             }
         }
         if values.is_empty() {
@@ -587,8 +591,25 @@ fn install_generic(
     println!("{}", color.paint(BOLD, "this will be recorded:"));
     println!("  addon : {}", def.name);
     println!("  state : open");
-    if collected.is_empty() {
+    if collected.is_empty() && shown_defaults.is_empty() {
         println!("{}", color.paint(DIM, "  (no settings)"));
+    }
+    for (key, found) in &shown_defaults {
+        println!(
+            "  {key}: {}",
+            color.paint(
+                DIM,
+                "none recorded — each agent's own folder, looked up when a session is read"
+            )
+        );
+        println!(
+            "  {}  {}",
+            " ".repeat(key.len()),
+            color.paint(DIM, "found on this machine today:")
+        );
+        for folder in found {
+            println!("  {}  {folder}", " ".repeat(key.len()));
+        }
     }
     for (key, joined) in &collected {
         let shown = tacet_web::addon::shown_value(def.name, key, joined);
@@ -611,14 +632,16 @@ fn install_generic(
     save(color, def, collected)
 }
 
-/// What an empty answer to a setting means on THIS machine, if anything.
+/// What an empty answer to a setting means on THIS machine, if anything —
+/// for the approval screen and `addon try` to SHOW; the install records none
+/// of it.
 ///
 /// `agent-sessions`' folders: each agent's own (`$CLAUDE_CONFIG_DIR` or
 /// `~/.claude`, `$CODEX_HOME` or `~/.codex`, the three `~/.gemini/antigravity*`)
-/// that exist. Asked through the readers' own `default_roots`, so the install
+/// that exist. Asked through the readers' own `default_roots`, so the screen
 /// and the readers cannot disagree about where an agent keeps its files. A
-/// folder that does not exist is left out: registering it would put a path on
-/// the approval screen that nothing will be read from.
+/// folder that does not exist is left out: showing it would name a path that
+/// nothing will be read from today.
 fn found_on_this_machine(addon: &str, key: &str) -> Vec<String> {
     use tacet_web::addon::{AGENT_SESSIONS, ROOTS_KEY};
     if addon == AGENT_SESSIONS && key == ROOTS_KEY {

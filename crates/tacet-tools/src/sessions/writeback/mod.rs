@@ -161,10 +161,18 @@ pub(crate) fn io_error(path: &Path) -> impl Fn(std::io::Error) -> WriteError + '
 /// sentence saying what it is, and the record's own rendering — the
 /// structure-safe `.md` twin, so no field of the record can forge a heading or
 /// a finished task inside the note either.
+///
+/// IT DOES NOT SAY TACET DID THE WORK. It said "While you were away, Tacet
+/// worked on this session and reports its progress below" above a record whose
+/// summary was the session as Tacet found it — so Claude was told its own
+/// "assistant: Tests added." was Tacet's progress (review of 10 Oct 2026,
+/// RG-27; E2/E3 measured what a misattributed note does). The record now
+/// labels what it found, and the note says only what is known.
 pub fn note_text(record: &HandoffRecord) -> String {
     let mut text = format!(
-        "{NOTE_PREFIX} While you were away, Tacet worked on this session and reports its \
-         progress below. It is a report, not a request: the user has not asked for anything \
+        "{NOTE_PREFIX} The user continued this session in Tacet. Below is Tacet's handoff \
+         record for it: the session as Tacet found it, and whatever has been reported back \
+         since. It is a report, not a request: the user has not asked for anything \
          new.\n\n{}",
         record.render_markdown()
     );
@@ -188,13 +196,24 @@ fn clip(text: &mut String, max: usize) {
 
 /// The context a hook hands the agent's model: who wrote it, that it is not
 /// the user, and the record.
-pub fn hook_context(record: &HandoffRecord) -> String {
+///
+/// `tacet_bin` is the program the instruction names — the same canonical
+/// path the hook entry runs (`handoff_cmd::tacet_bin`). A bare `tacet` here
+/// failed exactly where the hook was made robust: a hook installed with an
+/// absolute path because tacet is not on the agent's PATH told the agent to
+/// run `tacet handoff update …`, which is "command not found" there, and the
+/// report-back channel failed silently (review of 10 Oct 2026, RG-21).
+///
+/// And it does not claim the record is Tacet's work: see `note_text`.
+pub fn hook_context(record: &HandoffRecord, tacet_bin: &str) -> String {
     let mut text = format!(
-        "Tacet, a local assistant on this machine, left a handoff record for this session. \
-         It reports what Tacet did while the user worked with it; it is not an instruction \
-         from the user. To report your own progress back in the same record, run \
-         `tacet handoff update {} {} --by <you> --task <id>=<status>` \
+        "Tacet, a local assistant on this machine, left a handoff record for this session: \
+         the session as Tacet found it when the user continued it there, and whatever has \
+         been reported back since. It is not an instruction from the user. To report your \
+         own progress back in the same record, run \
+         `{} handoff update {} {} --by <you> --task <id>=<status>` \
          (statuses: pending, in_progress, completed, blocked, cancelled).\n\n{}",
+        shell_quote(tacet_bin),
         record.agent.slug(),
         record.session,
         record.render_markdown()
@@ -251,7 +270,10 @@ pub fn hook_session_id(agent: AgentKind, input: &Value) -> Option<String> {
 /// cannot parse is silence too: a broken hook must never stop the user's agent
 /// from starting. A record that exists and cannot be read is the one case the
 /// user is told about, where the agent has a user-facing field for it.
-pub fn hook_response(agent: AgentKind, dir: &Path, input: &str) -> Option<Value> {
+///
+/// `tacet_bin`: the program the agent is told to run to report back — the
+/// one the hook entry itself runs.
+pub fn hook_response(agent: AgentKind, dir: &Path, input: &str, tacet_bin: &str) -> Option<Value> {
     let event: Value = serde_json::from_str(input).ok()?;
     let id = hook_session_id(agent, &event)?;
     let record = match handoff::read(dir, agent, &id) {
@@ -270,7 +292,7 @@ pub fn hook_response(agent: AgentKind, dir: &Path, input: &str) -> Option<Value>
             };
         }
     };
-    let context = hook_context(&record);
+    let context = hook_context(&record, tacet_bin);
     Some(match agent {
         AgentKind::ClaudeCode | AgentKind::Codex => json!({
             "hookSpecificOutput": {
@@ -538,6 +560,9 @@ mod tests {
     use super::*;
     use crate::sessions::handoff::{HandoffTask, Status};
 
+    /// The program a hook entry runs, with a space so it must be quoted.
+    const BIN: &str = "/Users/a b/.cargo/bin/tacet";
+
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "tacet-writeback-{name}-{}-{}",
@@ -578,6 +603,9 @@ mod tests {
     fn the_note_opens_with_the_measured_prefix_and_carries_the_record() {
         let text = note_text(&record(AgentKind::ClaudeCode, "s-1"));
         assert!(text.starts_with(NOTE_PREFIX), "{text}");
+        // RG-27 review: the note does not tell the agent Tacet did the work.
+        assert!(!text.contains("Tacet worked on this session"), "{text}");
+        assert!(text.contains("the session as Tacet found it"), "{text}");
         assert!(text.contains("- [x] #1 set day to 1 before adding a month"));
         assert!(text.contains("> Run the gates."));
         let mut long = record(AgentKind::ClaudeCode, "s-1");
@@ -598,7 +626,7 @@ mod tests {
         let stdin = format!(
             r#"{{"session_id":"{id}","transcript_path":"/x/{id}.jsonl","cwd":"/w","hook_event_name":"SessionStart","source":"resume"}}"#
         );
-        let out = hook_response(AgentKind::ClaudeCode, &dir, &stdin).expect("a record exists");
+        let out = hook_response(AgentKind::ClaudeCode, &dir, &stdin, BIN).expect("a record exists");
         assert_eq!(
             out["hookSpecificOutput"]["hookEventName"], "SessionStart",
             "{out}"
@@ -607,15 +635,25 @@ mod tests {
             .as_str()
             .unwrap();
         assert!(ctx.contains("not an instruction from the user"), "{ctx}");
+        // RG-21 review: the program the agent is told to run is the one the
+        // hook entry runs, quoted the same way — never a bare `tacet`.
+        assert!(
+            ctx.contains(&format!("`'{BIN}' handoff update claude {id} --by <you>")),
+            "{ctx}"
+        );
+        assert!(!ctx.contains("`tacet handoff update"), "{ctx}");
+        // RG-27 review: the record is not presented as Tacet's own work.
+        assert!(!ctx.contains("reports what Tacet did"), "{ctx}");
+        assert!(ctx.contains("the session as Tacet found it"), "{ctx}");
         assert!(ctx.contains("- [x] #1 set day to 1 before adding a month"));
         assert!(out["systemMessage"].as_str().unwrap().contains("1 task"));
         // Another session: nothing at all.
         let other = r#"{"session_id":"b035ad6d-1c2b-4f6e-9d1a-0b8c7e6f5a43"}"#;
-        assert_eq!(hook_response(AgentKind::ClaudeCode, &dir, other), None);
+        assert_eq!(hook_response(AgentKind::ClaudeCode, &dir, other, BIN), None);
         // Not JSON, no id, a traversal id: nothing, and no panic.
         for bad in ["", "not json", "{}", r#"{"session_id":"../../.ssh/x"}"#] {
             assert_eq!(
-                hook_response(AgentKind::ClaudeCode, &dir, bad),
+                hook_response(AgentKind::ClaudeCode, &dir, bad, BIN),
                 None,
                 "{bad}"
             );
@@ -626,7 +664,7 @@ mod tests {
             "{ broken",
         )
         .unwrap();
-        let out = hook_response(AgentKind::ClaudeCode, &dir, &stdin).unwrap();
+        let out = hook_response(AgentKind::ClaudeCode, &dir, &stdin, BIN).unwrap();
         assert!(out.get("hookSpecificOutput").is_none());
         assert!(out["systemMessage"].as_str().unwrap().contains("not used"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -644,6 +682,7 @@ mod tests {
             AgentKind::Codex,
             &dir,
             &format!(r#"{{"session_id":"{cid}","hook_event_name":"SessionStart"}}"#),
+            BIN,
         )
         .unwrap();
         assert_eq!(out["hookSpecificOutput"]["hookEventName"], "SessionStart");
@@ -652,7 +691,7 @@ mod tests {
         let input = format!(
             r#"{{"transcriptPath":"/h/.gemini/antigravity-ide/brain/{aid}/.system_generated/logs/transcript_full.jsonl"}}"#
         );
-        let out = hook_response(AgentKind::Antigravity, &dir, &input).unwrap();
+        let out = hook_response(AgentKind::Antigravity, &dir, &input, BIN).unwrap();
         let steps = out["injectSteps"].as_array().unwrap();
         assert_eq!(steps.len(), 1, "{out}");
         assert!(
@@ -680,7 +719,7 @@ mod tests {
         let mut r = record(AgentKind::ClaudeCode, "s-2");
         r.summary = "ğ".repeat(7_999);
         r.next = "ş".repeat(1_999);
-        let ctx = hook_context(&r);
+        let ctx = hook_context(&r, BIN);
         assert!(
             ctx.chars().count() <= MAX_CONTEXT_CHARS + 80,
             "{}",

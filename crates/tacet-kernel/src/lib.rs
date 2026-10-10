@@ -58,7 +58,9 @@ pub use catalog::ToolCatalog;
 pub use constraint::{Constrainer, ConstraintError, ConstraintSession, FreeConstraint};
 pub use context::ToolContext;
 pub use data_store::{DataStore, InMemoryDataStore, Record, SourceRef};
-pub use defang::{Vocabulary, defang, register_markers, register_vocabulary};
+pub use defang::{
+    Vocabulary, defang, neutralise_data_fences, register_markers, register_vocabulary,
+};
 pub use env::{config_dir, config_path, env_var};
 pub use error::{
     ERROR_MODEL_TEXT, INVALID_ARGUMENTS_MODEL_TEXT, ToolError, ToolResult, UNKNOWN_TOOL_MODEL_TEXT,

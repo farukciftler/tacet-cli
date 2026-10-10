@@ -685,6 +685,21 @@ mod tests {
                 "home/.claude.json.backup.json",
                 ".claude/projects/p/s1/subagents/agent-a1.meta.json",
             ),
+            // ONE CASE PER ENTRY that no other entry also catches (RG-16
+            // review of 10 Oct 2026): each of these substrings and stems could
+            // be deleted with the suite green, and each deletion made the
+            // file beside it here readable through `read_text`.
+            ("home/my-credential.json", "home/my-credit.json"),
+            ("home/passwords.json", "home/passages.md"),
+            ("home/db-passwd.json", "home/db-pass.json"),
+            ("home/openai-apikey.json", "home/openai-api.json"),
+            ("home/api-key.json", "home/api-docs.json"),
+            ("home/my_api_key.json", "home/my_api.json"),
+            ("home/client_secret.json", "home/client.json"),
+            ("home/github-oauth.json", "home/github-oath.json"),
+            ("home/id_ed25519.json", "home/id_ed.json"),
+            ("home/id_ecdsa.json", "home/id_ec.json"),
+            ("home/id_dsa.json", "home/id_ds.json"),
         ];
         for (secret, neighbour) in cases {
             for rel in [secret, neighbour] {

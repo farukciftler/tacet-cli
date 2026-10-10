@@ -261,7 +261,7 @@ fn auto_executed_name(stem: &str, extension: &str) -> Option<String> {
         ));
     }
     let lower = fold_case(stem);
-    if let Some(runner) = test_runner_collects(&lower) {
+    if let Some(runner) = test_runner_collects(&lower, extension) {
         return Some(format!(
             "'{stem}' is a test file name: {runner} imports and runs every file named like it"
         ));
@@ -455,8 +455,8 @@ fn fold_case(stem: &str) -> String {
 }
 
 /// The test runner that would collect — and so EXECUTE — a file with this
-/// (lower-case, dot-free) stem when the user types its bare command in the
-/// folder, or `None`.
+/// (lower-case, dot-free) stem and `extension` when the user types its bare
+/// command in the folder, or `None`.
 ///
 /// A RECORDED DECISION, NOT AN ACCIDENT: test files are refused. The first
 /// version of the M3 fix closed `conftest.py` and let `test_ideas.py` through
@@ -464,29 +464,38 @@ fn fold_case(stem: &str) -> String {
 /// bare `pytest` imports every `test_*.py` and `*_test.py` in the folder, which
 /// runs their top level outside the sandbox with the user's privileges: the
 /// same path as `conftest.py`, by the very tool the audit named. The patterns
-/// are each runner's DEFAULT collection glob, as documented:
-///   * pytest `python_files`: `test_*.py`, `*_test.py`;
-///   * `python -m unittest` discovery: `test*.py` — any stem STARTING with
-///     `test`, which is why `testimonials` is refused too; that is the
+/// are each runner's DEFAULT collection glob, as documented, AND EACH IS
+/// KEYED ON THE EXTENSION ITS RUNNER COLLECTS:
+///   * `.py` — pytest `python_files`: `test_*.py`, `*_test.py`;
+///     `python -m unittest` discovery: `test*.py` — any stem STARTING with
+///     `test`, which is why `testimonials.py` is refused too; that is the
 ///     runner's rule, not ours, and the model is told which runner and can
 ///     pick another name without losing an attempt;
-///   * `node --test`: `test.js`, `test-*.js`, `*-test.js`, `*_test.js`
-///     (and `*.test.js`, which the dotted-stem rule already refuses);
-///   * jest `testMatch`: `?(*.)+(spec|test).js` — a bare `spec` or `test`.
+///   * `.js` — `node --test`: `test.js`, `test-*.js`, `*-test.js`,
+///     `*_test.js` (and `*.test.js`, which the dotted-stem rule already
+///     refuses); jest `testMatch` `?(*.)+(spec|test).js`: a bare `spec`.
+///
+/// EXTENSION-BLIND, THIS REFUSED `testimonials.js` (review of 10 Oct 2026,
+/// reproduced on the fake engine): unittest's `test*` rule was applied to
+/// JavaScript, which unittest never reads and no node runner's glob matches,
+/// and the model was told `python -m unittest` would run it.
 ///
 /// What is NOT refused, and why: a name that merely contains the word
 /// (`latest`, `contest`, `attestation`) matches none of these globs.
-fn test_runner_collects(lower: &str) -> Option<&'static str> {
-    if lower.starts_with("test_") || lower.ends_with("_test") {
-        Some("pytest")
-    } else if lower.starts_with("test") {
-        Some("python -m unittest")
-    } else if lower.ends_with("-test") {
-        Some("node --test")
-    } else if lower == "spec" {
-        Some("jest")
-    } else {
-        None
+fn test_runner_collects(lower: &str, extension: &str) -> Option<&'static str> {
+    match extension {
+        "py" if lower.starts_with("test_") || lower.ends_with("_test") => Some("pytest"),
+        "py" if lower.starts_with("test") => Some("python -m unittest"),
+        "js" | "mjs" | "cjs"
+            if lower == "test"
+                || lower.starts_with("test-")
+                || lower.ends_with("-test")
+                || lower.ends_with("_test") =>
+        {
+            Some("node --test")
+        }
+        "js" | "mjs" | "cjs" if lower == "spec" => Some("jest"),
+        _ => None,
     }
 }
 
@@ -1163,8 +1172,9 @@ mod tests {
             // Invoke's task file, in the fabfile/noxfile family.
             "tasks",
             "Tasks.py",
-            // Test files: pytest's two globs, unittest's `test*`, node --test's
-            // and jest's bare names (see `test_runner_collects`).
+            // Test files: pytest's two globs and unittest's `test*` (see
+            // `test_runner_collects`; node's and jest's are asked for `.js`
+            // in `a_test_file_name_is_refused_for_the_runner_that_reads_it`).
             "test_ideas",
             "Test_Ideas.py",
             "parser_test",
@@ -1172,8 +1182,6 @@ mod tests {
             "testimonials",
             "test",
             "test-utils",
-            "utils-test.js",
-            "spec",
             // Standard-library names: the folder's next `import json` runs
             // the delivered file instead (see `PYTHON_STDLIB`).
             "json",
@@ -1334,6 +1342,39 @@ mod tests {
         )
     }
 
+    /// M3, review of 10 Oct 2026: a test-file rule applies to the language
+    /// whose runner collects it, and names THAT runner. `testimonials.js`
+    /// was refused for a `python -m unittest` reason, and so were
+    /// `testing_utils.js` and `testdata.js`, which no node runner reads.
+    #[test]
+    fn a_test_file_name_is_refused_for_the_runner_that_reads_it() {
+        for (name, ext, runner) in [
+            ("test", "js", "node --test"),
+            ("test-utils", "js", "node --test"),
+            ("utils-test", "js", "node --test"),
+            ("parser_test", "js", "node --test"),
+            ("spec", "js", "jest"),
+            ("test_ideas", "py", "pytest"),
+            ("parser_test", "py", "pytest"),
+            ("testimonials", "py", "python -m unittest"),
+        ] {
+            let why = auto_executed_name(name, ext)
+                .unwrap_or_else(|| panic!("{name}.{ext} would be delivered"));
+            assert!(why.contains(runner), "{name}.{ext}: {why}");
+        }
+        for (name, ext) in [
+            ("testimonials", "js"),
+            ("testing_utils", "js"),
+            ("testdata", "js"),
+            ("hello_page", "js"),
+            // Python's runners use `_`, not `-`; jest's bare name is JS only.
+            ("utils-test", "py"),
+            ("spec", "py"),
+        ] {
+            assert_eq!(auto_executed_name(name, ext), None, "{name}.{ext}");
+        }
+    }
+
     /// 1d) THE REFUSAL HAPPENS BEFORE ANYTHING RUNS AND COSTS NO ATTEMPT (M3).
     ///     No file of that name appears, nothing is executed, and the model
     ///     still has both of its runs for the corrected name.
@@ -1419,6 +1460,13 @@ mod tests {
         ));
         assert_eq!(outcome.state, ToolState::Written, "{}", outcome.to_model);
         assert!(root.join("json.js").is_file(), "json.js was not delivered");
+        // The call the review made: unittest's `test*` is not a JS rule.
+        let outcome = hold(tool.run(
+            json!({"file_name": "testimonials", "lines": ["console.log(42)"]}),
+            &mut ctx,
+        ));
+        assert_eq!(outcome.state, ToolState::Written, "{}", outcome.to_model);
+        assert!(root.join("testimonials.js").is_file());
         std::fs::remove_dir_all(&root).ok();
     }
 

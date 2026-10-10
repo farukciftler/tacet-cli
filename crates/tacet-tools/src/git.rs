@@ -51,9 +51,10 @@
 //! the user what is actually going on.
 
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
+use tacet_kernel::context::CancelToken;
 use tacet_kernel::{
     ArgSchema, Field, Tool, ToolContext, ToolError, ToolFuture, ToolOutcome, ToolResult,
     TraceUpdate, boxed,
@@ -276,6 +277,22 @@ enum GitFailure {
     /// from. Running on without it is exactly what H6 forbids, so this is a
     /// refusal — reported as one, not as the absence of a repository.
     Unsupported,
+    /// The call was stopped while git ran, and git was killed and reaped.
+    Stopped,
+}
+
+impl GitFailure {
+    /// What `status`, `diff` and `log` report when a run produced nothing.
+    fn into_tool_error(self) -> ToolError {
+        match self {
+            GitFailure::Stopped => {
+                ToolError::Other("git was stopped before it finished; nothing was read.".into())
+            }
+            GitFailure::Spawn | GitFailure::Unsupported => {
+                ToolError::Other("The git command could not be run.".into())
+            }
+        }
+    }
 }
 
 /// git's exit status for a usage error, including an option it does not know.
@@ -362,14 +379,24 @@ fn neutralizing_args(raw: &str) -> Vec<String> {
 /// one extra process per call, a few milliseconds against a turn that
 /// generates tokens.
 ///
-/// NO TIMEOUT, AND THAT IS A DECISION. The three subcommands are local-only —
-/// none of them opens a socket — so the runtime is bounded by the size of the
-/// user's own repository, exactly like the blocking `std::fs::read` in
-/// `read_document`. A timeout would mean a second process-supervision path next
-/// to `run_code`'s, and one that could not be measured by a test on this runner;
-/// this repository's recurring failure is precisely the mechanism that is built
-/// and never proven.
-fn run_git(program: &str, dir: &Path, args: &[&str]) -> Result<GitRun, GitFailure> {
+/// NO TIMEOUT OF ITS OWN, AND THAT IS A DECISION. The three subcommands are
+/// local-only — none of them opens a socket — so the runtime is bounded by the
+/// size of the user's own repository, exactly like the blocking
+/// `std::fs::read` in `read_document`.
+///
+/// BUT IT STOPS WHEN ASKED (audit M30, review of 10 Oct 2026). The executor
+/// gives every call a deadline (`DEFAULT_DEADLINE`, 120 s) and passes Ctrl-C
+/// through `stop`. With a plain `output()` neither reached git: on a
+/// repository where `status --untracked-files=all` outlived the deadline, the
+/// executor abandoned the worker after its grace and reported the call as
+/// stopped, while the git child ran on, orphaned, for the rest of the session.
+/// `output_unless_stopped` kills and reaps it instead.
+fn run_git(
+    program: &str,
+    dir: &Path,
+    args: &[&str],
+    stop: &CancelToken,
+) -> Result<GitRun, GitFailure> {
     let scan = git_command(
         program,
         dir,
@@ -382,9 +409,8 @@ fn run_git(program: &str, dir: &Path, args: &[&str]) -> Result<GitRun, GitFailur
             "--get-regexp",
             FILTER_KEYS,
         ],
-    )
-    .output()
-    .map_err(|_| GitFailure::Spawn)?;
+    );
+    let scan = output_unless_stopped(scan, stop)?;
     // Exit 1 is git's "no key matched" — the common case. Anything else means
     // the config could not be read (129: `--show-scope` unknown, git < 2.26;
     // 128: a config file git cannot parse), and running on WITHOUT the
@@ -395,9 +421,7 @@ fn run_git(program: &str, dir: &Path, args: &[&str]) -> Result<GitRun, GitFailur
         Some(1) => Vec::new(),
         _ => return Err(GitFailure::Unsupported),
     };
-    let out = git_command(program, dir, &neutralize, args)
-        .output()
-        .map_err(|_| GitFailure::Spawn)?;
+    let out = output_unless_stopped(git_command(program, dir, &neutralize, args), stop)?;
     // git 2.26–2.30 has `--show-scope` but not `--config-env`, so it rejects
     // the overrides of a repository that defines a filter. That is a usage
     // error (129), never a "not a repository" (128) — keep them apart.
@@ -412,6 +436,58 @@ fn run_git(program: &str, dir: &Path, args: &[&str]) -> Result<GitRun, GitFailur
     })
 }
 
+/// `cmd.output()`, except that a fired `stop` kills the child, reaps it and
+/// answers `Stopped` within one poll.
+///
+/// THE PIPES ARE DRAINED ON THEIR OWN THREADS while the child is polled:
+/// `git diff` on a large change writes more than a pipe holds, and a child
+/// blocked on a full pipe never exits for `try_wait` to see. On a stop the
+/// readers are not joined — a grandchild could hold the pipe open — they end
+/// when the last writer does.
+fn output_unless_stopped(mut cmd: Command, stop: &CancelToken) -> Result<Output, GitFailure> {
+    use std::io::Read;
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|_| GitFailure::Spawn)?;
+    fn drain(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            bytes
+        })
+    }
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if stop.is_cancelled() => {
+                // KILL AND THEN REAP, as `calendar::run_osascript` learned:
+                // without the `wait` the child stays a zombie.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(GitFailure::Stopped);
+            }
+            Ok(None) => std::thread::sleep(STOP_POLL),
+            Err(_) => return Err(GitFailure::Spawn),
+        }
+    };
+    Ok(Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    })
+}
+
+/// How often a running git is checked for a stop. The process tools poll at
+/// 10 ms; the executor looks up every 20 ms and waits `ABANDON_GRACE` (3 s),
+/// so this is well inside both.
+const STOP_POLL: std::time::Duration = std::time::Duration::from_millis(10);
+
 /// What the working directory turned out to be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Repo {
@@ -422,6 +498,9 @@ enum Repo {
     Unavailable,
     /// git runs, but not with the overrides H6 needs (see `GitFailure`).
     Unsupported,
+    /// The call was stopped (Ctrl-C or the executor's deadline) while git
+    /// was still answering.
+    Stopped,
 }
 
 /// Asks git itself instead of reading its error text.
@@ -430,9 +509,10 @@ enum Repo {
 /// machine with a non-English git the substring never appears and every directory
 /// would look like a repository. `rev-parse --is-inside-work-tree` answers
 /// structurally: exit status plus `true`/`false`.
-fn probe(program: &str, dir: &Path) -> Repo {
-    match run_git(program, dir, &["rev-parse", "--is-inside-work-tree"]) {
+fn probe(program: &str, dir: &Path, stop: &CancelToken) -> Repo {
+    match run_git(program, dir, &["rev-parse", "--is-inside-work-tree"], stop) {
         Err(GitFailure::Spawn) => Repo::Unavailable,
+        Err(GitFailure::Stopped) => Repo::Stopped,
         Err(GitFailure::Unsupported) => Repo::Unsupported,
         Ok(r) if r.ok && r.stdout.trim() == "true" => Repo::Present,
         // `false` = we are inside the `.git` directory itself; a non-zero exit =
@@ -444,10 +524,15 @@ fn probe(program: &str, dir: &Path) -> Repo {
 /// Does the repository have a commit yet? A fresh `git init` has no `HEAD`, and
 /// `git diff HEAD` / `git log` FAIL there rather than returning empty — the state
 /// has to be known before the command is chosen, not guessed from the error.
-fn has_commit(program: &str, dir: &Path) -> bool {
-    run_git(program, dir, &["rev-parse", "--verify", "--quiet", "HEAD"])
-        .map(|r| r.ok)
-        .unwrap_or(false)
+fn has_commit(program: &str, dir: &Path, stop: &CancelToken) -> bool {
+    run_git(
+        program,
+        dir,
+        &["rev-parse", "--verify", "--quiet", "HEAD"],
+        stop,
+    )
+    .map(|r| r.ok)
+    .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -528,7 +613,7 @@ fn branch_name(raw: &str) -> String {
     head.trim().to_string()
 }
 
-fn status(program: &str, dir: &Path) -> ToolResult<Report> {
+fn status(program: &str, dir: &Path, stop: &CancelToken) -> ToolResult<Report> {
     let run = run_git(
         program,
         dir,
@@ -543,8 +628,9 @@ fn status(program: &str, dir: &Path) -> ToolResult<Report> {
             HERE[0],
             HERE[1],
         ],
+        stop,
     )
-    .map_err(|_| ToolError::Other("The git command could not be run.".into()))?;
+    .map_err(GitFailure::into_tool_error)?;
     if !run.ok {
         return Err(ToolError::Other("The git status could not be read.".into()));
     }
@@ -634,12 +720,12 @@ fn parse_numstat(raw: &str) -> Vec<FileStat> {
         .collect()
 }
 
-fn diff(program: &str, dir: &Path) -> ToolResult<Report> {
+fn diff(program: &str, dir: &Path, stop: &CancelToken) -> ToolResult<Report> {
     // WHICH DIFF: against `HEAD`, i.e. staged AND unstaged changes together —
     // "what did I change since the last commit" is the question actually being
     // asked. On a repository with no commit yet there is no `HEAD` to compare
     // with, so the staged set is the whole of the change.
-    let base: &str = if has_commit(program, dir) {
+    let base: &str = if has_commit(program, dir, stop) {
         "HEAD"
     } else {
         "--cached"
@@ -659,8 +745,9 @@ fn diff(program: &str, dir: &Path) -> ToolResult<Report> {
             HERE[0],
             HERE[1],
         ],
+        stop,
     )
-    .map_err(|_| ToolError::Other("The git command could not be run.".into()))?;
+    .map_err(GitFailure::into_tool_error)?;
     if !stat_run.ok {
         return Err(ToolError::Other("The git diff could not be read.".into()));
     }
@@ -706,8 +793,9 @@ fn diff(program: &str, dir: &Path) -> ToolResult<Report> {
             HERE[0],
             HERE[1],
         ],
+        stop,
     )
-    .map_err(|_| ToolError::Other("The git command could not be run.".into()))?;
+    .map_err(GitFailure::into_tool_error)?;
     Ok(Report {
         chip: format!("git diff · {} files", stats.len()),
         summary,
@@ -719,8 +807,8 @@ fn diff(program: &str, dir: &Path) -> ToolResult<Report> {
 // log
 // ---------------------------------------------------------------------------
 
-fn log(program: &str, dir: &Path) -> ToolResult<Report> {
-    if !has_commit(program, dir) {
+fn log(program: &str, dir: &Path, stop: &CancelToken) -> ToolResult<Report> {
+    if !has_commit(program, dir, stop) {
         return Ok(Report::empty(
             "git log · no commits",
             "git_log: the repository has no commits yet",
@@ -747,8 +835,9 @@ fn log(program: &str, dir: &Path) -> ToolResult<Report> {
             HERE[0],
             HERE[1],
         ],
+        stop,
     )
-    .map_err(|_| ToolError::Other("The git command could not be run.".into()))?;
+    .map_err(GitFailure::into_tool_error)?;
     if !run.ok {
         return Err(ToolError::Other("The git log could not be read.".into()));
     }
@@ -907,7 +996,8 @@ impl GitTool {
         // a `current_dir` that a symlink has moved somewhere else.
         let dir = crate::sandbox_path::resolve_existing_dir(ctx, ".")?;
 
-        match probe(self.program, &dir) {
+        let stop = ctx.cancel_token();
+        match probe(self.program, &dir, stop) {
             Repo::Unavailable => Ok((
                 ToolOutcome::read_ok(
                     "git is not installed",
@@ -924,6 +1014,8 @@ impl GitTool {
                 ),
                 false,
             )),
+            // Before anything of the user's was read: not tainted.
+            Repo::Stopped => Err(GitFailure::Stopped.into_tool_error()),
             Repo::Absent => Ok((
                 ToolOutcome::read_ok(
                     "no git repository here",
@@ -933,9 +1025,9 @@ impl GitTool {
             )),
             Repo::Present => {
                 let report = match action {
-                    Action::Status => status(self.program, &dir)?,
-                    Action::Diff => diff(self.program, &dir)?,
-                    Action::Log => log(self.program, &dir)?,
+                    Action::Status => status(self.program, &dir, stop)?,
+                    Action::Diff => diff(self.program, &dir, stop)?,
+                    Action::Log => log(self.program, &dir, stop)?,
                 };
                 Ok((self.outcome(ctx, report), true))
             }
@@ -1923,7 +2015,13 @@ mod tests {
     fn an_implicit_bare_repository_is_not_discovered() {
         let root = temp_dir("h6-bare");
         git_fixture(&root, &["init", "--bare", "-q"]);
-        let run = run_git("git", &root, &["rev-parse", "--git-dir"]).expect("git runs");
+        let run = run_git(
+            "git",
+            &root,
+            &["rev-parse", "--git-dir"],
+            &CancelToken::new(),
+        )
+        .expect("git runs");
         assert!(
             !run.ok,
             "a bare repository was discovered implicitly: {}",
@@ -1994,6 +2092,64 @@ mod tests {
                 "missing env {key}={value:?}: {envs:?}"
             );
         }
+    }
+
+    /// AUDIT M30, review of 10 Oct 2026: a git that outlives the call's
+    /// deadline, or a Ctrl-C, used to keep running orphaned after the
+    /// executor abandoned the worker — `output()` never looked at the token.
+    /// A stand-in that only sleeps plays the slow repository; it writes its
+    /// pid so the test can see it is gone, not merely no longer waited for.
+    #[cfg(unix)]
+    #[test]
+    fn a_stop_kills_the_git_that_is_running() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{Duration, Instant};
+        let root = temp_dir("git-stop");
+        let pid_file = root.join("pid");
+        let program = root.join("slow-git");
+        std::fs::write(
+            &program,
+            format!(
+                "#!/bin/sh\necho $$ > '{}'\nexec sleep 20\n",
+                pid_file.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // The stop is said once the stand-in is known to be running — under
+        // a loaded test run a fixed delay fired before it had started.
+        let stop = CancelToken::new();
+        let stopper = {
+            let stop = stop.clone();
+            let pid_file = pid_file.clone();
+            std::thread::spawn(move || {
+                let waiting = Instant::now();
+                while !pid_file.exists() && waiting.elapsed() < Duration::from_secs(10) {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+                stop.cancel();
+                Instant::now()
+            })
+        };
+        let run = run_git(program.to_str().unwrap(), &root, &["status"], &stop);
+        let stopped_at = stopper.join().unwrap();
+        assert!(matches!(run, Err(GitFailure::Stopped)), "{:?}", run.err());
+        assert!(
+            stopped_at.elapsed() < Duration::from_secs(2),
+            "the run waited {:?} after the stop for a git it had been told to stop",
+            stopped_at.elapsed()
+        );
+        let pid = std::fs::read_to_string(&pid_file).expect("the stand-in ran");
+        let alive = std::process::Command::new("kill")
+            .args(["-0", pid.trim()])
+            .stderr(Stdio::null())
+            .status()
+            .expect("kill runs")
+            .success();
+        assert!(!alive, "git {} is still running after the stop", pid.trim());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// WHOSE filters are switched off. The repository's (`local`,

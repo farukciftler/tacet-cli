@@ -9,8 +9,9 @@
 //! glance, and the whole reason the file exists is that a release once went out
 //! on exactly that kind of glance.
 //!
-//! So: the flags it types are checked against the parser, and the five failures
-//! it claims to detect are checked against the file, both from source.
+//! So: the flags it types are checked against the parser (the built binary's
+//! `chat --help`), and the five failures it claims to detect are checked
+//! against the file, from source.
 
 use std::path::{Path, PathBuf};
 
@@ -84,41 +85,68 @@ fn flags_used(text: &str) -> Vec<String> {
     out
 }
 
-/// The long flags `tacet chat` accepts, read out of the `Chat` variant in
-/// `cli.rs`. clap kebab-cases each field name, so the fields ARE the flags and
-/// this cannot drift from the parser the way a hand-written list would.
-fn chat_flags_from_source() -> Vec<String> {
-    let text = read("crates/tacet-cli/src/cli.rs");
-    let start = text.find("    Chat {").expect("the Chat variant");
-    let body = &text[start..];
-    let end = body.find("\n    },").map(|i| i + 6).unwrap_or(body.len());
-    let body = &body[..end];
-
-    let mut out = Vec::new();
-    for line in body.lines() {
-        let line = line.trim();
-        if line.starts_with('#') || line.starts_with("//") {
+/// The long flags `tacet chat` accepts, as the built binary's own `--help`
+/// prints them.
+///
+/// NOT FROM `cli.rs`'S FIELD NAMES, which this read until the review of
+/// 10 Oct 2026. It kebab-cased every field and called that "the flags", but
+/// two fields are renamed — `#[arg(long = "continue")] continue_session` and
+/// `#[arg(long = "session")] session_id` — so the list held `continue-session`
+/// and `session-id`, which `tacet chat` rejects, and not `continue` or
+/// `session`, which it takes. A smoke line passing `--session-id` was reported
+/// clean while the script itself would exit 2. The parser is the authority on
+/// the parser; the test binary is built for this suite anyway.
+fn chat_flags_from_help() -> Vec<String> {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_tacet"))
+        .args(["chat", "--help"])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("the tacet binary runs");
+    assert!(out.status.success(), "`tacet chat --help` failed");
+    let help = String::from_utf8_lossy(&out.stdout);
+    let mut flags: Vec<String> = Vec::new();
+    for word in help.split(|c: char| c.is_whitespace() || c == ',' || c == '[' || c == ']') {
+        let Some(name) = word.strip_prefix("--") else {
             continue;
-        }
-        if let Some((name, _)) = line.split_once(':')
-            && !name.is_empty()
-            && name
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit())
-        {
-            out.push(name.replace('_', "-"));
+        };
+        let name: String = name
+            .chars()
+            .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
+            .collect();
+        if !name.is_empty() {
+            flags.push(name);
         }
     }
+    flags.sort();
+    flags.dedup();
     assert!(
-        out.contains(&"message".to_string()) && out.contains(&"json".to_string()),
-        "the variant was not parsed, so this test would pass on anything: {out:?}"
+        ["message", "json", "continue", "session"]
+            .iter()
+            .all(|f| flags.iter().any(|g| g == f)),
+        "the help was not parsed, so this test would pass on anything: {flags:?}"
     );
-    out
+    flags
+}
+
+/// The review's case, held: a renamed flag is read under the name the parser
+/// takes, so the field's own spelling is missing and the flag's is not.
+#[test]
+fn a_renamed_flag_is_read_as_the_parser_spells_it() {
+    let accepted = chat_flags_from_help();
+    let used = flags_used(
+        "\"$BIN\" chat --message \"$1\" --session-id x --continue-session --json \\\n  --continue --session y\n",
+    );
+    let missing: Vec<&String> = used.iter().filter(|f| !accepted.contains(f)).collect();
+    assert_eq!(
+        missing,
+        ["continue-session", "session-id"],
+        "the guard does not read flags the way `tacet chat` does"
+    );
 }
 
 #[test]
 fn every_flag_the_smoke_check_passes_exists_in_the_cli() {
-    let accepted = chat_flags_from_source();
+    let accepted = chat_flags_from_help();
     let missing: Vec<String> = flags_used(&read("scripts/smoke.sh"))
         .into_iter()
         .filter(|f| !accepted.contains(f))
