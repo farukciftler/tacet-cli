@@ -619,14 +619,6 @@ fn total_ram_bytes() -> Option<u64> {
     }
 }
 
-/// In a tainted session, shows the REAL PAYLOAD going to an external tool and
-/// asks y/n.
-///
-/// WHY NOT `AlwaysApprove`: wiring the gate permanently to "yes" makes it
-/// useless — the user would be approving without seeing the data being sent.
-/// `SilentDeny` would be wrong too: here there IS someone to ask. The reason the
-/// gate exists is to show the content being sent (the query string) to the user
-/// VERBATIM.
 /// Answers a server's MRTR question (spec §4) — the terminal side of the
 /// pattern that replaced elicitation push.
 ///
@@ -635,97 +627,119 @@ fn total_ram_bytes() -> Option<u64> {
 /// guess who is asking. Feeding it to the model instead would be `sampling`
 /// with extra steps, and `sampling` is refused permanently.
 ///
-/// Declining is `None`: an empty answer, an EOF, a closed pipe. The call is
-/// then abandoned and the retry is never sent.
+/// Declining is `None`: an empty answer, an EOF, a closed pipe — and a stdin
+/// that is not a terminal at all, which is never read (see `ui::Prompt::open`).
+/// The call is then abandoned and the retry is never sent.
 struct TerminalAsk;
 
 impl mcp::InputAsk for TerminalAsk {
     fn ask(&self, server: &str, questions: &[mcp::Question]) -> Option<Vec<String>> {
-        use mcp::QuestionKind;
-        let color = Color::setup();
-        eprintln!();
-        eprintln!(
-            "  {} the '{server}' server is asking for something before it will run this:",
-            color.paint(BRASS, "[input]")
-        );
-        let mut answers = Vec::with_capacity(questions.len());
-        for question in questions {
-            // The question is DATA. It is printed and nothing else — never
-            // parsed for commands, never handed to the model.
-            eprintln!("    {}", crate::ui::one_line(&question.prompt));
-            match &question.kind {
-                QuestionKind::Boolean => eprint!("    [y/N] "),
-                QuestionKind::Choice(choices) => {
-                    for (i, choice) in choices.iter().enumerate() {
-                        eprintln!("      {}. {}", i + 1, crate::ui::one_line(choice));
-                    }
-                    eprint!("    pick a number (enter cancels) ");
-                }
-                QuestionKind::Text => eprint!("    answer (enter cancels) "),
-            }
-            let _ = std::io::stderr().flush();
-            let mut line = String::new();
-            if std::io::stdin().read_line(&mut line).is_err() {
-                return None;
-            }
-            let line = line.trim().to_string();
-            match &question.kind {
-                // A bare enter on a yes/no is an ANSWER (no), not a cancel:
-                // that is what [y/N] means everywhere else in this shell.
-                QuestionKind::Boolean => answers.push(line),
-                QuestionKind::Choice(choices) => {
-                    let picked = line
-                        .parse::<usize>()
-                        .ok()
-                        .filter(|n| *n >= 1 && *n <= choices.len());
-                    match picked {
-                        Some(n) => answers.push(choices[n - 1].clone()),
-                        None => {
-                            eprintln!("    (cancelled)");
-                            return None;
-                        }
-                    }
-                }
-                QuestionKind::Text => {
-                    if line.is_empty() {
-                        eprintln!("    (cancelled)");
-                        return None;
-                    }
-                    answers.push(line);
-                }
-            }
-        }
-        Some(answers)
+        answer_server(server, questions, &ui::Terminal)
     }
 }
 
+/// `TerminalAsk`'s body, with the console as a parameter so a test can stand
+/// in for the person.
+fn answer_server(
+    server: &str,
+    questions: &[mcp::Question],
+    console: &dyn ui::Console,
+) -> Option<Vec<String>> {
+    use mcp::QuestionKind;
+    let prompt = ui::Prompt::open(console)?;
+    let color = Color::setup();
+    eprintln!();
+    eprintln!(
+        "  {} the '{}' server is asking for something before it will run this:",
+        color.paint(BRASS, "[input]"),
+        ui::one_line(server)
+    );
+    let mut answers = Vec::with_capacity(questions.len());
+    for question in questions {
+        // The question is DATA. It is printed and nothing else — never
+        // parsed for commands, never handed to the model.
+        eprintln!("    {}", ui::one_line(&question.prompt));
+        match &question.kind {
+            QuestionKind::Boolean => eprint!("    [y/N] "),
+            QuestionKind::Choice(choices) => {
+                for (i, choice) in choices.iter().enumerate() {
+                    eprintln!("      {}. {}", i + 1, ui::one_line(choice));
+                }
+                eprint!("    pick a number (enter cancels) ");
+            }
+            QuestionKind::Text => eprint!("    answer (enter cancels) "),
+        }
+        let _ = std::io::stderr().flush();
+        let line = prompt.read()?.trim().to_string();
+        match &question.kind {
+            // A bare enter on a yes/no is an ANSWER (no), not a cancel:
+            // that is what [y/N] means everywhere else in this shell.
+            QuestionKind::Boolean => answers.push(line),
+            QuestionKind::Choice(choices) => {
+                let picked = line
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|n| *n >= 1 && *n <= choices.len());
+                match picked {
+                    Some(n) => answers.push(choices[n - 1].clone()),
+                    None => {
+                        eprintln!("    (cancelled)");
+                        return None;
+                    }
+                }
+            }
+            QuestionKind::Text => {
+                if line.is_empty() {
+                    eprintln!("    (cancelled)");
+                    return None;
+                }
+                answers.push(line);
+            }
+        }
+    }
+    Some(answers)
+}
+
+/// In a tainted session, shows the REAL PAYLOAD going to an external tool and
+/// asks y/n.
+///
+/// WHY NOT `AlwaysApprove`: wiring the gate permanently to "yes" makes it
+/// useless — the user would be approving without seeing the data being sent.
+/// `SilentDeny` would be wrong too: here there IS someone to ask. The reason the
+/// gate exists is to show the content being sent (the query string) to the user
+/// VERBATIM.
 struct TerminalApproval;
 
 impl ApprovalGate for TerminalApproval {
     fn request(&self, request: &ApprovalRequest) -> bool {
-        eprintln!();
-        eprintln!(
-            "  ⚠ the '{}' tool will send data to the outside world:",
-            request.tool_name
-        );
-        // THE CONSENT LINE IS SANITISED HERE, NOT SOMEWHERE UPSTREAM.
-        //
-        // Today `content` happens to arrive JSON-encoded, so control bytes are
-        // already escaped — but that is a property of the CALLER, and this is
-        // the line a user's "y" is answering. The day someone hands the raw
-        // `as_str()` of an argument to this gate, a `\r` would let the payload
-        // rewrite the very sentence describing what is about to be sent, and a
-        // `\n` would let it paint a second, friendlier-looking prompt. The
-        // defence belongs where the bytes meet the terminal.
-        eprintln!("    {}", crate::ui::one_line(&request.content));
-        eprint!("  Do you allow it? [y/N] ");
-        let _ = std::io::stderr().flush();
-        let mut line = String::new();
-        if std::io::stdin().read_line(&mut line).is_err() {
-            return false;
-        }
-        matches!(line.trim().to_lowercase().as_str(), "y" | "yes")
+        approve(request, &ui::Terminal)
     }
+}
+
+/// `TerminalApproval`'s body, with the console as a parameter.
+fn approve(request: &ApprovalRequest, console: &dyn ui::Console) -> bool {
+    // NOBODY TO ASK IS A NO, and stdin is not touched (audit L31).
+    let Some(prompt) = ui::Prompt::open(console) else {
+        return false;
+    };
+    eprintln!();
+    eprintln!(
+        "  ⚠ the '{}' tool will send data to the outside world:",
+        ui::one_line(&request.tool_name)
+    );
+    // THE CONSENT LINE IS SANITISED HERE, NOT SOMEWHERE UPSTREAM.
+    //
+    // Today `content` happens to arrive JSON-encoded, so control bytes are
+    // already escaped — but that is a property of the CALLER, and this is
+    // the line a user's "y" is answering. The day someone hands the raw
+    // `as_str()` of an argument to this gate, a `\r` would let the payload
+    // rewrite the very sentence describing what is about to be sent, and a
+    // `\n` would let it paint a second, friendlier-looking prompt. The
+    // defence belongs where the bytes meet the terminal.
+    eprintln!("    {}", ui::one_line(&request.content));
+    eprint!("  Do you allow it? [y/N] ");
+    let _ = std::io::stderr().flush();
+    ui::is_yes(prompt.read().as_deref())
 }
 
 /// Shows the MEASURED effect of a database change and asks y/n.
@@ -748,36 +762,159 @@ struct TerminalWriteConfirm;
 
 impl tacet_tools::db_write::WriteConfirm for TerminalWriteConfirm {
     fn confirm(&self, request: &tacet_tools::db_write::WriteRequest<'_>) -> bool {
-        let color = Color::setup();
-        eprintln!();
-        eprintln!(
-            "  {} a change to '{}' is about to be written:",
-            color.paint(YELLOW, "⚠"),
-            crate::ui::one_line(request.file)
-        );
-        eprintln!("    {}", crate::ui::one_line(request.statement));
-        eprintln!();
-        eprintln!("  {}", color.paint(DIM, "measured on a copy of the file:"));
-        for line in request.effect.lines() {
-            eprintln!("    {}", crate::ui::one_line(line));
-        }
-        eprintln!(
-            "  {}",
-            color.paint(
-                DIM,
-                &format!(
-                    "the file as it is now will be kept beside it as {}",
-                    crate::ui::one_line(request.backup)
-                )
+        confirm_write(request, &ui::Terminal)
+    }
+}
+
+/// `TerminalWriteConfirm`'s body, with the console as a parameter.
+fn confirm_write(
+    request: &tacet_tools::db_write::WriteRequest<'_>,
+    console: &dyn ui::Console,
+) -> bool {
+    let Some(prompt) = ui::Prompt::open(console) else {
+        return false;
+    };
+    let color = Color::setup();
+    eprintln!();
+    eprintln!(
+        "  {} a change to '{}' is about to be written:",
+        color.paint(YELLOW, "⚠"),
+        ui::one_line(request.file)
+    );
+    eprintln!("    {}", ui::one_line(request.statement));
+    eprintln!();
+    eprintln!("  {}", color.paint(DIM, "measured on a copy of the file:"));
+    for line in request.effect.lines() {
+        eprintln!("    {}", ui::one_line(line));
+    }
+    eprintln!(
+        "  {}",
+        color.paint(
+            DIM,
+            &format!(
+                "the file as it is now will be kept beside it as {}",
+                ui::one_line(request.backup)
             )
-        );
-        eprint!("  Apply it? [y/N] ");
-        let _ = std::io::stderr().flush();
-        let mut line = String::new();
-        if std::io::stdin().read_line(&mut line).is_err() {
-            return false;
+        )
+    );
+    eprint!("  Apply it? [y/N] ");
+    let _ = std::io::stderr().flush();
+    ui::is_yes(prompt.read().as_deref())
+}
+
+#[cfg(test)]
+mod consent_prompt_tests {
+    //! The three consent prompts, held to the two promises `ui::Prompt` makes.
+    use super::*;
+    use std::cell::Cell;
+
+    /// A console that records whether anything was read, and what the answer
+    /// would have been.
+    struct Fake {
+        terminal: bool,
+        answer: &'static str,
+        reads: Cell<usize>,
+    }
+
+    impl Fake {
+        fn piped(answer: &'static str) -> Self {
+            Fake {
+                terminal: false,
+                answer,
+                reads: Cell::new(0),
+            }
         }
-        matches!(line.trim().to_lowercase().as_str(), "y" | "yes")
+        fn person(answer: &'static str) -> Self {
+            Fake {
+                terminal: true,
+                ..Fake::piped(answer)
+            }
+        }
+    }
+
+    impl ui::Console for Fake {
+        fn is_terminal(&self) -> bool {
+            self.terminal
+        }
+        fn read_answer(&self) -> Option<String> {
+            self.reads.set(self.reads.get() + 1);
+            Some(self.answer.to_string())
+        }
+    }
+
+    fn request() -> ApprovalRequest {
+        ApprovalRequest {
+            source: "shell".into(),
+            tool_name: "shell".into(),
+            content: r#"{"command":"echo"}"#.into(),
+        }
+    }
+
+    fn write_request() -> tacet_tools::db_write::WriteRequest<'static> {
+        tacet_tools::db_write::WriteRequest {
+            file: "notes.db",
+            statement: "DELETE FROM notes",
+            effect: "notes: 3 rows deleted",
+            backup: "notes.db.bak",
+        }
+    }
+
+    /// AUDIT L31: A PIPE IS NOBODY, and a pipe's next line is not an answer.
+    ///
+    /// The piped console holds a `y`. Every gate must say no WITHOUT READING
+    /// IT — the read count is the measurement, because the bug was never the
+    /// verdict alone: the line the gate consumed was the user's next message.
+    #[test]
+    fn a_pipe_is_never_read_as_consent() {
+        let piped = Fake::piped("y");
+        assert!(!approve(&request(), &piped), "a piped `y` approved a send");
+        assert!(
+            !confirm_write(&write_request(), &piped),
+            "a piped `y` approved a write"
+        );
+        let question = mcp::Question {
+            id: "q".into(),
+            prompt: "continue?".into(),
+            kind: mcp::QuestionKind::Boolean,
+        };
+        assert_eq!(answer_server("srv", &[question], &piped), None);
+        assert_eq!(
+            piped.reads.get(),
+            0,
+            "a consent prompt read stdin with no terminal on it"
+        );
+    }
+
+    /// The other half: with a person there, the gates DO ask, and only `y` /
+    /// `yes` is a yes. Without this the test above would also pass for gates
+    /// that never ask anybody.
+    #[test]
+    fn a_person_is_asked_and_only_yes_is_yes() {
+        // A real prompt suspends whatever indicator is active; the ui tests
+        // register one of their own and must not have it paused from here.
+        let _serial = ui::ACTIVE_INDICATOR_TEST
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for (answer, verdict) in [("y", true), ("YES", true), ("", false), ("n", false)] {
+            let person = Fake::person(answer);
+            assert_eq!(approve(&request(), &person), verdict, "{answer:?}");
+            assert_eq!(
+                confirm_write(&write_request(), &person),
+                verdict,
+                "{answer:?}"
+            );
+            assert_eq!(person.reads.get(), 2, "{answer:?}");
+        }
+        let person = Fake::person("hello");
+        let question = mcp::Question {
+            id: "q".into(),
+            prompt: "name?".into(),
+            kind: mcp::QuestionKind::Text,
+        };
+        assert_eq!(
+            answer_server("srv", &[question], &person),
+            Some(vec!["hello".to_string()])
+        );
     }
 }
 
@@ -1007,7 +1144,7 @@ fn refresh_session(
     store: &Arc<SharedStore>,
     memory: &SharedMemory,
     color: &Color,
-    interactive: bool,
+    can_ask: bool,
     mcp_load: &mut mcp::LoadOutcome,
     engine: &Arc<dyn EngineProvider>,
     catalog: &mut ToolCatalog,
@@ -1018,10 +1155,10 @@ fn refresh_session(
     code_state: &mut Option<Arc<CodeState>>,
 ) {
     let tainted = executor.session_tainted();
-    let (mut c, cs) = session_catalog(store, memory, color, interactive);
+    let (mut c, cs) = session_catalog(store, memory, color, can_ask);
     let names = mcp::feed_catalog(&mut c, mcp_load);
     let mut ex = ToolExecutor::new(c.clone());
-    ex = if interactive {
+    ex = if can_ask {
         ex.with_gate(TerminalApproval)
     } else {
         ex.with_gate(SilentDeny)

@@ -222,6 +222,13 @@ impl Color {
             tty: std::io::stdout().is_terminal(),
         }
     }
+    /// A palette that paints nothing, whatever fd 1 is. For tests that measure
+    /// the bytes a line carries: `setup` answers for the developer's terminal
+    /// when `cargo test` runs in one.
+    #[cfg(test)]
+    pub fn plain() -> Self {
+        Self { tty: false }
+    }
     pub fn paint(&self, code: &str, text: &str) -> String {
         if self.tty {
             // The theme translation lives HERE so no call site changes when the
@@ -470,6 +477,15 @@ impl Screen {
         let mut inner = self.inner.lock().expect("screen lock");
         inner.raw = on;
     }
+
+    /// Something was written to the terminal OUTSIDE this screen — a consent
+    /// question on stderr. The last line no longer belongs to the last chip,
+    /// and an in-place update would go one line up and erase the user's answer
+    /// instead of the chip; forgetting the chip makes its update a new line.
+    fn forget_last_chip(&self) {
+        let mut inner = self.inner.lock().expect("screen lock");
+        inner.last_chip = None;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -622,6 +638,272 @@ fn stage_wakes(quiet: bool, stage: &Stage) -> bool {
     !quiet || !matches!(stage, Stage::Generating { .. })
 }
 
+/// The terminal's INPUT side, as the indicator uses it: raw mode and the next
+/// key.
+///
+/// A TRAIT FOR ONE REASON: the suspend/resume state machine below is what
+/// audit H1 was about, and a state machine that can only be exercised with a
+/// real terminal attached is one that `cargo test` never runs. Production
+/// passes `Crossterm`; the tests pass a keyboard that counts.
+trait Keyboard: Send + Sync {
+    /// Turns raw mode on or off; `true` when the terminal is now in the
+    /// requested mode.
+    fn set_raw(&self, on: bool) -> bool;
+    /// The next input event, waiting at most `wait`. `None` on a timeout.
+    fn next_event(&self, wait: Duration) -> Option<Event>;
+}
+
+struct Crossterm;
+
+impl Keyboard for Crossterm {
+    fn set_raw(&self, on: bool) -> bool {
+        if on {
+            enable_raw_mode().is_ok()
+        } else {
+            disable_raw_mode().is_ok()
+        }
+    }
+
+    fn next_event(&self, wait: Duration) -> Option<Event> {
+        match event::poll(wait) {
+            Ok(true) => event::read().ok(),
+            Ok(false) => None,
+            // A poll that fails does so at once, and the drawing loop calls this
+            // as its clock: without the sleep a broken terminal would spin a core
+            // at 100% for the whole turn.
+            Err(_) => {
+                std::thread::sleep(wait);
+                None
+            }
+        }
+    }
+}
+
+/// The part of the indicator that a suspend stops and a resume restarts.
+struct Spinner {
+    stop: Arc<AtomicBool>,
+    handle: std::thread::JoinHandle<()>,
+}
+
+struct RunState {
+    spinner: Option<Spinner>,
+    raw_on: bool,
+    /// How many prompts are holding the indicator suspended. A count, not a
+    /// flag: an MCP question can arrive while an approval is being asked for
+    /// on another thread, and the first one to finish must not restart a
+    /// spinner the second one is still sitting under.
+    paused: usize,
+    finished: bool,
+}
+
+/// Everything the indicator owns, shared between the turn loop (which holds
+/// the `TurnIndicator`) and a consent prompt (which finds it through
+/// `ACTIVE_INDICATOR`).
+struct IndicatorCore {
+    state: Arc<AtomicU8>,
+    stage: Arc<Mutex<Stage>>,
+    screen: Arc<Screen>,
+    keyboard: Arc<dyn Keyboard>,
+    cancel: &'static AtomicBool,
+    label: &'static str,
+    /// Kept across a suspend so the clock does not restart at 0s after the user
+    /// answers a question: the turn did not start again, it waited.
+    started: Instant,
+    run: Mutex<RunState>,
+}
+
+/// THE INDICATOR THAT IS ON SCREEN RIGHT NOW, if any.
+///
+/// WHY A GLOBAL and not a handle threaded to the gates: the consent prompts
+/// (`TerminalApproval`, `TerminalWriteConfirm`, `TerminalAsk`) are built once,
+/// at session start, deep inside the executor and the tool catalog, while an
+/// indicator lives for one turn. Threading the turn's indicator through
+/// `ApprovalGate::request` would change a trait three crates implement, for a
+/// fact that is about the terminal — and there is only one terminal. `Weak`, so
+/// a finished indicator that somebody forgot to unregister cannot be revived.
+static ACTIVE_INDICATOR: Mutex<Option<std::sync::Weak<IndicatorCore>>> = Mutex::new(None);
+
+/// Serialises the tests that touch `ACTIVE_INDICATOR`. The indicator tests
+/// register a real active indicator, and anything that opens a `Prompt` at the
+/// same moment (the gate tests in main.rs) would suspend it under their feet.
+#[cfg(test)]
+pub(crate) static ACTIVE_INDICATOR_TEST: Mutex<()> = Mutex::new(());
+
+impl IndicatorCore {
+    fn spawn_spinner(core: &Arc<IndicatorCore>) -> Spinner {
+        let stop = Arc::new(AtomicBool::new(false));
+        let (thread_stop, state, screen, stage, keyboard, cancel, label, started) = (
+            Arc::clone(&stop),
+            Arc::clone(&core.state),
+            Arc::clone(&core.screen),
+            Arc::clone(&core.stage),
+            Arc::clone(&core.keyboard),
+            core.cancel,
+            core.label,
+            core.started,
+        );
+        let handle = std::thread::spawn(move || {
+            let mut frame = 0usize;
+            while !thread_stop.load(Ordering::Relaxed) {
+                // The key wait doubles as the indicator's clock: it returns at
+                // once if an event arrives, and after 100 ms if not.
+                if let Some(home) = keyboard.next_event(Duration::from_millis(100)) {
+                    swallow_key(&home, cancel, &screen);
+                }
+                // A stop that arrived during the wait must not draw one more
+                // frame: the suspend is about to put a question on this line.
+                if thread_stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                if state.load(Ordering::Relaxed) == STATE_THINKING {
+                    // The stage is CLONED and the lock released before
+                    // drawing: `screen.indicator` takes a lock of its own,
+                    // and holding two while writing to a terminal is how a
+                    // shell ends up deadlocked against its own spinner.
+                    let now = stage.lock().expect("stage lock").clone();
+                    // The ensō turns in brass, the words stay dim. Two
+                    // ticks per quadrant: a full turn takes 800 ms — calm,
+                    // not frantic. A PHASE CHANGE LEAVES NO TRACE: the line
+                    // is erased and rewritten in place, so a turn that went
+                    // through five stages still occupies one line.
+                    screen.indicator(&indicator_line(
+                        FRAMES[(frame / 2) % FRAMES.len()],
+                        &now,
+                        label,
+                        started.elapsed().as_secs(),
+                        terminal_width(),
+                        true,
+                    ));
+                    frame += 1;
+                }
+            }
+        });
+        Spinner { stop, handle }
+    }
+
+    fn halt(spinner: Option<Spinner>) {
+        if let Some(s) = spinner {
+            s.stop.store(true, Ordering::Relaxed);
+            let _ = s.handle.join();
+        }
+    }
+
+    /// HANDS THE TERMINAL TO A QUESTION (audit H1).
+    ///
+    /// MEASURED, under a pty driving the real binary: with the indicator left
+    /// running, the approval prompt was printed and then erased by the next
+    /// frame's `\r\x1b[2K`; the `y` and the `\r` the user typed were read by the
+    /// spinner thread's `event::read` and swallowed like any other key; and the
+    /// `read_line` waiting for the answer sat on a raw-mode terminal that never
+    /// turns `\r` into the `\n` it was waiting for. Four seconds of typing did
+    /// nothing; the shell hung. Each of the three steps below removes one of
+    /// those causes, and the order matters — the thread must be GONE before the
+    /// typeahead is drained, or it could take a key the drain was about to.
+    fn suspend(&self) {
+        let mut run = self.run.lock().expect("indicator run lock");
+        run.paused += 1;
+        if run.paused > 1 || run.finished {
+            return;
+        }
+        // 1. Nobody reads the keyboard but the question.
+        Self::halt(run.spinner.take());
+        if run.raw_on {
+            // TYPEAHEAD MUST NOT ANSWER A CONSENT QUESTION. A key pressed
+            // during generation is swallowed by design; one that arrived in the
+            // last 100 ms is still queued, and a `y` sitting there would be read
+            // as the answer to a question the user has not yet seen. Drained
+            // under the same rule as every other key of the turn (ctrl-c still
+            // cancels), and bounded so a held key cannot keep us here.
+            for _ in 0..1024 {
+                match self.keyboard.next_event(Duration::ZERO) {
+                    Some(key) => swallow_key(&key, self.cancel, &self.screen),
+                    None => break,
+                }
+            }
+        }
+        // 2. Nothing will erase the question.
+        self.screen.clear_indicator();
+        self.screen.forget_last_chip();
+        // 3. The terminal is a line terminal again: echo on, and the enter key
+        // arrives as the newline a line reader waits for.
+        if run.raw_on {
+            self.keyboard.set_raw(false);
+            self.screen.raw_mode(false);
+            run.raw_on = false;
+        }
+    }
+
+    fn resume(core: &Arc<IndicatorCore>) {
+        let mut run = core.run.lock().expect("indicator run lock");
+        if run.paused == 0 {
+            return;
+        }
+        run.paused -= 1;
+        if run.paused > 0 || run.finished {
+            return;
+        }
+        // The input lock comes back for the rest of the turn: a tool still has
+        // to finish, and keys pressed while it runs must not spill out.
+        run.raw_on = core.keyboard.set_raw(true);
+        core.screen.raw_mode(run.raw_on);
+        run.spinner = Some(Self::spawn_spinner(core));
+    }
+
+    fn finish(core: &Arc<IndicatorCore>) {
+        let mut run = core.run.lock().expect("indicator run lock");
+        if run.finished {
+            return;
+        }
+        run.finished = true;
+        Self::halt(run.spinner.take());
+        core.screen.clear_indicator();
+        if run.raw_on {
+            core.keyboard.set_raw(false);
+            core.screen.raw_mode(false);
+            run.raw_on = false;
+        }
+        drop(run);
+        let mut active = ACTIVE_INDICATOR.lock().expect("active indicator lock");
+        if active
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .is_some_and(|a| Arc::ptr_eq(&a, core))
+        {
+            *active = None;
+        }
+    }
+}
+
+/// While this is alive, no indicator draws, reads keys, or holds raw mode.
+///
+/// Returned by `pause_indicator`; dropping it gives the turn its indicator back
+/// — unless the turn ended in the meantime, in which case there is nothing to
+/// give back and nothing is restarted.
+pub struct IndicatorPause(Option<Arc<IndicatorCore>>);
+
+impl Drop for IndicatorPause {
+    fn drop(&mut self) {
+        if let Some(core) = self.0.take() {
+            IndicatorCore::resume(&core);
+        }
+    }
+}
+
+/// Suspends the indicator that is on screen, if there is one. EVERY PROMPT
+/// THAT READS AN ANSWER DURING A TURN GOES THROUGH HERE (see `Prompt::open`);
+/// with no indicator running it costs a lock and does nothing.
+pub fn pause_indicator() -> IndicatorPause {
+    let core = ACTIVE_INDICATOR
+        .lock()
+        .expect("active indicator lock")
+        .as_ref()
+        .and_then(std::sync::Weak::upgrade);
+    if let Some(core) = &core {
+        core.suspend();
+    }
+    IndicatorPause(core)
+}
+
 /// The watcher that owns the screen and the keyboard for the duration of one
 /// user turn.
 ///
@@ -630,17 +912,12 @@ fn stage_wakes(quiet: bool, stage: &Stage) -> bool {
 /// — a terminal left in raw mode is, from the user's point of view, a broken
 /// shell, so `finish` is called on every path and `Drop` does the same job as a
 /// second safety net.
+///
+/// IT STEPS ASIDE FOR A QUESTION. A tool that needs the user's consent runs
+/// while this is open; `pause_indicator` (used by every consent prompt) stops
+/// the spinner and gives the terminal back for the length of the question.
 pub struct TurnIndicator {
-    stop: Arc<AtomicBool>,
-    state: Arc<AtomicU8>,
-    /// The phase the drawing thread reads on every frame. A mutex and not an
-    /// atomic because two of the stages carry a name; the lock is taken ten times
-    /// a second by the drawing thread and once per phase change by the caller,
-    /// so there is nothing to contend for.
-    stage: Arc<Mutex<Stage>>,
-    handle: Option<std::thread::JoinHandle<()>>,
-    screen: Arc<Screen>,
-    raw_on: bool,
+    core: Arc<IndicatorCore>,
 }
 
 impl TurnIndicator {
@@ -654,67 +931,40 @@ impl TurnIndicator {
         if !screen.tty() {
             return Self::disabled(screen);
         }
+        Self::start_with(screen, cancel, label, Arc::new(Crossterm))
+    }
+
+    fn start_with(
+        screen: Arc<Screen>,
+        cancel: &'static AtomicBool,
+        label: &'static str,
+        keyboard: Arc<dyn Keyboard>,
+    ) -> TurnIndicator {
         // If raw mode cannot be turned on (an odd terminal, a restricted
         // environment) THE PROGRAM DOES NOT CRASH: the spinner still turns, only
         // the input lock is missing. The absence of a decoration beats the
         // absence of a shell.
-        let raw_on = enable_raw_mode().is_ok();
+        let raw_on = keyboard.set_raw(true);
         screen.raw_mode(raw_on);
-
-        let stop = Arc::new(AtomicBool::new(false));
-        let state = Arc::new(AtomicU8::new(STATE_THINKING));
-        let stage = Arc::new(Mutex::new(Stage::Thinking));
-        let handle = {
-            let (stop, state, screen, stage) = (
-                Arc::clone(&stop),
-                Arc::clone(&state),
-                Arc::clone(&screen),
-                Arc::clone(&stage),
-            );
-            std::thread::spawn(move || {
-                let started = Instant::now();
-                let mut frame = 0usize;
-                while !stop.load(Ordering::Relaxed) {
-                    // `poll` both waits for a key and keeps the indicator's
-                    // clock: it returns immediately if an event arrives, and
-                    // after 100 ms if not.
-                    if matches!(event::poll(Duration::from_millis(100)), Ok(true))
-                        && let Ok(home) = event::read()
-                    {
-                        swallow_key(&home, cancel, &screen);
-                    }
-                    if state.load(Ordering::Relaxed) == STATE_THINKING {
-                        // The stage is CLONED and the lock released before
-                        // drawing: `screen.indicator` takes a lock of its own,
-                        // and holding two while writing to a terminal is how a
-                        // shell ends up deadlocked against its own spinner.
-                        let now = stage.lock().expect("stage lock").clone();
-                        // The ensō turns in brass, the words stay dim. Two
-                        // ticks per quadrant: a full turn takes 800 ms — calm,
-                        // not frantic. A PHASE CHANGE LEAVES NO TRACE: the line
-                        // is erased and rewritten in place, so a turn that went
-                        // through five stages still occupies one line.
-                        screen.indicator(&indicator_line(
-                            FRAMES[(frame / 2) % FRAMES.len()],
-                            &now,
-                            label,
-                            started.elapsed().as_secs(),
-                            terminal_width(),
-                            true,
-                        ));
-                        frame += 1;
-                    }
-                }
-            })
-        };
-        TurnIndicator {
-            stop,
-            state,
-            stage,
-            handle: Some(handle),
+        let core = Arc::new(IndicatorCore {
+            state: Arc::new(AtomicU8::new(STATE_THINKING)),
+            stage: Arc::new(Mutex::new(Stage::Thinking)),
             screen,
-            raw_on,
-        }
+            keyboard,
+            cancel,
+            label,
+            started: Instant::now(),
+            run: Mutex::new(RunState {
+                spinner: None,
+                raw_on,
+                paused: 0,
+                finished: false,
+            }),
+        });
+        let spinner = IndicatorCore::spawn_spinner(&core);
+        core.run.lock().expect("indicator run lock").spinner = Some(spinner);
+        *ACTIVE_INDICATOR.lock().expect("active indicator lock") = Some(Arc::downgrade(&core));
+        TurnIndicator { core }
     }
 
     /// AN INDICATOR THAT DOES NOTHING: no raw mode, no thread, no drawing, and
@@ -733,14 +983,26 @@ impl TurnIndicator {
     /// called from a dozen places in the turn loop, several of them on error
     /// paths. An `Option` would put a `if let Some` at every one of them, and
     /// the one that got forgotten would be on the path nobody exercises.
+    ///
+    /// IT IS NEVER REGISTERED as the active indicator: there is nothing for a
+    /// prompt to suspend.
     pub fn disabled(screen: Arc<Screen>) -> TurnIndicator {
         TurnIndicator {
-            stop: Arc::new(AtomicBool::new(true)),
-            state: Arc::new(AtomicU8::new(STATE_QUIET)),
-            stage: Arc::new(Mutex::new(Stage::Thinking)),
-            handle: None,
-            screen,
-            raw_on: false,
+            core: Arc::new(IndicatorCore {
+                state: Arc::new(AtomicU8::new(STATE_QUIET)),
+                stage: Arc::new(Mutex::new(Stage::Thinking)),
+                screen,
+                keyboard: Arc::new(Crossterm),
+                cancel: &NEVER_CANCELLED,
+                label: "",
+                started: Instant::now(),
+                run: Mutex::new(RunState {
+                    spinner: None,
+                    raw_on: false,
+                    paused: 0,
+                    finished: false,
+                }),
+            }),
         }
     }
 
@@ -755,11 +1017,11 @@ impl TurnIndicator {
     /// call. So a per-token `Generating` update costs a lock and nothing else; it
     /// does not paint the screen a thousand times.
     pub fn stage(&self, stage: Stage) {
-        let quiet = self.state.load(Ordering::Relaxed) == STATE_QUIET;
+        let quiet = self.core.state.load(Ordering::Relaxed) == STATE_QUIET;
         let wakes = stage_wakes(quiet, &stage);
-        *self.stage.lock().expect("stage lock") = stage;
+        *self.core.stage.lock().expect("stage lock") = stage;
         if wakes {
-            self.state.store(STATE_THINKING, Ordering::Relaxed);
+            self.core.state.store(STATE_THINKING, Ordering::Relaxed);
         }
     }
 
@@ -771,23 +1033,21 @@ impl TurnIndicator {
     /// for a phase that is silent again (a tool running) but NOT for a token
     /// count — see `stage_wakes`.
     pub fn quiet(&self) {
-        self.state.store(STATE_QUIET, Ordering::Relaxed);
-        self.screen.clear_indicator();
+        self.core.state.store(STATE_QUIET, Ordering::Relaxed);
+        self.core.screen.clear_indicator();
     }
 
     pub fn finish(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(h) = self.handle.take() {
-            let _ = h.join();
-        }
-        self.screen.clear_indicator();
-        if self.raw_on {
-            let _ = disable_raw_mode();
-            self.screen.raw_mode(false);
-            self.raw_on = false;
-        }
+        IndicatorCore::finish(&self.core);
+        // A disabled indicator owns nothing, but its screen may still carry an
+        // indicator someone else drew; the old `finish` cleared it on every
+        // path and callers rely on that.
+        self.core.screen.clear_indicator();
     }
 }
+
+/// The cancel flag of an indicator that reads no keys.
+static NEVER_CANCELLED: AtomicBool = AtomicBool::new(false);
 
 impl Drop for TurnIndicator {
     fn drop(&mut self) {
@@ -869,18 +1129,33 @@ impl LiveReporter {
 /// scripts parse. The caller makes the colour decision, just like with
 /// `Color::paint`.
 pub fn chip_line(trace: &ToolTrace, colored: bool) -> String {
-    let text = trace.text.trim_end_matches('…').trim_end();
+    // EVERY FIELD GOES THROUGH `one_line`, HERE, and not only the one that
+    // looked dangerous (audit M13). The core already cleans `text` on its way
+    // in, so this used to clean nothing — and the failure REASON rode past it
+    // untouched: an `edit_document` call with `source_ref:
+    // "\u001b]52;c;…\u0007"` failed with the reference quoted in its reason,
+    // and the OSC 52 sequence reached the pty raw (a clipboard write and a
+    // title change); an HTTP error body put `\x1b[2J` on the screen. A chip is
+    // one line by construction, so `one_line` and not `printable`.
+    let text = one_line(&trace.text);
+    let text = text.trim_end_matches('…').trim_end();
     let body = match &trace.state {
         ToolState::Running => format!("{text}…"),
         // Some tools ALREADY write the error reason into the chip text ("File
         // not found."); appending it once more produced
-        // `File not found. · File not found.`.
-        ToolState::Failed(reason) if !text.contains(reason.trim_end_matches('.')) => {
-            format!("{text} · {reason}")
+        // `File not found. · File not found.`. Compared AFTER sanitising, so a
+        // reason the text already carries is still recognised as a repeat.
+        ToolState::Failed(reason) => {
+            let reason = one_line(reason);
+            if text.contains(reason.trim_end_matches('.')) {
+                text.to_string()
+            } else {
+                format!("{text} · {reason}")
+            }
         }
         _ => text.to_string(),
     };
-    let body = format!("  ⏺ {} · {body}", trace.icon);
+    let body = format!("  ⏺ {} · {body}", one_line(&trace.icon));
     if colored {
         format!("{}{body}{}", dim_code(), reset_code())
     } else {
@@ -914,6 +1189,127 @@ pub fn one_line(text: &str) -> String {
     text.chars()
         .map(|c| if c.is_control() { '·' } else { c })
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Consent prompts — the one door every "may I?" goes through
+// ---------------------------------------------------------------------------
+
+/// Where the answer to a consent question comes from.
+///
+/// A TRAIT so the gates can be held to their two promises in a unit test —
+/// they ask nobody when nobody can answer, and the indicator is out of the way
+/// while they read — without a terminal attached. Production uses `Terminal`.
+pub trait Console {
+    /// Is there a person on the other end who could answer? `false` for a pipe.
+    fn is_terminal(&self) -> bool;
+    /// One answer line, or `None` when the person declined to give one
+    /// (escape, ctrl-d, the input ended).
+    fn read_answer(&self) -> Option<String>;
+}
+
+/// The real terminal: stdin, read THROUGH CROSSTERM.
+///
+/// WHY CROSSTERM AND NOT `stdin().read_line` — the same reason `ask_yes_no`
+/// gives: the input field and the indicator both read the tty through
+/// crossterm, which keeps bytes it has already pulled off the fd in its own
+/// buffer, where a std `read_line` would never see them and would hang.
+pub struct Terminal;
+
+impl Console for Terminal {
+    fn is_terminal(&self) -> bool {
+        std::io::stdin().is_terminal()
+    }
+
+    fn read_answer(&self) -> Option<String> {
+        collect_answer(std::iter::from_fn(|| event::read().ok()))
+    }
+}
+
+/// Turns key events into one answer line.
+///
+/// THE LINE ENDS ON `\r` AND ON `\n` ALIKE. Which of the two the enter key
+/// produces depends on the terminal's mode — `\r` raw, `\n` cooked — and the
+/// old `read_line` answered only one of them; under the spinner's raw mode
+/// that was the half of H1 that turned a typed `y⏎` into nothing. Crossterm
+/// reports `\r` as Enter in every mode and `\n` as Enter in cooked mode but as
+/// ctrl-J in raw mode, so ctrl-J is an enter here too.
+///
+/// PURE over its input so the line discipline can be tested without a tty.
+fn collect_answer(events: impl IntoIterator<Item = Event>) -> Option<String> {
+    let mut line = String::new();
+    for event in events {
+        match event {
+            // A paste answers with its first line only — a consent question is
+            // one line, and the rest of a paste is not an answer to it.
+            Event::Paste(text) => {
+                line.push_str(text.lines().next().unwrap_or(""));
+                return Some(line);
+            }
+            Event::Key(k) if k.kind != KeyEventKind::Release => {
+                let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+                match k.code {
+                    KeyCode::Enter => return Some(line),
+                    KeyCode::Char('j') | KeyCode::Char('m') if ctrl => return Some(line),
+                    // Declining is always available and always means no.
+                    KeyCode::Char('c') | KeyCode::Char('d') if ctrl => return None,
+                    KeyCode::Esc => return None,
+                    KeyCode::Backspace => {
+                        line.pop();
+                    }
+                    KeyCode::Char(c) if !ctrl => line.push(c),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    // The input ended (or the terminal stopped answering) mid-line: nobody said
+    // yes.
+    None
+}
+
+/// Is this answer a yes? Only `y` and `yes`, any case — the `[y/N]` the
+/// question prints. Everything else, including nothing, is a no.
+pub fn is_yes(answer: Option<&str>) -> bool {
+    answer.is_some_and(|a| matches!(a.trim().to_lowercase().as_str(), "y" | "yes"))
+}
+
+/// An open consent question: nobody else is reading the keyboard or drawing on
+/// the line while it exists.
+pub struct Prompt<'a> {
+    console: &'a dyn Console,
+    _pause: IndicatorPause,
+}
+
+impl<'a> Prompt<'a> {
+    /// Opens a question, or refuses to.
+    ///
+    /// `None` WHEN NOBODY CAN ANSWER (audit L31), and in that case NOT ONE BYTE
+    /// of stdin is read. Without a terminal, stdin is the user's script — with
+    /// no `--message` the shell reads its MESSAGES from it line by line — so a
+    /// `read_line` here took the next message and treated it as the answer:
+    /// `printf 'run it\ny\nsecond message\n' | tacet chat` approved a tainted
+    /// `shell` call with the `y` that was meant to be a message (measured on
+    /// the scripted engine, 10 Oct 2026). The caller treats `None` as a no.
+    ///
+    /// Otherwise the turn's indicator is suspended (audit H1) for as long as
+    /// the returned `Prompt` lives — open it BEFORE printing the question, or
+    /// the spinner's next frame erases it.
+    pub fn open(console: &'a dyn Console) -> Option<Prompt<'a>> {
+        if !console.is_terminal() {
+            return None;
+        }
+        Some(Prompt {
+            console,
+            _pause: pause_indicator(),
+        })
+    }
+
+    /// One answer line. The question must already be on screen and flushed.
+    pub fn read(&self) -> Option<String> {
+        self.console.read_answer()
+    }
 }
 
 impl Reporter for LiveReporter {
@@ -1392,6 +1788,287 @@ mod tests {
         let s = chip_line(&finished, false);
         assert!(s.contains("27 results"), "{s}");
         assert!(!s.contains('…'), "{s}");
+    }
+
+    /// AUDIT M13: NO FIELD OF A CHIP CAN TALK TO THE TERMINAL.
+    ///
+    /// The payload is the audit's own: an OSC 52 clipboard write terminated by
+    /// BEL, the form `edit_document` quoted back in its failure reason, plus
+    /// the `\x1b[2J` an HTTP error body carried and a one-character C1 CSI.
+    /// Each field gets it in turn — the reason is the one that leaked, the
+    /// others are here so the next field added to a chip is not the next leak.
+    #[test]
+    fn a_chip_carries_no_escape_in_any_field() {
+        let payload = "x\u{1b}]52;c;aGk=\u{7}\u{1b}[2J\u{9b}31m\rreal\nfake";
+        let base = ToolTrace {
+            id: TraceId(9),
+            icon: "doc".into(),
+            text: "edit".into(),
+            state: ToolState::Failed(format!("no such source: {payload}")),
+            raw_input: None,
+            raw_output: None,
+            file_path: None,
+        };
+        let cases = [
+            base.clone(),
+            ToolTrace {
+                text: payload.into(),
+                ..base.clone()
+            },
+            ToolTrace {
+                icon: payload.into(),
+                ..base.clone()
+            },
+            ToolTrace {
+                text: payload.into(),
+                state: ToolState::Running,
+                ..base.clone()
+            },
+        ];
+        for trace in cases {
+            for colored in [false, true] {
+                let line = chip_line(&trace, colored);
+                // The palette's own escapes are allowed around the line; strip
+                // exactly those and nothing else may remain.
+                let bare = if colored {
+                    line.strip_prefix(dim_code())
+                        .and_then(|l| l.strip_suffix(reset_code()))
+                        .unwrap_or_else(|| panic!("unexpected framing: {line:?}"))
+                        .to_string()
+                } else {
+                    line.clone()
+                };
+                for bad in ['\u{1b}', '\u{7}', '\u{9b}', '\r', '\n'] {
+                    assert!(!bare.contains(bad), "{bad:?} reached the chip: {line:?}");
+                }
+                assert!(
+                    bare.contains("real"),
+                    "the text must stay readable: {bare:?}"
+                );
+            }
+        }
+        // The repeat check still recognises a reason the text already carries
+        // once both are cleaned.
+        let repeated = ToolTrace {
+            text: format!("no such source: {payload}"),
+            ..base
+        };
+        assert_eq!(
+            chip_line(&repeated, false)
+                .matches("no such source")
+                .count(),
+            1
+        );
+    }
+
+    fn key(code: KeyCode, modifiers: KeyModifiers) -> Event {
+        Event::Key(KeyEvent::new(code, modifiers))
+    }
+
+    fn typed(text: &str) -> Vec<Event> {
+        text.chars()
+            .map(|c| key(KeyCode::Char(c), KeyModifiers::NONE))
+            .collect()
+    }
+
+    /// The answer line ends on `\r` and on `\n` alike (audit H1 — under raw
+    /// mode the enter key is a `\r`, which the old `read_line` never ended
+    /// on). Crossterm hands `\r` over as Enter and a raw-mode `\n` as ctrl-J.
+    #[test]
+    fn an_answer_ends_on_either_line_ending_and_can_be_declined() {
+        let enter = key(KeyCode::Enter, KeyModifiers::NONE);
+        let ctrl = |c| key(KeyCode::Char(c), KeyModifiers::CONTROL);
+
+        let mut cr = typed("y");
+        cr.push(enter.clone());
+        cr.extend(typed("ignored"));
+        assert_eq!(collect_answer(cr), Some("y".into()));
+
+        let mut lf = typed("yes");
+        lf.push(ctrl('j'));
+        assert_eq!(collect_answer(lf), Some("yes".into()));
+
+        let mut edited = typed("nx");
+        edited.push(key(KeyCode::Backspace, KeyModifiers::NONE));
+        edited.push(enter.clone());
+        assert_eq!(collect_answer(edited), Some("n".into()));
+
+        // Declining is always a `None`, and so is input that simply stops.
+        let mut esc = typed("y");
+        esc.push(key(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(collect_answer(esc), None);
+        let mut interrupted = typed("y");
+        interrupted.push(ctrl('c'));
+        assert_eq!(collect_answer(interrupted), None);
+        assert_eq!(collect_answer(typed("y")), None, "no enter, no answer");
+
+        assert!(is_yes(Some(" Y ")));
+        assert!(!is_yes(Some("yeah")));
+        assert!(!is_yes(None));
+    }
+
+    /// A keyboard that is a counter: raw mode is a flag, and every WAITING
+    /// read (the spinner's — a prompt drain waits zero) is counted.
+    ///
+    /// TYPEAHEAD IS ONLY VISIBLE TO A ZERO WAIT. That is the honest model of
+    /// the case the drain exists for — a key that arrived in the spinner's
+    /// last instant, still queued when the question is about to be asked — and
+    /// it keeps the spinner thread from racing the drain for it in the test.
+    #[derive(Default)]
+    struct CountingKeyboard {
+        raw: AtomicBool,
+        waits: std::sync::atomic::AtomicUsize,
+        typeahead: Mutex<Vec<Event>>,
+    }
+
+    impl Keyboard for CountingKeyboard {
+        fn set_raw(&self, on: bool) -> bool {
+            self.raw.store(on, Ordering::SeqCst);
+            true
+        }
+        fn next_event(&self, wait: Duration) -> Option<Event> {
+            if wait.is_zero() {
+                return self.typeahead.lock().expect("typeahead").pop();
+            }
+            self.waits.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(2));
+            None
+        }
+    }
+
+    impl CountingKeyboard {
+        fn waits(&self) -> usize {
+            self.waits.load(Ordering::SeqCst)
+        }
+        fn raw(&self) -> bool {
+            self.raw.load(Ordering::SeqCst)
+        }
+        /// Did anything read the keyboard during the next `ms` milliseconds?
+        fn read_during(&self, ms: u64) -> bool {
+            let before = self.waits();
+            std::thread::sleep(Duration::from_millis(ms));
+            self.waits() != before
+        }
+    }
+
+    /// A person at a terminal who answers `y` — and checks, AT THE MOMENT OF
+    /// READING, that nothing else owns the keyboard.
+    struct Watched<'a> {
+        keyboard: &'a CountingKeyboard,
+        seen: Mutex<Option<(bool, bool)>>,
+    }
+
+    impl Console for Watched<'_> {
+        fn is_terminal(&self) -> bool {
+            true
+        }
+        fn read_answer(&self) -> Option<String> {
+            *self.seen.lock().expect("seen") =
+                Some((self.keyboard.raw(), self.keyboard.read_during(60)));
+            Some("y".into())
+        }
+    }
+
+    /// AUDIT H1 / RG-03: WHILE A CONSENT QUESTION IS OPEN, THE TURN INDICATOR
+    /// IS GONE — no thread reading keys, raw mode off — and it comes back when
+    /// the question closes.
+    ///
+    /// The pty run in `tests/consent_reaches_the_person.rs` shows the user-visible
+    /// result on macOS; this is the same contract stated on the state machine,
+    /// with no terminal, so it runs on every platform CI has.
+    #[test]
+    fn a_consent_prompt_suspends_the_indicator_and_gives_it_back() {
+        let _serial = ACTIVE_INDICATOR_TEST
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        static CANCEL: AtomicBool = AtomicBool::new(false);
+        let keyboard = Arc::new(CountingKeyboard::default());
+        let mut indicator = TurnIndicator::start_with(
+            headless_screen(),
+            &CANCEL,
+            "thinking",
+            Arc::clone(&keyboard) as Arc<dyn Keyboard>,
+        );
+        assert!(keyboard.raw(), "the turn starts with the input lock on");
+        assert!(keyboard.read_during(60), "the spinner reads the keyboard");
+
+        // Typeahead from the turn, including a ctrl-c the user really meant.
+        keyboard.typeahead.lock().expect("typeahead").extend([
+            key(KeyCode::Char('y'), KeyModifiers::NONE),
+            key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        ]);
+
+        let person = Watched {
+            keyboard: &keyboard,
+            seen: Mutex::new(None),
+        };
+        {
+            let prompt = Prompt::open(&person).expect("a terminal is somebody to ask");
+            assert_eq!(prompt.read().as_deref(), Some("y"));
+        }
+        let (raw_while_asking, read_while_asking) =
+            person.seen.lock().expect("seen").expect("the prompt read");
+        assert!(
+            !raw_while_asking,
+            "raw mode was on while the question was asked"
+        );
+        assert!(
+            !read_while_asking,
+            "the spinner thread was still reading keys while the question waited"
+        );
+        assert!(
+            keyboard.typeahead.lock().expect("typeahead").is_empty(),
+            "typeahead was left queued for the question to read as its answer"
+        );
+        assert!(
+            CANCEL.load(Ordering::SeqCst),
+            "a ctrl-c in the typeahead must still cancel the turn"
+        );
+
+        // The question is closed: the turn has its input lock and spinner back.
+        assert!(
+            keyboard.raw(),
+            "raw mode did not come back after the question"
+        );
+        assert!(keyboard.read_during(60), "the spinner did not come back");
+
+        // And once the turn is over there is nothing left to suspend or revive.
+        indicator.finish();
+        assert!(!keyboard.raw(), "raw mode leaked past the turn");
+        assert!(!keyboard.read_during(30), "the spinner outlived the turn");
+        drop(pause_indicator());
+        assert!(
+            !keyboard.raw() && !keyboard.read_during(30),
+            "a prompt after the turn revived a finished indicator"
+        );
+    }
+
+    /// Two questions open at once (an MCP ask during an approval): the first
+    /// one to close must not restart the spinner under the second.
+    #[test]
+    fn nested_prompts_keep_the_indicator_down_until_the_last_closes() {
+        let _serial = ACTIVE_INDICATOR_TEST
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        static CANCEL: AtomicBool = AtomicBool::new(false);
+        let keyboard = Arc::new(CountingKeyboard::default());
+        let indicator = TurnIndicator::start_with(
+            headless_screen(),
+            &CANCEL,
+            "thinking",
+            Arc::clone(&keyboard) as Arc<dyn Keyboard>,
+        );
+        let outer = pause_indicator();
+        let inner = pause_indicator();
+        drop(inner);
+        assert!(
+            !keyboard.raw() && !keyboard.read_during(30),
+            "the inner question's close revived the indicator"
+        );
+        drop(outer);
+        assert!(keyboard.raw() && keyboard.read_during(60));
+        drop(indicator);
+        assert!(!keyboard.raw());
     }
 
     /// Ctrl-C raises the flag; other keys are SWALLOWED (they do not touch it).

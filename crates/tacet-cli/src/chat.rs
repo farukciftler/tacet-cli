@@ -322,7 +322,18 @@ pub fn chat(run: ChatRun) -> ExitCode {
     }
     let mut injection_state = InjectionState::new();
 
-    let (mut catalog, mut code_state) = session_catalog(&store, &memory, &color, interactive);
+    // IS THERE SOMEBODY TO ASK — not the same question as `interactive`
+    // (audit L31). With no `--message` and a PIPE on stdin the loop is
+    // interactive, but stdin is the script feeding it messages: a consent
+    // question read from there took the next message as its answer, and a
+    // `y` meant as a message approved a tainted `shell` call. So such a session
+    // gets what a one-shot run gets — the silent "no" and no `db_write` (a tool
+    // that can only ever be refused is a trap; see `session_catalog`). The
+    // prompts check the same thing themselves (`ui::Prompt::open`); deciding it
+    // here as well is what keeps the catalog honest about it.
+    let can_ask = interactive && std::io::stdin().is_terminal();
+
+    let (mut catalog, mut code_state) = session_catalog(&store, &memory, &color, can_ask);
 
     // THE ADDON GATE'S VALUE IS READ AT SESSION START — AT THE SAME MOMENT as
     // the catalog. The catalog is set up at session start too; reading the two at
@@ -338,10 +349,10 @@ pub fn chat(run: ChatRun) -> ExitCode {
     let mcp_names = mcp::feed_catalog(&mut catalog, &mut mcp_load);
     report_mcp(&mcp_load, &color);
 
-    // THE APPROVAL GATE: a real question in interactive mode, SilentDeny in
-    // diagnostic mode.
+    // THE APPROVAL GATE: a real question when somebody can answer it,
+    // SilentDeny in diagnostic mode and on a piped stdin.
     let mut executor = ToolExecutor::new(catalog.clone());
-    if interactive {
+    if can_ask {
         executor = executor.with_gate(TerminalApproval);
     } else {
         executor = executor.with_gate(SilentDeny);
@@ -669,7 +680,7 @@ pub fn chat(run: ChatRun) -> ExitCode {
                                 &store,
                                 &memory,
                                 &color,
-                                interactive,
+                                can_ask,
                                 &mut mcp_load,
                                 &engine,
                                 &mut catalog,
@@ -735,7 +746,7 @@ pub fn chat(run: ChatRun) -> ExitCode {
                     &store,
                     &memory,
                     &color,
-                    interactive,
+                    can_ask,
                     &mut mcp_load,
                     &engine,
                     &mut catalog,
@@ -2276,43 +2287,90 @@ fn slash(
 
 /// Reports the MCP load to the user — none of it is silently swallowed.
 pub fn report_mcp(load: &mcp::LoadOutcome, color: &Color) {
+    for (ink, line) in mcp_report_lines(load) {
+        eprintln!("{}", color.paint(ink, &line));
+    }
+}
+
+/// The lines `report_mcp` prints, with their ink. PURE, so what reaches the
+/// terminal can be measured without one.
+///
+/// EVERY STRING A SERVER WROTE GOES THROUGH `one_line` (audit M14). A remote
+/// tool name, a skip reason quoting the schema type it choked on, a connection
+/// error carrying the server's own words — all of it was `eprintln!`ed raw on
+/// every shell start, and a hostile server's `"y\u{1b}[31mRED"` coloured the
+/// user's terminal (audit harness, 9 Oct 2026; the reason path carried
+/// `\u{1b}[5mBLINK`). The connection name is the user's own config and is
+/// cleaned anyway: one funnel is cheaper than an argument about which field is
+/// trusted.
+fn mcp_report_lines(load: &mcp::LoadOutcome) -> Vec<(&'static str, String)> {
+    let mut lines = Vec::new();
     for (connection, reason) in &load.connection_errors {
-        eprintln!(
-            "{}",
-            color.paint(
-                YELLOW,
-                &format!(
-                    "(mcp: the '{connection}' connection could not be established — {reason})"
-                )
-            )
-        );
+        lines.push((
+            YELLOW,
+            format!(
+                "(mcp: the '{}' connection could not be established — {})",
+                ui::one_line(connection),
+                ui::one_line(reason)
+            ),
+        ));
     }
     for skipped in &load.skipped {
-        eprintln!(
-            "{}",
-            color.paint(
-                DIM,
-                &format!(
-                    "(mcp: the '{}' tool was skipped [{}] — {})",
-                    skipped.remote_name, skipped.connection, skipped.reason
-                )
-            )
-        );
+        lines.push((
+            DIM,
+            format!(
+                "(mcp: the '{}' tool was skipped [{}] — {})",
+                ui::one_line(&skipped.remote_name),
+                ui::one_line(&skipped.connection),
+                ui::one_line(&skipped.reason)
+            ),
+        ));
     }
     for note in &load.notes {
-        eprintln!("{}", color.paint(DIM, &format!("(mcp: {note})")));
+        lines.push((DIM, format!("(mcp: {})", ui::one_line(note))));
     }
     if !load.tools.is_empty() {
-        eprintln!(
-            "{}",
-            color.paint(
-                DIM,
-                &format!(
-                    "(mcp: {} remote tools added to the catalog)",
-                    load.tools.len()
-                )
-            )
-        );
+        lines.push((
+            DIM,
+            format!(
+                "(mcp: {} remote tools added to the catalog)",
+                load.tools.len()
+            ),
+        ));
+    }
+    lines
+}
+
+#[cfg(test)]
+mod mcp_report_tests {
+    use super::*;
+
+    /// AUDIT M14: a server's words reach the screen as text, never as commands.
+    #[test]
+    fn a_hostile_server_cannot_write_escapes_into_the_startup_report() {
+        let hostile = "y\u{1b}[31mRED\u{7}\u{9b}2J\r\nfake prompt [y/N]";
+        let load = mcp::LoadOutcome {
+            connection_errors: vec![(hostile.into(), hostile.into())],
+            skipped: vec![mcp::SkippedTool {
+                connection: hostile.into(),
+                remote_name: hostile.into(),
+                reason: format!("unsupported type: {hostile}"),
+            }],
+            notes: vec![hostile.into()],
+            ..Default::default()
+        };
+        let lines = mcp_report_lines(&load);
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        for (_, line) in &lines {
+            for bad in ['\u{1b}', '\u{7}', '\u{9b}', '\r', '\n'] {
+                assert!(
+                    !line.contains(bad),
+                    "{bad:?} reached the terminal: {line:?}"
+                );
+            }
+            // Still readable: hiding what the server said would hide the error.
+            assert!(line.contains("RED"), "{line:?}");
+        }
     }
 }
 

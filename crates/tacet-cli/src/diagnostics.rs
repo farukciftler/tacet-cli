@@ -337,8 +337,9 @@ pub fn mcp_try(name: &str, call: Option<String>, args: &str) -> ExitCode {
                 // approval gate follows: this command has no gate in front of
                 // it, so the transparency has to be here.
                 println!(
-                    "  {} {tool} {}",
+                    "  {} {} {}",
                     color.paint(DIM, "→"),
+                    crate::ui::one_line(&tool),
                     color.paint(DIM, &crate::ui::one_line(&parsed.to_string()))
                 );
                 Some((tool, parsed))
@@ -355,42 +356,62 @@ pub fn mcp_try(name: &str, call: Option<String>, args: &str) -> ExitCode {
     let outcome = match mcp::try_connection(name, Arc::new(TerminalAsk), call) {
         Ok(outcome) => outcome,
         Err(message) => {
-            eprintln!("  {}", color.paint(YELLOW, &message));
+            // The message can quote the server (an error body, a refused
+            // revision); it goes through the same funnel as everything below.
+            eprintln!("  {}", color.paint(YELLOW, &crate::ui::one_line(&message)));
             return ExitCode::FAILURE;
         }
     };
-    println!(
+    for line in mcp_try_lines(&outcome, &color) {
+        println!("{line}");
+    }
+    ExitCode::SUCCESS
+}
+
+/// What `tacet mcp try` prints for an outcome. PURE, so the bytes can be
+/// measured without a server or a terminal.
+///
+/// EVERY STRING THE FAR SIDE WROTE GOES THROUGH `one_line` (audit M14). The
+/// descriptions and the call output already did; the tool NAMES, the revision
+/// string and the called tool's name did not, and a server is free to name a
+/// tool `"y\u{1b}[31mRED"` — which this command printed raw, in BOLD.
+fn mcp_try_lines(outcome: &mcp::TryOutcome, color: &Color) -> Vec<String> {
+    use crate::ui::one_line;
+    let mut lines = vec![format!(
         "  {}  {}  {}",
-        color.paint(BOLD, &outcome.revision),
+        color.paint(BOLD, &one_line(&outcome.revision)),
         color.paint(DIM, &format!("{} ms", outcome.millis)),
         color.paint(DIM, &format!("{} tools", outcome.tools.len())),
-    );
+    )];
     if outcome.fell_back {
-        println!(
+        lines.push(format!(
             "  {}",
             color.paint(
                 YELLOW,
                 "the server did not accept the current revision; the frozen path was used"
             )
-        );
+        ));
     }
     for (tool, description) in &outcome.tools {
         // A description the far side wrote, on its way to a terminal: one line,
         // capped, escapes gone.
-        println!(
+        lines.push(format!(
             "    {}  {}",
-            tool,
-            color.paint(DIM, &crate::ui::one_line(description))
-        );
+            one_line(tool),
+            color.paint(DIM, &one_line(description))
+        ));
     }
     if outcome.tools.is_empty() {
-        println!("  {}", color.paint(DIM, "(the server offers no tools)"));
+        lines.push(format!(
+            "  {}",
+            color.paint(DIM, "(the server offers no tools)")
+        ));
     }
     if let Some((tool, text, is_error)) = &outcome.called {
-        println!();
-        println!(
+        lines.push(String::new());
+        lines.push(format!(
             "  {} {}",
-            color.paint(BOLD, tool),
+            color.paint(BOLD, &one_line(tool)),
             color.paint(
                 DIM,
                 if *is_error {
@@ -399,12 +420,12 @@ pub fn mcp_try(name: &str, call: Option<String>, args: &str) -> ExitCode {
                     ""
                 }
             )
-        );
+        ));
         for line in text.lines().take(20) {
-            println!("    {}", crate::ui::one_line(line));
+            lines.push(format!("    {}", one_line(line)));
         }
     }
-    ExitCode::SUCCESS
+    lines
 }
 
 /// `tacet doctor` — one screen that answers "is this machine set up right".
@@ -814,4 +835,33 @@ fn write_grammar(
     }
 
     true
+}
+
+#[cfg(test)]
+mod mcp_try_tests {
+    use super::*;
+
+    /// AUDIT M14, the `mcp try` half: a hostile server's names and revision
+    /// are printed as text. `Color::plain()` so that the only escapes that
+    /// could appear are ones the server smuggled in.
+    #[test]
+    fn a_hostile_server_cannot_write_escapes_through_mcp_try() {
+        let hostile = "y\u{1b}[31mRED\u{7}\u{9b}2J\r\nfake";
+        let outcome = mcp::TryOutcome {
+            revision: hostile.into(),
+            fell_back: false,
+            millis: 3,
+            tools: vec![(hostile.into(), hostile.into())],
+            called: Some((hostile.into(), hostile.into(), true)),
+        };
+        let lines = mcp_try_lines(&outcome, &Color::plain());
+        let printed = lines.join("\n");
+        for bad in ['\u{1b}', '\u{7}', '\u{9b}', '\r'] {
+            assert!(
+                !printed.contains(bad),
+                "{bad:?} reached the terminal: {printed:?}"
+            );
+        }
+        assert!(printed.contains("RED"), "{printed:?}");
+    }
 }
