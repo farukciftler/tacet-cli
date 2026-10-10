@@ -1008,6 +1008,156 @@ mod tests {
         );
     }
 
+    /// RG-27: the protocol reaches the other agents only through the rule
+    /// blocks a person pastes into each agent's own instructions file. The
+    /// guard above could not see them go: it wants five `tacet handoff`
+    /// mentions and three flags, and the rest of the document holds fifteen
+    /// mentions, so deleting the whole "Rule text to paste" section passed
+    /// (completeness review). This one asks, per agent, for its own block under
+    /// a heading naming its file, and runs the command the block teaches
+    /// through the real parser and the real update, so a block that names the
+    /// wrong agent, a flag that was renamed, or a status the protocol does not
+    /// know is red here rather than a silent no-op on somebody's machine.
+    #[test]
+    fn the_handoff_document_teaches_each_agent_to_report_back() {
+        use clap::Parser as _;
+        let doc = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/agent-handoff.md"),
+        )
+        .unwrap();
+        // The pasted rules carry `## Tacet handoff` headings of their own, so
+        // the section and its blocks are cut on headings OUTSIDE a fence.
+        // Each entry: a `### ` heading and the first ```markdown fence under it.
+        let mut blocks: Vec<(&str, Option<String>)> = Vec::new();
+        let mut in_section = false;
+        let mut fence: Option<(bool, String)> = None;
+        for line in doc.lines() {
+            if let Some((markdown, body)) = fence.as_mut() {
+                if line.starts_with("```") {
+                    if *markdown
+                        && in_section
+                        && let Some((_, slot @ None)) = blocks.last_mut()
+                    {
+                        *slot = Some(std::mem::take(body));
+                    }
+                    fence = None;
+                } else {
+                    body.push_str(line);
+                    body.push('\n');
+                }
+                continue;
+            }
+            if line.starts_with("```") {
+                fence = Some((line.trim_end() == "```markdown", String::new()));
+            } else if line.starts_with("## ") {
+                if in_section {
+                    break;
+                }
+                in_section = line.trim_end() == "## Rule text to paste";
+            } else if in_section && line.starts_with("### ") {
+                blocks.push((line, None));
+            }
+        }
+        assert!(
+            in_section,
+            "docs/agent-handoff.md has no `## Rule text to paste` section"
+        );
+
+        // (the file the block is pasted into, the agent, who reports). The
+        // reporter is written as the slug where the two agree: a bare "codex"
+        // literal is an agent CLI in program position to
+        // network_monopoly's `agent_clis_are_spawned_only_behind_the_approval_gate`.
+        let targets = [
+            ("`CLAUDE.md`", AgentKind::ClaudeCode, "claude-code"),
+            ("`AGENTS.md`", AgentKind::Codex, AgentKind::Codex.slug()),
+            (
+                "`.agents/rules/",
+                AgentKind::Antigravity,
+                AgentKind::Antigravity.slug(),
+            ),
+        ];
+        for (file, agent, by) in targets {
+            let (_, block) = blocks
+                .iter()
+                .find(|(heading, _)| heading.contains(file))
+                .unwrap_or_else(|| panic!("no `### {file}…` rule block for {agent:?}"));
+            let block = block
+                .as_deref()
+                .unwrap_or_else(|| panic!("{file}: the rule is not a closed ```markdown block"));
+
+            // It tells the agent to read the record before it starts.
+            assert!(
+                block.contains("Tacet handoff") && block.contains("read"),
+                "{file}: the block does not tell the agent to read the handoff:\n{block}"
+            );
+            // It names the update for THIS agent, and its reporter.
+            let teach = format!("tacet handoff update {} ", agent.slug());
+            let at = block
+                .find(&format!("`{teach}"))
+                .unwrap_or_else(|| panic!("{file}: the block never says `{teach}…`:\n{block}"));
+            let command = &block[at + 1..];
+            let command = &command[..command.find('`').unwrap()];
+            assert!(
+                command.contains(&format!("--by {by} ")),
+                "{file}: `{command}` does not report as --by {by}"
+            );
+            // Every status the protocol has is named, so the agent is not
+            // left guessing the spelling `--task` accepts.
+            for status in Status::ALL {
+                let word = status.as_str();
+                assert!(
+                    block.contains(word) && Status::parse(word) == Some(status),
+                    "{file}: the block does not name the status {word:?}"
+                );
+            }
+
+            // The command as the agent would type it, placeholders filled.
+            let mut typed = command.replace("<id>=<status>", "1=completed");
+            while let (Some(a), Some(b)) = (typed.find('<'), typed.find('>')) {
+                typed.replace_range(a..=b, "s-1");
+            }
+            let parsed = crate::cli::Shell::try_parse_from(typed.split_whitespace())
+                .unwrap_or_else(|e| panic!("{file}: `{typed}` does not parse:\n{e}"));
+            let Some(crate::cli::Command::Handoff {
+                job:
+                    HandoffJob::Update {
+                        agent: slug,
+                        id,
+                        by: reporter,
+                        summary,
+                        next,
+                        tasks,
+                        notes,
+                    },
+            }) = parsed.command
+            else {
+                panic!("{file}: `{typed}` is not `tacet handoff update`");
+            };
+            assert_eq!(agent_of(&slug), Ok(agent), "{file}: `{typed}`");
+            validate_id(&id).unwrap();
+            let mut record = HandoffRecord::new(agent, &id);
+            record.tasks.push(HandoffTask {
+                id: "1".into(),
+                title: "the task the agent was given".into(),
+                status: Status::InProgress,
+                note: String::new(),
+                updated_at: None,
+            });
+            apply_update(
+                &mut record,
+                &reporter,
+                summary,
+                next,
+                &tasks,
+                &notes,
+                "2026-10-10T12:00:00Z",
+            )
+            .unwrap_or_else(|e| panic!("{file}: `{typed}` is refused: {e}"));
+            assert_eq!(record.by, by);
+            assert_eq!(record.tasks[0].status, Status::Completed, "{file}");
+        }
+    }
+
     /// RG-04: a reader that panics under `tacet handoff note` / `tasks` is a
     /// failed command with a sentence, not an unwind out of `main`. `run` is
     /// `run_with(job, dispatch)`, so this is the production frame with only
