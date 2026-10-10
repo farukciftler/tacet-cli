@@ -27,8 +27,10 @@
 //!   * the FIXTURE tests need no weights and run wherever the file is built
 //!     with `--features candle`: `cargo test -p tacet-engine --features candle
 //!     --test a_marker_is_not_text` locally, and the nightly job's "guards that
-//!     need no weights" step in CI. ci.yml does not build `candle` at all, so
-//!     a PR does not run them; the rule itself is also held in the default
+//!     need no weights" step in CI. On a PR, ci.yml's `candle-compiles` job
+//!     builds them (`cargo test --workspace --features candle --no-run`) but
+//!     does not run them, so a PR proves they compile and only the nightly
+//!     proves they pass; the rule itself is also held in the default
 //!     build by `gguf_tokenizer::markers_are_found_by_flag_and_by_name`. They load
 //!     `tests/fixtures/marker_tokenizer.json` — a 4 KB tokenizer whose added
 //!     vocabulary copies the shapes of qwen3-4b's and gemma3-4b's (the table it

@@ -35,6 +35,30 @@ releases to follow.
   `hooks` key, which Antigravity reads as a hook named `hooks` that runs
   nothing; an entry of that old shape is not counted as installed.
   `docs/agent-handoff.md` shows the new snippet (RG-25).
+* `tacet update --help` no longer says nothing checks by itself and there is
+  no timer: it names the opt-in daily check (`update.check on`, once every 24
+  hours, only at the end of an interactive session on a terminal), as the
+  README does. A test runs the help and holds it to that (D7).
+* The README's 135M training section no longer says the 0.40 irrelevance
+  weight stops a tool gain from buying a loss in restraint — its own row
+  showed the composite rising while irrelevance fell. The exchange-rate
+  sentence (one gate failure 1.67 points, six tool cases to buy it back,
+  91.1 -> 91.2) is now derived from the weights and the model table's top row
+  by `the_readme_quotes_the_baselines`, not only pinned in `bench.rs` (D9).
+* Ctrl-C typed at a real terminal during `shell sleep 9` is now driven end to
+  end through `script(1)`: the chip comes back within 5 s, the `sleep` is
+  gone, the shell answers the next message. With the tool's cancel token
+  unwired it reproduces the audit's `exit 0 · 9554 ms` (M4; macOS only).
+* `scripts/session-roundtrip.sh`'s judge drops Markdown emphasis before
+  matching: the 11 Oct 2026 run's E3 answer, "from **Tacet**", is a credit and
+  read as CHANGED. Re-judged on the saved evidence, that run is E2 differing
+  (no self-claim) and the other four as measured; the ADR records it (RG-29).
+* The ADR said the agent hooks read the handoff `.md`; they read the `.json`
+  record through `handoff::read` and render it. A test holds both the binary
+  (a hand-edited `.md` never reaches an agent) and the ADR to that (RG-21,
+  RG-23, RG-25). `a_marker_is_not_text.rs` no longer says ci.yml does not
+  build `candle`: PR CI compiles those tests and only the nightly runs them,
+  and a workflow test reads the doc against both files (T1).
 
 ---
 

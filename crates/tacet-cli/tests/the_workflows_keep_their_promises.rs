@@ -754,3 +754,53 @@ fn the_release_builds_from_nothing() {
         }
     }
 }
+
+/// What a test file says about where it runs is a claim about these YAML files
+/// too (audit T1, completeness review). `a_marker_is_not_text.rs` said "ci.yml
+/// does not build `candle` at all, so a PR does not run them" after ci.yml had
+/// gained the `candle-compiles` job; the sentence was half right (a PR does
+/// not RUN them) and wholly misleading about the build. The doc is checked
+/// against the YAML in both directions: while ci.yml compiles the candle
+/// tests, the doc may not say it does not build them and must say a PR only
+/// compiles them; and the nightly must still be the place that runs the file.
+fn marker_doc_agrees(doc: &str, ci: &str, nightly: &str) -> Result<(), String> {
+    let flat = doc.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut problems = Vec::new();
+    let ci_compiles = settings(ci)
+        .iter()
+        .any(|l| l.contains("--features candle") && l.contains("--no-run"));
+    if ci_compiles && flat.contains("does not build `candle` at all") {
+        problems.push("says ci.yml does not build candle, and ci.yml compiles it".to_string());
+    }
+    if ci_compiles && !(flat.contains("--no-run") && flat.contains("does not run them")) {
+        problems.push("does not say a PR compiles the candle tests without running them".into());
+    }
+    if !settings(nightly)
+        .iter()
+        .any(|l| l.contains("--test a_marker_is_not_text"))
+    {
+        problems.push("the nightly no longer runs a_marker_is_not_text".to_string());
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems.join("\n"))
+    }
+}
+
+#[test]
+fn the_marker_tests_say_where_ci_runs_them() {
+    let ci = read(".github/workflows/ci.yml");
+    let nightly = read(".github/workflows/nightly.yml");
+    let audited = "//! need no weights\" step in CI. ci.yml does not build `candle` at all, so\n\
+                   //! a PR does not run them;";
+    let err = marker_doc_agrees(audited, &ci, &nightly).expect_err("the audited doc passed");
+    assert!(err.contains("does not build candle"), "{err}");
+    let doc: String = read("crates/tacet-engine/tests/a_marker_is_not_text.rs")
+        .lines()
+        .filter_map(|l| l.strip_prefix("//!"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    marker_doc_agrees(&doc, &ci, &nightly)
+        .unwrap_or_else(|e| panic!("a_marker_is_not_text.rs's module doc:\n{e}"));
+}

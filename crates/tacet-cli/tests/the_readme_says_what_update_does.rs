@@ -127,3 +127,65 @@ fn both_readmes_say_what_update_does() {
         update_paragraph_agrees(&text).unwrap_or_else(|e| panic!("{page}:\n{e}"));
     }
 }
+
+/// THE HELP TEXT, held to the same correction (audit D7, completeness review).
+///
+/// The README stopped saying nothing checks by itself the day the daily check
+/// was added, and `tacet update --help` went on saying it: "NOTHING CHECKS BY
+/// ITSELF. There is no start-up check and no timer … This runs when it is
+/// typed." Once `update.check on` is set, a timer is exactly what there is.
+/// The help is what a person reads at the moment they wonder whether the
+/// program goes online, so it is held here like the page is.
+fn update_help_agrees(help: &str) -> Result<(), String> {
+    let flat = help
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    let mut problems = Vec::new();
+    if flat.contains("nothing checks by itself") || flat.contains("no timer") {
+        problems.push("the help says nothing ever checks on its own".to_string());
+    }
+    if !flat.contains("update.check on") {
+        problems.push("the help does not name the opt-in daily check".to_string());
+    }
+    if !flat.contains("24 hours") {
+        problems.push("the help does not say how often the daily check looks".to_string());
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems.join("\n"))
+    }
+}
+
+/// The `Update` doc as the completeness review read it (cli.rs:388-390).
+const AUDITED_HELP: &str = "\
+Updates this binary to the newest release.
+
+NOTHING CHECKS BY ITSELF. There is no start-up check and no timer: a program
+whose promise is that it stays off the network cannot quietly go online to ask
+about itself. This runs when it is typed.
+";
+
+#[test]
+fn the_help_the_review_read_is_refused() {
+    let err = update_help_agrees(AUDITED_HELP).expect_err("the audited help passed");
+    assert!(err.contains("nothing ever checks"), "{err}");
+    assert!(err.contains("opt-in daily check"), "{err}");
+}
+
+#[test]
+fn update_help_names_the_daily_check() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_tacet"))
+        .args(["update", "--help"])
+        .env(
+            "TACET_HOME",
+            std::env::temp_dir().join("tacet-update-help-unused"),
+        )
+        .output()
+        .expect("the tacet binary runs");
+    assert!(out.status.success(), "`tacet update --help` failed");
+    let help = String::from_utf8_lossy(&out.stdout);
+    update_help_agrees(&help).unwrap_or_else(|e| panic!("`tacet update --help`:\n{e}\n\n{help}"));
+}

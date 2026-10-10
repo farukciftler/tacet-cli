@@ -460,8 +460,9 @@ const RUNTIME_SPAWN_SITES: &[(&str, &str)] = &[
     ),
     (
         "tacet-cli/tests/ctrl_c_reaches_the_running_tool.rs",
-        "the binary under test on the scripted engine, and the literals `kill -INT` and \
-         `pgrep -f` aimed at it and its `sleep` (audit M4)",
+        "the binary under test on the scripted engine — directly, and under the literal \
+         `/usr/bin/script` for a pty — and the literals `kill -INT` and `pgrep -f` aimed \
+         at it and its `sleep` (audit M4)",
     ),
     (
         "tacet-tools/src/sessions/writeback/codex.rs",
@@ -491,6 +492,11 @@ const RUNTIME_SPAWN_SITES: &[(&str, &str)] = &[
         "tacet-cli/tests/the_readme_quotes_the_baselines.rs",
         "`env!(\"CARGO_BIN_EXE_tacet\")`, the binary under test, as `eval --compare` over \
          two committed baselines (audit D1); no model is loaded and no socket opened",
+    ),
+    (
+        "tacet-cli/tests/the_readme_says_what_update_does.rs",
+        "`env!(\"CARGO_BIN_EXE_tacet\")`, the binary under test, as `update --help` — \
+         clap prints and exits before any update code runs, so nothing asks GitHub (D7)",
     ),
 ];
 

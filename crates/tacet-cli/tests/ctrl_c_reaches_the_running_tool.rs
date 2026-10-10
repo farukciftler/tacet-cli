@@ -193,3 +193,157 @@ fn a_sigint_between_turns_still_ends_the_process() {
     drop(stdin);
     assert_eq!(status.signal(), Some(2), "{status:?}");
 }
+
+/// Ctrl-C as a KEY at a real terminal (audit M4, the form the audit measured).
+///
+/// The tests above send the signal with `kill -INT`, and the indicator's key
+/// thread has only a unit test (`ui::tests::ctrl_c_marks_…`). Neither is what
+/// the audit did: it pressed ctrl-c at a pty during `shell sleep 9` and watched
+/// the chip read `exit 0 · 9018 ms`. This drives the binary through
+/// `script(1)` — the pty harness `consent_reaches_the_person.rs` already uses,
+/// no crate — types `\x03` while the tool sleeps, and holds three things: the
+/// chip comes back well before the sleep would have ended, the `sleep` is gone,
+/// and the shell answers the next message.
+///
+/// WHICH PATH CARRIES THE KEY IS NOT ASSERTED. With the indicator in raw mode
+/// the byte is a key and `swallow_key` sets `CANCEL`; with the terminal cooked
+/// the pty's line discipline turns it into a SIGINT and `interrupt::on_sigint`
+/// does. Either is the fix; what the person sees is what is held. Both end in
+/// the tool's context watching `CANCEL` (`chat::session_context`).
+///
+/// RED WITHOUT IT (11 Oct 2026, this Mac): with `session_context` building a
+/// plain `ToolContext::new`, the screen showed `(cancelling…)` at once and then
+/// `shell · sleep · exit 0 · 9554 ms` — the audit's defect, byte for byte — and
+/// the "came back early" assertion failed at 9.17 s.
+///
+/// macOS only: `script -q /dev/null cmd…` is the BSD spelling; util-linux's is
+/// different and has not been run here, so it is not claimed.
+#[cfg(target_os = "macos")]
+mod at_a_terminal {
+    use super::*;
+    use std::io::Read;
+    use std::sync::{Arc, Mutex};
+
+    /// Nine seconds — the audit's `sleep 9` — and a fraction no other run draws.
+    fn nine_seconds() -> String {
+        format!("9.{}", &unique_seconds()[2..])
+    }
+
+    #[test]
+    fn ctrl_c_typed_during_a_tool_stops_it_and_the_shell_lives_on() {
+        let s = Scratch::new("pty");
+        install_sleep(&s);
+        let marker = nine_seconds();
+        let call =
+            format!(r#"{{"name":"shell","arguments":{{"command":"sleep","args":["{marker}"]}}}}"#);
+
+        let mut c = Command::new("/usr/bin/script");
+        c.args(["-q", "/dev/null", env!("CARGO_BIN_EXE_tacet")])
+            .args(["chat", "--engine", "fake"])
+            .args(["--script", &call])
+            .args(["--script", "AFTER-STOP.", "--script", "STILL-HERE."])
+            .args(["--script", "STILL-HERE."]);
+        let mut child = c
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("TACET_MODEL")
+            .env_remove("TACET_TOKENIZER")
+            .env("HOME", s.home())
+            .env("TACET_HOME", s.home())
+            .current_dir(s.home().join("work"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("script(1) runs");
+        let mut input = child.stdin.take().expect("stdin");
+        let mut stdout = child.stdout.take().expect("stdout");
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&output);
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = stdout.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                sink.lock().expect("output").extend_from_slice(&buf[..n]);
+            }
+        });
+        let text = || String::from_utf8_lossy(&output.lock().expect("output")).into_owned();
+        let wait_for = |needle: &str, from: usize, secs: u64| -> Option<usize> {
+            let deadline = Instant::now() + Duration::from_secs(secs);
+            while Instant::now() < deadline {
+                let t = text();
+                if let Some(at) = t.get(from..).and_then(|t| t.find(needle)) {
+                    return Some(from + at + needle.len());
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            None
+        };
+        let mut type_text = |keys: &str| {
+            input
+                .write_all(keys.as_bytes())
+                .expect("types into the pty");
+            input.flush().expect("flush");
+        };
+
+        let ready = wait_for("/help", 0, 20)
+            .unwrap_or_else(|| panic!("the shell never started:\n{}", text()));
+        type_text("wait\r");
+
+        let needle = format!("sleep {marker}");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !still_running(&needle) {
+            assert!(
+                Instant::now() < deadline,
+                "the tool never started:\n{}",
+                text()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        // Let the sleep be under way, the way a person notices and reacts.
+        std::thread::sleep(Duration::from_millis(500));
+        let pressed = Instant::now();
+        let before = text().len().max(ready);
+        type_text("\x03");
+
+        // The turn ends: the indicator's "(stopped)", or the chip's own failure.
+        let back = wait_for("stopped", before, 12);
+        let took = pressed.elapsed();
+        let screen = text();
+        let back = back
+            .unwrap_or_else(|| panic!("the turn never said it stopped after ctrl-c:\n{screen}"));
+        assert!(
+            took < Duration::from_secs(5),
+            "ctrl-c reached the tool only after {took:?} — the {marker}s sleep \
+             ran out instead of being stopped:\n{screen}"
+        );
+        assert!(
+            !screen[before..].contains(" exit 0"),
+            "the stopped tool reported a clean exit:\n{screen}"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            !still_running(&needle),
+            "`{needle}` outlived the ctrl-c typed at its turn"
+        );
+
+        type_text("still there?\r");
+        assert!(
+            wait_for("STILL-HERE.", back, 15).is_some(),
+            "the shell did not answer after ctrl-c — the key ended the program, \
+             not the turn:\n{}",
+            text()
+        );
+        type_text("/exit\r");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}

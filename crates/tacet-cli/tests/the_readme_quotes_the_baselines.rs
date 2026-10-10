@@ -1252,3 +1252,98 @@ fn the_bfcl_table_is_the_bfcl_reports() {
         "the unscored BFCL cases, from the reports",
     );
 }
+
+/// The exchange-rate sentence the page must carry, derived from the model
+/// table's top row and the published weights (audit D9).
+///
+/// The row's denominators ARE the suite's proportions (160 tool, 24
+/// irrelevance, 190 step, 47 answer — `bench.rs` pins that they are the live
+/// suite's), so the cost of one gate failure, the earnings of one tool case
+/// with its step, how many of those buy the failure back, and the before and
+/// after scores all come from numbers the page itself prints.
+fn exchange_rate_sentence(top: &ModelRow) -> String {
+    use tacet_eval::bench::WEIGHTS;
+    let weight = |axis: &str| {
+        WEIGHTS
+            .iter()
+            .find(|(name, _)| *name == axis)
+            .unwrap_or_else(|| panic!("a weight for {axis}"))
+            .1
+    };
+    let (_, _, tool, irr, step, answer) = *top;
+    let cost = 100.0 * weight("irrelevance") / irr.1 as f64;
+    let earn = 100.0 * (weight("tool") / tool.1 as f64 + weight("step") / step.1 as f64);
+    let clean = BenchScore::from_counts(tool, irr, step, answer);
+    let row = |k: usize| {
+        BenchScore::from_counts(
+            (tool.0 + k, tool.1),
+            (irr.0 - 1, irr.1),
+            (step.0 + k, step.1),
+            answer,
+        )
+    };
+    let k = (1..=tool.1 - tool.0)
+        .find(|&k| row(k).composite > clean.composite)
+        .expect("some number of tool cases buys back one gate failure");
+    let word = [
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+    ]
+    .get(k)
+    .copied()
+    .map(str::to_string)
+    .unwrap_or_else(|| k.to_string());
+    format!(
+        "one irrelevance failure costs {cost:.2} points and a tool case landed with its step \
+         earns {earn:.2}, so it takes {word} of them to buy one back ({} -> {} on the top row \
+         of the model table)",
+        clean.out_of_100(),
+        row(k).out_of_100()
+    )
+}
+
+/// What the page must not say any more: that the 0.40 weight stops a tool gain
+/// from buying a loss in restraint. D9 measured the opposite, and the 135M
+/// row beside the claim showed it — composite up, irrelevance down.
+fn claims_restraint_cannot_be_bought(page: &str) -> bool {
+    let flat = folded(page);
+    flat.contains("is not allowed to quietly buy a loss in restraint")
+        || flat.contains("cannot be bought back")
+}
+
+/// The 135M paragraph as the completeness review read it (README:1262-1264).
+const AUDITED_135M: &str = "\
+reach a tool now do. This is why the composite weights irrelevance at 0.40: a
+gain in tool accuracy is not allowed to quietly buy a loss in restraint, and it
+is why 51 of 119 tools found still only moves the composite from 46.4 to 59.9.";
+
+#[test]
+fn the_audited_135m_claim_is_refused() {
+    assert!(claims_restraint_cannot_be_bought(AUDITED_135M));
+}
+
+/// D9, ON THE PAGE. `bench.rs` pins the exchange rate in the code; this pins
+/// the sentence quoting it, so a weight, a denominator or the top row changed
+/// alone goes red with the sentence it now expects. And the old claim — that
+/// the weight forbids the trade — may not come back anywhere on the page.
+#[test]
+fn the_exchange_rate_on_the_page_is_the_weights() {
+    let page = readme();
+    let rows = model_table(&page);
+    let top = rows.first().expect("the model table has a top row");
+    require(
+        &page,
+        &exchange_rate_sentence(top),
+        "the D9 exchange rate, from the top row's counts and `WEIGHTS`",
+    );
+    require(
+        &page,
+        "Two tests pin that exchange rate: `bench.rs` holds the arithmetic in both \
+         directions, and `the_readme_quotes_the_baselines` derives this sentence",
+        "the page names the tests that pin it — bench.rs and this one",
+    );
+    assert!(
+        !claims_restraint_cannot_be_bought(&page),
+        "README.md says the irrelevance weight stops a tool gain from buying a loss in \
+         restraint; D9 measured six tool cases buying one back"
+    );
+}

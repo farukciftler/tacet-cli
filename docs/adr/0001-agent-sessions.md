@@ -156,6 +156,19 @@ A range is widened by a measurement, never by an edit: a read range after the
 fixture corpus (RG-28) parses that version with no unparsed line, a write range
 after the round-trip script (RG-29) passes on it.
 
+**The second run, 11 Oct 2026** (Claude Code 2.1.285 — the version already in
+the write range — on the measuring Mac; exit 2, $1.57 reported). E1, E4 and E5
+read as measured. E3 printed CHANGED, and that was the judge, not the agent:
+the answer was "The note was from \*\*Tacet\*\*, a local assistant …", a credit
+in Markdown emphasis, and the matcher's `from tacet` did not see through the
+`**`. The matcher now drops `*`, `_` and `` ` `` before judging (its self-test
+holds that answer); re-judged on the saved evidence, with no new paid turn,
+E3 is the measurement. E2 genuinely differed: the model gave PELICAN-42 and
+said the text "sat in my position in the conversation", but did not say it had
+written it. That changes no decision — only the user role is written either
+way — and widens nothing: the run had one real difference, so it is not a
+measurement any range may cite.
+
 ## Dependencies (RG-05)
 
 **No new crate.** Tacet's dependency list is an architectural decision
@@ -191,8 +204,9 @@ supported. Tacet's position:
   Tacet does not drive the product, call its model or use its credentials.
 * **Official hooks for reporting back.** A PreInvocation hook in
   `.agents/hooks.json` or `~/.gemini/config/hooks.json`, installed only with
-  the user's approval, reads Tacet's handoff `.md` and returns it as an
-  `ephemeralMessage` in `injectSteps`. Antigravity's own mechanism, writing
+  the user's approval, reads Tacet's handoff record (the `.json`, through
+  `handoff::read` and its checks), renders it as Markdown and returns that as
+  an `ephemeralMessage` in `injectSteps`. Antigravity's own mechanism, writing
   nothing of Antigravity's.
 * **One write, experimental, off by default.** Checkbox updates to a
   conversation's `task.md` — and nothing else in Antigravity's storage — behind
@@ -223,7 +237,10 @@ Preferred to fallback, for every agent:
    is refused before it is written, with the same reason.
 2. **The official hook** — Claude Code and Codex SessionStart
    `additionalContext`, Antigravity PreInvocation `injectSteps`. The hook reads
-   the `.md`; no transcript is touched.
+   the `.json` record through `handoff::read` (the secrets gate, the schema
+   check, the file name agreeing with the session it names) and renders it as
+   Markdown; the `.md` twin is for people and the hook never opens it. No
+   transcript is touched.
 3. **A file append** — Claude Code only, inside the measured write range, the
    user-role note format, never into a live session, chain verified after.
    Codex appends additionally refuse when `thread-writer-locks/<id>.lock`

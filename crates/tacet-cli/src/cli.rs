@@ -386,9 +386,14 @@ pub enum Command {
 
     /// Updates this binary to the newest release.
     ///
-    /// NOTHING CHECKS BY ITSELF. There is no start-up check and no timer: a
-    /// program whose promise is that it stays off the network cannot quietly
-    /// go online to ask about itself. This runs when it is typed.
+    /// NOTHING CHECKS ON ITS OWN UNTIL YOU SAY SO. There is no start-up check:
+    /// a program whose promise is that it stays off the network cannot quietly
+    /// go online to ask about itself. This command runs when it is typed. The
+    /// one other door is opt-in: `tacet config set update.check on` (the shell
+    /// asks once, a few turns into the first session) looks once every 24
+    /// hours, at the end of an interactive session with stdout and stderr on a
+    /// terminal — never after `--message`, under `--json`, or when output is
+    /// piped. `update.check off` closes it.
     ///
     /// THE BARE COMMAND NOW UPDATES, and the reason for the change is that the
     /// old default was a trap of the most ordinary kind: `tacet update` printed
