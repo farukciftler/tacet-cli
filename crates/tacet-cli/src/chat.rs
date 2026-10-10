@@ -957,8 +957,10 @@ pub fn chat(run: ChatRun) -> ExitCode {
             // with the question cut to nothing and a generation cap past the
             // window — on a 2048-token model, every turn. Nothing is sent now;
             // the turn ends the way an engine error ends it, with the numbers.
-            // Refused only when even the minimum answer does not fit — see
-            // `MIN_ANSWER`; a 4096 window under the full shell prompt is sent.
+            // Refused only when even the minimum answer does not fit beside
+            // the question, or a fragment of it — see `MIN_ANSWER` and
+            // `MIN_QUESTION_KEPT`; a 4096 window under the full shell prompt
+            // is sent.
             let report = match counter.fit(&mut prompt) {
                 Ok(report) => report,
                 Err(e) => {
@@ -1671,10 +1673,16 @@ pub fn chat(run: ChatRun) -> ExitCode {
 /// It names the window, the measured prompt and the way out, because the only
 /// fix is outside the conversation: `fit` refuses only when the part that is
 /// never cut — the instructions, the tool descriptions, and the memory notes
-/// the question matched — leaves less than `MIN_ANSWER` for the answer ON ITS
-/// OWN (a cut instruction makes the model forget who it is). A shorter question
-/// or a `/clear` changes nothing, and saying only "budget exceeded" sends the
-/// user to try exactly those.
+/// the question matched — leaves no room for the conversation (a cut
+/// instruction makes the model forget who it is). A shorter question or a
+/// `/clear` changes nothing, and saying only "budget exceeded" sends the user
+/// to try exactly those.
+///
+/// NOT "OVER WITHOUT YOUR QUESTION" (review of L21, third pass). That was true
+/// while only a fixed part over the ceiling was refused. A fixed part a few
+/// tokens under it is refused too now, because the question could keep only
+/// a fragment (`MIN_QUESTION_KEPT`), and there the claim is false by those
+/// few tokens. "No room for your question" is true of both.
 ///
 /// THE NUMBER IS THE WHOLE PROMPT, question included, and it is called that.
 /// The first version of this text called it "the instructions and tool
@@ -1686,11 +1694,12 @@ fn window_refusal(error: &tacet_engine::EngineError, window: usize) -> String {
         tacet_engine::EngineError::BudgetExceeded { measured, budget } => format!(
             "not sent: this model's window is {window} tokens and this prompt, your \
              question included, comes to ~{measured} — over the {budget} a prompt may \
-             take and still leave room for an answer. It is over without your \
-             question too: the instructions, tool descriptions and matching memory \
-             notes are never cut, so your question was not cut either, and a shorter \
-             one will not help. A model with a larger context window is needed (or \
-             fewer MCP tools)."
+             take and still leave room for an answer. The instructions, tool \
+             descriptions and matching memory notes are never cut, and they leave no \
+             room for your question: the word or two that would fit is a question \
+             you did not ask, so your question was not cut, and a shorter one will \
+             not help. A model with a larger context window is needed (or fewer MCP \
+             tools)."
         ),
         other => format!("not sent: {other}"),
     }
@@ -2423,6 +2432,14 @@ mod window_refusal_tests {
         assert!(
             !text.contains("alone"),
             "the number includes the question: {text}"
+        );
+        // Near the ceiling the fixed part is a few tokens UNDER it on its
+        // own, and the turn is refused because the question has no room —
+        // so the text may not claim the prompt is over without it.
+        assert!(
+            text.contains("no room for your question")
+                && !text.contains("over without your question"),
+            "the refusal misstates why: {text}"
         );
     }
 
