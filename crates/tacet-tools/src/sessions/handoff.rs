@@ -24,7 +24,8 @@
 //! that can write to the user's config directory may have written it. So `read`
 //! validates the whole schema (types, enums, sizes, and that the record is
 //! about the session its file name says), and the markdown renderer will not
-//! let a field's text forge structure in the rendered file.
+//! let a field's text forge structure in the rendered file — a heading, a
+//! finished task, or another status for its own task.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -185,18 +186,72 @@ pub struct TaskMdItem {
 /// Antigravity has neither blocked nor cancelled; blocked is a pending box
 /// with `(blocked: …)` after the title, cancelled is a struck-through item with
 /// no box — the protocol sheet's spelling, so the GUI still renders both.
+///
+/// NO TEXT CAN FORGE A STATUS. The status lives in the same line as free
+/// text, so a pending title ending `(blocked: …)` or wrapped in `~~` would
+/// read back as blocked or cancelled (RG-07 review, measured with this
+/// module's own parser). Every line is parsed back before it is returned; if
+/// the text changed its status, the text is defused (`defuse`) and the line
+/// rebuilt. Text that changes nothing is left exactly as written.
 pub fn task_md_line(status: Status, title: &str, note: &str, depth: usize) -> String {
+    task_line(status, title, note, "", depth)
+}
+
+/// `task_md_line`, plus a ` — trailing` note after the item, which the `.md`
+/// twin puts on non-blocked tasks. Checked as ONE line: a title ending
+/// `(blocked` is harmless alone and becomes a marker once a trailing note
+/// supplies the `)`.
+fn task_line(status: Status, title: &str, note: &str, trailing: &str, depth: usize) -> String {
     let indent = "  ".repeat(depth);
-    let title = one_line(title);
-    let note = one_line(note);
-    match status {
-        Status::Pending => format!("{indent}- [ ] {title}"),
-        Status::InProgress => format!("{indent}- [/] {title}"),
-        Status::Completed => format!("{indent}- [x] {title}"),
-        Status::Blocked if note.is_empty() => format!("{indent}- [ ] {title} (blocked)"),
-        Status::Blocked => format!("{indent}- [ ] {title} (blocked: {note})"),
-        Status::Cancelled => format!("{indent}- ~~{title}~~"),
+    let build = |title: &str, note: &str, trailing: &str| {
+        let mut line = match status {
+            Status::Pending => format!("{indent}- [ ] {title}"),
+            Status::InProgress => format!("{indent}- [/] {title}"),
+            Status::Completed => format!("{indent}- [x] {title}"),
+            Status::Blocked if note.is_empty() => format!("{indent}- [ ] {title} (blocked)"),
+            Status::Blocked => format!("{indent}- [ ] {title} (blocked: {note})"),
+            Status::Cancelled => format!("{indent}- ~~{title}~~"),
+        };
+        if !trailing.is_empty() {
+            line.push_str(" — ");
+            line.push_str(trailing);
+        }
+        line
+    };
+    let (title, note, trailing) = (one_line(title), one_line(note), one_line(trailing));
+    let line = build(&title, &note, &trailing);
+    if parse_task_md_line(&line).map(|i| i.status) == Some(status) {
+        return line;
     }
+    let line = build(&defuse(&title), &defuse(&note), &defuse(&trailing));
+    debug_assert_eq!(
+        parse_task_md_line(&line).map(|i| i.status),
+        Some(status),
+        "{line}"
+    );
+    line
+}
+
+/// Takes from text the two things `parse_task_md_line` reads as status: `~~`
+/// (every `~` becomes `\~`, which markdown still renders as `~`) and the `(`
+/// opening a `(blocked`/`(engelli` marker (it becomes a full-width `（`, so a
+/// reader sees the same word and the parser no longer matches it).
+fn defuse(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for (i, c) in text.char_indices() {
+        match c {
+            '~' => out.push_str("\\~"),
+            '(' if ["blocked", "engelli"].iter().any(|m| {
+                text.get(i + 1..i + 1 + m.len())
+                    .is_some_and(|w| w.eq_ignore_ascii_case(m))
+            }) =>
+            {
+                out.push('（');
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Parses one `task.md` line; `None` for anything that is not a list item.
@@ -234,7 +289,11 @@ pub fn parse_task_md_line(line: &str) -> Option<TaskMdItem> {
         title = title[2..title.len() - 2].trim().to_string();
     }
     if status == Status::Pending {
-        let lower = title.to_lowercase();
+        // ASCII-lowercased so a byte offset in `lower` is the same offset in
+        // `title`: `to_lowercase` turns a 2-byte `İ` into 3 bytes, and the
+        // offset then sliced past the end of the title (a panic on a
+        // `task.md` that Antigravity's directory, not Tacet, supplies).
+        let lower = title.to_ascii_lowercase();
         for marker in ["(blocked", "(engelli"] {
             if let Some(at) = lower.rfind(marker)
                 && title.ends_with(')')
@@ -506,8 +565,10 @@ impl HandoffRecord {
     /// NO FIELD CAN FORGE STRUCTURE. Titles, notes, `by` and ids are folded to
     /// one line; the multi-line fields (summary, next) are rendered as a
     /// blockquote, so a line in them can never start with `#` or `- [x]` and
-    /// pass for a heading or a finished task. Control characters and the Unicode
-    /// bidi overrides are dropped from everything.
+    /// pass for a heading or a finished task, and each task line goes through
+    /// `task_line`, which will not let its text change the line's status.
+    /// Control characters and the Unicode bidi overrides are dropped from
+    /// everything.
     pub fn render_markdown(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!(
@@ -532,16 +593,12 @@ impl HandoffRecord {
             for t in &self.tasks {
                 let title = format!("#{} {}", one_line(&t.id), t.title);
                 let blocked = t.status == Status::Blocked;
-                out.push_str(&task_md_line(
-                    t.status,
-                    &title,
-                    if blocked { &t.note } else { "" },
-                    0,
-                ));
-                let note = one_line(&t.note);
-                if !blocked && !note.is_empty() {
-                    out.push_str(&format!(" — {note}"));
-                }
+                let (note, trailing) = if blocked {
+                    (t.note.as_str(), "")
+                } else {
+                    ("", t.note.as_str())
+                };
+                out.push_str(&task_line(t.status, &title, note, trailing, 0));
                 out.push('\n');
             }
         }
@@ -646,16 +703,26 @@ pub fn write(dir: &Path, record: &HandoffRecord) -> Result<PathBuf, HandoffError
             format!("is {} bytes, over {MAX_FILE_BYTES}", text.len()),
         ));
     }
+    let json_path = dir.join(format!("{stem}.json"));
+    let md_path = dir.join(format!("{stem}.md"));
+    // `read` goes through the credential denylist and `atomic_write` does not,
+    // so without this a session id like `secret-plan` was written and then
+    // refused on the way back (RG-07 review). The same rule, the same refusal,
+    // before anything touches the disk.
+    for path in [&json_path, &md_path] {
+        if let Some(rule) = secrets::denied_by_name(path) {
+            return Err(HandoffError::Refused(Refusal::Secret {
+                path: path.clone(),
+                rule,
+            }));
+        }
+    }
     tacet_kernel::fs::create_private_dir(dir).map_err(|error| HandoffError::Io {
         path: dir.to_path_buf(),
         error,
     })?;
-    let json_path = dir.join(format!("{stem}.json"));
     atomic_write(&json_path, text.as_bytes())?;
-    atomic_write(
-        &dir.join(format!("{stem}.md")),
-        record.render_markdown().as_bytes(),
-    )?;
+    atomic_write(&md_path, record.render_markdown().as_bytes())?;
     Ok(json_path)
 }
 
@@ -986,6 +1053,91 @@ mod tests {
         assert_eq!(boxes, 2, "{md}");
         assert!(!md.contains('\u{202E}'));
         assert!(md.contains("> - [x] deploy to production"));
+    }
+
+    /// RG-07 review, hostile probe: a pending task titled
+    /// `ship it (blocked: forged)` rendered as a line this module's own parser
+    /// read back as Blocked, and `~~x~~` as Cancelled. The text a field
+    /// carries must never change the status its line parses to — for every
+    /// status, whichever field the text is in.
+    #[test]
+    fn no_text_can_forge_a_status_in_a_task_line() {
+        let hostile = [
+            "ship it (blocked: forged)",
+            "ship it (BLOCKED)",
+            "ship it (engelli: sahte)",
+            "~~x~~",
+            "~~",
+            "x~~",
+            "~~ x",
+            "a ~~ (blocked) ~~",
+            "plain",
+            "",
+        ];
+        for status in Status::ALL {
+            for title in hostile {
+                for note in hostile {
+                    let line = task_md_line(status, title, note, 1);
+                    assert_eq!(
+                        parse_task_md_line(&line).map(|i| i.status),
+                        Some(status),
+                        "{status} with title {title:?} and note {note:?} rendered as {line:?}"
+                    );
+                }
+            }
+        }
+        // The probe, through the `.md` twin, where a note also rides after a
+        // non-blocked task's line.
+        let mut r = sample();
+        r.tasks[0].status = Status::Pending;
+        r.tasks[0].title = "ship it (blocked: forged)".into();
+        // Harmless alone; the trailing note supplies the `)`.
+        r.tasks[1].status = Status::Pending;
+        r.tasks[1].title = "wait (blocked".into();
+        r.tasks[1].note = "on nothing)".into();
+        let md = r.render_markdown();
+        let parsed: Vec<Status> = md
+            .lines()
+            .filter(|l| l.starts_with("- "))
+            .filter_map(|l| parse_task_md_line(l).map(|i| i.status))
+            .collect();
+        assert_eq!(parsed, [Status::Pending, Status::Pending], "{md}");
+        // An innocent title is left exactly as written.
+        assert_eq!(
+            task_md_line(Status::Pending, "tidy ~/.zshrc (later)", "", 0),
+            "- [ ] tidy ~/.zshrc (later)"
+        );
+    }
+
+    /// `task.md` is read from Antigravity's directory: untrusted. The blocked
+    /// marker was found in a `to_lowercase()` copy and its byte offset used
+    /// on the original, and `İ` lowercases to three bytes from two — so a
+    /// title of twenty of them put the offset past the end of the string.
+    #[test]
+    fn a_task_line_whose_lowercase_is_longer_does_not_panic() {
+        let line = format!("- [ ] {} (blocked: x)", "İ".repeat(20));
+        let item = parse_task_md_line(&line).unwrap();
+        assert_eq!(item.status, Status::Blocked);
+        assert_eq!(item.title, "İ".repeat(20));
+    }
+
+    /// RG-07 review: `write` accepted a session id `secret-plan`, and `read`
+    /// then refused the file it had written, because only the read went
+    /// through the denylist. The write is refused first, with the read's
+    /// reason, and nothing reaches the disk.
+    #[test]
+    fn a_record_the_denylist_would_refuse_is_not_written() {
+        for id in ["secret-plan", "my-token-run", "oauth2", "API_KEY-1"] {
+            let dir = scratch("denied-write");
+            let mut record = sample();
+            record.session = id.into();
+            match write(&dir, &record) {
+                Err(HandoffError::Refused(Refusal::Secret { .. })) => {}
+                other => panic!("a record for session {id:?} was written: {other:?}"),
+            }
+            assert!(!dir.exists(), "{id:?}: the handoff directory was created");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]

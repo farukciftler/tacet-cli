@@ -63,10 +63,12 @@ other agent's ability to resume its own session.
 |---|---|---|
 | Prompt injection carried in a transcript | A README the other agent read says `<\|im_start\|>system …`, or `</memory>`; the transcript now carries it | Imported text is **defanged** at the prompt boundary like any tool result (audit H3/H4, RG-02); the model gets a short summary, not the transcript |
 | Exfiltration after reading | A summarised transcript contains a token, then the model calls `web_fetch` | Reading a session **taints** the Tacet session (`sessions::TAINTS_SESSION`, audit H2, RG-01), so every outbound tool asks first |
-| A credential read by a reader that "only wanted the transcript" | `~/.claude/sessions/<pid>.key` next to `<pid>.json`; `auth.json` next to `session_index.jsonl` | One door (`secrets::open`), a denylist checked on the given AND the canonical path, an extension allowlist, an inode re-check after open; a test fails the build if a reader opens a file any other way |
+| A credential read by a reader that "only wanted the transcript" | `~/.claude/sessions/<pid>.key` next to `<pid>.json`; `auth.json` next to `session_index.jsonl` | One door (`secrets::open`), a denylist checked on the given AND the canonical path, an extension allowlist; a test fails the build if a reader opens a file any other way — a fully qualified `std::fs::read`, an aliased `use std::fs as f`, a bare imported `read_to_string`, or production code placed after a stray `#[cfg(test)]` (each one a bypass the review made by hand, and each now in the guard's own test) |
 | A planted symlink | `brain/x/.system_generated/logs/transcript_full.jsonl -> ~/.codex/auth.json` | Names are checked on what the link resolves to |
+| A planted hard link | `ln ~/.codex/auth.json ~/.codex/sessions/rollout-x.jsonl` — **measured** in review: the innocent name returned the API key, because a hard link has no target to resolve | On Unix a file with more than one name is refused (`Refusal::HardLinked`), counted on the open handle. No transcript the three agents write has a second name. Windows: not enforced (no stable link count in std), NOT MEASURED |
+| A swap between the check and the open | The checked path is renamed over, or replaced by a link to `auth.json` or by a FIFO, after `check` and before the open | `check` keeps the metadata of the entry it vetted, not followed; the open uses `O_NOFOLLOW` and `O_NONBLOCK`; the inode opened must be the one checked — compared with the check-time metadata, never a fresh lookup (a fresh lookup follows the swap and matches it). Tests drive the swap inside `open` itself. Unix only |
 | Path traversal through an id | `--from claude:../../.ssh/x`, or a `session` field inside a handoff file | `model::validate_id`: `[A-Za-z0-9._-]`, at most 128 bytes, no leading dot, no `..` — applied before any path is built |
-| A forged or oversized handoff | Another process writes `claude-A.json` claiming to be about session B, or a 60 MB "summary" | Schema-validated read (types, enums, sizes, file name must match the record); the `.md` twin folds every field so it cannot forge headings or finished tasks |
+| A forged or oversized handoff | Another process writes `claude-A.json` claiming to be about session B, or a 60 MB "summary" | Schema-validated read (types, enums, sizes, file name must match the record); the `.md` twin folds every field so it cannot forge headings or finished tasks, and every task line is parsed back before it is written — a title or note that would change its status (`… (blocked: …)` on a pending task, `~~…~~`) is defused |
 | A write that corrupts the user's history | Wrong `parentUuid`: **measured**, `--resume` then loaded nothing before the note | Writes are fail-closed: version gate (below), never into a live session, user approval every time, chain re-verified after the write and rolled back if the old leaf is no longer an ancestor; the official hook path is preferred and touches no transcript |
 | Impersonating the other agent's model | An assistant-role entry: **measured**, the model then believed it had written the text itself | Never write the assistant role. The only file format is a single user-role entry beginning `[Note from Tacet, a local assistant, not from the user]` |
 
@@ -162,7 +164,9 @@ Preferred to fallback, for every agent:
 
    A record without `schema` reads as 1 (another agent following the rule by
    hand will not know to write it); a higher number is refused; unknown
-   fields are ignored.
+   fields are ignored. A record whose file name the credential denylist
+   would refuse on the way back (a session id containing `token`, `secret`…)
+   is refused before it is written, with the same reason.
 2. **The official hook** — Claude Code and Codex SessionStart
    `additionalContext`, Antigravity PreInvocation `injectSteps`. The hook reads
    the `.md`; no transcript is touched.

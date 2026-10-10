@@ -43,22 +43,343 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
     }
 
-    /// The ways Rust code opens a file for reading. Spelled in pieces so this
-    /// test does not find itself.
-    const OPENERS: &[&str] = &[
-        concat!("File", "::open("),
-        concat!("fs::", "read("),
-        concat!("fs::", "read_to_string("),
-        concat!("OpenOptions", "::new("),
-        concat!("File", "::options("),
+    /// One token of Rust source, with the line it starts on. Comments, string
+    /// literals and char literals are gone before tokens are made, so text
+    /// that merely MENTIONS an opener (this module's own fixtures, a doc
+    /// comment) is not mistaken for one.
+    #[derive(Debug, Clone, PartialEq)]
+    struct Tok {
+        text: String,
+        line: usize,
+    }
+
+    /// Rust source with comments and the insides of string and char literals
+    /// replaced by spaces, line breaks kept so line numbers survive. Enough
+    /// lexer for this guard: block comments nest, raw strings take their
+    /// hashes, and `'a` is told apart from `'a'`.
+    fn skeleton(src: &str) -> String {
+        let c: Vec<char> = src.chars().collect();
+        let mut out = String::with_capacity(src.len());
+        let blank = |ch: char| if ch == '\n' { '\n' } else { ' ' };
+        let mut i = 0;
+        while i < c.len() {
+            if c[i] == '/' && c.get(i + 1) == Some(&'/') {
+                while i < c.len() && c[i] != '\n' {
+                    out.push(' ');
+                    i += 1;
+                }
+            } else if c[i] == '/' && c.get(i + 1) == Some(&'*') {
+                let mut depth = 0;
+                while i < c.len() {
+                    if c[i] == '/' && c.get(i + 1) == Some(&'*') {
+                        depth += 1;
+                        out.push_str("  ");
+                        i += 2;
+                    } else if c[i] == '*' && c.get(i + 1) == Some(&'/') {
+                        depth -= 1;
+                        out.push_str("  ");
+                        i += 2;
+                        if depth == 0 {
+                            break;
+                        }
+                    } else {
+                        out.push(blank(c[i]));
+                        i += 1;
+                    }
+                }
+            } else if c[i] == 'r'
+                && (c.get(i + 1) == Some(&'"') || c.get(i + 1) == Some(&'#'))
+                && (i == 0 || !(c[i - 1].is_alphanumeric() || c[i - 1] == '_'))
+            {
+                let mut j = i + 1;
+                let mut hashes = 0;
+                while c.get(j) == Some(&'#') {
+                    hashes += 1;
+                    j += 1;
+                }
+                if c.get(j) != Some(&'"') {
+                    out.push(c[i]);
+                    i += 1;
+                    continue;
+                }
+                out.push_str(&" ".repeat(j + 1 - i));
+                i = j + 1;
+                while i < c.len() {
+                    if c[i] == '"' && (1..=hashes).all(|k| c.get(i + k) == Some(&'#')) {
+                        out.push_str(&" ".repeat(hashes + 1));
+                        i += hashes + 1;
+                        break;
+                    }
+                    out.push(blank(c[i]));
+                    i += 1;
+                }
+            } else if c[i] == '"' {
+                out.push(' ');
+                i += 1;
+                while i < c.len() && c[i] != '"' {
+                    if c[i] == '\\' {
+                        out.push(' ');
+                        i += 1;
+                    }
+                    if i < c.len() {
+                        out.push(blank(c[i]));
+                        i += 1;
+                    }
+                }
+                out.push(' ');
+                i += 1;
+            } else if c[i] == '\'' {
+                // `'x'` or `'\n'` is a char literal; `'a` alone is a lifetime.
+                let end = if c.get(i + 1) == Some(&'\\') {
+                    (i + 2..c.len()).find(|&k| c[k] == '\'')
+                } else if c.get(i + 2) == Some(&'\'') {
+                    Some(i + 2)
+                } else {
+                    None
+                };
+                match end {
+                    Some(e) => {
+                        out.push_str(&" ".repeat(e + 1 - i));
+                        i = e + 1;
+                    }
+                    None => {
+                        out.push(' ');
+                        i += 1;
+                    }
+                }
+            } else {
+                out.push(c[i]);
+                i += 1;
+            }
+        }
+        out
+    }
+
+    fn tokens(src: &str) -> Vec<Tok> {
+        let c: Vec<char> = skeleton(src).chars().collect();
+        let mut out = Vec::new();
+        let (mut i, mut line) = (0, 1);
+        while i < c.len() {
+            let ch = c[i];
+            if ch == '\n' {
+                line += 1;
+                i += 1;
+            } else if ch.is_whitespace() {
+                i += 1;
+            } else if ch.is_alphanumeric() || ch == '_' {
+                let start = i;
+                while i < c.len() && (c[i].is_alphanumeric() || c[i] == '_') {
+                    i += 1;
+                }
+                out.push(Tok {
+                    text: c[start..i].iter().collect(),
+                    line,
+                });
+            } else if ch == ':' && c.get(i + 1) == Some(&':') {
+                out.push(Tok {
+                    text: "::".into(),
+                    line,
+                });
+                i += 2;
+            } else {
+                out.push(Tok {
+                    text: ch.to_string(),
+                    line,
+                });
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// The tokens outside `#[cfg(test)] mod … { … }` blocks. ONLY a test
+    /// MODULE is skipped, and only up to its closing brace: the old guard
+    /// stopped at the first `#[cfg(test)]` anywhere, so a one-line
+    /// `#[cfg(test)] fn x() {}` above production code hid everything after it
+    /// (RG-16 review, break B15). A `#[cfg(test)]` on anything else — a
+    /// helper function, an `impl` — is scanned like production code.
+    fn production(toks: &[Tok]) -> Vec<Tok> {
+        let is = |i: usize, t: &str| toks.get(i).is_some_and(|k| k.text == t);
+        // `# [ ... ]` starting at i: the index after its `]`.
+        let attr_end = |i: usize| -> Option<usize> {
+            if !(is(i, "#") && is(i + 1, "[")) {
+                return None;
+            }
+            let mut depth = 0;
+            for (k, t) in toks.iter().enumerate().skip(i + 1) {
+                match t.text.as_str() {
+                    "[" => depth += 1,
+                    "]" => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return Some(k + 1);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            None
+        };
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < toks.len() {
+            let cfg_test = ["#", "[", "cfg", "(", "test", ")", "]"]
+                .iter()
+                .enumerate()
+                .all(|(k, t)| is(i + k, t));
+            if cfg_test {
+                let mut j = i + 7;
+                while let Some(next) = attr_end(j) {
+                    j = next;
+                }
+                if is(j, "pub") {
+                    j += 1;
+                    if is(j, "(") {
+                        while j < toks.len() && !is(j, ")") {
+                            j += 1;
+                        }
+                        j += 1;
+                    }
+                }
+                if is(j, "mod") && is(j + 2, "{") {
+                    let mut depth = 0;
+                    let mut k = j + 2;
+                    while k < toks.len() {
+                        match toks[k].text.as_str() {
+                            "{" => depth += 1,
+                            "}" => depth -= 1,
+                            _ => {}
+                        }
+                        k += 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    i = k;
+                    continue;
+                }
+            }
+            out.push(toks[i].clone());
+            i += 1;
+        }
+        out
+    }
+
+    /// `a :: b` call paths that open a file for reading, as token triples.
+    /// Matching tokens rather than text means `std::fs::read::<&Path>(p)` and
+    /// `fs :: read (p)` are seen too, and `read_dir`/`metadata` are not.
+    const OPENERS: &[(&str, &str)] = &[
+        ("fs", "read"),
+        ("fs", "read_to_string"),
+        ("File", "open"),
+        ("File", "options"),
+        ("OpenOptions", "new"),
     ];
 
-    /// Every file in `sessions/` other than `secrets.rs` that opens a file for
-    /// reading, with the line. Walks the directory rather than listing files,
-    /// so the next reader added here (claude.rs, codex.rs…) is covered without
-    /// anyone remembering to add it.
+    /// Names that, imported from an `fs` module, open a file under a name the
+    /// call-path check cannot see: `use std::fs::read_to_string;` and then a
+    /// bare `read_to_string(p)` (break B14).
+    const IMPORTED_OPENERS: &[&str] = &["read", "read_to_string", "File", "OpenOptions", "*"];
+
+    /// Every path a `use` tree brings in, as (segments, alias). Expands
+    /// `use std::{fs::{self as f, File}, io};` into its leaves.
+    fn use_leaves(
+        toks: &[Tok],
+        i: &mut usize,
+        prefix: Vec<String>,
+        out: &mut Vec<(Vec<String>, Option<String>, usize)>,
+    ) {
+        let mut prefix = prefix;
+        let line = toks.get(*i).map_or(0, |t| t.line);
+        while let Some(t) = toks.get(*i) {
+            match t.text.as_str() {
+                "::" => *i += 1,
+                "{" => {
+                    *i += 1;
+                    loop {
+                        use_leaves(toks, i, prefix.clone(), out);
+                        match toks.get(*i).map(|t| t.text.as_str()) {
+                            Some(",") => *i += 1,
+                            Some("}") => {
+                                *i += 1;
+                                break;
+                            }
+                            _ => break,
+                        }
+                    }
+                    return;
+                }
+                "*" => {
+                    *i += 1;
+                    prefix.push("*".into());
+                    out.push((prefix, None, line));
+                    return;
+                }
+                "}" | "," | ";" => return,
+                word => {
+                    *i += 1;
+                    if toks.get(*i).is_some_and(|t| t.text == "::") {
+                        prefix.push(word.to_string());
+                        continue;
+                    }
+                    let alias = if toks.get(*i).is_some_and(|t| t.text == "as") {
+                        *i += 1;
+                        let a = toks.get(*i).map(|t| t.text.clone());
+                        *i += 1;
+                        a
+                    } else {
+                        None
+                    };
+                    prefix.push(word.to_string());
+                    out.push((prefix, alias, line));
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Why one production token stream opens a file without the gate, one
+    /// entry per finding: (line, what).
+    fn openers_in(toks: &[Tok]) -> Vec<(usize, String)> {
+        let mut found = Vec::new();
+        for w in toks.windows(3) {
+            if w[1].text == "::" && OPENERS.contains(&(w[0].text.as_str(), w[2].text.as_str())) {
+                found.push((w[0].line, format!("{}::{}", w[0].text, w[2].text)));
+            }
+        }
+        for (k, t) in toks.iter().enumerate() {
+            if t.text != "use" {
+                continue;
+            }
+            let mut i = k + 1;
+            let mut leaves = Vec::new();
+            use_leaves(toks, &mut i, Vec::new(), &mut leaves);
+            for (path, alias, line) in leaves {
+                let Some(fs_at) = path.iter().position(|s| s == "fs") else {
+                    continue;
+                };
+                let last = path.last().map(String::as_str).unwrap_or_default();
+                let tail = &path[fs_at + 1..];
+                // `use std::fs as f;` / `use std::fs::{self as f}` — every
+                // call through `f::` dodges the call-path check (break B13).
+                let fs_alias = alias.is_some() && (tail.is_empty() || tail == ["self"]);
+                if fs_alias || (tail.len() == 1 && IMPORTED_OPENERS.contains(&last)) {
+                    let alias = alias.map(|a| format!(" as {a}")).unwrap_or_default();
+                    found.push((line, format!("use {}{alias}", path.join("::"))));
+                }
+            }
+        }
+        found
+    }
+
+    /// Every file under `dir` other than `dir/secrets.rs` that opens a file
+    /// for reading, with the line. Walks the directory rather than listing
+    /// files, so the next reader added here (claude.rs, codex.rs…) is covered
+    /// without anyone remembering to add it. Only the TOP-LEVEL `secrets.rs`
+    /// is the door; a `secrets.rs` in a subdirectory is just a file.
     fn bypasses(dir: &Path) -> Vec<String> {
         let mut found = Vec::new();
+        let door = dir.join("secrets.rs");
         let mut stack = vec![dir.to_path_buf()];
         while let Some(d) = stack.pop() {
             for entry in std::fs::read_dir(&d).unwrap().flatten() {
@@ -67,27 +388,18 @@ mod tests {
                     stack.push(path);
                     continue;
                 }
-                if path.extension().and_then(|e| e.to_str()) != Some("rs")
-                    || path.file_name().unwrap() == "secrets.rs"
-                {
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") || path == door {
                     continue;
                 }
                 // Source files of this crate, read by a test: not a session file.
                 let text = std::fs::read_to_string(&path).unwrap();
-                // Production code only. A test that reads back the source, the
-                // lockfile or the ADR is not a session reader, and the module
-                // convention puts `#[cfg(test)]` last.
-                let production = text
-                    .lines()
-                    .take_while(|l| !l.trim_start().starts_with("#[cfg(test)]"));
-                for (n, line) in production.enumerate() {
-                    let code = line.split("//").next().unwrap_or_default();
-                    if OPENERS.iter().any(|o| code.contains(o)) {
-                        found.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
-                    }
+                let toks = production(&tokens(&text));
+                for (line, what) in openers_in(&toks) {
+                    found.push(format!("{}:{line}: {what}", path.display()));
                 }
             }
         }
+        found.sort();
         found
     }
 
@@ -103,39 +415,125 @@ mod tests {
         );
     }
 
-    /// The guard above is only worth having if it can fail: a file that opens
-    /// directly IS reported.
+    /// The guard above is only worth having if it can fail: every bypass the
+    /// RG-16 review made by hand (B12–B15) IS reported, and the things that
+    /// only look like one are not.
     #[test]
     fn the_gate_guard_sees_a_direct_open() {
         let dir = std::env::temp_dir().join(format!("tacet-sessions-guard-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("nested")).unwrap();
-        std::fs::write(
-            dir.join("secrets.rs"),
-            format!("let f = std::fs::{}\"x\");", "File::open("),
-        )
-        .unwrap();
-        std::fs::write(
-            dir.join("nested/codex.rs"),
-            format!("let t = std::{}p)?;", "fs::read_to_string("),
-        )
-        .unwrap();
-        std::fs::write(
-            dir.join("ok.rs"),
-            format!("// std::{}p) in a comment", "fs::read("),
-        )
-        .unwrap();
-        std::fs::write(
-            dir.join("tested.rs"),
-            format!(
-                "fn f() {{}}\n#[cfg(test)]\nmod tests {{ fn t() {{ std::{}\"Cargo.lock\"); }} }}",
-                "fs::read("
+        // Openers are assembled from pieces so this file does not hold them.
+        let fs_read = concat!("fs::", "read(");
+        let fs_rts = concat!("fs::", "read_to_string");
+        let file_open = concat!("File", "::open(");
+        let planted: &[(&str, String, Option<&str>)] = &[
+            // The door itself, at the top level: allowed.
+            (
+                "secrets.rs",
+                format!("let f = std::fs::{file_open}\"x\");"),
+                None,
             ),
-        )
-        .unwrap();
+            // B12: fully qualified.
+            (
+                "nested/codex.rs",
+                format!("let t = std::{fs_rts}(p)?;"),
+                Some("nested/codex.rs:1:"),
+            ),
+            // A `secrets.rs` that is not THE door.
+            (
+                "nested/secrets.rs",
+                format!("let t = std::{fs_read}p)?;"),
+                Some("nested/secrets.rs:1:"),
+            ),
+            // B13: an aliased module.
+            (
+                "alias.rs",
+                "use std::fs as f;\nfn g(p: &str) { f::read(p); }".into(),
+                Some("alias.rs:1: use std::fs as f"),
+            ),
+            (
+                "self_alias.rs",
+                "use std::{fs::{self as f, File}, io};".into(),
+                Some("self_alias.rs:1: use std::fs::self as f"),
+            ),
+            // B14: a bare imported reader, alone and in a group.
+            (
+                "bare.rs",
+                "use std::fs::read_to_string;\nfn g(p: &str) { read_to_string(p); }".into(),
+                Some("bare.rs:1: use std::fs::read_to_string"),
+            ),
+            (
+                "glob.rs",
+                "use std::fs::*;".into(),
+                Some("glob.rs:1: use std::fs::*"),
+            ),
+            // B15: a `#[cfg(test)]` that is not a test module, above production.
+            (
+                "early.rs",
+                format!("#[cfg(test)]\nfn x() {{}}\nfn f(p: &str) {{ std::{fs_rts}(p); }}"),
+                Some("early.rs:3: fs::read_to_string"),
+            ),
+            // Production code AFTER a test module is still production code.
+            (
+                "after.rs",
+                format!(
+                    "#[cfg(test)]\nmod t {{ fn a() {{ std::{fs_read}\"Cargo.lock\"); }} }}\nfn f() {{ std::{fs_read}\"x\"); }}"
+                ),
+                Some("after.rs:3: fs::read"),
+            ),
+            // A turbofish and spaces do not hide the call path.
+            (
+                "spaced.rs",
+                "fn f() { std::fs :: read::<&str>(\"x\"); }".into(),
+                Some("spaced.rs:1: fs::read"),
+            ),
+            // Not openers: a comment, a string, a test module, a directory walk.
+            (
+                "comment.rs",
+                format!("// std::{fs_read}p) in a comment"),
+                None,
+            ),
+            ("string.rs", format!("let s = \"std::{fs_read}p)\";"), None),
+            (
+                "tested.rs",
+                format!(
+                    "fn f() {{}}\n#[cfg(test)]\n#[allow(unused)]\nmod tests {{ fn t() {{ let c = '{{'; std::{fs_read}\"Cargo.lock\"); }} }}"
+                ),
+                None,
+            ),
+            (
+                "walk.rs",
+                "use std::fs::{read_dir, metadata};\nfn f() { std::fs::read_dir(\".\"); }".into(),
+                None,
+            ),
+        ];
+        for (name, text, _) in planted {
+            std::fs::write(dir.join(name), text).unwrap();
+        }
         let found = bypasses(&dir);
-        assert_eq!(found.len(), 1, "{found:?}");
-        assert!(found[0].contains("codex.rs:1"), "{found:?}");
+        let expected: Vec<&str> = planted.iter().filter_map(|(_, _, e)| *e).collect();
+        for want in &expected {
+            assert!(
+                found.iter().any(|f| f.contains(want)),
+                "the guard missed {want:?}; it reported:\n{}",
+                found.join("\n")
+            );
+        }
+        // And nothing else: a file may be reported on more than one line (a
+        // `use` of `fs::read_to_string` is also that call path), but a file
+        // with no bypass is never reported.
+        let reported: std::collections::BTreeSet<&str> = found
+            .iter()
+            .filter_map(|f| f.strip_prefix(dir.to_str().unwrap()))
+            .filter_map(|f| f.trim_start_matches('/').split(':').next())
+            .collect();
+        let bypassing: std::collections::BTreeSet<&str> = planted
+            .iter()
+            .filter(|(_, _, e)| e.is_some())
+            .map(|(name, _, _)| *name)
+            .collect();
+        assert_eq!(reported, bypassing, "{found:#?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -196,6 +594,19 @@ mod tests {
         for ext in super::secrets::DENIED_EXTENSIONS {
             if !adr.contains(&format!("`*.{ext}`")) {
                 missing.push(format!("denied extension `*.{ext}`"));
+            }
+        }
+        // The substring and directory rules refuse as much as the names do;
+        // the RG-05 review added `bearer` and `.kube` to the code and this
+        // test stayed green until these two loops existed.
+        for word in super::secrets::DENIED_SUBSTRINGS {
+            if !adr.contains(&format!("`{word}`")) {
+                missing.push(format!("denied substring `{word}`"));
+            }
+        }
+        for dir in super::secrets::DENIED_DIRS {
+            if !adr.contains(&format!("`{dir}`")) {
+                missing.push(format!("denied directory `{dir}`"));
             }
         }
         for k in super::version::KNOWN {

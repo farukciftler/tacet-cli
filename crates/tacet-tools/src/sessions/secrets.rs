@@ -13,12 +13,22 @@
 //! `sessions::tests::every_reader_goes_through_the_secrets_gate` fails the
 //! build if any other file in `sessions/` opens one directly.
 //!
-//! TWO LAYERS, BECAUSE NAMES LIE. A name check alone is beaten by a symlink: a
-//! file called `transcript_full.jsonl` that points at `auth.json` passes any
-//! test on the name it was opened by. So the name is checked on the path as
-//! given AND on the canonical path, and on Unix the inode actually opened is
-//! compared with the one that was checked, so a link swapped in between the
-//! check and the open is caught before a byte is read.
+//! NAMES LIE, THREE WAYS, AND EACH HAS ITS OWN LAYER.
+//!
+//! * A symlink: `transcript_full.jsonl -> auth.json` passes any test on the
+//!   name it was opened by. So the name is checked on the path as given AND on
+//!   the canonical path.
+//! * A hard link: `ln auth.json rollout-x.jsonl` has no target to
+//!   canonicalize — both names are the same inode, equally real. MEASURED by
+//!   the RG-16 review on this branch: before this layer, `read_text` on the
+//!   innocent name returned the API key. So on Unix a file with more than one
+//!   name is refused outright (`Refusal::HardLinked`). No transcript the three
+//!   agents write has a second name, so the cost is a refusal nobody meets.
+//! * A swap between the check and the open: `check` canonicalizes, then a
+//!   process renames something else over the canonical path. So `check` keeps
+//!   the metadata of the entry it vetted (`symlink_metadata`, not followed),
+//!   `open` refuses to follow a link at the last component (`O_NOFOLLOW`), and
+//!   the inode actually opened must be the one that was checked.
 //!
 //! ON TOP OF THE DENYLIST, AN ALLOWLIST OF EXTENSIONS. Every file a reader
 //! needs is `.jsonl`, `.json` or `.md`; nothing else is opened. The denylist
@@ -122,6 +132,12 @@ pub enum Refusal {
     Swapped {
         path: PathBuf,
     },
+    /// The file has more than one name on disk. One of the others may be a
+    /// credential's, and a hard link cannot be told apart from it by name.
+    HardLinked {
+        path: PathBuf,
+        links: u64,
+    },
     Io {
         path: PathBuf,
         error: std::io::Error,
@@ -166,6 +182,12 @@ impl fmt::Display for Refusal {
                     path.display()
                 )
             }
+            Refusal::HardLinked { path, links } => write!(
+                f,
+                "{} was not read: it has {links} names on disk, and another of them \
+                 may be a credential's",
+                path.display()
+            ),
             Refusal::Io { path, error } => write!(f, "{}: {error}", path.display()),
         }
     }
@@ -228,9 +250,20 @@ fn check_name(path: &Path) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// Every rule, on the path as given and on what it resolves to. Returns the
-/// canonical path, which is the one `open` then opens.
+/// Every rule that can be answered before a file is opened, on the path as
+/// given and on what it resolves to. Returns the canonical path.
+///
+/// The rules only an open handle can answer — the link count, and that the
+/// file opened is the file checked — are `open`'s; read through `open`,
+/// `read_text` or `read_tail`, never through `check` and a `File::open` of
+/// one's own.
 pub fn check(path: &Path) -> Result<PathBuf, Refusal> {
+    check_entry(path).map(|(real, _)| real)
+}
+
+/// `check`, keeping the metadata of the entry it vetted for `open` to compare
+/// against.
+fn check_entry(path: &Path) -> Result<(PathBuf, std::fs::Metadata), Refusal> {
     check_name(path)?;
     let io = |error| Refusal::Io {
         path: path.to_path_buf(),
@@ -246,43 +279,134 @@ pub fn check(path: &Path) -> Result<PathBuf, Refusal> {
         },
         other => other,
     })?;
-    let meta = std::fs::metadata(&real).map_err(io)?;
+    // NOT FOLLOWED. `canonicalize` resolved every link, so a link at `real`
+    // now is one put there since; following it here would vet the target and
+    // then compare `open`'s result against the target — a check of nothing.
+    let meta = std::fs::symlink_metadata(&real).map_err(io)?;
+    if meta.file_type().is_symlink() {
+        return Err(Refusal::Swapped {
+            path: path.to_path_buf(),
+        });
+    }
     if !meta.is_file() {
         return Err(Refusal::NotAFile {
             path: path.to_path_buf(),
         });
     }
-    Ok(real)
+    Ok((real, meta))
 }
 
-/// Opens a file for reading, after `check`. THE ONLY `File::open` IN THIS
-/// MODULE.
+/// Open flags, spelled per platform because there is no libc crate here
+/// (zero-dependency identity, as in `run_code.rs`). The Linux values are NOT
+/// the same on every architecture: x86 has `O_NOFOLLOW` at `0o400000`, arm and
+/// aarch64 at `0o100000` (their `0o400000` is `O_LARGEFILE`). An
+/// architecture not listed gets `0` — no extra flag — and the inode
+/// comparison in `open` is then the only belt.
+///
+/// `O_NONBLOCK` is here for a FIFO swapped in after the check: a blocking
+/// read-only open of a FIFO waits for a writer that never comes, and the
+/// reader with it. Non-blocking, the open returns at once and the handle's
+/// metadata says it is not a regular file. On a regular file the flag changes
+/// nothing.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+const OPEN_FLAGS: i32 = 0x0100 /* O_NOFOLLOW */ | 0x0004 /* O_NONBLOCK */;
+#[cfg(all(
+    any(target_os = "linux", target_os = "android"),
+    any(target_arch = "x86", target_arch = "x86_64")
+))]
+const OPEN_FLAGS: i32 = 0o400000 /* O_NOFOLLOW */ | 0o4000 /* O_NONBLOCK */;
+#[cfg(all(
+    any(target_os = "linux", target_os = "android"),
+    any(target_arch = "arm", target_arch = "aarch64")
+))]
+const OPEN_FLAGS: i32 = 0o100000 /* O_NOFOLLOW */ | 0o4000 /* O_NONBLOCK */;
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "macos",
+        target_os = "ios",
+        all(
+            any(target_os = "linux", target_os = "android"),
+            any(
+                target_arch = "x86",
+                target_arch = "x86_64",
+                target_arch = "arm",
+                target_arch = "aarch64"
+            )
+        )
+    ))
+))]
+const OPEN_FLAGS: i32 = 0;
+
+/// Opens for reading without following a link at the last component.
+fn open_no_follow(real: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(OPEN_FLAGS);
+    }
+    options.open(real)
+}
+
+/// Opens a file for reading, after `check`. THE ONLY OPEN IN THIS MODULE.
 pub fn open(path: &Path) -> Result<std::fs::File, Refusal> {
-    let real = check(path)?;
+    let (real, checked) = check_entry(path)?;
     let io = |error| Refusal::Io {
         path: path.to_path_buf(),
         error,
     };
-    #[cfg(unix)]
-    let checked = std::fs::metadata(&real).map_err(io)?;
-    let file = std::fs::File::open(&real).map_err(io)?;
+    #[cfg(test)]
+    swap_seam::between_check_and_open(&real);
+    let file = match open_no_follow(&real) {
+        Ok(file) => file,
+        // `O_NOFOLLOW` on a link fails the open (ELOOP); name it for what it
+        // is rather than as an I/O error the user would go looking for.
+        Err(_)
+            if std::fs::symlink_metadata(&real)
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false) =>
+        {
+            return Err(Refusal::Swapped {
+                path: path.to_path_buf(),
+            });
+        }
+        Err(error) => return Err(io(error)),
+    };
     let opened = file.metadata().map_err(io)?;
     if !opened.is_file() {
         return Err(Refusal::NotAFile {
             path: path.to_path_buf(),
         });
     }
-    // The inode opened must be the inode checked. Without this, renaming a link
-    // to `auth.json` over the canonical path between `check` and `open` would
-    // hand the caller the key — `canonicalize` has already run, so nothing
-    // after it looks at names again. Unix only: std exposes no stable file id
-    // on Windows, and there the window is left open (NOT MEASURED there).
+    // The inode opened must be the inode CHECKED — the metadata `check_entry`
+    // took, not a fresh lookup now: a fresh lookup follows whatever is at the
+    // path by now, and so matches the swapped-in file every time (the RG-16
+    // review disabled the old comparison and every test stayed green). Unix
+    // only: std exposes no stable file id on Windows, and there the window is
+    // left open (NOT MEASURED there).
     #[cfg(unix)]
     if !same_inode(&checked, &opened) {
         return Err(Refusal::Swapped {
             path: path.to_path_buf(),
         });
     }
+    // On the HANDLE, after the open: a link added after `check` is seen, and
+    // the count is the inode's, whichever name it was opened by. Unix only —
+    // the Windows link count is not on stable std.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if opened.nlink() > 1 {
+            return Err(Refusal::HardLinked {
+                path: path.to_path_buf(),
+                links: opened.nlink(),
+            });
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = checked;
     Ok(file)
 }
 
@@ -290,6 +414,42 @@ pub fn open(path: &Path) -> Result<std::fs::File, Refusal> {
 fn same_inode(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
     (a.dev(), a.ino()) == (b.dev(), b.ino())
+}
+
+/// The window between `check` and the open, held open on demand. A race
+/// cannot be won reliably from outside, so the tests below run their swap
+/// HERE, inside `open` itself — the comparison is then tested as `open`
+/// uses it, not as a helper someone could stop calling.
+#[cfg(test)]
+pub(crate) mod swap_seam {
+    use std::cell::RefCell;
+    use std::path::Path;
+
+    type Hook = Box<dyn Fn(&Path)>;
+
+    thread_local! {
+        static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn between_check_and_open(real: &Path) {
+        HOOK.with(|h| {
+            if let Some(hook) = h.borrow().as_ref() {
+                hook(real);
+            }
+        });
+    }
+
+    /// Runs `body` with `hook` in the window, on this thread only (tests run
+    /// in parallel threads).
+    // Every swap test is Unix-only (links, FIFOs, inodes); on Windows nothing
+    // calls this, and `clippy -D warnings` would not be the one to say so.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pub(crate) fn with<T>(hook: impl Fn(&Path) + 'static, body: impl FnOnce() -> T) -> T {
+        HOOK.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+        let out = body();
+        HOOK.with(|h| *h.borrow_mut() = None);
+        out
+    }
 }
 
 /// Reads a whole file as text, refusing one over `cap` bytes.
@@ -436,9 +596,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// The race itself cannot be won on demand in a test, so the comparison
-    /// that catches it is held to its job directly: two different files are
-    /// not the same file, even when their contents are identical.
+    /// The comparison `open` relies on, on its own: two different files are
+    /// not the same file, even when their contents are identical. The swaps
+    /// themselves are driven through `open` by the tests that follow.
     #[cfg(unix)]
     #[test]
     fn a_file_swapped_in_after_the_check_is_told_apart() {
@@ -452,6 +612,127 @@ mod tests {
             !same_inode(&meta(&a), &meta(&b)),
             "two files compared as one"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// RG-16 review, hostile probe: `ln auth.json sessions/rollout-x.jsonl`
+    /// returned the API key, because a hard link has no target to resolve and
+    /// every name rule ran on the innocent name.
+    #[cfg(unix)]
+    #[test]
+    fn a_hard_link_to_a_credential_is_refused() {
+        let root = scratch("hardlink");
+        let codex = root.join(".codex");
+        std::fs::create_dir_all(codex.join("sessions")).unwrap();
+        std::fs::write(
+            codex.join("auth.json"),
+            "{\"OPENAI_API_KEY\":\"sk-hardlinked\"}",
+        )
+        .unwrap();
+        let link = codex.join("sessions/rollout-x.jsonl");
+        std::fs::hard_link(codex.join("auth.json"), &link).unwrap();
+        for result in [read_text(&link, 1 << 20), read_tail(&link, 1 << 20)] {
+            match result {
+                Err(Refusal::HardLinked { links: 2, .. }) => {}
+                other => panic!("a hard link to auth.json was not refused: {other:?}"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Something else renamed over the checked path between `check` and the
+    /// open: a regular file, so `O_NOFOLLOW` has nothing to refuse and only
+    /// the inode comparison stands between the reader and the key.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_renamed_over_the_checked_path_is_refused() {
+        let root = scratch("rename-swap");
+        let path = root.join("t.jsonl");
+        std::fs::write(&path, "{\"type\":\"user\"}\n").unwrap();
+        let planted = root.join("planted");
+        std::fs::write(&planted, "{\"OPENAI_API_KEY\":\"sk-swapped\"}").unwrap();
+        let result = swap_seam::with(
+            move |real| std::fs::rename(&planted, real).unwrap(),
+            || read_text(&path, 1 << 20),
+        );
+        match result {
+            Err(Refusal::Swapped { .. }) => {}
+            other => panic!("the file renamed in after the check was read: {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The reviewer's exact race: the checked path becomes a link to
+    /// `auth.json` after `check`. Refused by `O_NOFOLLOW` first and by the
+    /// inode comparison behind it.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_swapped_in_after_the_check_is_not_followed() {
+        let root = scratch("link-swap");
+        std::fs::create_dir_all(root.join(".codex")).unwrap();
+        let auth = root.join(".codex/auth.json");
+        std::fs::write(&auth, "{\"OPENAI_API_KEY\":\"sk-linked\"}").unwrap();
+        let path = root.join("t.jsonl");
+        std::fs::write(&path, "{}\n").unwrap();
+        let result = swap_seam::with(
+            move |real| {
+                std::fs::remove_file(real).unwrap();
+                std::os::unix::fs::symlink(&auth, real).unwrap();
+            },
+            || read_text(&path, 1 << 20),
+        );
+        match result {
+            Err(Refusal::Swapped { .. }) => {}
+            other => panic!("a link swapped in after the check was followed: {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `O_NOFOLLOW` itself, so a wrong per-platform constant (the arm64 Linux
+    /// value differs from x86's) fails here rather than silently becoming
+    /// "no flag".
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn the_open_does_not_follow_a_link() {
+        let root = scratch("nofollow");
+        std::fs::write(root.join("target.json"), "{}").unwrap();
+        std::os::unix::fs::symlink(root.join("target.json"), root.join("link.json")).unwrap();
+        assert!(open_no_follow(&root.join("target.json")).is_ok());
+        assert!(
+            open_no_follow(&root.join("link.json")).is_err(),
+            "the open followed a link"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A FIFO swapped in after the check would hang a blocking open forever.
+    /// The open runs on its own thread so a regression fails the test on the
+    /// timeout instead of hanging the suite.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_swapped_in_after_the_check_does_not_hang_the_reader() {
+        let root = scratch("fifo-swap");
+        let path = root.join("t.jsonl");
+        std::fs::write(&path, "{}\n").unwrap();
+        let fifo = root.join("fifo");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo");
+        assert!(made.success());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = swap_seam::with(
+                move |real| std::fs::rename(&fifo, real).unwrap(),
+                || read_text(&path, 1 << 20),
+            );
+            let _ = tx.send(result);
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(Err(Refusal::NotAFile { .. })) => {}
+            Ok(other) => panic!("a FIFO swapped in was not refused: {other:?}"),
+            Err(_) => panic!("the open blocked on a FIFO swapped in after the check"),
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
