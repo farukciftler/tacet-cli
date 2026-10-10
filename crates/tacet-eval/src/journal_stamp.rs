@@ -48,19 +48,35 @@ pub struct BuildProvenance {
 }
 
 impl BuildProvenance {
-    /// The tree this crate was compiled from.
+    /// The tree this crate was compiled from, leaving out `journal`.
     ///
     /// `CARGO_MANIFEST_DIR` RATHER THAN THE WORKING DIRECTORY: the question is
     /// which code produced the number, and `tacet eval` can be started from
     /// anywhere. `nightly-eval.sh` rebuilds before it runs, so the tree and the
     /// binary agree; a tree edited after the build makes the stamp differ from
     /// the last run, which refuses — the safe direction.
-    pub fn of_source_tree() -> Self {
-        Self::of_tree(Path::new(env!("CARGO_MANIFEST_DIR")))
+    ///
+    /// THE JOURNAL IS NOT SOURCE. A journal directory inside the checkout —
+    /// `tacet eval --journal ./night` run from the repository, a path no
+    /// `.gitignore` here covers — is untracked, so its own `identity.json` and
+    /// case files went into the hash: the first open stamped the tree without
+    /// them, every later open saw a DIFFERENT build and refused to resume.
+    /// Measured in a temporary repository before this fix: one journalled run,
+    /// reopen, "cannot be resumed: it holds cases measured with a DIFFERENT
+    /// build". A clean tree also turned dirty when the first case file landed.
+    pub fn of_source_tree(journal: &Path) -> Self {
+        Self::of_tree_excluding(Path::new(env!("CARGO_MANIFEST_DIR")), Some(journal))
     }
 
     /// The provenance of whatever repository contains `dir`.
     pub fn of_tree(dir: &Path) -> Self {
+        Self::of_tree_excluding(dir, None)
+    }
+
+    /// `of_tree`, with everything under `exclude` left out of the status, the
+    /// diff and the untracked files. An `exclude` outside the repository, or
+    /// the repository's own top, excludes nothing.
+    pub fn of_tree_excluding(dir: &Path, exclude: Option<&Path>) -> Self {
         let git = |args: &[&str]| -> Option<Vec<u8>> {
             let out = Command::new("git")
                 .arg("-C")
@@ -77,7 +93,25 @@ impl BuildProvenance {
         let top = git(&["rev-parse", "--show-toplevel"])
             .map(|t| String::from_utf8_lossy(&t).trim().to_string())
             .unwrap_or_else(|| dir.to_string_lossy().into_owned());
-        let status = git(&["status", "--porcelain", "--untracked-files=all"]).unwrap_or_default();
+        // A PATHSPEC, not a filter over the output: git applies it to the
+        // status, the diff and the untracked listing alike, so a journal that
+        // happens to sit in a tracked directory is left out of all three.
+        // `literal` because a directory name is not a glob.
+        let mut pathspec: Vec<String> = Vec::new();
+        if let Some(rel) = exclude.and_then(|e| inside(Path::new(&top), e)) {
+            pathspec.push("--".into());
+            pathspec.push(":/".into());
+            pathspec.push(format!(":(top,exclude,literal){rel}"));
+        }
+        let with_spec = |args: &[&str]| -> Vec<String> {
+            args.iter()
+                .map(|a| (*a).to_string())
+                .chain(pathspec.iter().cloned())
+                .collect()
+        };
+        let status_args = with_spec(&["status", "--porcelain", "--untracked-files=all"]);
+        let status_args: Vec<&str> = status_args.iter().map(String::as_str).collect();
+        let status = git(&status_args).unwrap_or_default();
         if status.is_empty() {
             return Self {
                 commit: Some(commit),
@@ -85,10 +119,11 @@ impl BuildProvenance {
             };
         }
         let at_top = |args: &[&str]| -> Vec<u8> {
+            let args = with_spec(args);
             Command::new("git")
                 .arg("-C")
                 .arg(&top)
-                .args(args)
+                .args(&args)
                 .output()
                 .ok()
                 .filter(|o| o.status.success())
@@ -122,6 +157,41 @@ impl BuildProvenance {
     }
 }
 
+/// `path` relative to the repository at `top`, with `/` separators, or `None`
+/// when it is not strictly inside it.
+///
+/// BOTH SIDES ARE RESOLVED, because git prints the top with symlinks resolved
+/// (`/private/var/...` on macOS) and the caller passes the journal as typed
+/// (`/var/...`, or `./night`). The journal need not exist yet — a first open
+/// stamps before it creates the directory — so the longest existing ancestor
+/// is resolved and the rest appended.
+fn inside(top: &Path, path: &Path) -> Option<String> {
+    let top = top.canonicalize().ok()?;
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    let mut existing = abs.as_path();
+    let mut rest = Vec::new();
+    let resolved = loop {
+        if let Ok(c) = existing.canonicalize() {
+            break rest
+                .iter()
+                .rev()
+                .fold(c, |p: std::path::PathBuf, r| p.join(r));
+        }
+        rest.push(existing.file_name()?.to_os_string());
+        existing = existing.parent()?;
+    };
+    let rel = resolved.strip_prefix(&top).ok()?;
+    let rel: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    (!rel.is_empty()).then(|| rel.join("/"))
+}
+
 /// Everything the cases in one journal must share. See the module header.
 pub struct JournalStamp {
     /// Every field but the per-case hashes; compared whole.
@@ -130,6 +200,7 @@ pub struct JournalStamp {
     cases: BTreeMap<String, String>,
     budget: Option<usize>,
     force_tool_name: bool,
+    build: BuildProvenance,
 }
 
 impl JournalStamp {
@@ -159,7 +230,16 @@ impl JournalStamp {
             cases,
             budget,
             force_tool_name,
+            build: build.clone(),
         }
+    }
+
+    /// The source tree the stamp names. Public so the COMMAND that builds a
+    /// stamp can be tested, not only this library: a `tacet eval` that passed
+    /// `BuildProvenance::default()` here stamped no commit at all and every
+    /// test stayed green (audit M24 review).
+    pub fn build(&self) -> &BuildProvenance {
+        &self.build
     }
 
     /// The router options the cases were measured with. A run handed a journal
@@ -330,6 +410,51 @@ mod tests {
         assert_ne!(
             second.uncommitted_sha256, third.uncommitted_sha256,
             "a new untracked module changed nothing in the stamp"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A JOURNAL INSIDE THE CHECKOUT CAN BE RESUMED. Before the exclusion its
+    /// own `identity.json` and case files were untracked edits, so the second
+    /// open always saw a DIFFERENT build. The journal path is given as typed
+    /// (through the temp dir's unresolved name) and does not exist at the first
+    /// stamp, which is how `tacet eval --journal ./night` meets it.
+    #[test]
+    fn a_journal_inside_the_checkout_can_be_resumed() {
+        use tacet_engine::EngineProvider as _;
+        let Some(dir) = repo("journal-inside") else {
+            eprintln!("skipped: no git on this machine");
+            return;
+        };
+        let journal = dir.join("eval-journal");
+        let identity = tacet_engine::fake::FakeEngine::script(Vec::<String>::new()).identity();
+        let catalog = ToolCatalog::new();
+        let stamp = |build: &BuildProvenance| {
+            JournalStamp::new(&identity, &catalog, build, &[], None, false)
+        };
+
+        let first = BuildProvenance::of_tree_excluding(&dir, Some(&journal));
+        assert_eq!(first.uncommitted_sha256, None, "the fixture tree is clean");
+        crate::tool_selection::CaseJournal::open(&journal, &stamp(&first))
+            .expect("a new journal opens");
+        // A finished case, the way the run leaves one.
+        std::fs::write(journal.join("some-case.json"), "{}").unwrap();
+
+        let second = BuildProvenance::of_tree_excluding(&dir, Some(&journal));
+        assert_eq!(
+            second, first,
+            "the journal's own files changed the build it is stamped with"
+        );
+        if let Err(e) = crate::tool_selection::CaseJournal::open(&journal, &stamp(&second)) {
+            panic!("a journal inside the checkout could not be resumed: {e}");
+        }
+
+        // NOT VACUOUS: an edit OUTSIDE the journal still moves the stamp.
+        std::fs::write(dir.join("a.rs"), "fn a() { 3; }\n").unwrap();
+        let edited = BuildProvenance::of_tree_excluding(&dir, Some(&journal));
+        assert!(
+            edited.uncommitted_sha256.is_some(),
+            "a source edit was excluded too"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

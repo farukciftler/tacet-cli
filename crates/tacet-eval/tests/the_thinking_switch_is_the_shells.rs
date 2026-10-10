@@ -10,6 +10,9 @@
 //!
 //! The rule now lives in `tacet_engine::thinking_switch`, and this pins that the
 //! eval uses it — on the question, and in the history the next step replays.
+//! The other half — that the SHELL uses it and keeps no copy of its own — is
+//! `the_shells_switch_is_the_engines` in `tacet-cli`'s `main.rs`, because only
+//! that crate can reach the shell's function.
 
 use std::sync::Arc;
 

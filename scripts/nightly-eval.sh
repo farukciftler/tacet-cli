@@ -19,9 +19,10 @@
 #     can be traced to what produced it.
 #   * LIVE. The eval's own progress line ("[103/184] case · 31m elapsed · ~20m
 #     left") is in the log as it happens; `tail -f` is the live view.
-#   * IT REFUSES TO MIX. A journal stamped for a different model or catalog
-#     stops the run (see `CaseJournal::open`), so a report can never be half one
-#     build and half another.
+#   * IT REFUSES TO MIX. A journal stamped for a different model, catalog,
+#     commit, set of uncommitted edits, prompt text or router options, or
+#     holding a case that has since been rewritten, stops the run (see
+#     `JournalStamp`), so a report can never be half one build and half another.
 #
 # USAGE
 #   scripts/nightly-eval.sh                 # tonight's run, resuming if it can

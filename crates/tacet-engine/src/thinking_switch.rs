@@ -89,9 +89,10 @@ pub fn soft_switch(template: Template, setting: ThinkingSetting, message: &str) 
 /// `ozetle`.
 ///
 /// A COPY OF `tacet_tools::router::simplify`, and deliberately so: this crate
-/// sits below `tacet-tools` and cannot call it. Two folds that disagree would
-/// make the shell and the eval pick different modes for the same Turkish
-/// message, which is the drift this module exists to remove — so
+/// sits below `tacet-tools` and cannot call it. The shell and the eval both
+/// call THIS fold now (the shell's private rule used the router's), so they
+/// cannot disagree with each other; the copy is kept equal to the router's so
+/// a message the router reads as "özetle" is read the same way here —
 /// `tacet-eval`'s `the_thinking_switch_is_the_shells` runs both over every
 /// message in the suite and fails if they ever differ.
 pub fn fold(text: &str) -> String {

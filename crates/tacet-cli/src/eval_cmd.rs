@@ -885,6 +885,32 @@ pub struct SelectionRun<'a> {
     pub journal: Option<&'a str>,
 }
 
+/// The stamp `tacet eval --journal DIR` opens its journal with.
+///
+/// THE COMMIT AND THE UNCOMMITTED EDITS ARE IN IT, so a journal from
+/// yesterday's code refuses today's run instead of joining it (audit M24); the
+/// journal directory itself is left out of them, so a journal inside the
+/// checkout can still be resumed. A function of its own so a test can check the
+/// stamp the COMMAND builds: the library's tests use a fixed provenance, and a
+/// `BuildProvenance::default()` here passed all of them.
+fn selection_stamp(
+    identity: &tacet_engine::EngineIdentity,
+    catalog: &tacet_kernel::ToolCatalog,
+    cases: &[tacet_eval::SelectionCase],
+    budget: Option<usize>,
+    force_tool_name: bool,
+    journal: &std::path::Path,
+) -> tacet_eval::tool_selection::JournalStamp {
+    tacet_eval::tool_selection::JournalStamp::new(
+        identity,
+        catalog,
+        &tacet_eval::tool_selection::BuildProvenance::of_source_tree(journal),
+        cases,
+        budget,
+        force_tool_name,
+    )
+}
+
 pub fn eval_tool_selection(run: SelectionRun<'_>) -> ExitCode {
     let SelectionRun {
         json,
@@ -1026,18 +1052,16 @@ pub fn eval_tool_selection(run: SelectionRun<'_>) -> ExitCode {
                 &tacet_tools::memory::SharedMemory::in_memory(),
             )
             .catalog;
-            // THE COMMIT AND THE UNCOMMITTED EDITS ARE IN THE STAMP, so a
-            // journal from yesterday's code refuses today's run instead of
-            // joining it (audit M24).
-            let stamp = tacet_eval::tool_selection::JournalStamp::new(
+            let dir = std::path::Path::new(dir);
+            let stamp = selection_stamp(
                 &engine.identity(),
                 &catalog,
-                &tacet_eval::tool_selection::BuildProvenance::of_source_tree(),
                 &cases,
                 budget,
                 force_tool_name,
+                dir,
             );
-            match tacet_eval::tool_selection::CaseJournal::open(std::path::Path::new(dir), &stamp) {
+            match tacet_eval::tool_selection::CaseJournal::open(dir, &stamp) {
                 Ok(j) => {
                     opened = j;
                     Some(&opened)
@@ -1510,5 +1534,64 @@ mod compare_catalog {
         );
         let after = run(Some(&["calculate"]), &[("sums", "calculate")]);
         assert!(incomparable_cases(&before, &after).is_empty());
+    }
+}
+
+/// THE STAMP THE COMMAND BUILDS, not the one the library's tests hand it
+/// (audit M24 review). Replacing `of_source_tree(journal)` in `selection_stamp`
+/// with `BuildProvenance::default()` dropped the commit from every `tacet eval
+/// --journal` stamp and left every test green; so did a journal inside this
+/// checkout that could never be resumed.
+#[cfg(test)]
+mod the_commands_stamp {
+    use super::*;
+
+    /// The journal directory is created inside the crate, where a user's
+    /// `--journal ./night` would land, and removed however the test ends.
+    struct Remove(std::path::PathBuf);
+    impl Drop for Remove {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn the_command_stamps_the_commit_and_leaves_its_journal_out() {
+        let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let head = std::process::Command::new("git")
+            .arg("-C")
+            .arg(here)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+        let Some(head) = head else {
+            eprintln!("skipped: this crate was not built from a git checkout");
+            return;
+        };
+        let journal = here.join(format!("eval-journal-stamp-test-{}", std::process::id()));
+        let _remove = Remove(journal.clone());
+        let identity = tacet_engine::EngineIdentity::default();
+        let catalog = tacet_kernel::ToolCatalog::new();
+        let stamp = || selection_stamp(&identity, &catalog, &[], None, false, &journal);
+
+        let before = stamp();
+        assert_eq!(
+            before.build().commit.as_deref(),
+            Some(head.as_str()),
+            "`tacet eval --journal` stamped no commit, or the wrong one"
+        );
+
+        // What a run leaves behind: the stamp and a finished case.
+        std::fs::create_dir_all(&journal).unwrap();
+        std::fs::write(journal.join("identity.json"), "{}").unwrap();
+        std::fs::write(journal.join("some-case.json"), "{}").unwrap();
+        assert_eq!(
+            stamp().build(),
+            before.build(),
+            "the journal's own files changed the build the command stamps, so it \
+             can never be resumed"
+        );
     }
 }
