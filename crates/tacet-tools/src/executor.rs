@@ -1436,7 +1436,7 @@ impl ToolExecutor {
         let worker_tool = Arc::clone(tool);
         let (sender, receiver) = mpsc::sync_channel(1);
         let spawned = std::thread::Builder::new()
-            .name(format!("tool:{}", tool.name()))
+            .name(format!("{TOOL_THREAD_PREFIX}{}", tool.name()))
             .spawn(move || {
                 let mut worker_ctx = worker_ctx;
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1654,6 +1654,44 @@ fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
     } else {
         "the tool panicked".to_string()
     }
+}
+
+/// The name every tool worker thread starts with; `quiet_tool_panics` knows a
+/// tool's thread by it.
+pub const TOOL_THREAD_PREFIX: &str = "tool:";
+
+/// Keeps a tool's panic off the chat screen. Call once, from the binary.
+///
+/// WHY: the executor already turns a tool's panic into a Failed chip, with the
+/// message made safe for a screen (`lost_call`), because that message can quote
+/// what was being parsed — another agent's transcript, a server's answer. Std's
+/// default hook runs first and writes "thread 'tool:<name>' panicked at ...:
+/// <message>" raw to stderr, in the middle of the chat, bypassing that. The
+/// thread name is not safe either: an MCP server picks its own tool names.
+/// Review of 10 Oct 2026 found no live escape (std's char-boundary panic does
+/// not quote the string), but a reader with `panic!("..{line}..")` would leak.
+///
+/// SILENCED, NOT FILTERED: nothing is lost, since the chip's detail keeps the
+/// message, and a one-line filter here would be a second copy of the policy
+/// `safe_for_screen` already holds. Panics on every other thread reach the
+/// previous hook unchanged.
+///
+/// A PROCESS-WIDE SIDE EFFECT, which is why `ToolExecutor::new` does not do it
+/// for you: a library constructor that rewires the panic hook surprises every
+/// test binary that links it.
+pub fn quiet_tool_panics() {
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let on_a_tool_thread = std::thread::current()
+                .name()
+                .is_some_and(|name| name.starts_with(TOOL_THREAD_PREFIX));
+            if !on_a_tool_thread {
+                previous(info);
+            }
+        }));
+    });
 }
 
 #[cfg(test)]
@@ -3577,6 +3615,43 @@ mod guarded {
     }
 
     // --- M30 / RG-04: a panic is a failed chip, not a dead session ---
+
+    /// M30 review note: the executor's safe chip is the only place a tool's
+    /// panic text may reach. The hook that was in place before is swapped for
+    /// a recorder, `quiet_tool_panics` wraps it, and two threads panic: only
+    /// the one that is not a tool's may reach the recorder.
+    #[test]
+    fn a_tool_threads_panic_does_not_reach_the_screen_and_others_still_do() {
+        static SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        let saved = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {
+            let name = std::thread::current().name().unwrap_or("").to_string();
+            SEEN.lock().unwrap_or_else(|e| e.into_inner()).push(name);
+        }));
+        quiet_tool_panics();
+        let panic_on = |name: String| {
+            let _ = std::thread::Builder::new()
+                .name(name)
+                .spawn(|| panic!("\u{1b}[2J a line the reader could not parse"))
+                .expect("thread")
+                .join();
+        };
+        panic_on(format!("{TOOL_THREAD_PREFIX}hook-probe"));
+        panic_on("hook-probe-elsewhere".to_string());
+        // Other tests may panic while the recorder is in; their hook comes
+        // back here and they only lose a line of output, not an assertion.
+        let _ = std::panic::take_hook();
+        std::panic::set_hook(saved);
+        let seen = SEEN.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(
+            !seen.iter().any(|n| n == "tool:hook-probe"),
+            "a tool thread's panic reached the screen hook: {seen:?}"
+        );
+        assert!(
+            seen.iter().any(|n| n == "hook-probe-elsewhere"),
+            "a panic outside the tools was swallowed too: {seen:?}"
+        );
+    }
 
     #[test]
     fn a_reader_that_panics_on_a_line_it_cannot_parse_fails_and_the_session_goes_on() {

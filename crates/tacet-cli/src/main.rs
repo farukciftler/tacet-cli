@@ -231,6 +231,9 @@ const DEFAULT_MODEL: &str = "qwen3-4b";
 static CANCEL: AtomicBool = AtomicBool::new(false);
 
 fn main() -> ExitCode {
+    // A tool's panic becomes a Failed chip with its text made screen-safe; the
+    // default hook would print the raw text over the chat first (M30 review).
+    tacet_tools::executor::quiet_tool_panics();
     // ANSWERED BEFORE ANYTHING ELSE, including argument parsing. `tacet update
     // --install` runs the DOWNLOADED binary with this flag to ask what it was
     // built with, and that question has to be cheap and impossible to fail:
@@ -702,11 +705,12 @@ impl mcp::InputAsk for TerminalAsk {
 /// The line above the payload — the sentence the user's "y" answers.
 ///
 /// IT SAYS WHY THIS CALL ASKS (audit H2-c, review of 10 Oct 2026). The gate
-/// used to print "will send data to the outside world" for every request, so
-/// after a web page was read a `db_write` or a `shell ls` was described to the
-/// user as a data export: a false sentence on the one line that decides. The
-/// reason comes from the executor and its wording from
-/// `ApprovalReason::sentence`, so every gate says the same true thing.
+/// used to print the outbound sentence for every request, so after a web page
+/// was read a `db_write` or a `shell ls` was described to the user as a data
+/// export: a false sentence on the one line that decides. The reason comes
+/// from the executor and its wording from `ApprovalReason::sentence`, so every
+/// gate says the same true thing. That sentence lives only there; a source
+/// guard in the tests keeps a hard-coded copy from coming back into this file.
 ///
 /// The tool name is a catalog name, but an MCP server picks its own; it goes
 /// through `one_line` for the same reason the payload does.
@@ -2608,6 +2612,56 @@ mod tests {
         );
         // A server-chosen tool name cannot break the line it sits on.
         assert!(!ask("x\r\x1b[2Kok", ApprovalReason::Outbound).contains('\r'));
+    }
+
+    /// The test above holds `approval_heading`; this holds the gate to it.
+    /// Review of 10 Oct 2026: with the gate's `eprintln!` put back to the old
+    /// fixed outbound sentence and the helper left intact, all 142 tests in
+    /// this file stayed green — the helper was tested, the question the user
+    /// actually reads was not. A branch that moves the gate's body elsewhere
+    /// (U20's `approve`) must carry the call with it.
+    #[test]
+    fn the_terminal_gate_prints_the_heading_it_was_given() {
+        let body = include_str!("main.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the file has a body");
+        // The gate and anything it delegates to sit between its own `struct`
+        // and the next one (the database gate's).
+        let gate = body
+            .split("struct TerminalApproval;")
+            .nth(1)
+            .expect("TerminalApproval is declared")
+            .split("\nstruct ")
+            .next()
+            .expect("the gate has a body");
+        let squeezed: String = gate.split_whitespace().collect();
+        assert!(
+            squeezed.contains("eprintln!(\"{}\",approval_heading(request));"),
+            "the terminal approval gate no longer prints `approval_heading(request)`"
+        );
+        let fixed = ["will send data", " to the outside world"].concat();
+        assert!(
+            !body.contains(&fixed),
+            "main.rs hard-codes the outbound sentence; it belongs to `ApprovalReason::sentence` alone"
+        );
+    }
+
+    /// `quiet_tool_panics` is tested in tacet-tools; this holds `main` to
+    /// calling it, since a hook nobody installs is a tested no-op.
+    #[test]
+    fn main_installs_the_quiet_tool_panic_hook() {
+        let main_body = include_str!("main.rs")
+            .split("fn main() -> ExitCode {")
+            .nth(1)
+            .expect("main is declared")
+            .split("\n}\n")
+            .next()
+            .expect("main has a body");
+        assert!(
+            main_body.contains("tacet_tools::executor::quiet_tool_panics();"),
+            "main no longer installs the hook that keeps tool panics off the chat"
+        );
     }
 
     /// A REBUILT EXECUTOR KEEPS BOTH FLAGS. `/addon open|close` swaps the
