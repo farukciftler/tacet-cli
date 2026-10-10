@@ -61,6 +61,11 @@ pub const KNOWN: &[Known] = &[
         measured: "read: brain/ transcripts and task.md of 12 IDE conversations, 9 Oct 2026; \
                    write: never measured (RG-26 needs the GUI to re-read task.md, by hand)",
     },
+    // Measured, and kept so the measurement is not lost, but no read reaches
+    // it today: `agy` writes no version anywhere a read opens, and its own is
+    // only in the binary (`antigravity::installed_version` has no row for its
+    // root), so every `agy` read is asked about no version and warns. The ADR
+    // row says so, and `antigravity`'s tests hold it to that.
     Known {
         agent: AgentKind::Antigravity,
         flavor: Some("cli"),

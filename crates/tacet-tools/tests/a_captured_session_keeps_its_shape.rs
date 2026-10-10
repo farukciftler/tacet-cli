@@ -288,6 +288,13 @@ fn every_fixture_reads_the_same_after_a_capture() {
 /// A capture off a machine that is not the corpus's: another home, the
 /// user's name, an address, a token. None of it survives; the session reads
 /// the same, under the project directory of its masked `cwd`.
+///
+/// The last three lines are the review's hostile shapes: user data under the
+/// key names the anonymiser keeps for structure — a CRM answer in a
+/// tool_result, a tool call's input, a top-level `source` naming the user
+/// with a capital letter. Before keeping looked at the value's shape and at
+/// whether it sat inside a tool's data, every one of them came out verbatim,
+/// the e-mail address included.
 #[test]
 fn a_planted_capture_loses_what_identifies_it_and_keeps_its_reading() {
     let dir = scratch("planted");
@@ -307,6 +314,16 @@ fn a_planted_capture_loses_what_identifies_it_and_keeps_its_reading() {
             "sourceToolAssistantUUID":"a1",
             "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"fn bill_alice() {}"}]}}),
         serde_json::json!({"type":"ai-title","aiTitle":"Invoice for AcmeCorp","sessionId":id}),
+        serde_json::json!({"type":"assistant","uuid":"a2","parentUuid":"u2","sessionId":id,
+            "cwd":cwd,"version":"2.1.285","timestamp":"2026-10-09T10:00:07.000Z","isSidechain":false,
+            "message":{"id":"msg_2","role":"assistant","model":"claude-x","content":[
+                {"type":"tool_use","id":"t2","name":"mcp__crm__lookup","input":
+                    {"id":"AcmeCorp-contract-77","status":"AcmeCorp pending","type":"AcmeCorp confidential"}}]}}),
+        serde_json::json!({"type":"user","uuid":"u3","parentUuid":"a2","sessionId":id,
+            "cwd":cwd,"version":"2.1.285","timestamp":"2026-10-09T10:00:08.000Z","isSidechain":false,
+            "sourceToolAssistantUUID":"a2","source":"Alice's laptop",
+            "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":
+                r#"{"id":"jane.doe@clientbank.com","status":"overdue: Jane Doe owes 40k","source":"Clientbank CRM","version":"Q3 board deck"}"#}]}}),
     ];
     let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
     let project = tacet_tools::sessions::claude::project_dir_name(cwd);
@@ -324,7 +341,26 @@ fn a_planted_capture_loses_what_identifies_it_and_keeps_its_reading() {
     let scrub = Scrub::new(7, Some("alice"));
     let out = scrub.jsonl(&text);
     for leak in [
-        "alice", "Alice", "AcmeCorp", "acme", "Clients", "invoice", "@", "sk-ant-", "SECRET",
+        "alice",
+        "Alice",
+        "AcmeCorp",
+        "acme",
+        "Clients",
+        "invoice",
+        "@",
+        "sk-ant-",
+        "SECRET",
+        "jane",
+        "Jane",
+        "clientbank",
+        "Clientbank",
+        "overdue",
+        "owes",
+        "board",
+        "deck",
+        "contract",
+        "confidential",
+        "laptop",
     ] {
         assert!(!out.contains(leak), "{leak:?} survived:\n{out}");
     }

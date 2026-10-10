@@ -1300,4 +1300,57 @@ not json at all
             );
         }
     }
+
+    /// RG-30 review: a read range the gate can never be asked about reads to
+    /// a person as "this version is trusted". Every root whose flavor has a
+    /// measured read range either has an installed version this module can
+    /// find (`installed_version` answers when the app it names is present),
+    /// or the ADR's row for that range says every read of it warns — and a
+    /// reachable row does not say so. The row is found by its range, so a
+    /// renamed product cannot slip past.
+    #[test]
+    fn a_read_range_no_read_can_reach_says_so_in_the_adr() {
+        let adr = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/adr/0001-agent-sessions.md"),
+        )
+        .unwrap();
+        let dir = std::env::temp_dir().join(format!("tacet-ag-reach-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut checked = 0;
+        for (name, flavor) in ROOTS {
+            let Some(known) = super::super::version::KNOWN
+                .iter()
+                .find(|k| k.agent == AgentKind::Antigravity && k.flavor == flavor)
+            else {
+                continue;
+            };
+            // Every bundle this module knows, installed, each claiming to be
+            // this root's product at the measured version.
+            let apps = dir.join(name);
+            for (_, word) in APP_PRODUCTS {
+                let product = product_json(&apps, word);
+                std::fs::create_dir_all(product.parent().unwrap()).unwrap();
+                std::fs::write(
+                    &product,
+                    serde_json::json!({"applicationName": name, "ideVersion": known.read.0})
+                        .to_string(),
+                )
+                .unwrap();
+            }
+            let reachable = installed_version(&dir.join("roots").join(name), &[apps]).is_some();
+            let range = format!("{}–{}", known.read.0, known.read.1);
+            let row = adr
+                .lines()
+                .find(|l| l.starts_with('|') && l.contains(&range))
+                .unwrap_or_else(|| panic!("no ADR table row for {range}"));
+            assert_eq!(
+                row.contains("every read warns"),
+                !reachable,
+                "{name}: reachable = {reachable}, ADR row: {row}"
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 2, "the IDE and CLI rows were not both checked");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -117,7 +117,7 @@ measurements.
 |---|---|---|---|
 | Claude Code | 2.1.263–2.1.293 | write 2.1.285–2.1.285 | read: 30 newest transcripts (340 MB, no unparsed line); write: the E2–E5 append/resume experiment |
 | Antigravity IDE | 2.5.5–2.5.5 | none | brain/ transcripts and task.md; no write was ever verified |
-| Antigravity CLI (`agy`) | 1.1.10–1.1.10 | none | brain/ transcripts; no write was ever verified |
+| Antigravity CLI (`agy`) | 1.1.10–1.1.10, measured but not reachable: no version can be read without running the binary, so every read warns | none | brain/ transcripts; no write was ever verified |
 | Codex CLI | none | none | not installed; source and fixtures only |
 
 Where the version comes from: Claude Code's is the `version` on the entries of

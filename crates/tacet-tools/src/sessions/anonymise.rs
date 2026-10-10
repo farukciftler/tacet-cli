@@ -14,8 +14,16 @@
 //! WHAT IS KEPT, WHAT IS NOT. The readers depend on structure — line types,
 //! roles, ids and parent links, timestamps, versions, tool names, task ids and
 //! statuses — and on a handful of markup tokens inside text (`<USER_REQUEST>`,
-//! `<command-name>`, `- [x]`, `file://`). Those survive. Every other string
-//! value is MASKED: each word becomes a pseudo-word of the same length and
+//! `<command-name>`, `- [x]`, `file://`). Those survive, and only where they
+//! LOOK like structure: a value under a kept key is kept only in a kept key's
+//! shape (an identifier, a dotted version, an RFC 3339 time), and inside a
+//! tool's data — a call's input or arguments, a result's content, any JSON
+//! carried in a string — only the few values the readers take from there
+//! (a status they know, a numeric task id, a content block's type). The first
+//! version kept by key name alone, at every depth; a review put a CRM answer
+//! in a tool_result (`{"id":"jane.doe@…","status":"overdue: Jane Doe owes
+//! 40k",…}`) and every value came out verbatim. Every other string value is
+//! MASKED: each word becomes a pseudo-word of the same length and
 //! case pattern, the same word always the same pseudo-word within one capture
 //! (so a path in a `cwd` field and the same path inside a tool call still
 //! agree, and Claude Code's project directory can be recomputed from the
@@ -25,8 +33,11 @@
 //!
 //! THE SALT IS PER CAPTURE AND NEVER STORED. Without it the masking is a
 //! deterministic function of the word, and a dictionary of user names and
-//! common words would read a masked fixture back. With a random salt that is
-//! printed once and not written anywhere, it cannot be.
+//! common words would read a masked fixture back. With a salt drawn from the
+//! OS's randomness, printed once and not written anywhere, that dictionary
+//! would have to be run once per possible salt — 2^64 of them. The first
+//! version drew it from the clock and the pid: microsecond clock on macOS, a
+//! commit date to narrow the hour, about 2^49 candidates, few enough to try.
 //!
 //! WHAT IT CANNOT KNOW. A value under a kept key that is private anyway (a
 //! tool literally named after a client), and anything the readers never look
@@ -92,6 +103,85 @@ pub const KEEP_KEYS: &[&str] = &[
     "cli_version",
 ];
 
+/// Keys whose string values are times: kept only as RFC 3339 is spelled.
+const TIME_KEYS: &[&str] = &["timestamp", "created_at", "updatedAt"];
+
+/// Keys whose string values are versions: kept only as dotted numbers with
+/// an optional suffix (`2.1.285`, `0.46.0-alpha.3`).
+const VERSION_KEYS: &[&str] = &["version", "cli_version"];
+
+/// Objects whose KEYS are file paths, relative or not. A key is otherwise
+/// structure and kept; one with a `/` or `\` in it was masked as a path, but
+/// `trackedFileBackups` also keys by a bare file name (`acme_payroll.xlsx`).
+const PATH_KEYED_MAPS: &[&str] = &["trackedFileBackups"];
+
+/// The keys under which a tool's DATA sits: what a call was given and what a
+/// result said. Anything in there is the user's or a third party's — an API
+/// answer, a `package.json`, `gh` output — and is masked whatever its key is
+/// called, but for `DATA_KEEP`.
+fn is_data(object_type: Option<&str>, in_call: bool, key: &str) -> bool {
+    match key {
+        "input" | "arguments" | "args" => in_call,
+        "content" => object_type == Some("tool_result"),
+        "output" => object_type.is_some_and(|t| t.ends_with("_output")),
+        // Claude Code's structured copy of a result, beside the message.
+        "toolUseResult" => true,
+        _ => false,
+    }
+}
+
+/// Content block types a reader branches on inside a result's content
+/// (`claude.rs` takes the text of a `text` block only). Any other `type`
+/// in data is masked: it is not structure the readers use, and a hostile
+/// one (`"type":"AcmeCorp confidential"`) is the user's text.
+const DATA_BLOCK_TYPES: &[&str] = &["text", "image", "document", "tool_reference"];
+
+/// Whether a value in a tool's data is one a reader takes from there:
+/// a task's or plan item's status the readers know (`TaskUpdate`,
+/// `TodoWrite`, Codex `update_plan`), and a task id, which Claude Code
+/// numbers (`TaskUpdate.taskId`, `addBlockedBy`, `toolUseResult.task.id`).
+/// A masked digit string would still match itself, but not a task id the
+/// same session wrote as a JSON number.
+fn data_keep(key: &str, s: &str) -> bool {
+    match key {
+        "status" => {
+            super::Status::from_claude_task(s, false).is_some()
+                || super::Status::from_codex_plan(s).is_some()
+        }
+        "taskId" | "addBlockedBy" | "id" => {
+            !s.is_empty() && s.len() <= 20 && s.bytes().all(|b| b.is_ascii_digit())
+        }
+        "type" => DATA_BLOCK_TYPES.contains(&s),
+        _ => false,
+    }
+}
+
+/// Whether a value under a kept key looks like what that key holds. Ids,
+/// roles, types, models: one token of `[A-Za-z0-9_.:-]`, no space, no `@`,
+/// no `/`. Times and versions: their own spellings. Anything else under a
+/// kept key is text somebody wrote there and is masked like text.
+fn structural(key: &str, s: &str) -> bool {
+    if s.is_empty() {
+        return true;
+    }
+    if s.len() > 128 {
+        return false;
+    }
+    let starts_digit = s.starts_with(|c: char| c.is_ascii_digit());
+    if TIME_KEYS.contains(&key) {
+        return starts_digit
+            && s.bytes()
+                .all(|b| b.is_ascii_digit() || b"-:.TZ+".contains(&b));
+    }
+    if VERSION_KEYS.contains(&key) {
+        return starts_digit
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b".-+_".contains(&b));
+    }
+    s.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b"_.:-".contains(&b))
+}
+
 /// `name` is a tool's name only in a call: an object of one of these `type`s,
 /// or an entry of Antigravity's `tool_calls`. Kept everywhere, it kept the
 /// session title Claude Code writes as `name` into `sessions/<pid>.json`
@@ -146,13 +236,20 @@ impl Scrub {
         }
     }
 
-    /// A salt nobody chose: the clock and the process id, hashed.
+    /// A salt nobody chose, from the OS's randomness without a new
+    /// dependency: std seeds each `RandomState`'s SipHash keys from the OS
+    /// (`getentropy` on macOS, `getrandom` on Linux, `ProcessPrng` on
+    /// Windows) once per thread and steps them per call, so two hashers of
+    /// the same input give two unpredictable words. Not the clock: see the
+    /// module doc for what that cost.
     pub fn fresh_salt() -> u64 {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default();
-        splitmix(fnv(&now.to_le_bytes()) ^ u64::from(std::process::id()))
+        use std::hash::{BuildHasher, Hasher};
+        let draw = |n: u64| {
+            let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+            h.write_u64(n);
+            h.finish()
+        };
+        draw(0) ^ draw(1).rotate_left(32)
     }
 
     /// One JSONL file: each line anonymised on its own. A line that is not
@@ -167,7 +264,7 @@ impl Scrub {
             };
             match serde_json::from_str::<Value>(body) {
                 Ok(mut v) if !body.trim().is_empty() => {
-                    self.value(&mut v, None);
+                    self.value(&mut v, None, false);
                     out.push_str(&v.to_string());
                 }
                 _ => out.push_str(&self.text(body)),
@@ -181,7 +278,7 @@ impl Scrub {
     pub fn json(&self, text: &str) -> String {
         match serde_json::from_str::<Value>(text) {
             Ok(mut v) => {
-                self.value(&mut v, None);
+                self.value(&mut v, None, false);
                 v.to_string()
             }
             Err(_) => self.text(text),
@@ -199,38 +296,51 @@ impl Scrub {
         self.text(path)
     }
 
-    fn value(&self, v: &mut Value, key: Option<&str>) {
+    /// `data` is true inside a tool's data (`is_data`), where only
+    /// `data_keep` values survive; outside it, `KEEP_KEYS` values survive in
+    /// their key's shape (`structural`).
+    fn value(&self, v: &mut Value, key: Option<&str>, data: bool) {
         match v {
             Value::String(s) => {
-                *s = if key.is_some_and(|k| KEEP_KEYS.contains(&k)) {
-                    self.kept(s)
-                } else {
-                    self.string(s)
+                *s = match key {
+                    Some(k) if data && data_keep(k, s) => s.clone(),
+                    Some(k) if !data && KEEP_KEYS.contains(&k) && structural(k, s) => self.kept(s),
+                    _ => self.string(s),
                 };
             }
             // An array inherits its key: `addBlockedBy: ["1"]` is ids.
             Value::Array(items) => {
                 for item in items {
-                    self.value(item, key);
+                    self.value(item, key, data);
                 }
             }
             Value::Object(map) => {
+                let object_type = map.get("type").and_then(Value::as_str).map(str::to_string);
+                let is_call = key == Some("tool_calls")
+                    || object_type
+                        .as_deref()
+                        .is_some_and(|t| TOOL_OBJECT_TYPES.contains(&t));
                 // Keys are structure, except where a format keys a map by
                 // file path (Claude Code's `trackedFileBackups`).
-                let is_call = key == Some("tool_calls")
-                    || map
-                        .get("type")
-                        .and_then(Value::as_str)
-                        .is_some_and(|t| TOOL_OBJECT_TYPES.contains(&t));
+                let path_keyed = key.is_some_and(|k| PATH_KEYED_MAPS.contains(&k));
                 let entries: Vec<(String, Value)> = std::mem::take(map).into_iter().collect();
                 for (k, mut child) in entries {
+                    let child_data = data || is_data(object_type.as_deref(), is_call, &k);
                     match &mut child {
-                        Value::String(s) if is_call && TOOL_NAMES.contains(&k.as_str()) => {
+                        // A tool's name, in the agent's own call: what the
+                        // reader reports as the entry's tool. A "tool_use"
+                        // inside a tool's data is somebody's JSON, not a call.
+                        Value::String(s)
+                            if is_call
+                                && !data
+                                && TOOL_NAMES.contains(&k.as_str())
+                                && structural(&k, s) =>
+                        {
                             *s = self.kept(s);
                         }
-                        _ => self.value(&mut child, Some(&k)),
+                        _ => self.value(&mut child, Some(&k), child_data),
                     }
-                    let k = if k.contains('/') || k.contains('\\') {
+                    let k = if path_keyed || k.contains('/') || k.contains('\\') {
                         self.text(&k)
                     } else {
                         k
@@ -244,23 +354,29 @@ impl Scrub {
 
     /// A masked string value — unless it is JSON itself: Codex carries a
     /// call's arguments as a JSON string (`update_plan`'s plan is in one), and
-    /// masking its braces' contents as prose would lose the plan.
+    /// masking its braces' contents as prose would lose the plan. JSON in a
+    /// string is always walked as data: wherever it sits, it is something a
+    /// tool or a person wrote, not the agent's own envelope.
     fn string(&self, s: &str) -> String {
         let t = s.trim_start();
         if (t.starts_with('{') || t.starts_with('['))
             && let Ok(mut inner) = serde_json::from_str::<Value>(s)
         {
-            self.value(&mut inner, None);
+            self.value(&mut inner, None, true);
             return inner.to_string();
         }
         self.text(s)
     }
 
-    /// A kept value, still put through the home rule and the user name.
+    /// A kept value, still put through the home rule, the e-mail rule and
+    /// the user name. The name is matched without ASCII case: `Alice-mbp`
+    /// is the user `alice` too. `structural` already turns an address away
+    /// (no `@` in any kept shape); the e-mail rule is here so that widening
+    /// a shape cannot be what lets one through.
     fn kept(&self, s: &str) -> String {
-        let mut out = homes_to_dev(s);
+        let mut out = emails_out(&homes_to_dev(s));
         if let Some(user) = &self.user {
-            out = out.replace(user.as_str(), "dev");
+            out = replace_ignore_ascii_case(&out, user, "dev");
         }
         out
     }
@@ -335,6 +451,25 @@ impl Scrub {
             })
             .collect()
     }
+}
+
+/// `text` with every ASCII-case-blind occurrence of `needle` replaced.
+fn replace_ignore_ascii_case(text: &str, needle: &str, with: &str) -> String {
+    if needle.is_empty() {
+        return text.to_string();
+    }
+    let (hay, pat) = (text.to_ascii_lowercase(), needle.to_ascii_lowercase());
+    // ASCII lowercasing keeps every byte offset, so offsets in `hay` are
+    // offsets in `text`.
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for (at, _) in hay.match_indices(&pat) {
+        out.push_str(&text[last..at]);
+        out.push_str(with);
+        last = at + pat.len();
+    }
+    out.push_str(&text[last..]);
+    out
 }
 
 /// The length of a markup tag at the start of `text`: `<TAG>`, `</TAG>`,
@@ -529,6 +664,82 @@ mod tests {
         let torn = s.jsonl("{\"type\":\"user\",\"message\":{\"content\":\"secret plan");
         assert!(serde_json::from_str::<Value>(&torn).is_err());
         assert!(!torn.contains("secret"));
+    }
+
+    /// RG-28 review: a kept key name is not enough. Under the agent's own
+    /// envelope a kept value must look like its key's structure; inside a
+    /// tool's data only what a reader takes from there survives.
+    #[test]
+    fn a_kept_key_keeps_only_a_value_shaped_like_structure() {
+        let s = scrub();
+        // Envelope: prose under `source`/`status`/`version`/`model` is text.
+        let line = r#"{"type":"user","uuid":"u-1","source":"Alice's laptop","status":"waiting on Bob","version":"Q3 board deck","model":"Bob/acme","timestamp":"yesterday at noon","created_at":"2026-10-09T10:00:00+03:00"}"#;
+        let out: Value = serde_json::from_str(s.jsonl(line).trim_end()).unwrap();
+        assert_eq!(out["uuid"], "u-1");
+        assert_eq!(out["created_at"], "2026-10-09T10:00:00+03:00");
+        for (key, word) in [
+            ("source", "laptop"),
+            ("status", "waiting"),
+            ("version", "board"),
+            ("model", "acme"),
+            ("timestamp", "noon"),
+        ] {
+            let v = out[key].as_str().unwrap();
+            assert!(!v.contains(word), "{key}: {v}");
+        }
+
+        // Codex: a call's arguments and its output are data. `update_plan`'s
+        // statuses survive (the reader needs them); a CRM's `id`, `status`
+        // and `type` do not.
+        let call = r#"{"type":"response_item","payload":{"type":"function_call","name":"crm_lookup","call_id":"c1","arguments":"{\"id\":\"AcmeCorp-77\",\"status\":\"overdue\",\"type\":\"Acme\"}"}}"#;
+        let out = s.jsonl(call);
+        assert!(out.contains(r#""name":"crm_lookup""#), "{out}");
+        assert!(out.contains(r#""call_id":"c1""#), "{out}");
+        for leak in ["Acme", "overdue"] {
+            assert!(!out.contains(leak), "{leak}: {out}");
+        }
+        let output = r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":"{\"id\":\"42\",\"status\":\"completed\",\"source\":\"AcmeCRM\",\"version\":\"v9-acme\"}"}}"#;
+        let out = s.jsonl(output);
+        for leak in ["AcmeCRM", "acme"] {
+            assert!(!out.contains(leak), "{leak}: {out}");
+        }
+
+        // A "tool_use" inside a result is the result's JSON, not a call: its
+        // `name` is masked.
+        let nested = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"tool_use","name":"JaneDoe"}]}]}}"#;
+        let out = s.jsonl(nested);
+        assert!(!out.contains("JaneDoe"), "{out}");
+        assert!(out.contains(r#""tool_use_id":"t1""#), "{out}");
+    }
+
+    #[test]
+    fn a_kept_value_loses_an_address_and_the_user_in_any_case() {
+        let s = scrub();
+        assert_eq!(s.kept("Alice-MBP.ALICE.local"), "dev-MBP.dev.local");
+        assert_eq!(s.kept("x-jane.doe@clientbank.com"), "[email]");
+    }
+
+    /// RG-28 review: `trackedFileBackups` keys by file name, and a relative
+    /// one has no `/` to give it away.
+    #[test]
+    fn a_path_keyed_map_loses_relative_keys_too() {
+        let s = scrub();
+        let line = r#"{"type":"file-history-snapshot","snapshot":{"trackedFileBackups":{"acme_payroll_2026.xlsx":{"version":1},"/Users/alice/acme/b.rs":{"version":2}}}}"#;
+        let out = s.jsonl(line);
+        assert!(!out.contains("acme"), "{out}");
+        assert!(!out.contains("payroll"), "{out}");
+        assert!(out.contains(r#""version":1"#), "{out}");
+    }
+
+    /// RG-28 review: the salt was the clock and the pid, and macOS's clock
+    /// moves in microseconds: two captures drawn in the same microsecond got
+    /// the same salt, and the salt space was the hours a commit date allows.
+    /// A thousand draws in a row must all differ.
+    #[test]
+    fn fresh_salts_do_not_repeat() {
+        let draws: std::collections::HashSet<u64> =
+            (0..1000).map(|_| Scrub::fresh_salt()).collect();
+        assert_eq!(draws.len(), 1000);
     }
 
     #[test]

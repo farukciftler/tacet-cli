@@ -13,9 +13,9 @@
 //!
 //! A RUN NEVER READS ANYTHING BY ITSELF. It is a person's command, aimed at a
 //! file they chose, with their consent to copy it; no test runs it. What it
-//! writes is still to be read before it is committed (corpus README, step 3):
-//! masking is mechanical, and a value under a kept key can still say more than
-//! it should.
+//! writes is still to be read before it is committed (corpus README, step 2):
+//! masking is mechanical, and a value under a kept key that is shaped like an
+//! identifier (`"source":"AcmeCorp"`) can still say more than it should.
 //!
 //! One capture, one salt: the files of one session (a transcript and its
 //! `task.md`) must share it, or the same path is masked two ways in them. The

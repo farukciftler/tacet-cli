@@ -43,9 +43,15 @@ The steps, for whoever does:
    ```
 
    It keeps what the readers depend on (line types, ids and parent links,
-   timestamps, versions, tool names, task ids and statuses, markup tags) and
-   masks every other string word by word; home directories become `dev` and
-   e-mail addresses are removed. The first run prints a salt: pass it with
+   timestamps, versions, tool names, task ids and statuses, markup tags), and
+   only in that shape: a kept key holding prose, an address or a path is
+   masked like any other text, and inside a tool's data (a call's input or
+   arguments, a result's content, JSON carried in a string) only the statuses
+   the readers know, numeric task ids and content-block types survive. Every
+   other string is masked word by word; home directories become `dev`, the
+   capturing user's name becomes `dev` in any case, and e-mail addresses are
+   removed. An identifier-shaped value under a kept key outside a tool's data
+   (`"source":"AcmeCorp"`) is kept, which is one reason for step 2. The first run prints a salt: pass it with
    `--salt` to the other files of the same session so a path is masked the
    same way in all of them, and commit it nowhere. For a Claude Code
    transcript it prints the `projects/<dir>/` the masked working directory
