@@ -11,7 +11,7 @@
 # So each case below hands `smoke.sh` an answer that is known to be bad and
 # asserts it says so, plus one known-good answer to prove the detectors are not
 # simply stuck on "fail". `FakeEngine` supplies the answers, so this runs in
-# about a second and needs neither weights nor a GPU — which matters, because
+# seconds on a built tree and needs neither weights nor a GPU — which matters, because
 # the machine that can run a model is the one place this is hardest to run.
 #
 #   scripts/smoke-selftest.sh
@@ -23,8 +23,12 @@ set -u
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SMOKE="$REPO/scripts/smoke.sh"
 [ -x "$SMOKE" ] || { echo "not executable: $SMOKE" >&2; exit 127; }
-[ -x "$REPO/target/release/tacet" ] || {
-  echo "build first: cargo build --release -p tacet-cli" >&2; exit 127; }
+# NO "build first" CHECK ANY MORE: smoke.sh builds the binary itself, with the
+# same features a real smoke run uses, so running this first leaves the tree
+# ready for the real run instead of relinking it. The first case below pays for
+# the build when the tree is stale; the other seven find cargo's fingerprints
+# current and cost about a second each. `TACET_SMOKE_FEATURES=none` runs this
+# on a machine that cannot build an inference backend at all.
 
 # Six messages go through smoke.sh and FakeEngine answers all of them the same
 # way, so a detector that fires fires six times. "clean" is the only row that
