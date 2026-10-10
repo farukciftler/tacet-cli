@@ -180,8 +180,10 @@ const SOCKET_LAYER_ROWS: &[(&str, &str, &str)] = &[];
 /// `$n`. So every foreign function is named here or is red, a `link_name` must
 /// be one string literal, and an extern block a macro fills in is red.
 /// `setsid`/`killpg` are tacet-tools' process-group calls (shell.rs,
-/// run_code.rs); `poll` is tacet-cli's piped-stdin check (main.rs).
-const EXTERN_FNS: &[&str] = &["setsid", "killpg", "poll"];
+/// run_code.rs); `poll` is tacet-cli's piped-stdin check (main.rs);
+/// `signal`/`raise` are tacet-cli's SIGINT-cancels-the-turn handler (chat.rs,
+/// audit M4).
+const EXTERN_FNS: &[&str] = &["setsid", "killpg", "poll", "signal", "raise"];
 
 /// Other agents' CLIs. Each one, spawned, sends the conversation to a hosted
 /// model — an outbound call that happens to go through `fork` instead of
@@ -367,6 +369,16 @@ const RUNTIME_SPAWN_SITES: &[(&str, &str)] = &[
         "tacet-cli/tests/consent_reaches_the_person.rs",
         "`env!(\"CARGO_BIN_EXE_tacet\")`, the binary under test, on the scripted engine — \
          directly, and under the literal `/usr/bin/script` for a pty (audit H1)",
+    ),
+    (
+        "tacet-cli/tests/the_session_keeps_its_promises.rs",
+        "`env!(\"CARGO_BIN_EXE_tacet\")`, the binary under test, on the scripted engine \
+         (audit H2-b, L29, L27, D7)",
+    ),
+    (
+        "tacet-cli/tests/ctrl_c_reaches_the_running_tool.rs",
+        "the binary under test on the scripted engine, and the literals `kill -INT` and \
+         `pgrep -f` aimed at it and its `sleep` (audit M4)",
     ),
 ];
 

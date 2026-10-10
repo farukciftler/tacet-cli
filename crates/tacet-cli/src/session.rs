@@ -22,8 +22,11 @@
 //!
 //! HOW IT IS DELETED: `Session::purge_all()` removes the whole `sessions/`
 //! directory, or `rm -rf` on the path above does exactly the same thing — there
-//! is no index, no second copy and no database, so deleting the files IS the
-//! deletion. Individual files can be deleted by hand with no side effects.
+//! is no index, no copy outside this folder and no database, so deleting the
+//! files IS the deletion. Individual files can be deleted by hand with no side
+//! effects — but a session started with `--continue` or `--session` carries a
+//! copy of the conversation it continued (see `Session::continuing`), so
+//! forgetting one conversation by hand means deleting every file of its chain.
 //!
 //! PERMISSIONS: the directory is 0700 and every file 0600, stamped through
 //! `tacet_kernel::fs` rather than left to the umask — see that module for why
@@ -265,6 +268,9 @@ pub struct Session {
     file: Option<PathBuf>,
     /// Lines already written by THIS handle. Exact, because the file is fresh.
     turns: usize,
+    /// The conversation this one continues, written ahead of the first new
+    /// turn — see `continuing`.
+    earlier: Vec<Turn>,
 }
 
 impl Session {
@@ -277,6 +283,7 @@ impl Session {
             None => Session {
                 file: None,
                 turns: 0,
+                earlier: Vec::new(),
             },
         }
     }
@@ -298,7 +305,26 @@ impl Session {
         Session {
             file: Some(dir.join(format!("{}.{EXT}", new_id()))),
             turns: 0,
+            earlier: Vec::new(),
         }
+    }
+
+    /// This session CONTINUES `earlier`: those turns are written into this
+    /// session's file ahead of its first new turn.
+    ///
+    /// WHY THEY ARE COPIED (audit L29). `--continue` loads the latest file into
+    /// the prompt and writes the new turns to a NEW file; the loaded turns were
+    /// in nobody's file but the old one. The next `--continue` loaded the new
+    /// file — the second conversation only — so a chain of three runs could not
+    /// see the first: measured, three `--continue --message` runs, the third
+    /// did not know "first". With the earlier turns copied in, the newest file
+    /// is always the whole conversation, which is what `latest` hands out.
+    ///
+    /// NOT WRITTEN NOW: the file still appears on the first `append` (see
+    /// `start`), so a resumed shell closed without a word leaves no copy.
+    pub fn continuing(mut self, earlier: Vec<Turn>) -> Session {
+        self.earlier = earlier;
+        self
     }
 
     /// The session's identifier — its file stem. `None` when there is nowhere
@@ -320,6 +346,13 @@ impl Session {
     /// is worth interrupting the user for is the shell's call, not this
     /// module's. It must NOT be worth ending the conversation over.
     pub fn append(&mut self, turn: &Turn) -> Result<(), String> {
+        for earlier in std::mem::take(&mut self.earlier) {
+            self.append_one(&earlier)?;
+        }
+        self.append_one(turn)
+    }
+
+    fn append_one(&mut self, turn: &Turn) -> Result<(), String> {
         let path = self
             .file
             .clone()
@@ -361,7 +394,23 @@ impl Session {
     }
 
     fn latest_in(dir: &Path) -> Option<Vec<Turn>> {
-        for path in session_files(dir).into_iter().rev() {
+        // NEWEST WRITE FIRST, not newest name. The name sorts by its second
+        // and then by PROCESS ID, so two runs in one second — exactly a script
+        // chaining `--continue` — were ordered by whichever pid the system
+        // handed out, and `--continue` could pick the older of the two. Now
+        // that a continued session carries the whole conversation (see
+        // `continuing`), the last file written is the one to continue.
+        let mut files: Vec<(std::time::SystemTime, PathBuf)> = session_files(dir)
+            .into_iter()
+            .map(|p| {
+                let at = fs::metadata(&p)
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::UNIX_EPOCH);
+                (at, p)
+            })
+            .collect();
+        files.sort();
+        for (_, path) in files.into_iter().rev() {
             let turns = read_turns(&path);
             if !turns.is_empty() {
                 return Some(turns);
@@ -724,6 +773,77 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// AUDIT L29: a chain of `--continue` runs keeps the whole conversation.
+    /// Each run continues the latest file and writes a new one; before the fix
+    /// the new one held only its own turns, so the third run had lost the first.
+    #[test]
+    fn a_chain_of_continues_keeps_every_earlier_turn() {
+        let dir = temp_dir("chain");
+        let mut first = Session::start_in(&dir);
+        first.append(&user("first")).unwrap();
+        first.append(&Turn::new(Role::Assistant, "one")).unwrap();
+
+        for (asked, answered) in [("second", "two"), ("third", "three")] {
+            let earlier = Session::latest_in(&dir).expect("something to continue");
+            // A distinct name: two sessions started in one second by one
+            // process would otherwise share a file and prove nothing.
+            let mut next = Session {
+                file: Some(dir.join(format!("{asked}.{EXT}"))),
+                turns: 0,
+                earlier: Vec::new(),
+            }
+            .continuing(earlier);
+            next.append(&user(asked)).unwrap();
+            next.append(&Turn::new(Role::Assistant, answered)).unwrap();
+        }
+
+        let texts: Vec<String> = Session::latest_in(&dir)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.text)
+            .collect();
+        assert_eq!(
+            texts,
+            ["first", "one", "second", "two", "third", "three"],
+            "the continued conversation lost its start"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A continued session that never says a word writes no copy: the earlier
+    /// turns ride along with the first new one, not with the opening.
+    #[test]
+    fn continuing_without_a_new_turn_writes_nothing() {
+        let dir = temp_dir("silent-continue");
+        let session = Session::start_in(&dir).continuing(vec![user("old")]);
+        assert!(!session.path().unwrap().exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Two sessions in the same second: `--continue` takes the one written
+    /// last, whatever the process ids make of the names.
+    #[test]
+    fn latest_is_the_last_written_not_the_highest_pid() {
+        let dir = temp_dir("same-second");
+        tacet_kernel::fs::create_private_dir(&dir).unwrap();
+        let older = dir.join(format!("20261010T120000Z-9999.{EXT}"));
+        let newer = dir.join(format!("20261010T120000Z-1000.{EXT}"));
+        fs::write(&older, "{\"at\":1,\"role\":\"user\",\"text\":\"older\"}\n").unwrap();
+        fs::write(&newer, "{\"at\":1,\"role\":\"user\",\"text\":\"newer\"}\n").unwrap();
+        let stamp = |p: &Path, secs: u64| {
+            fs::File::options()
+                .write(true)
+                .open(p)
+                .unwrap()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+                .unwrap();
+        };
+        stamp(&older, 1_000_000);
+        stamp(&newer, 1_000_005);
+        assert_eq!(Session::latest_in(&dir).unwrap()[0].text, "newer");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     /// A line whose role we cannot read is dropped rather than guessed —
     /// attributing an unknown line to the user would put words in their mouth.
     #[test]
@@ -880,6 +1000,7 @@ mod tests {
         let mut session = Session {
             file: None,
             turns: 0,
+            earlier: Vec::new(),
         };
         assert!(session.append(&user("x")).is_err());
         assert!(session.id().is_none());

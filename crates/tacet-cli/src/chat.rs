@@ -195,6 +195,7 @@ pub fn chat(run: ChatRun) -> ExitCode {
     let color = Color::setup();
     let screen = Screen::setup();
     let interactive = single_message.is_none();
+    interrupt::install();
     // `--json` OWNS THE WHOLE OF STDOUT. Every human decoration below asks this
     // question rather than `interactive`, because the two are not the same: a
     // `--json` run in a terminal is still a machine-readable run.
@@ -276,9 +277,14 @@ pub fn chat(run: ChatRun) -> ExitCode {
     // `--continue`, so it wins; asking for both is not an error worth refusing
     // a shell over.
     let mut resumed: Vec<Turn> = Vec::new();
+    // The same turns in the FILE's shape, for the new session to carry (L29).
+    let mut resumed_stored: Vec<session::Turn> = Vec::new();
     if let Some(id) = &session_id {
         match session::Session::load(id) {
-            Some(turns) => resumed = to_engine_turns(&turns),
+            Some(turns) => {
+                resumed = to_engine_turns(&turns);
+                resumed_stored = turns;
+            }
             // NOT SILENT. A typo'd id that quietly opened an empty session is
             // the shape of failure this whole module exists to avoid: the user
             // would talk to a model that has forgotten everything and blame the
@@ -293,7 +299,10 @@ pub fn chat(run: ChatRun) -> ExitCode {
         }
     } else if continue_session {
         match session::Session::latest() {
-            Some(turns) => resumed = to_engine_turns(&turns),
+            Some(turns) => {
+                resumed = to_engine_turns(&turns);
+                resumed_stored = turns;
+            }
             None => eprintln!(
                 "{}",
                 color.paint(
@@ -303,6 +312,10 @@ pub fn chat(run: ChatRun) -> ExitCode {
             ),
         }
     }
+    // THE NEW FILE CARRIES THE OLD TURNS (audit L29) — see
+    // `Session::continuing`. Without this a chain of `--continue` runs kept
+    // only the last link.
+    chat_session = chat_session.map(|s| s.continuing(resumed_stored));
     if !resumed.is_empty() && human {
         println!(
             "{}",
@@ -381,6 +394,12 @@ pub fn chat(run: ChatRun) -> ExitCode {
         dir,
         Arc::clone(&traces) as Arc<dyn Reporter>,
     );
+    // PERSONAL DATA THAT CAME IN WITHOUT A TOOL TAINTS FROM THE START (audit
+    // H2-b) — see `PersonalInput`. Memory is the third door and it opens per
+    // turn, below, where the notes are chosen.
+    if let Some(why) = starting_taint(piped.is_some(), !resumed.is_empty()) {
+        taint_session(&executor, &mut ctx, why);
+    }
 
     // The remote tools get a floor in the budget: a catalog the model is never
     // shown is a catalog that does not exist as far as the answer is concerned.
@@ -779,6 +798,9 @@ pub fn chat(run: ChatRun) -> ExitCode {
         // `ToolExecutor` (see the "the old turn's word does not bind the new one"
         // note there).
         CANCEL.store(false, Ordering::Relaxed);
+        // From here to the end of the turn a SIGINT cancels the turn instead
+        // of ending the process — see `interrupt` (audit M4).
+        interrupt::turn(true);
         let ticket = executor.new_turn();
         traces.reset();
         if let Some(s) = &code_state {
@@ -858,6 +880,14 @@ pub fn chat(run: ChatRun) -> ExitCode {
         // MEMORY INJECTION (600 limit): the notes matching the message, in the
         // system block.
         let memory_text = memory.with(|s| s.injection_text(&message)).flatten();
+        // A NOTE IN THE PROMPT IS PERSONAL DATA IN THE PROMPT (audit H2-b,
+        // `PersonalInput::Memory`). Measured by the audit of 9 Oct 2026: a
+        // passport number remembered in one session was injected in the next,
+        // and web_search went out with no question, because only a TOOL could
+        // taint. Tainted here, before the first call of the turn can run.
+        if memory_text.is_some() {
+            taint_session(&executor, &mut ctx, PersonalInput::Memory);
+        }
 
         let mut answer = String::new();
         // The tokens of this USER turn. The inner loop (the tool turns) goes to
@@ -1525,6 +1555,10 @@ pub fn chat(run: ChatRun) -> ExitCode {
             }
         }
 
+        // No tool runs past this point in the turn; a SIGINT ends the process
+        // again.
+        interrupt::turn(false);
+
         last_turn_prompt = turn_prompt;
         last_turn_generation = turn_generation;
         session_tokens += turn_prompt + turn_generation;
@@ -1542,14 +1576,17 @@ pub fn chat(run: ChatRun) -> ExitCode {
         }
 
         // THE RECEIPT CHAIN — every trace of this turn, witnessed by pure
-        // code (see receipt.rs; `tacet log` shows and verifies them).
+        // code (see receipt.rs; `tacet log` shows and verifies them). The
+        // whole trace goes in and only its shape is kept: a chip's words are
+        // the user's data (a remembered note, a query, an imported transcript
+        // line) and never reach that file (audit L27, RG-32).
         {
             let at = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
             for t in traces.traces() {
-                receipt::append(at, &t.icon, &t.text, &format!("{:?}", t.state));
+                receipt::record(at, &t);
             }
         }
 
@@ -1695,7 +1732,10 @@ pub fn chat(run: ChatRun) -> ExitCode {
     // nothing. At start-up it would delay the first paint and block on the
     // network; mid-session it would interrupt. It prints only if the user
     // turned the check on, and stays silent when the check fails.
-    if let Some(line) = update::daily_notice(&color) {
+    // A CONVERSATION, NOT A RUN (audit D7): never after `--message` or under
+    // `--json`, and `daily_notice` itself refuses when either stream is not a
+    // terminal.
+    if let Some(line) = update::daily_notice(&color, interactive && human) {
         eprintln!();
         eprintln!("{line}");
     }
@@ -1731,6 +1771,144 @@ fn session_context(
 ) -> ToolContext {
     ToolContext::new(store, dir, reporter)
         .with_cancel_token(tacet_kernel::context::CancelToken::watching(&CANCEL))
+}
+
+/// Ctrl-C AS A SIGNAL — the half of audit M4 the key thread cannot reach.
+///
+/// On a terminal the turn indicator holds raw mode, ISIG is off, and Ctrl-C
+/// arrives as a KEY that its thread turns into `CANCEL` (see `swallow_key` and
+/// `session_context`). With no indicator — `--json`, or stdout piped
+/// (`tacet -m … | less`) — the terminal is cooked and Ctrl-C is a SIGINT. Its
+/// default action killed tacet on the spot, and the tool it was waiting on
+/// lives in its own process group (`shell` and `run_code` call `setsid` so a
+/// timeout can end the whole group), so the signal never reached it: the
+/// command ran on as an orphan with nothing left to stop it.
+///
+/// So while a turn runs, the FIRST SIGINT does what the key does — it sets
+/// `CANCEL`, the tool's token sees it, and the group is ended the way the
+/// executor ends it. A SECOND SIGINT in the same turn, or any SIGINT between
+/// turns, is the default again: the process ends. A hung turn can therefore
+/// never trap the user, and Ctrl-C at an idle prompt still quits.
+///
+/// No crate: `signal` and `raise` are in the C library every unix links, the
+/// same way `poll` is (main.rs). Both are async-signal-safe, and so is the
+/// atomic the handler touches; nothing else runs inside it.
+#[cfg(unix)]
+mod interrupt {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    unsafe extern "C" {
+        fn signal(signum: i32, handler: usize) -> usize;
+        fn raise(signum: i32) -> i32;
+    }
+
+    /// The same number on Linux and macOS.
+    const SIGINT: i32 = 2;
+    const SIG_DFL: usize = 0;
+
+    static TURN_RUNNING: AtomicBool = AtomicBool::new(false);
+
+    extern "C" fn on_sigint(_: i32) {
+        if TURN_RUNNING.load(Ordering::SeqCst) && !crate::CANCEL.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        // SAFETY: both calls are on the async-signal-safe list. The signal is
+        // blocked while this handler runs, so the raised one is delivered —
+        // with the default action — the moment it returns.
+        unsafe {
+            signal(SIGINT, SIG_DFL);
+            raise(SIGINT);
+        }
+    }
+
+    pub fn install() {
+        // SAFETY: installs a handler that touches two atomics and the two
+        // async-signal-safe calls above. The C library's `signal` gives BSD
+        // semantics on macOS and glibc — the handler stays installed and an
+        // interrupted read restarts.
+        unsafe {
+            signal(SIGINT, on_sigint as extern "C" fn(i32) as usize);
+        }
+    }
+
+    /// Marks a turn as running (or over). Between turns a SIGINT ends the
+    /// process, as it always did.
+    pub fn turn(running: bool) {
+        TURN_RUNNING.store(running, Ordering::SeqCst);
+    }
+}
+
+#[cfg(not(unix))]
+mod interrupt {
+    /// NOT MEASURED ON WINDOWS: console Ctrl-C there is a different mechanism
+    /// (`SetConsoleCtrlHandler`), and it is left as it was rather than guessed.
+    pub fn install() {}
+    pub fn turn(_: bool) {}
+}
+
+/// The ways the user's own data reaches the prompt WITHOUT a tool running.
+///
+/// WHY THIS LIST EXISTS (audit H2-b). The approval gate in front of every
+/// outbound tool asks only once the session is tainted, and only a tool could
+/// taint it — a tool that read a file, the clipboard, the machine. Three doors
+/// put personal data into the prompt with no tool at all, and each was
+/// measured or read leaking past the gate:
+/// * `Piped` — `printf 'AWS_SECRET…' | tacet chat --message …` sent the piped
+///   secret to web_search without a question;
+/// * `Resumed` — `--continue` / `--session` replay a transcript, which holds
+///   whatever the earlier session was given;
+/// * `Memory` — a note remembered in one session ("passport U1234567") was
+///   injected in the next, and web_search went out unasked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersonalInput {
+    Piped,
+    Resumed,
+    Memory,
+}
+
+impl PersonalInput {
+    /// The doors a `--message` run can open. Memory is not one: a one-shot run
+    /// keeps its memory in RAM and starts it empty (see `chat`).
+    #[cfg(test)]
+    pub const ALL: [PersonalInput; 2] = [PersonalInput::Piped, PersonalInput::Resumed];
+
+    /// How `--message`'s help names this door — held to it by
+    /// `the_message_help_promises_only_what_the_gate_does`.
+    #[cfg(test)]
+    pub fn help_phrase(self) -> &'static str {
+        match self {
+            PersonalInput::Piped => "piped input",
+            PersonalInput::Resumed => "a resumed session",
+            PersonalInput::Memory => "a remembered note",
+        }
+    }
+}
+
+/// Does the session start tainted, and through which door. Memory is decided
+/// per turn, where the notes are chosen.
+fn starting_taint(piped: bool, resumed: bool) -> Option<PersonalInput> {
+    if piped {
+        Some(PersonalInput::Piped)
+    } else if resumed {
+        Some(PersonalInput::Resumed)
+    } else {
+        None
+    }
+}
+
+/// Taints BOTH halves of the session: the executor's flag is what the gate
+/// reads, the context's is what a rebuilt executor and a worker inherit.
+/// One-way, like every taint — only a chat reset clears it.
+///
+/// THE DOOR IS NAMED in the diagnostic dump (`TACET_TRACE_DUMP`, the same key
+/// as the raw generation): a question that was refused "for no reason" is
+/// answered by the line that says which input tainted the session.
+fn taint_session(executor: &ToolExecutor, ctx: &mut ToolContext, why: PersonalInput) {
+    if tacet_kernel::env_var("TACET_TRACE_DUMP").is_some() && !executor.session_tainted() {
+        eprintln!("(session tainted: {why:?})");
+    }
+    executor.inherit_taint(true);
+    ctx.taint();
 }
 
 /// What the user reads when a turn is refused for the window.
