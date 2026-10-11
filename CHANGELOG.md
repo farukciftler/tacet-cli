@@ -23,6 +23,14 @@ releases to follow.
 
 **Fixed:**
 
+* The corpus anonymiser no longer keeps Anthropic's `req_…`, `msg_…`,
+  `toolu_…` and `srvtoolu_…` ids verbatim: each becomes a same-length
+  `<prefix>anon…` pseudonym, stable per salt so the entries of one response
+  still share an id. The six real Claude Code captures carried 21 request and
+  21 message ids of a real account; they were rewritten in place with
+  `corpus_capture --vendor-ids-only` (ids only), and
+  `the_real_captures_carry_no_raw_vendor_id` fails on a raw id anywhere in the
+  corpus (RG-28).
 * An Antigravity session read through `session_read`, `--from` or
   `/resume-from` carries its `implementation_plan.md` and `walkthrough.md`:
   a line each in the summary (the name and its metadata's summary) and the

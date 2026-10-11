@@ -60,6 +60,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
     let mut into: Option<PathBuf> = None;
     let mut version: Option<String> = None;
     let mut paths: Vec<PathBuf> = Vec::new();
+    let mut ids_only = false;
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -72,12 +73,31 @@ fn run(args: Vec<String>) -> Result<(), String> {
             }
             "--into" => into = Some(PathBuf::from(it.next().ok_or("--into needs a directory")?)),
             "--version" => version = Some(it.next().ok_or("--version needs a version")?),
+            "--vendor-ids-only" => ids_only = true,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(());
             }
             _ => paths.push(PathBuf::from(a)),
         }
+    }
+    // BRINGING AN OLDER CAPTURE UP TO `Scrub::vendor_id`, in place: only the
+    // vendor ids change, so the masked text the corpus tests pin stays put.
+    // One salt for the whole call keeps an id shared across files shared.
+    if ids_only {
+        if paths.is_empty() {
+            return Err(format!("usage: {USAGE}"));
+        }
+        let scrub = Scrub::new(salt.unwrap_or_else(Scrub::fresh_salt), None);
+        for path in &paths {
+            let text = secrets::read_text(path, CAP).map_err(|e| e.to_string())?;
+            let out = scrub.vendor_ids_jsonl(&text);
+            if out != text {
+                std::fs::write(path, &out).map_err(|e| format!("{}: {e}", path.display()))?;
+                eprintln!("rewrote {}", path.display());
+            }
+        }
+        return Ok(());
     }
     let (input, output) = match (into.as_ref(), paths.len()) {
         (Some(_), 1) => (paths.remove(0), None),
@@ -145,7 +165,8 @@ fn run(args: Vec<String>) -> Result<(), String> {
 }
 
 const USAGE: &str = "corpus_capture [--salt <n>] <input> <output>\n       \
-                     corpus_capture [--salt <n>] [--version <v>] --into <corpus> <input>";
+                     corpus_capture [--salt <n>] [--version <v>] --into <corpus> <input>\n       \
+                     corpus_capture [--salt <n>] --vendor-ids-only <capture.jsonl>...";
 
 enum Kind {
     Jsonl,

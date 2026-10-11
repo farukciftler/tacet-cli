@@ -123,6 +123,17 @@ pub const KEEP_KEYS: &[&str] = &[
     "cli_version",
 ];
 
+/// Vendor-minted ids that name one account's calls (`Scrub::vendor_id`):
+/// Anthropic's request, message, tool-call and server-tool-call ids.
+const VENDOR_ID_PREFIXES: &[&str] = &["req_", "msg_", "toolu_", "srvtoolu_"];
+
+/// What every pseudonym's body starts with, so a test can tell a pseudonym
+/// from a raw id of the same shape (`the_real_captures_carry_no_raw_vendor_id`).
+pub const VENDOR_ID_MARK: &str = "anon";
+
+/// Shorter tails are test fixtures' own ids (`msg_1`), not vendor-minted.
+const VENDOR_ID_MIN_TAIL: usize = 12;
+
 /// Keys whose string values are times: kept only as RFC 3339 is spelled.
 const TIME_KEYS: &[&str] = &["timestamp", "created_at", "updatedAt"];
 
@@ -391,6 +402,73 @@ impl Scrub {
         self.text(text)
     }
 
+    /// A vendor's request, message or tool-call id as a pseudonym: the same
+    /// prefix, `anon`, then a salted body of the original's length.
+    ///
+    /// WHY THESE ARE NOT KEPT AS STRUCTURE. `requestId` and `message.id` are
+    /// ids the readers group by (one API response is split into several
+    /// entries sharing `message.id`), so `KEEP_KEYS` kept them verbatim. But
+    /// `req_…`/`msg_…`/`toolu_…` are minted by the vendor for ONE account's
+    /// calls: not secret, yet each one names a request on a real account in a
+    /// public repository. The first real captures (11 Oct 2026, Claude Code
+    /// 2.1.285) carried 21 of each. The pseudonym is deterministic per salt,
+    /// so entries that shared an id still share one and the grouping holds;
+    /// and an id already marked `anon` is returned as it is, so the pass is
+    /// safe to run over a capture twice.
+    fn vendor_id(&self, s: &str) -> Option<String> {
+        let prefix = VENDOR_ID_PREFIXES.iter().find(|p| s.starts_with(**p))?;
+        let tail = &s[prefix.len()..];
+        if tail.len() < VENDOR_ID_MIN_TAIL || !tail.bytes().all(|b| b.is_ascii_alphanumeric()) {
+            return None;
+        }
+        if tail.starts_with(VENDOR_ID_MARK) {
+            return Some(s.to_string());
+        }
+        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        let seed = fnv(tail.as_bytes()) ^ self.salt.rotate_left(17);
+        let body: String = (0..tail.len() - VENDOR_ID_MARK.len())
+            .map(|i| char::from(ALPHABET[(splitmix(seed.wrapping_add(i as u64)) % 62) as usize]))
+            .collect();
+        Some(format!("{prefix}{VENDOR_ID_MARK}{body}"))
+    }
+
+    /// Only the vendor-id pass, over a capture that is already anonymised:
+    /// every string value that is a vendor id becomes its pseudonym and
+    /// nothing else changes. Running the whole scrub again would mask the
+    /// masked words a second time and move every fixture the corpus tests
+    /// pin; this is how a capture made before `vendor_id` existed is brought
+    /// up to it. Lines that are not JSON are copied as they are.
+    pub fn vendor_ids_jsonl(&self, text: &str) -> String {
+        fn walk(scrub: &Scrub, v: &mut Value) {
+            match v {
+                Value::String(s) => {
+                    if let Some(p) = scrub.vendor_id(s) {
+                        *s = p;
+                    }
+                }
+                Value::Array(items) => items.iter_mut().for_each(|i| walk(scrub, i)),
+                Value::Object(map) => map.values_mut().for_each(|i| walk(scrub, i)),
+                _ => {}
+            }
+        }
+        let mut out = String::with_capacity(text.len());
+        for line in text.split_inclusive('\n') {
+            let (body, end) = match line.strip_suffix('\n') {
+                Some(b) => (b, "\n"),
+                None => (line, ""),
+            };
+            match serde_json::from_str::<Value>(body) {
+                Ok(mut v) if !body.trim().is_empty() => {
+                    walk(self, &mut v);
+                    out.push_str(&v.to_string());
+                }
+                _ => out.push_str(body),
+            }
+            out.push_str(end);
+        }
+        out
+    }
+
     /// A path as `cwd` holds it, masked the way every occurrence of it is.
     pub fn path(&self, path: &str) -> String {
         self.text(path)
@@ -545,6 +623,9 @@ impl Scrub {
     /// (no `@` in any kept shape); the e-mail rule is here so that widening
     /// a shape cannot be what lets one through.
     fn kept(&self, s: &str) -> String {
+        if let Some(pseudonym) = self.vendor_id(s) {
+            return pseudonym;
+        }
         let mut out = emails_out(&homes_to_dev(s));
         if let Some(user) = &self.user {
             out = replace_ignore_ascii_case(&out, user, "dev");
@@ -801,6 +882,48 @@ mod tests {
 
     fn scrub() -> Scrub {
         Scrub::new(42, Some("alice"))
+    }
+
+    #[test]
+    fn a_vendor_id_becomes_a_pseudonym_that_still_links() {
+        let s = scrub();
+        let a = r#"{"type":"assistant","requestId":"req_011CfrdnyrasKevhoqKVqCuq","message":{"id":"msg_01AbCdEfGhIjKlMnOpQrStUv","content":[{"type":"tool_use","id":"toolu_01XyZxYzXyZxYzXyZxYzXy","name":"Read","input":{}}]}}"#;
+        let b = r#"{"type":"assistant","requestId":"req_011CfrdnyrasKevhoqKVqCuq","message":{"id":"msg_01AbCdEfGhIjKlMnOpQrStUv","content":[]}}"#;
+        let r = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_01XyZxYzXyZxYzXyZxYzXy"}]}}"#;
+        let (a, b, r) = (s.jsonl(a), s.jsonl(b), s.jsonl(r));
+        for raw in [
+            "011CfrdnyrasKevhoqKVqCuq",
+            "01AbCdEfGhIjKlMnOpQrStUv",
+            "01XyZxYzXyZxYzXyZxYzXy",
+        ] {
+            for out in [&a, &b, &r] {
+                assert!(!out.contains(raw), "{raw} survived: {out}");
+            }
+        }
+        let (va, vb, vr): (Value, Value, Value) = (
+            serde_json::from_str(&a).unwrap(),
+            serde_json::from_str(&b).unwrap(),
+            serde_json::from_str(&r).unwrap(),
+        );
+        let req = va["requestId"].as_str().unwrap();
+        assert!(req.starts_with("req_anon"), "{req}");
+        assert_eq!(req.len(), "req_011CfrdnyrasKevhoqKVqCuq".len());
+        // Two entries of one response still share their ids …
+        assert_eq!(va["requestId"], vb["requestId"]);
+        assert_eq!(va["message"]["id"], vb["message"]["id"]);
+        // … and a tool result still names its call.
+        assert_eq!(
+            va["message"]["content"][0]["id"],
+            vr["message"]["content"][0]["tool_use_id"]
+        );
+        // A second pass, whole or ids only, changes nothing.
+        assert_eq!(s.jsonl(&a), a);
+        assert_eq!(s.vendor_ids_jsonl(&a), a);
+        // A short test id is not a vendor id.
+        assert!(
+            s.jsonl(r#"{"type":"assistant","message":{"id":"msg_1"}}"#)
+                .contains(r#""msg_1""#)
+        );
     }
 
     #[test]

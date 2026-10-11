@@ -1850,3 +1850,58 @@ fn the_captured_cases_are_the_ones_the_corpus_readme_names() {
     let captured: BTreeSet<&str> = CAPTURED.iter().copied().collect();
     assert_eq!(named, captured, "session ids the README names vs CAPTURED");
 }
+
+/// THE CORPUS IS PUBLIC, AND A VENDOR ID NAMES A CALL ON A REAL ACCOUNT. The
+/// first real captures (11 Oct 2026) kept 21 `req_…` and 21 `msg_…` ids
+/// verbatim, because the readers group by them and the anonymiser counted
+/// them as structure. Every vendor-shaped id anywhere under the corpus must
+/// now be a pseudonym (`Scrub::vendor_id`, body starting with `anon`); a
+/// raw one fails here, whichever agent or version folder it sits in.
+#[test]
+fn the_real_captures_carry_no_raw_vendor_id() {
+    use tacet_tools::sessions::anonymise::VENDOR_ID_MARK;
+    fn files(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                files(&p, out);
+            } else {
+                out.push(p);
+            }
+        }
+    }
+    let mut all = Vec::new();
+    files(&corpus(), &mut all);
+    let mut raw = Vec::new();
+    for path in &all {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        for prefix in ["req_", "msg_", "toolu_", "srvtoolu_"] {
+            for (at, _) in text.match_indices(prefix) {
+                // A prefix inside a longer word (`xmsg_`) is not an id.
+                if at > 0 && text.as_bytes()[at - 1].is_ascii_alphanumeric() {
+                    continue;
+                }
+                let tail: String = text[at + prefix.len()..]
+                    .chars()
+                    .take_while(char::is_ascii_alphanumeric)
+                    .collect();
+                if tail.len() >= 12 && !tail.starts_with(VENDOR_ID_MARK) {
+                    raw.push(format!("{}: {prefix}{tail}", path.display()));
+                }
+            }
+        }
+    }
+    assert!(
+        all.len() > 10,
+        "the corpus walk found only {} files",
+        all.len()
+    );
+    assert!(
+        raw.is_empty(),
+        "{} raw vendor id(s) in the corpus:\n{}",
+        raw.len(),
+        raw.join("\n")
+    );
+}

@@ -59,9 +59,16 @@ the source, by listing every string value and key the capture kept verbatim
 and every word that survived inside a masked string. Kept verbatim: line
 types, uuids, timestamps, the version, the model names (`claude-opus-5-5`,
 `tacet-local`), `entrypoint`, `permissionMode`, `stop_reason`, token counts,
-costs and durations, the tool-schema keys of the attachment lines, and
-Anthropic's own `msg_…` and `req_…` ids — which name an API call to the
-provider that served it and nothing to anyone else. Words left in masked
+costs and durations, and the tool-schema keys of the attachment lines.
+Anthropic's own `msg_…` and `req_…` ids were kept verbatim at first (21 of
+each) and are now pseudonyms: not secret, but each names a call on a real
+account, in a public repository. `Scrub::vendor_id` turns `req_`/`msg_`/
+`toolu_`/`srvtoolu_` ids into `<prefix>anon…` of the same length,
+deterministically per salt, so entries of one response still share an id;
+these six files were brought up to it with `corpus_capture
+--vendor-ids-only` (ids only, nothing else moved), and
+`the_real_captures_carry_no_raw_vendor_id` fails on a raw one anywhere in
+the corpus. Words left in masked
 text: markup (`system-reminder`, `command-name`), the words the anonymiser
 always keeps (`Users`/`users` and `dev`, for the home rule; `blocked`), Tacet's
 own note prefix, and two pseudo-words that happen to spell `two` and `flag`
