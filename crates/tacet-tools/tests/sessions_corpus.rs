@@ -34,6 +34,10 @@
 //! arrive out of order and trail the database. `the_corpus_holds_every_shape_
 //! rg28_names` fails if a case carrying one of them is taken out.
 //!
+//! CAPTURED CASES. Six Claude Code cases are real transcripts, masked by the
+//! anonymiser (`CAPTURED`); their text is its pseudo-words, and what they
+//! are is the corpus README's to say, which a test below holds it to.
+//!
 //! Nothing here reads the user's real `~/.claude`, `~/.codex` or `~/.gemini`:
 //! Claude and Codex read the fixture directories in place, Antigravity a
 //! scratch copy (its lag notice is computed from file times, which a checkout
@@ -106,6 +110,9 @@ enum Shape {
     FallbackTranscript,
     /// A nested `task.md`.
     NestedTasks,
+    /// A `--fork-session` copy: the origin's entries, uuids unchanged, under
+    /// a new session id, in the same project directory as the origin.
+    Fork,
 }
 
 use Shape::*;
@@ -123,6 +130,7 @@ const REQUIRED: &[(AgentKind, Shape)] = &[
     (CC, OutOfOrderTimestamps),
     (CC, DuplicateUuid),
     (CC, Sidechain),
+    (CC, Fork),
     (CX, LegacyRollout),
     (CX, PaginatedRollout),
     (CX, CorruptLine),
@@ -392,6 +400,203 @@ fn the_short_log_still_running(r: &Read) {
 
 const AG_METADATA: &str = "The current local time is: 2026-10-08T17:00:00+03:00.";
 
+// --------------------------------------------- captured from Claude Code --
+// REAL FILES, MASKED. Each is a transcript Claude Code 2.1.285 wrote on the
+// measuring Mac on 11 Oct 2026 during a throwaway run made for this project
+// (no prompt, path or file of the user's), passed through `corpus_capture
+// --into` and read before it was committed (README, "What is real"). The
+// text below is therefore the anonymiser's pseudo-words: the same word is the
+// same pseudo-word within one run, which is why `XEDMND-7` is the codeword in
+// the note, in the answer and in the fork.
+
+/// The 11 Oct round trip (`scripts/session-roundtrip.sh`), session a: E2's
+/// assistant-role entry Tacet wrote, then E4's note chained to a parent that
+/// does not exist — the read shows what Claude Code then showed, the note and
+/// nothing before it.
+const RT_A: &str = "8efd26aa-bf4f-4660-9712-f11cb03b9613";
+/// Session b: E3's note chained to the real leaf, and the answer crediting
+/// Tacet with it.
+const RT_B: &str = "b35773e3-c3e3-4b5a-94f3-c2d2a449361d";
+/// E5: `--resume b --fork-session`.
+const RT_FORK: &str = "59905b9b-3af4-4285-b3ee-d573d9b01228";
+/// RG-21's runs 1 and 2: a startup, then a resume that ran Tacet's
+/// SessionStart hook (its `additionalContext` is an attachment line, which
+/// the reader leaves out of the context).
+const HOOK_RESUMED: &str = "c46e3daf-1074-4fbc-956c-3a2638be85a1";
+/// RG-21's run 3: `--resume --fork-session` of the session above, which ran
+/// no SessionStart hook.
+const HOOK_FORK: &str = "a75f24d5-c79c-42c4-8417-e7ca4710192b";
+/// RG-21's run 4: a startup under a record Tacet had already written.
+const HOOK_STARTUP: &str = "2522b459-b16f-4938-b7ca-b01e86dcfc95";
+
+/// The captured cases, and the forks among them with the session each was
+/// forked from.
+const CAPTURED: &[&str] = &[RT_A, RT_B, RT_FORK, HOOK_RESUMED, HOOK_FORK, HOOK_STARTUP];
+const CAPTURED_FORKS: &[(&str, &str)] = &[(RT_B, RT_FORK), (HOOK_RESUMED, HOOK_FORK)];
+
+const RT_A_TITLE: &str = "Ajkx bwote dscgqtas fdswwzeuj sf gqqz htwlboobnnjx.";
+const RT_A_ROWS: &[Row] = &[
+    (
+        User,
+        Text,
+        None,
+        "[Note from Tacet, a local assistant, not from the user] Dbaozwht: WUAKR-9.",
+    ),
+    (Assistant, Text, None, "Rc sppgrska jxmyohspx."),
+    (
+        User,
+        Text,
+        None,
+        "Ajkx bwote dscgqtas fdswwzeuj sf gqqz htwlboobnnjx.",
+    ),
+    (
+        Assistant,
+        Text,
+        None,
+        "Gsh cpah dscgqtas sf gqqz htwlboobnnjx gr **WUAKR-9**. Yl urkw sf nan qldkfif jgve uxdjifr ek kxiss tcwy Mxkeq, a rldyc gbrmdvzkp.",
+    ),
+];
+const RT_B_TITLE: &str = "Knt scvn a jgve fnexb I etq tajx, zze emry etq nan dscgqtas?";
+const RT_B_ROWS: &[Row] = &[
+    (User, Text, None, "Pamss bkja tfiegmq: XSCHB"),
+    (Assistant, Text, None, "XSCHB"),
+    (
+        User,
+        Text,
+        None,
+        "[Note from Tacet, a local assistant, not from the user] Msdcw adc rtgo tajx Mxkeq tiayl nan fwzuigwl cpdrt piukqlxc jee (ubkqc U85). Dbaozwht: XEDMND-7.",
+    ),
+    (Assistant, Text, None, "Rc sppgrska jxmyohspx."),
+    (
+        User,
+        Text,
+        None,
+        "Knt scvn a jgve fnexb I etq tajx, zze emry etq nan dscgqtas?",
+    ),
+    (
+        Assistant,
+        Text,
+        None,
+        "Gsh jgve etq tcwy **Mxkeq**, a rldyc gbrmdvzkp. Yl owhn Mxkeq sir tiayl nan fwzuigwl cpdrt piukqlxc jee (ubkqc U85) fnexb adc rtgo tajx, zze nn zdzj nan dscgqtas **XEDMND-7**.",
+    ),
+];
+const RT_FORK_TITLE: &str = "Pamss bkja tfiegmq: XSCHB";
+const RT_FORK_ROWS: &[Row] = &[
+    (User, Text, None, "Pamss bkja tfiegmq: XSCHB"),
+    (Assistant, Text, None, "XSCHB"),
+    (
+        User,
+        Text,
+        None,
+        "[Note from Tacet, a local assistant, not from the user] Msdcw adc rtgo tajx Mxkeq tiayl nan fwzuigwl cpdrt piukqlxc jee (ubkqc U85). Dbaozwht: XEDMND-7.",
+    ),
+    (Assistant, Text, None, "Rc sppgrska jxmyohspx."),
+    (
+        User,
+        Text,
+        None,
+        "Knt scvn a jgve fnexb I etq tajx, zze emry etq nan dscgqtas?",
+    ),
+    (
+        Assistant,
+        Text,
+        None,
+        "Gsh jgve etq tcwy **Mxkeq**, a rldyc gbrmdvzkp. Yl owhn Mxkeq sir tiayl nan fwzuigwl cpdrt piukqlxc jee (ubkqc U85) fnexb adc rtgo tajx, zze nn zdzj nan dscgqtas **XEDMND-7**.",
+    ),
+    (User, Text, None, "Zizd nan dscgqtas tcwy Mxkeq's jgve."),
+    (Assistant, Text, None, "**XEDMND-7**"),
+];
+const HOOK_RESUMED_TITLE: &str = "Fyovru pjvh rfpk xdga kd yeuqunb ql nkcy drcdisbplsxx, ramdrxu qttun llq kkgii: kd yefjn a cura ztxc ls ektwhskn sxejtv…";
+const HOOK_RESUMED_ROWS: &[Row] = &[
+    (User, Text, None, "Uorpo otnr zenovyd: VYDTE"),
+    (Assistant, Text, None, "VYDTE"),
+    (
+        User,
+        Text,
+        None,
+        "Fyovru pjvh rfpk xdga kd yeuqunb ql nkcy drcdisbplsxx, ramdrxu qttun llq kkgii: kd yefjn a cura ztxc ls ektwhskn sxejtv tuh nkcy tylwbrc ql lvqk obsrdvj? Mb cfv, uwbtk vqr gwtdi htpli oy cura 2 vbx rqd ihb vzkh vqr sxejtv. Mb gyr, mioho JXSP.",
+    ),
+    (
+        Assistant,
+        Text,
+        None,
+        "Tqo. Lwxg 2 kd otxhll **\"Emwnsw vqr zmqung xkhfzx cd OMZUBO-588\"**, vbx ez's klvsvi ql ektwhskn.\n\nKqy sxejtv uev vzkh ny **Tczsu**, a qjdlt jhctacrox st nkcy kozemyi. Wt hyfn ql qafeqjv nkcy tylwbrc's slcwnol kkji dc a akgeqce sxejtv, uiwy wdixzvq 9220-68-93X88:89:52Y ny riwkj.",
+    ),
+];
+const HOOK_FORK_TITLE: &str = "Uorpo otnr zenovyd: VYDTE";
+const HOOK_FORK_ROWS: &[Row] = &[
+    (User, Text, None, "Uorpo otnr zenovyd: VYDTE"),
+    (Assistant, Text, None, "VYDTE"),
+    (
+        User,
+        Text,
+        None,
+        "Fyovru pjvh rfpk xdga kd yeuqunb ql nkcy drcdisbplsxx, ramdrxu qttun llq kkgii: kd yefjn a cura ztxc ls ektwhskn sxejtv tuh nkcy tylwbrc ql lvqk obsrdvj? Mb cfv, uwbtk vqr gwtdi htpli oy cura 2 vbx rqd ihb vzkh vqr sxejtv. Mb gyr, mioho JXSP.",
+    ),
+    (
+        Assistant,
+        Text,
+        None,
+        "Tqo. Lwxg 2 kd otxhll **\"Emwnsw vqr zmqung xkhfzx cd OMZUBO-588\"**, vbx ez's klvsvi ql ektwhskn.\n\nKqy sxejtv uev vzkh ny **Tczsu**, a qjdlt jhctacrox st nkcy kozemyi. Wt hyfn ql qafeqjv nkcy tylwbrc's slcwnol kkji dc a akgeqce sxejtv, uiwy wdixzvq 9220-68-93X88:89:52Y ny riwkj.",
+    ),
+    (
+        User,
+        Text,
+        None,
+        "Fyovru pjvh rfpk xdga kd yeuqunb ql nkcy drcdisbplsxx, ramdrxu qttun llq kkgii: tog zzyf lzqbt ukit vqr ektwhskn sxejtv tuh nkcy tylwbrc ztxc ugo, vbx xdga kd vqr gwtdi htpli oy cura 3? Mb yefjn kd oi cura 3, mioho QE QUTL 3.",
+    ),
+    (
+        Assistant,
+        Text,
+        None,
+        "Kqy sxejtv qjrpu 2 lzqbt. QE QUTL 3.",
+    ),
+];
+const HOOK_STARTUP_TITLE: &str = "Fyovru pjvh rfpk xdga kd yeuqunb ql nkcy drcdisbplsxx, ramdrxu qttun llq kkgii: kd yefjn a cura ztxc ls ektwhskn sxejtv…";
+const HOOK_STARTUP_ROWS: &[Row] = &[
+    (
+        User,
+        Text,
+        None,
+        "Fyovru pjvh rfpk xdga kd yeuqunb ql nkcy drcdisbplsxx, ramdrxu qttun llq kkgii: kd yefjn a cura ztxc ls ektwhskn sxejtv tuh nkcy tylwbrc ql lvqk obsrdvj? Mb cfv, uwbtk vqr gwtdi htpli oy cura 1, pci jogwse, vbx ihb vzkh vqr sxejtv. Mb gyr, mioho JXSP.",
+    ),
+    (
+        Assistant,
+        Text,
+        None,
+        "Tqo. A CpzfaifJybfc kkji onczaq a akgeqce sxejtv tuh nkcy tylwbrc.\n\n- **Lwxg 1 htpli:** \"Meos vqr wlxbzztyb cd JCJVPZ-947\"\n- **Comqnr:** blocked\n- **Dyer ny:** Tczsu, a qjdlt jhctacrox st nkcy kozemyi. Kqy sxejtv kkch ez uev \"Czwfomb 9220-68-93X88:07:41J ny riwkj\".",
+    ),
+];
+
+fn captured_leaf(r: &Read, leaf: &str) {
+    assert_eq!(r.claude().leaf.as_deref(), Some(leaf));
+    assert!(!r.claude().compacted);
+}
+
+fn rt_a_leaf(r: &Read) {
+    captured_leaf(r, "06128eff-bcbc-4288-981f-dfd3caf44c2e");
+}
+
+fn rt_b_leaf(r: &Read) {
+    captured_leaf(r, "75df7e35-67ae-4460-9586-fb7c9128b4ba");
+}
+
+fn rt_fork_leaf(r: &Read) {
+    captured_leaf(r, "1813c99d-3709-4f40-81aa-4507b6150aab");
+}
+
+fn hook_resumed_leaf(r: &Read) {
+    captured_leaf(r, "d1ef5f3d-5fb7-4e53-b7e2-41757fc59212");
+}
+
+fn hook_fork_leaf(r: &Read) {
+    captured_leaf(r, "7585ab46-470a-4b77-af84-e063b379a3e5");
+}
+
+fn hook_startup_leaf(r: &Read) {
+    captured_leaf(r, "012043c3-a83d-4a58-8b32-cc921d343cce");
+}
+
 const CASES: &[Case] = &[
     // ---------------------------------------------------- Claude Code --
     // The two ends of the measured read range, the one measured write
@@ -603,6 +808,87 @@ const CASES: &[Case] = &[
         warnings: &["parentUuid loops back to e0000003-0000-4000-8000-000000000000"],
         db_after_log: None,
         check: nothing_more,
+    },
+    // Captured (see `CAPTURED`). No `ai-title` in a `claude -p` session, so
+    // each is named by its `last-prompt` line; a fork's carries its origin's
+    // first prompt, not the one asked in the fork (as Claude Code wrote it).
+    Case {
+        agent: CC,
+        version: "2.1.285",
+        id: RT_A,
+        shapes: &[OrphanParent],
+        title: RT_A_TITLE,
+        entries: Some(RT_A_ROWS),
+        plan: &[],
+        skipped: 0,
+        warnings: &["00000000-0000-4000-8000-000000000000, which is not in this file"],
+        db_after_log: None,
+        check: rt_a_leaf,
+    },
+    Case {
+        agent: CC,
+        version: "2.1.285",
+        id: RT_B,
+        shapes: &[Clean],
+        title: RT_B_TITLE,
+        entries: Some(RT_B_ROWS),
+        plan: &[],
+        skipped: 0,
+        warnings: &[],
+        db_after_log: None,
+        check: rt_b_leaf,
+    },
+    Case {
+        agent: CC,
+        version: "2.1.285",
+        id: RT_FORK,
+        shapes: &[Clean, Fork],
+        title: RT_FORK_TITLE,
+        entries: Some(RT_FORK_ROWS),
+        plan: &[],
+        skipped: 0,
+        warnings: &[],
+        db_after_log: None,
+        check: rt_fork_leaf,
+    },
+    Case {
+        agent: CC,
+        version: "2.1.285",
+        id: HOOK_RESUMED,
+        shapes: &[Clean],
+        title: HOOK_RESUMED_TITLE,
+        entries: Some(HOOK_RESUMED_ROWS),
+        plan: &[],
+        skipped: 0,
+        warnings: &[],
+        db_after_log: None,
+        check: hook_resumed_leaf,
+    },
+    Case {
+        agent: CC,
+        version: "2.1.285",
+        id: HOOK_FORK,
+        shapes: &[Clean, Fork],
+        title: HOOK_FORK_TITLE,
+        entries: Some(HOOK_FORK_ROWS),
+        plan: &[],
+        skipped: 0,
+        warnings: &[],
+        db_after_log: None,
+        check: hook_fork_leaf,
+    },
+    Case {
+        agent: CC,
+        version: "2.1.285",
+        id: HOOK_STARTUP,
+        shapes: &[Clean],
+        title: HOOK_STARTUP_TITLE,
+        entries: Some(HOOK_STARTUP_ROWS),
+        plan: &[],
+        skipped: 0,
+        warnings: &[],
+        db_after_log: None,
+        check: hook_startup_leaf,
     },
     // ----------------------------------------------------------- Codex --
     // Written from source (openai/codex @ a06545b), not collected: Codex was
@@ -1487,4 +1773,80 @@ fn the_anonymity_scan_sees_what_it_claims_to() {
     ] {
         assert!(anonymity_problems(fine, &me).is_empty(), "flagged {fine:?}");
     }
+}
+
+/// A FORK IS ITS ORIGIN UNDER A NEW ID. What the two captured forks hold,
+/// as Claude Code 2.1.285 wrote them: the origin's every uuid, every line
+/// stamped with the fork's own session id, filed beside the origin, and the
+/// origin's context as the start of the fork's. A reader that keyed entries
+/// by uuid across files, or listed one project directory's sessions by the
+/// first `sessionId` it met, would merge the two; this is where it shows.
+#[test]
+fn a_captured_fork_is_its_origin_under_a_new_id() {
+    fn ids(path: &Path) -> (BTreeSet<String>, BTreeSet<String>) {
+        let (mut uuids, mut sessions) = (BTreeSet::new(), BTreeSet::new());
+        for line in std::fs::read_to_string(path).unwrap().lines() {
+            let v: serde_json::Value = serde_json::from_str(line).unwrap();
+            if let Some(u) = v["uuid"].as_str() {
+                uuids.insert(u.to_string());
+            }
+            if let Some(s) = v["sessionId"].as_str() {
+                sessions.insert(s.to_string());
+            }
+        }
+        (uuids, sessions)
+    }
+    let gemini = Gemini::new("fork");
+    let case = |id: &str| CASES.iter().find(|c| c.id == id).unwrap();
+    assert!(!CAPTURED_FORKS.is_empty());
+    for (origin, fork) in CAPTURED_FORKS {
+        let (o, f) = (case(origin), case(fork));
+        assert!(f.shapes.contains(&Fork) && !o.shapes.contains(&Fork));
+        let (o, f) = (read(o, &gemini).unwrap(), read(f, &gemini).unwrap());
+        let (op, fp) = (&o.claude().path, &f.claude().path);
+        assert_eq!(op.parent(), fp.parent(), "{fork}: not beside {origin}");
+        let ((ou, os), (fu, fs)) = (ids(op), ids(fp));
+        assert!(ou.is_subset(&fu), "{fork}: lost uuids of {origin}");
+        assert_eq!(os, BTreeSet::from([origin.to_string()]));
+        assert_eq!(fs, BTreeSet::from([fork.to_string()]));
+        let (oc, fc) = (shape(&o), shape(&f));
+        assert!(fc.len() > oc.len(), "{fork}: nothing asked in the fork");
+        assert_eq!(fc[..oc.len()], oc[..], "{fork}: does not start as {origin}");
+    }
+}
+
+/// WHAT IS CAPTURED IS SAID, AND ONLY THAT. The corpus README is where a
+/// reader learns which fixtures are real; it said "no real session is in the
+/// corpus yet" for as long as that was true, and a capture added without
+/// changing it would leave the page claiming less than the corpus holds — or,
+/// the other way round, a session id left in the README after its files went
+/// would claim more. Both directions, by id.
+#[test]
+fn the_captured_cases_are_the_ones_the_corpus_readme_names() {
+    let readme = std::fs::read_to_string(corpus().join("README.md")).unwrap();
+    assert!(
+        !readme.contains("No real session is in the corpus yet"),
+        "the README still says no real session is in the corpus"
+    );
+    for id in CAPTURED {
+        let case = CASES
+            .iter()
+            .find(|c| c.id == *id)
+            .unwrap_or_else(|| panic!("{id}: captured, but no case reads it"));
+        assert!(case.entries.is_some(), "{id}");
+        assert!(
+            !VERSION_EDITED_COPIES.contains(id),
+            "{id}: declared a capture and a copy"
+        );
+        assert!(readme.contains(id), "the corpus README does not name {id}");
+    }
+    for (origin, fork) in CAPTURED_FORKS {
+        assert!(CAPTURED.contains(origin) && CAPTURED.contains(fork));
+    }
+    let named: BTreeSet<&str> = readme
+        .split(|c: char| !(c.is_ascii_hexdigit() || c == '-'))
+        .filter(|w| w.len() == 36 && w.matches('-').count() == 4)
+        .collect();
+    let captured: BTreeSet<&str> = CAPTURED.iter().copied().collect();
+    assert_eq!(named, captured, "session ids the README names vs CAPTURED");
 }

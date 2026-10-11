@@ -130,8 +130,9 @@ fn every_corpus_file_is_where_place_would_file_it() {
         assert_eq!(filed, rel, "{name} sits where `place` would not put it");
         placed += 1;
     }
-    // 12 Claude Code transcripts, 5 Codex rollouts, 7 Antigravity files.
-    assert_eq!(placed, 24, "the corpus changed; recount");
+    // 18 Claude Code transcripts (6 of them captured, 11 Oct 2026), 5 Codex
+    // rollouts, 7 Antigravity files.
+    assert_eq!(placed, 30, "the corpus changed; recount");
 }
 
 /// The home a planted capture comes from, and the user it belongs to: not

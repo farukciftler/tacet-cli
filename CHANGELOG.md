@@ -71,6 +71,20 @@ releases to follow.
   updater to that order: deleting the clear used to leave every test green,
   because the only test called the helper on its own. A second test reads
   `install` and fails if it reaches the downloader any other way (L3).
+* A Claude Code session with no `ai-title` (every `claude -p` one) is named
+  by its `last-prompt` line in the listing and in the read alike. A real one
+  is ~280 KB of attachment lines by its first answer, so the listing saw only
+  its tail and named it by its last prompt while the read named it by its
+  first, and a small session was renamed when it grew past the 64 KB tail
+  (RG-28).
+* The session corpus holds its first real files: six Claude Code 2.1.285
+  transcripts from the 11 Oct 2026 round trip and the RG-21 hook run (both
+  throwaway, nothing of the user's), masked by `corpus_capture --into` and
+  reviewed value by value; each is a case read through the real reader, the
+  two `--fork-session` copies are held to their origins, and a test holds the
+  corpus README to the captured ids. Antigravity has no capture (`agy` stopped
+  at sign-in before any conversation existed) and Codex none (not installed)
+  (RG-28).
 
 **Measured:** the Claude Code SessionStart hook, run for real on 11 Oct 2026
 with Claude Code 2.1.285 (four headless `-p` turns in a throwaway project,

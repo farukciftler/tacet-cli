@@ -13,7 +13,8 @@ antigravity/<version>/<root>/brain|conversations     copied to ~/.gemini/<root>
 
 ## What is in it today, and where it came from
 
-Every line is **synthetic**: written for the corpus in the measured *shape*
+Six Claude Code transcripts are **real captures** (next section). Every other
+line is **synthetic**: written for the corpus in the measured *shape*
 (the field names, the line types, the order quirks the 9 Oct 2026 measurement
 counted), never copied out of a real session. The Claude Code versions are the
 two ends of the measured read range and the one version a write was measured
@@ -29,11 +30,69 @@ Codex directories are named after the `cli_version` the fixtures carry; Codex
 was not installed where they were written, so they follow its source
 (openai/codex @ a06545b) and are not a measurement of those releases.
 
+## What is real
+
+Six transcripts written by **Claude Code 2.1.285** (`claude -p`, entrypoint
+`claude-desktop`) on 11 Oct 2026, on the measuring Mac (Apple M4 Pro, macOS
+26.5.2), in throwaway directories made for this project: every prompt in
+them was the run's own, and no transcript was taken from the user's
+`~/.claude`. Claude Code still wrote the account's context into them as
+attachment lines — its skill and tool listings, the output of the account's
+own hooks, the prompt snapshot, the e-mail address and organisation — and
+that is masked like everything else (below). All are under
+`claude/2.1.285/projects/`, one project directory per working directory the
+run used.
+
+| session | run | what it holds |
+|---|---|---|
+| `8efd26aa-bf4f-4660-9712-f11cb03b9613` | `scripts/session-roundtrip.sh`, session a | E2's assistant-role entry Tacet wrote (model `tacet-local`), then E4's note chained to a parent that is not in the file: the read keeps the note and what followed it, and warns |
+| `b35773e3-c3e3-4b5a-94f3-c2d2a449361d` | the same run, session b | E3's note chained to the real leaf, and the answer crediting Tacet |
+| `59905b9b-3af4-4285-b3ee-d573d9b01228` | the same run, E5 | `--resume b --fork-session`: b's entries, uuids unchanged, under a new id |
+| `c46e3daf-1074-4fbc-956c-3a2638be85a1` | RG-21's hook run, runs 1 and 2 | a start, then a resume that ran Tacet's SessionStart hook (its context is a `hook_additional_context` attachment line) |
+| `a75f24d5-c79c-42c4-8417-e7ca4710192b` | RG-21, run 3 | `--resume --fork-session` of the session above: no SessionStart hook ran |
+| `2522b459-b16f-4938-b7ca-b01e86dcfc95` | RG-21, run 4 | a start under a record Tacet had already written |
+
+**How.** Each through `corpus_capture --into`, one salt per run (shared by a
+run's sessions, so a fork and its origin mask the same words the same way),
+drawn from the OS and kept nowhere. **Reviewed** before the commit, against
+the source, by listing every string value and key the capture kept verbatim
+and every word that survived inside a masked string. Kept verbatim: line
+types, uuids, timestamps, the version, the model names (`claude-opus-5-5`,
+`tacet-local`), `entrypoint`, `permissionMode`, `stop_reason`, token counts,
+costs and durations, the tool-schema keys of the attachment lines, and
+Anthropic's own `msg_…` and `req_…` ids — which name an API call to the
+provider that served it and nothing to anyone else. Words left in masked
+text: markup (`system-reminder`, `command-name`), the words the anonymiser
+always keeps (`Users`/`users` and `dev`, for the home rule; `blocked`), Tacet's
+own note prefix, and two pseudo-words that happen to spell `two` and `flag`
+(a different salt left neither; the source words differ). The e-mail
+address, the organisation uuid, the home directory, the user and machine
+names and the scratch paths were masked; `grep` for each found none, and
+`the_corpus_is_anonymised` passes.
+
+**What they showed that the synthetic files could not.** A real `claude -p`
+session is ~280 KB of attachment lines (skill listings, the prompt snapshot,
+hook output) by its first answer, so a listing reads only its tail; with no
+`ai-title`, the listing named each by its `last-prompt` line and the read by
+its first prompt. The two now agree on `last-prompt`
+(`claude_sessions.rs`, `an_untitled_session_is_named_the_same_…`). A fork's
+`last-prompt` lines carry its origin's first prompt, not the question asked
+in the fork. Opus 5.5's thinking blocks are written with empty text, and the
+reader leaves them out.
+
+**Still not real.** The 2.1.263 and 2.1.293 ends of the read range and the
+2.2.0 case are version-edited copies (`VERSION_EDITED_COPIES`); no captured
+Claude Code session has a tool call, a plan, a compaction or a sidechain
+(these runs asked for none). **Antigravity:** none — `agy` 1.1.10 stopped at
+Google sign-in before any conversation existed (RG-25, 11 Oct 2026), and the
+IDE was not driven. **Codex:** none, and none can be made here: Codex is not
+installed on the measuring Mac.
+
 ## Adding a real session
 
-No real session is in the corpus yet: capturing one means reading somebody's
-`~/.claude`, `~/.codex` or `~/.gemini`, which only that person can agree to.
-The steps, for whoever does:
+Capturing one from a person's own `~/.claude`, `~/.codex` or `~/.gemini`
+means reading their sessions, which only that person can agree to; a
+throwaway run made for the purpose, as above, needs no one's. The steps:
 
 1. Capture each file of the session through the anonymiser, and let it file
    the result:

@@ -1,8 +1,10 @@
 //! Turning a real session into a corpus fixture without publishing it (RG-28).
 //!
-//! WHY THIS EXISTS. The corpus under `tests/fixtures/sessions/corpus/` is
+//! WHY THIS EXISTS. The corpus under `tests/fixtures/sessions/corpus/` was
 //! synthetic: every line was written in the measured *shape*, and the four
-//! Claude Code "versions" are one file with the version string edited. RG-28
+//! Claude Code "versions" are one file with the version string edited (six
+//! Claude Code 2.1.285 transcripts captured through this on 11 Oct 2026 are
+//! the first real files; the corpus README lists them). RG-28
 //! asks for anonymised sessions per agent and version, which means copying a
 //! real one off a real machine — and a real session holds the user's prompts,
 //! code, paths, branch names and whatever they pasted. The corpus README's old

@@ -172,7 +172,9 @@ fn a_listing_reads_only_the_tail_of_the_transcript() {
 }
 
 /// custom-title beats ai-title beats the first thing the user typed; a slash
-/// command's wrapper and a system-injected (`isMeta`) line are not that.
+/// command's wrapper and a system-injected (`isMeta`) line are not that. (A
+/// `last-prompt` line, which these files do not have, comes before the first
+/// prompt: the test after this one says why.)
 #[test]
 fn the_title_is_the_custom_one_then_the_ai_one_then_the_first_prompt() {
     let s = source();
@@ -222,6 +224,66 @@ fn the_title_is_the_custom_one_then_the_ai_one_then_the_first_prompt() {
         .collect();
     assert!(listed.contains(&("untitled".into(), "make the build green".into())));
     assert!(listed.contains(&("aititled".into(), "Green build".into())));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// AN UNTITLED SESSION HAS ONE NAME, WHATEVER ITS SIZE. Claude Code writes no
+/// `ai-title` for a `claude -p` session, and the 11 Oct 2026 captures in the
+/// corpus are about 280 KB by their first answer (skill listings, the
+/// prompt snapshot, hook output, all as attachment lines), so a listing sees
+/// only their tail and names them by the `last-prompt` line there. The read
+/// named them by the first prompt on the chain: the list showed one name and
+/// the opened session another, and the same session was renamed the moment its
+/// file passed `LIST_TAIL_BYTES`. A `last-prompt` line is in every tail Claude
+/// Code writes (it re-appends one per turn), so it is what both name it by.
+#[test]
+fn an_untitled_session_is_named_the_same_by_the_listing_and_the_read_at_any_size() {
+    let root = scratch("untitled-sizes");
+    let mut lines = vec![
+        entry_line("u0", None, "user", serde_json::json!("the first prompt")),
+        entry_line(
+            "a0",
+            Some("u0"),
+            "assistant",
+            serde_json::json!([{"type": "text", "text": "first answer"}]),
+        ),
+        entry_line("u1", Some("a0"), "user", serde_json::json!("the second prompt")),
+        serde_json::json!({"type": "last-prompt", "lastPrompt": "the second prompt", "leafUuid": "u1"})
+            .to_string(),
+    ];
+    let titles = |root: &Path| {
+        let listed = source().discover(root);
+        assert_eq!(listed.len(), 1);
+        let read = source().read(root, "untitled-sizes").unwrap();
+        (listed[0].title.clone(), read.title)
+    };
+    one_session(&root, "-w", "untitled-sizes", &lines);
+    let small = titles(&root);
+    assert_eq!(small.0, small.1, "a whole-file listing and the read");
+
+    // The same session after a long answer: the head is out of the tail now.
+    let filler = "x".repeat(1000);
+    let mut parent = "u1".to_string();
+    let mut n = 0;
+    while lines.iter().map(|l| l.len() + 1).sum::<usize>() < 2 * LIST_TAIL_BYTES as usize {
+        let uuid = format!("f{n}");
+        lines.insert(
+            lines.len() - 1,
+            entry_line(
+                &uuid,
+                Some(&parent),
+                "assistant",
+                serde_json::json!([{"type": "text", "text": filler}]),
+            ),
+        );
+        parent = uuid;
+        n += 1;
+    }
+    one_session(&root, "-w", "untitled-sizes", &lines);
+    let large = titles(&root);
+    assert_eq!(large.0, large.1, "a tail listing and the read");
+    assert_eq!(large, small, "the session was renamed by growing");
+    assert_eq!(large.0, "the second prompt");
     let _ = std::fs::remove_dir_all(&root);
 }
 

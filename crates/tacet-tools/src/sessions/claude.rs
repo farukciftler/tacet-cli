@@ -246,8 +246,11 @@ impl ClaudeSource {
             .clone()
             .or_else(|| scan.ai_title.clone())
             .or_else(|| side_title(&path, id))
-            .or(built.first_prompt)
+            // `last-prompt` before the first prompt, as in `summarize`: the
+            // listing cannot see the first prompt of a real file, and a
+            // session must have one name.
             .or_else(|| scan.last_prompt.clone())
+            .or(built.first_prompt)
             .map(|t| clip_title(&t))
             .unwrap_or_default();
         let session = AgentSession {
@@ -472,6 +475,15 @@ fn modified(path: &Path) -> Option<i64> {
 /// `started` is only filled when the tail IS the whole file: the earliest
 /// timestamp of a tail is not when the session started, and a wrong timestamp
 /// in a listing is worse than a missing one (model.rs).
+///
+/// AN UNTITLED SESSION IS NAMED BY ITS `last-prompt`, AND THE READ AGREES.
+/// The first prompt was preferred, and the listing could only find it when
+/// the tail was the whole file. A `claude -p` session has no `ai-title` and
+/// is ~280 KB of attachment lines by its first answer (the 11 Oct 2026
+/// captures in the corpus), so every real one was listed by its last prompt
+/// and opened under its first, and a small one was renamed when it grew past
+/// the tail. Claude Code re-appends `last-prompt` every turn, so the tail
+/// always has it; the first prompt is only the fallback for a file without.
 fn summarize(path: &Path, id: &str) -> Result<SessionSummary, Refusal> {
     let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(u64::MAX);
     let tail = secrets::read_tail(path, LIST_TAIL_BYTES)?;
@@ -503,8 +515,8 @@ fn summarize(path: &Path, id: &str) -> Result<SessionSummary, Refusal> {
         .custom_title
         .or(scan.ai_title)
         .or_else(|| side_title(path, id))
-        .or(first_prompt)
         .or(scan.last_prompt)
+        .or(first_prompt)
         .map(|t| clip_title(&t))
         .unwrap_or_default();
     Ok(SessionSummary {
