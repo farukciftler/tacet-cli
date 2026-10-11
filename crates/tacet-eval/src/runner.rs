@@ -185,6 +185,22 @@ pub fn run_case(case: &EvalCase, selector: &dyn EngineSelector) -> CaseOutcome {
     // A DUPLICATE CALL ENDS THE TOOL PHASE — see the shell's loop for the
     // measurement. Set here, read by `final_turn` below.
     let mut must_answer = false;
+    // WHAT THE MODEL IS ASKED, as opposed to what the case says — the same
+    // split `tool_selection.rs` makes, for the same reason (audit M23): the
+    // shell appends the Qwen soft switch to every ChatML turn, and this loop
+    // sent the bare input, so a hybrid Qwen3 build was measured here in a
+    // thinking mode a default install never runs it in. The selection loop was
+    // fixed first and this one was missed. `case.input` stays the router's
+    // input, as `message` does in the shell.
+    let asked = format!(
+        "{}{}",
+        case.input,
+        tacet_engine::thinking_switch::soft_switch(
+            engine.template(),
+            tacet_engine::thinking_switch::ThinkingSetting::Auto,
+            &case.input,
+        )
+    );
 
     for turn in 0..MAX_TURNS {
         // THE LAST PASS CARRIES NO TOOLS AND NO CONSTRAINT — the shell does the
@@ -220,11 +236,11 @@ pub fn run_case(case: &EvalCase, selector: &dyn EngineSelector) -> CaseOutcome {
         // already been fixed; this file was measuring a prompt the product does
         // not build, and reporting the difference as the model's fault.
         let first_pass = history.is_empty();
-        let question = if first_pass { case.input.as_str() } else { "" };
+        let question = if first_pass { asked.as_str() } else { "" };
         let previous: Vec<Turn> = if first_pass {
             Vec::new()
         } else {
-            std::iter::once(Turn::user(&case.input))
+            std::iter::once(Turn::user(&asked))
                 .chain(history.iter().cloned())
                 .collect()
         };
@@ -246,7 +262,7 @@ pub fn run_case(case: &EvalCase, selector: &dyn EngineSelector) -> CaseOutcome {
             executor.cancel();
         }
 
-        let generation = match wait(
+        let mut generation = match wait(
             engine.generate(
                 &prompt,
                 constraint
@@ -263,6 +279,10 @@ pub fn run_case(case: &EvalCase, selector: &dyn EngineSelector) -> CaseOutcome {
                 break;
             }
         };
+        // The catalog-aware thinking split, exactly as the shell makes it — see
+        // `Generation::split_against`. A loop that skipped it would measure a
+        // different executor input from the one users get.
+        generation.split_against(&executor.catalog().names(), |t| executor.parse_call(t));
         // Half output IS NOT PARSED: a tool call that hit the token cap is half
         // a JSON.
         if !generation.stop.is_complete() {
@@ -279,7 +299,9 @@ pub fn run_case(case: &EvalCase, selector: &dyn EngineSelector) -> CaseOutcome {
         // ON THE LAST PASS, WHAT THE MODEL WRITES IS THE ANSWER — the same rule
         // as the other two loops, kept in step with them deliberately.
         let last_pass = turn + 1 == MAX_TURNS;
-        let executed = if last_pass {
+        // And not a call the thinking split could only guess about — see
+        // `Generation::executable`; the shell gates on it the same way.
+        let executed = if last_pass || !generation.executable {
             None
         } else {
             wait(executor.execute_raw(&generation.text, ticket, &mut ctx))
@@ -563,6 +585,62 @@ mod tests {
 
         let outcome = run_case(&case, &FakeSelector);
         assert!(outcome.passed, "faults: {:?}", outcome.faults);
+    }
+
+    /// Audit H5, through the whole loop: the engine's thinking split cannot see
+    /// the catalog, so before the loop re-split with it a `</think>` inside one
+    /// glued argument closed the block and left `calculateexpression: "6*7"`
+    /// opening a line — the executor's glued recovery ran `calculate`, a call
+    /// the model never made.
+    ///
+    /// NOR DOES `find_file` RUN, and this test used to require that it did. A
+    /// glued call has no end the split can prove, so whether that `</think>`
+    /// ends the block is a guess: kept, the text is a `find_file` call; cut,
+    /// it is a `calculate` call. A review showed the kept reading running calls
+    /// the model had declined inside its reasoning, and with two readings that
+    /// name different calls nothing tells this one apart from those — so the
+    /// turn ends as an answer, which is what `called` being empty means.
+    #[test]
+    fn a_close_tag_inside_a_glued_argument_cannot_launch_another_call() {
+        let case = EvalCase::new("h5-glued-probe", "Find the budget file")
+            .tool("find_file")
+            .script(&[
+                "<think>reason\nfind_filepattern: \"a\", folder: \"</think>\ncalculateexpression: \"6*7\"\"",
+                "Done.",
+            ]);
+        let outcome = run_case(&case, &FakeSelector);
+        assert!(
+            !outcome.called.iter().any(|c| c == "calculate"),
+            "a call was assembled from an argument: {:?}",
+            outcome.called
+        );
+        assert!(
+            outcome.called.is_empty(),
+            "a call ran on a guess: {:?}",
+            outcome.called
+        );
+    }
+
+    /// Audit H5, the other direction: a call the model wrote INSIDE its
+    /// reasoning and declined must not run because the split kept the block on
+    /// a guess. The marker makes the call start unprovable, the split keeps
+    /// the block, and the kept text holds `find_file`; before the loop gated on
+    /// `executable` the executor ran it and the case recorded a call the model
+    /// had said it would not make.
+    #[test]
+    fn a_call_declined_inside_the_thinking_does_not_run() {
+        let case = EvalCase::new("h5-declined-probe", "Do not look anything up")
+            .tool("find_file")
+            .script(&[
+                "<think>I could write <tool_call>find_file pattern=\"secret\" but I will not.</think>Nothing to look up.",
+                "Done.",
+            ]);
+        let outcome = run_case(&case, &FakeSelector);
+        assert!(
+            outcome.called.is_empty(),
+            "a declined call ran: {:?}",
+            outcome.called
+        );
     }
 
     /// The script both gate cases share; only the flag differs.

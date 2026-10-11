@@ -146,18 +146,73 @@ pub fn fold(message: &str) -> String {
 /// unreadable — a router that panics because a generated file was truncated is
 /// worse than one that falls back to its trigger list.
 pub fn predict(message: &str) -> Option<&'static str> {
-    if BLOB.len() < 8 {
+    predict_with(BLOB, message)
+}
+
+/// The header of a blob, checked against the blob's own length, or `None`.
+///
+/// SEPARATE FROM `predict` SO IT CAN BE FED A BAD BLOB. The shipped file is
+/// well formed, so a test that only ever reads it cannot tell this guard from
+/// its absence: the audit of 9 Oct 2026 (T2) deleted the guard in a copy and
+/// all four tests in this file still passed. The arithmetic is checked because
+/// the counts come from the file — `u32::MAX * 3` wraps on a 32-bit target and
+/// would let a short weight slice past the length comparison.
+fn header(blob: &[u8]) -> Option<(usize, usize, &[u8])> {
+    if blob.len() < 8 {
         return None;
     }
-    let buckets = u32::from_le_bytes(BLOB[0..4].try_into().ok()?) as usize;
-    let classes = u32::from_le_bytes(BLOB[4..8].try_into().ok()?) as usize;
-    let weights = &BLOB[8..];
-    if classes != CLASSES.len() || weights.len() != buckets * classes || buckets == 0 {
+    let buckets = u32::from_le_bytes(blob[0..4].try_into().ok()?) as usize;
+    let classes = u32::from_le_bytes(blob[4..8].try_into().ok()?) as usize;
+    let weights = &blob[8..];
+    if classes != CLASSES.len() || buckets == 0 || weights.len() != buckets.checked_mul(classes)? {
         return None;
     }
+    Some((buckets, classes, weights))
+}
+
+fn predict_with(blob: &[u8], message: &str) -> Option<&'static str> {
+    let (buckets, classes, weights) = header(blob)?;
 
     let folded = fold(message);
     let text = folded.as_bytes();
+
+    // NO WORD IS NO EVIDENCE. The fold drops everything outside ASCII and the
+    // Turkish letters but KEEPS ASCII punctuation, so "привет, как дела?"
+    // folds to " , ? " and the model votes on punctuation n-grams alone. It
+    // was never shown a message like that and its answer is noise: measured
+    // 10 Oct 2026, that one gave acc=[-3,6,-1] and `search_filter`, a bare "?"
+    // gave [-5,5,1] and `search_filter`, and "." gave [-3,-2,5] and
+    // `message_intent` — each a +12 for the Extract profile on small talk.
+    // An earlier fix abstained only when every sum was exactly 0, which caught
+    // "спасибо" (no n-gram at all) and none of these. A message with no ASCII
+    // letter left after the fold has said nothing the model can read, so it
+    // abstains and the trigger list decides alone.
+    //
+    // A LETTER, NOT A LETTER OR DIGIT. The fold keeps digits too, so with
+    // `is_ascii_alphanumeric` here a non-Latin message with a number in it
+    // folded to digits and spaces and was voted on by those alone: "спасибо 2"
+    // gave `search_filter`, "привет 5$" `message_intent`, 270 of "спасибо 0" to
+    // "спасибо 999" fired, and two `core-zh.json` calculate requests ("…原价
+    // 6980，…打八五折…" and "那把 1280 和 460 这两项加起来是多少？") gave
+    // `search_filter` — a +12 for Extract on a sum the model cannot read.
+    //
+    // This check, with the tie-break below, is the one place the Rust departs
+    // from `esp32/check.py` and the C, so both were measured over every message
+    // in `benchmarks/` (10 Oct 2026): the 150 in `tasks/` (the 131 above among
+    // them) predict exactly as before, so 107/131 stands. Of the 1105 in the
+    // other suites the gate fired on 104 at 4f1c1a8; 32 of those hashed no
+    // n-gram at all and are the tie-break's. Of the other 72 it now fires on
+    // 38 — the 34 it no longer fires on are 31 of `core-ru.json` ("Привет! Как
+    // дела?", "Который сейчас час?") and 3 of `core-zh.json` (one punctuation
+    // only, the two calculate requests above), none of them an extraction.
+    //
+    // NOT SETTLED HERE: one short Latin token after non-Latin text is still
+    // read — "Как дела? ok" gives `search_filter`. How much ASCII is enough
+    // evidence is a separate question from whether there is any.
+    if !text.iter().any(u8::is_ascii_alphabetic) {
+        return None;
+    }
+
     let mut acc = [0i32; CLASSES.len()];
     for n in 3..=5usize {
         if text.len() < n {
@@ -175,11 +230,23 @@ pub fn predict(message: &str) -> Option<&'static str> {
         }
     }
 
-    let best = acc
-        .iter()
-        .enumerate()
-        .max_by_key(|(_, v)| **v)
-        .map(|(i, _)| i)?;
+    // A TIE GOES TO "none", THE FIRST CLASS. This used `max_by_key`, which
+    // returns the LAST of equal maxima, so a model that could not decide
+    // between "none" and a tool fired the tool: "iw" ([6,-12,6]) and "oc"
+    // ([9,-18,9]) gave `message_intent`, and before the check above every
+    // message with no n-gram at all ([0,0,0]) did too — "спасибо", "谢谢" and
+    // the empty string put `message_intent`, `search_filter`, `web_search` and
+    // `web_fetch` in the router's top four (audit M19, measured 9 Oct 2026).
+    // Keeping the FIRST maximum is also what the numbers in this file were
+    // measured with: `esp32/check.py` takes Python's `max`, `esp32/slots.c` a
+    // strict `>` from class 0, and both keep the first. The Rust was the one
+    // implementation that disagreed.
+    let mut best = 0;
+    for (i, &v) in acc.iter().enumerate().skip(1) {
+        if v > acc[best] {
+            best = i;
+        }
+    }
     match CLASSES[best] {
         "none" => None,
         name => Some(name),
@@ -256,13 +323,89 @@ mod tests {
 
     /// A truncated or replaced blob must degrade to the trigger list, never
     /// panic. The header is checked against the file's own length for that.
+    ///
+    /// THIS USED TO READ THE SHIPPED BLOB'S HEADER, which is well formed, so it
+    /// passed with the guard deleted (audit T2). It now feeds the guard blobs
+    /// that are wrong in each way the guard checks, through the same code path
+    /// `predict` takes, and a message long enough to hash many n-grams so that
+    /// an unguarded read would index past the end of the weights.
     #[test]
     fn a_malformed_blob_is_refused_rather_than_indexed() {
-        // The shipped one is well formed; this asserts the guard exists by
-        // checking the header the guard reads.
-        let buckets = u32::from_le_bytes(BLOB[0..4].try_into().unwrap()) as usize;
-        let classes = u32::from_le_bytes(BLOB[4..8].try_into().unwrap()) as usize;
-        assert_eq!(classes, CLASSES.len());
-        assert_eq!(BLOB.len(), 8 + buckets * classes);
+        // The control: the shipped blob passes the guard, so the refusals below
+        // are about the malformation and not a guard that refuses everything.
+        assert!(header(BLOB).is_some(), "the shipped blob was refused");
+
+        let message = "free things to do in London this weekend";
+        let well_formed = |buckets: u32, classes: u32, weights: usize| {
+            let mut b = Vec::new();
+            b.extend_from_slice(&buckets.to_le_bytes());
+            b.extend_from_slice(&classes.to_le_bytes());
+            b.resize(8 + weights, 1);
+            b
+        };
+        let truncated = {
+            let mut b = BLOB.to_vec();
+            b.truncate(BLOB.len() / 2);
+            b
+        };
+        for (what, blob) in [
+            ("empty", Vec::new()),
+            ("shorter than the header", vec![0u8; 7]),
+            ("truncated", truncated),
+            ("one weight short", well_formed(1024, 3, 1024 * 3 - 1)),
+            ("one weight long", well_formed(1024, 3, 1024 * 3 + 1)),
+            ("wrong class count", well_formed(1024, 2, 1024 * 2)),
+            ("zero buckets", well_formed(0, 3, 0)),
+            ("counts that overflow", well_formed(u32::MAX, 3, 16)),
+        ] {
+            assert_eq!(header(&blob), None, "accepted a blob that is {what}");
+            assert_eq!(
+                predict_with(&blob, message),
+                None,
+                "predicted from a blob that is {what}"
+            );
+        }
+    }
+
+    /// NON-LATIN SMALL TALK AND THE EMPTY STRING carry no word the model can
+    /// see, so the gate abstains rather than letting a tie-break pick a tool.
+    /// Before the first fix the first six returned `Some("message_intent")`.
+    /// The rest kept their ASCII punctuation through the fold and were voted
+    /// on by punctuation n-grams alone, which an all-zero check did not catch:
+    /// "привет, как дела?" and "?" gave `search_filter`, "." and the line from
+    /// `benchmarks/core/core-ru.json` gave `message_intent`. The last two kept
+    /// their digits through the fold and passed a letter-or-digit check:
+    /// "спасибо 2" and the `core-zh.json` calculate request each gave
+    /// `search_filter`.
+    #[test]
+    fn a_message_with_no_ngrams_reaches_neither_tool() {
+        for quiet in [
+            "спасибо",
+            "谢谢",
+            "こんにちは",
+            "שלום",
+            "",
+            "   ",
+            "привет, как дела?",
+            "Привет! Как дела?",
+            "谢谢？!",
+            "?",
+            ".",
+            "спасибо 2",
+            "那把 1280 和 460 这两项加起来是多少？",
+        ] {
+            assert_eq!(predict(quiet), None, "fired on {quiet:?}");
+        }
+    }
+
+    /// A MODEL THAT CANNOT DECIDE BETWEEN "none" AND A TOOL DOES NOT FIRE IT.
+    /// Both strings tie "none" with `message_intent` exactly — [6,-12,6] and
+    /// [9,-18,9] — and `max_by_key`, which keeps the last of equal maxima,
+    /// returned `Some("message_intent")` for both.
+    #[test]
+    fn a_tie_with_none_reaches_neither_tool() {
+        for tied in ["iw", "oc"] {
+            assert_eq!(predict(tied), None, "a tie fired on {tied:?}");
+        }
     }
 }

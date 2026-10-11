@@ -411,14 +411,41 @@ pub fn name_is_portable(name: &str) -> bool {
 /// May this `enum` value be carried into the prompt.
 ///
 /// Looser than a field name — a closed set legitimately holds words, spaces
-/// and non-ASCII text — but the two things that break the prompt are refused:
+/// and non-ASCII text — but the things that break the prompt are refused:
 /// a CONTROL character (a newline forges a line in the `<tools>` fence, an ESC
-/// repaints the terminal) and the `'` that the schema uses to quote each
-/// choice.
+/// repaints the terminal), the `'` that the schema uses to quote each choice,
+/// and the characters `line_breaker` names.
+///
+/// `\` AND `"` ARE ACCEPTED, and that is now a statement about the grammar
+/// rather than an oversight. Audit M15 measured them as a dead end — the
+/// grammar wrote a choice's characters raw, so `C:\temp` was generated as
+/// `C:<TAB>emp` and `a"b` could not be finished — while this filter let both
+/// through. The grammar now compiles a value to its JSON spelling
+/// (tacet-grammar `compile.rs`, `json_body`), so both are producible exactly,
+/// and refusing them here would cost a working tool its closed set.
 pub fn choice_is_portable(choice: &str) -> bool {
     !choice.is_empty()
         && choice.chars().count() <= MAX_NAME
-        && !choice.chars().any(|c| c.is_control() || c == '\'')
+        && !choice
+            .chars()
+            .any(|c| c.is_control() || c == '\'' || line_breaker(c))
+}
+
+/// A character that is not `Cc` and still ends or reorders the line a value
+/// is printed on — the same harm the control-character rule exists for,
+/// arriving through a door `char::is_control` does not watch.
+///
+/// TIGHTENED WITH M15, for consistency rather than from a measured exploit:
+/// the description gets `one_line`, which folds EVERY Unicode whitespace, while
+/// a choice — printed in the same fence, and required byte for byte — let
+/// U+2028 LINE SEPARATOR and U+2029 through untouched. Any whitespace but the
+/// ASCII space is refused (a reader may break the line on it, and a model
+/// reading `read only` cannot see that the gap it must write is U+00A0), and
+/// so are the bidirectional overrides and isolates (U+202A-202E, U+2066-2069),
+/// which reorder what a terminal shows without changing what the model reads.
+fn line_breaker(c: char) -> bool {
+    (c.is_whitespace() && c != ' ')
+        || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
 /// Flattens a string the FAR SIDE chose into one line.
@@ -982,6 +1009,12 @@ mod tests {
             "a\u{1b}[31m",
             "",
             &"x".repeat(MAX_NAME + 1),
+            // Not `Cc`, and a line break or a reordering all the same (M15).
+            "fast\u{2028}safe",
+            "fast\u{2029}safe",
+            "read\u{a0}only",
+            "abc\u{202e}fed",
+            "a\u{2066}b\u{2069}",
         ] {
             assert!(
                 matches!(
@@ -1002,6 +1035,35 @@ mod tests {
                 "properties": { "mode": {"type": "string", "enum": ["read only", "yazma izni"]} },
             }))
             .is_ok()
+        );
+    }
+
+    /// A backslash and a double quote are NOT refused: the grammar spells them
+    /// (audit M15), so the value reaches the schema byte for byte and the tool
+    /// keeps its closed set. tacet-grammar's
+    /// `a_closed_set_with_a_backslash_or_a_quote_decodes_to_exactly_the_declared_set`
+    /// proves the other half — that exactly these values can be written.
+    #[test]
+    fn an_enum_value_with_a_backslash_or_a_quote_converts_unchanged() {
+        let schema = convert(json!({
+            "type": "object",
+            "properties": { "dir": {"type": "string", "enum": ["C:\\temp", "a\"b", "plain"]} },
+        }))
+        .expect("must convert");
+        assert_eq!(
+            schema.fields()[0].schema.kind,
+            SchemaKind::Choice {
+                choices: vec![r"C:\temp".into(), r#"a"b"#.into(), "plain".into()]
+            }
+        );
+        // An EMPTY enum is still refused here, before `ArgSchema::choice` would
+        // refuse it by panicking (audit M15).
+        assert!(
+            convert(json!({
+                "type": "object",
+                "properties": { "dir": {"type": "string", "enum": []} },
+            }))
+            .is_err()
         );
     }
 

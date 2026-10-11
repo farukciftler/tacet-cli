@@ -32,6 +32,7 @@ pub mod prompt;
 pub mod provider;
 pub mod session;
 pub mod thinking;
+pub mod thinking_switch;
 pub mod token;
 
 #[cfg(feature = "candle")]
@@ -57,12 +58,31 @@ pub use session::{
 };
 pub use thinking::extract as extract_thinking;
 pub use token::{
-    CONTEXT_BUDGET, Device, GENERATION_SHARE, KV_CACHE_BUDGET_BYTES, TokenCounter,
-    TruncationReport, context_budget, kv_cache_budget,
+    CONTEXT_BUDGET, CONVERSATION_KEPT, Device, GENERATION_SHARE, KV_CACHE_BUDGET_BYTES, MIN_ANSWER,
+    TokenCounter, TruncationReport, context_budget, kv_cache_budget,
 };
 
 #[cfg(feature = "candle")]
 pub use candle_engine::{Architecture, CandleEngine, ModelSetting, TokenizerSource};
+
+/// The window a GGUF can be RUN at, without loading it — what a loaded
+/// engine's `context_length` will say (audit L21 review).
+///
+/// With candle this is the declared window cut to the architecture module's
+/// position table (`candle_engine::gguf_runnable_context_length`). Without
+/// candle there is no engine in the binary to cut it to, so the declared number
+/// is the only one there is, and it is returned as such — the build that would
+/// run the model is the one that knows the table.
+pub fn gguf_runnable_context_length(path: &std::path::Path) -> Option<usize> {
+    #[cfg(feature = "candle")]
+    {
+        candle_engine::gguf_runnable_context_length(path)
+    }
+    #[cfg(not(feature = "candle"))]
+    {
+        gguf_context_length(path)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -617,7 +637,10 @@ mod tests {
             full_cap >= 1024,
             "the minimum share was not preserved: {full_cap}"
         );
-        assert!(full_cap + counter.prompt_estimate(&full) <= 4096 + 1024);
+        // INSIDE THE WINDOW, NOT INSIDE "THE WINDOW PLUS A SHARE". This line
+        // used to allow `4096 + 1024`, which wrote the overrun audit L21 found
+        // into the test that was meant to catch it.
+        assert!(full_cap + counter.prompt_estimate(&full) <= 4096);
         // The full prompt's cap must be smaller than the short prompt's cap.
         assert!(full_cap < short_cap);
     }

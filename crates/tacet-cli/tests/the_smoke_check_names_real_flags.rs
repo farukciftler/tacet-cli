@@ -9,8 +9,9 @@
 //! glance, and the whole reason the file exists is that a release once went out
 //! on exactly that kind of glance.
 //!
-//! So: the flags it types are checked against the parser, and the five failures
-//! it claims to detect are checked against the file, both from source.
+//! So: the flags it types are checked against the parser (the built binary's
+//! `chat --help`), and the five failures it claims to detect are checked
+//! against the file, from source.
 
 use std::path::{Path, PathBuf};
 
@@ -84,41 +85,68 @@ fn flags_used(text: &str) -> Vec<String> {
     out
 }
 
-/// The long flags `tacet chat` accepts, read out of the `Chat` variant in
-/// `cli.rs`. clap kebab-cases each field name, so the fields ARE the flags and
-/// this cannot drift from the parser the way a hand-written list would.
-fn chat_flags_from_source() -> Vec<String> {
-    let text = read("crates/tacet-cli/src/cli.rs");
-    let start = text.find("    Chat {").expect("the Chat variant");
-    let body = &text[start..];
-    let end = body.find("\n    },").map(|i| i + 6).unwrap_or(body.len());
-    let body = &body[..end];
-
-    let mut out = Vec::new();
-    for line in body.lines() {
-        let line = line.trim();
-        if line.starts_with('#') || line.starts_with("//") {
+/// The long flags `tacet chat` accepts, as the built binary's own `--help`
+/// prints them.
+///
+/// NOT FROM `cli.rs`'S FIELD NAMES, which this read until the review of
+/// 10 Oct 2026. It kebab-cased every field and called that "the flags", but
+/// two fields are renamed — `#[arg(long = "continue")] continue_session` and
+/// `#[arg(long = "session")] session_id` — so the list held `continue-session`
+/// and `session-id`, which `tacet chat` rejects, and not `continue` or
+/// `session`, which it takes. A smoke line passing `--session-id` was reported
+/// clean while the script itself would exit 2. The parser is the authority on
+/// the parser; the test binary is built for this suite anyway.
+fn chat_flags_from_help() -> Vec<String> {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_tacet"))
+        .args(["chat", "--help"])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("the tacet binary runs");
+    assert!(out.status.success(), "`tacet chat --help` failed");
+    let help = String::from_utf8_lossy(&out.stdout);
+    let mut flags: Vec<String> = Vec::new();
+    for word in help.split(|c: char| c.is_whitespace() || c == ',' || c == '[' || c == ']') {
+        let Some(name) = word.strip_prefix("--") else {
             continue;
-        }
-        if let Some((name, _)) = line.split_once(':')
-            && !name.is_empty()
-            && name
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit())
-        {
-            out.push(name.replace('_', "-"));
+        };
+        let name: String = name
+            .chars()
+            .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
+            .collect();
+        if !name.is_empty() {
+            flags.push(name);
         }
     }
+    flags.sort();
+    flags.dedup();
     assert!(
-        out.contains(&"message".to_string()) && out.contains(&"json".to_string()),
-        "the variant was not parsed, so this test would pass on anything: {out:?}"
+        ["message", "json", "continue", "session"]
+            .iter()
+            .all(|f| flags.iter().any(|g| g == f)),
+        "the help was not parsed, so this test would pass on anything: {flags:?}"
     );
-    out
+    flags
+}
+
+/// The review's case, held: a renamed flag is read under the name the parser
+/// takes, so the field's own spelling is missing and the flag's is not.
+#[test]
+fn a_renamed_flag_is_read_as_the_parser_spells_it() {
+    let accepted = chat_flags_from_help();
+    let used = flags_used(
+        "\"$BIN\" chat --message \"$1\" --session-id x --continue-session --json \\\n  --continue --session y\n",
+    );
+    let missing: Vec<&String> = used.iter().filter(|f| !accepted.contains(f)).collect();
+    assert_eq!(
+        missing,
+        ["continue-session", "session-id"],
+        "the guard does not read flags the way `tacet chat` does"
+    );
 }
 
 #[test]
 fn every_flag_the_smoke_check_passes_exists_in_the_cli() {
-    let accepted = chat_flags_from_source();
+    let accepted = chat_flags_from_help();
     let missing: Vec<String> = flags_used(&read("scripts/smoke.sh"))
         .into_iter()
         .filter(|f| !accepted.contains(f))
@@ -234,6 +262,169 @@ fn the_self_test_covers_both_directions() {
          seam it would need weights, and the machine that has weights is the \
          one place this is hardest to run"
     );
+}
+
+/// THE RELEASE GATE MEASURES THE CODE IT IS GATING (audit M29).
+///
+/// `smoke.sh` checked only that `target/release/tacet` existed, then measured
+/// it. `nightly-eval.sh` builds into that same path from whatever was checked
+/// out at 03:07, so the gate could pass on last night's binary while the tag
+/// named this morning's commit — a green check standing for code it never ran.
+/// The build has to come BEFORE the first message, and the binary has to be
+/// asked what it is rather than assumed to be the build just made.
+#[test]
+fn the_smoke_check_builds_the_binary_it_measures() {
+    let text = code_only("scripts/smoke.sh");
+    let build = text
+        .find("cargo build --release -p tacet-cli")
+        .expect("scripts/smoke.sh no longer builds the binary it measures");
+    let first_message = text
+        .find("run_message \"$m\"")
+        .expect("the per-message loop calls run_message");
+    assert!(
+        build < first_message,
+        "the build comes after the first message is measured"
+    );
+    assert!(
+        text.contains("\"$BIN\" --print-features"),
+        "the binary must be asked what it was built with, not assumed to be the \
+         build just made"
+    );
+
+    // THE BUILD AND THE MEASUREMENT AGREE ON WHERE THE BINARY IS. The first
+    // fix built and then measured a hard-coded `target/release/tacet`; with
+    // `CARGO_TARGET_DIR`, `build.target-dir` or `build.target` set the fresh
+    // build landed elsewhere and the stale file in `target/` was measured —
+    // and passed `--print-features` whenever its features matched. So `BIN`
+    // must be read out of the build's own JSON, after the build.
+    assert!(
+        !text.contains("target/release/tacet"),
+        "scripts/smoke.sh names `target/release/tacet` again; any target-dir \
+         override sends the build elsewhere and that path is a stale binary"
+    );
+    let build_end = text[build..].find('\n').map_or(text.len(), |n| build + n);
+    let invocation: String = text[build..]
+        .lines()
+        .scan(true, |more, line| {
+            let keep = *more;
+            *more = line.trim_end().ends_with('\\');
+            keep.then_some(line)
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        invocation.contains("--message-format=json"),
+        "the build must report what it produced (`--message-format=json…`) so \
+         the path measured is cargo's answer, not a guess: `{invocation}`"
+    );
+    let assigned = text
+        .find("BIN=")
+        .expect("scripts/smoke.sh no longer sets BIN");
+    assert!(
+        assigned > build_end,
+        "BIN is fixed before the build runs, so it cannot be the build's output"
+    );
+    let assignment = &text[assigned
+        ..text[assigned..]
+            .find("\nif ")
+            .map_or(text.len(), |n| assigned + n)];
+    assert!(
+        assignment.contains("$build_json") && assignment.contains(".executable"),
+        "BIN must be the `executable` cargo reported for this build: `{assignment}`"
+    );
+}
+
+/// THE `--print-features` ANSWER IS COMPARED, AND A WRONG ONE STOPS THE RUN.
+///
+/// The test above checks that the question is asked. Review replaced the
+/// comparison with `if false` and it stayed green: a script that asks and
+/// ignores the answer reads the same to a text search. So this one runs the
+/// script. A copy sits in a temp tree (its `cd "$REPO"` lands there, not in
+/// this checkout); `HOME` points into the temp dir, and the script's own
+/// `PATH="$HOME/.cargo/bin:$PATH"` puts stub `cargo` and `jq` first, which
+/// report a stub `tacet` built with whatever features `STUB_FEATURES` says.
+/// The model directory does not exist, so a run that gets past the check
+/// stops at "no model.gguf" without measuring anything — which is also why
+/// the exit code alone (127 both ways) cannot tell the two paths apart and the
+/// `measuring` line is what is asserted. Unix only: the script is bash.
+#[cfg(unix)]
+#[test]
+fn a_binary_with_the_wrong_features_is_not_measured() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let root =
+        std::env::temp_dir().join(format!("tacet-smoke-feat-{}-{nanos}", std::process::id()));
+    let stubs = root.join("home/.cargo/bin");
+    std::fs::create_dir_all(root.join("scripts")).expect("temp dir");
+    std::fs::create_dir_all(&stubs).expect("temp dir");
+    std::fs::write(root.join("scripts/smoke.sh"), read("scripts/smoke.sh")).expect("copy");
+    let tacet = root.join("tacet");
+    let log = root.join("tacet.log");
+    let stub = |path: &Path, body: String| {
+        std::fs::write(path, body).expect("stub");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    };
+    stub(
+        &tacet,
+        format!(
+            "#!/bin/sh\necho \"$*\" >> '{}'\n\
+             [ \"$1\" = --print-features ] && echo \"$STUB_FEATURES\"\nexit 0\n",
+            log.display()
+        ),
+    );
+    stub(
+        &stubs.join("cargo"),
+        format!(
+            "#!/bin/sh\necho '{{\"reason\":\"compiler-artifact\",\"executable\":\"{}\"}}'\n",
+            tacet.display()
+        ),
+    );
+    stub(
+        &stubs.join("jq"),
+        format!("#!/bin/sh\ncat >/dev/null\necho '{}'\n", tacet.display()),
+    );
+
+    let run = |reported: &str| {
+        let out = Command::new("bash")
+            .arg(root.join("scripts/smoke.sh"))
+            .arg(root.join("no-such-model-dir"))
+            .current_dir(&root)
+            .env("HOME", root.join("home"))
+            .env("TACET_SMOKE_FEATURES", "candle")
+            .env("STUB_FEATURES", reported)
+            .env_remove("TACET_SMOKE_SCRIPT")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .output()
+            .expect("bash runs");
+        String::from_utf8_lossy(&out.stderr).to_string()
+    };
+
+    // The control: the right answer gets past the check. Without it a script
+    // that failed for any other reason would satisfy the assertion below.
+    let right = run("candle");
+    assert!(
+        right.contains("measuring ") && right.contains("no model.gguf"),
+        "a binary reporting the expected features was not let through: {right}"
+    );
+
+    let wrong = run("metal");
+    assert!(
+        wrong.contains("reports features 'metal', expected 'candle'")
+            && !wrong.contains("measuring "),
+        "a binary reporting the wrong features was measured anyway: {wrong}"
+    );
+    let calls = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        !calls.contains("chat"),
+        "the stub tacet was sent a message: {calls}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// THE SEAM IS `+x`, NOT `:-`.

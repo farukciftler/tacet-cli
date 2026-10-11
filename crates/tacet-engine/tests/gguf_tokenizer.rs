@@ -244,18 +244,79 @@ fn the_tokenizer_inside_the_gguf_is_identical_to_the_real_tokenizer_json() {
     }
 }
 
+/// A GGUF header carrying a tokenizer `gguf_has_tokenizer` accepts, and nothing
+/// else — no tensors, no weights. Twelve-odd keys of metadata is all the
+/// pre-check reads.
+fn tiny_gguf_with_a_tokenizer() -> Vec<u8> {
+    fn string(out: &mut Vec<u8>, s: &str) {
+        out.extend_from_slice(&(s.len() as u64).to_le_bytes());
+        out.extend_from_slice(s.as_bytes());
+    }
+    const STRING: u32 = 8;
+    const ARRAY: u32 = 9;
+    const I32: u32 = 5;
+    let mut body = Vec::new();
+    for (key, value) in [
+        ("general.architecture", "qwen3"),
+        ("tokenizer.ggml.model", "gpt2"),
+        ("tokenizer.ggml.pre", "qwen2"),
+    ] {
+        string(&mut body, key);
+        body.extend_from_slice(&STRING.to_le_bytes());
+        string(&mut body, value);
+    }
+    for (key, values) in [
+        ("tokenizer.ggml.tokens", &["a", "b", "ab"][..]),
+        ("tokenizer.ggml.merges", &["a b"][..]),
+    ] {
+        string(&mut body, key);
+        body.extend_from_slice(&ARRAY.to_le_bytes());
+        body.extend_from_slice(&STRING.to_le_bytes());
+        body.extend_from_slice(&(values.len() as u64).to_le_bytes());
+        for v in values {
+            string(&mut body, v);
+        }
+    }
+    string(&mut body, "tokenizer.ggml.token_type");
+    body.extend_from_slice(&ARRAY.to_le_bytes());
+    body.extend_from_slice(&I32.to_le_bytes());
+    body.extend_from_slice(&3u64.to_le_bytes());
+    for _ in 0..3 {
+        body.extend_from_slice(&1i32.to_le_bytes());
+    }
+    let mut out = Vec::new();
+    out.extend_from_slice(b"GGUF");
+    out.extend_from_slice(&3u32.to_le_bytes());
+    out.extend_from_slice(&0u64.to_le_bytes());
+    out.extend_from_slice(&6u64.to_le_bytes());
+    out.extend_from_slice(&body);
+    out
+}
+
 /// The priority rule, measured: an explicitly given `tokenizer.json` WINS, and a
 /// given-but-missing one is an ERROR rather than a silent fallback to the GGUF.
 ///
-/// Needs no weights — `files_exist` is the pre-check, it does not load.
+/// Needs no weights — `files_exist` is the pre-check, it does not load. SO IT
+/// NO LONGER WAITS FOR THEM (audit T1): it used to borrow the qwen3-4b pair and
+/// print SKIPPED without it, which on every machine without `~/models` meant
+/// the rule was never exercised. A generated GGUF header and the in-repo
+/// fixture tokenizer are all the pre-check looks at.
 #[test]
 fn an_explicit_tokenizer_path_wins_and_a_missing_one_does_not_fall_back() {
     use tacet_engine::{CandleEngine, ModelSetting};
 
-    let Some((model, tokenizer_json)) = fixture() else {
-        println!("SKIPPED: no fixture — see the other test in this file.");
-        return;
-    };
+    let dir = std::env::temp_dir().join(format!("tacet-explicit-tokenizer-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let model = dir.join("model.gguf");
+    std::fs::write(&model, tiny_gguf_with_a_tokenizer()).expect("write gguf");
+    let tokenizer_json = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("marker_tokenizer.json");
+    assert!(
+        tacet_engine::gguf_has_tokenizer(&model),
+        "the generated header must carry a tokenizer, or the last case below is vacuous"
+    );
 
     // Explicit and present: accepted.
     let explicit = ModelSetting::new(&model, &tokenizer_json);
@@ -276,4 +337,6 @@ fn an_explicit_tokenizer_path_wins_and_a_missing_one_does_not_fall_back() {
     assert!(from_gguf.tokenizer_path.is_none());
     CandleEngine::files_exist(&from_gguf)
         .expect("the gguf carries a tokenizer, the pre-check should pass");
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

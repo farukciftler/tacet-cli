@@ -93,6 +93,13 @@ pub struct ConnectionSetting {
     /// secret around.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<crate::auth::AuthSetting>,
+    /// Ask before EVERY call to this server, tainted session or not (audit
+    /// H2-a). THE ONLY SAFETY KNOB A CONNECTION HAS, AND IT ONLY TURNS ONE
+    /// WAY: a server's results always taint the session and always count as
+    /// outside text; nothing in this file can say otherwise, because a setting
+    /// that loosens the gate is a setting a poisoned config can flip.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub always_ask: bool,
 }
 
 fn yes() -> bool {

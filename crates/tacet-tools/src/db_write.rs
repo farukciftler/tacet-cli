@@ -1105,6 +1105,21 @@ impl Tool for DbWriteTool {
         true
     }
 
+    /// TRUE (audit H2-c): the SQL is the model's, and after the session has
+    /// read outside text it may be that text's. The executor then asks before
+    /// the measurement runs, in addition to the confirmation of the effect.
+    fn acts_on_host(&self) -> bool {
+        true
+    }
+
+    /// LONG, BECAUSE THE USER IS IN THE LOOP. A call waits on `confirm`, and a
+    /// person reading a diff is not a hung tool; an executor deadline that cut
+    /// them off would leave the question on screen with nobody listening, and a
+    /// "yes" typed after it would write behind a call already reported failed.
+    fn deadline(&self) -> Duration {
+        Duration::from_secs(60 * 60)
+    }
+
     fn run<'a>(&'a self, args: Value, ctx: &'a mut ToolContext) -> ToolFuture<'a> {
         boxed(async move {
             let trace = ctx.start_chip("database", "Measuring the change…");
@@ -1169,6 +1184,23 @@ impl DbWriteTool {
         if statement.starts_with('.') {
             return Err(ToolError::InvalidArgument(
                 "the statement must be SQL, not a sqlite3 dot-command".into(),
+            ));
+        }
+        // AND A LEADING `-`, for the reason measured in `db.rs`: sqlite3 parses
+        // every argument for options. Without `-readonly` it is worse than a
+        // stray version string. MEASURED (sqlite3 3.51.0, `-safe -batch -ascii
+        // -header t.db <statement>`): `-version` printed the version and exited
+        // 0, and with this guard removed the tool put it to the user and then
+        // reported "app.db was changed with the user's approval"; `-Ac` exited 0 having CREATED an `sqlar` table in the file — a
+        // schema change made by the archive command, not by any SQL, which the
+        // trial run would have shown the user as "a statement" to confirm.
+        // `-safe` keeps the archive mode inside this one file; it does not make
+        // an option into SQL.
+        if statement.starts_with('-') {
+            return Err(ToolError::InvalidArgument(
+                "the statement must not begin with '-': sqlite3 reads that as a command-line \
+                 option, not SQL (drop any leading '--' comment)"
+                    .into(),
             ));
         }
 
@@ -1686,6 +1718,10 @@ mod tests {
         let s = tool.schema();
         assert_eq!(tool.name(), "db_write");
         assert!(tool.taints_session());
+        // Audit H2-c: after outside text, every statement asks first. And a
+        // user reading the effect is never cut off by the executor's deadline.
+        assert!(tool.acts_on_host());
+        assert!(tool.deadline() >= Duration::from_secs(30 * 60));
         assert_eq!(
             s.fields()[0].schema.choices(),
             Some(&["app.db".to_string()][..])
@@ -2455,6 +2491,47 @@ mod tests {
             Err(ToolError::InvalidArgument(_))
         ));
         assert_eq!(sink.asked(), 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A LEADING `-` IS AN OPTION TO SQLITE3, NOT SQL (audit L18), and here it
+    /// was a write: `-Ac` created an `sqlar` table, through the trial run and
+    /// the confirmation, with no SQL anywhere. The approving sink is the point —
+    /// with the guard gone the user is asked, says yes, and the file changes; so
+    /// both "nobody was asked" and "the schema did not move" are asserted.
+    #[test]
+    fn a_statement_that_begins_with_a_dash_is_refused_as_an_option() {
+        let sink = Counting::new(true);
+        let Some(tool) = tool(&["app.db"], sink.clone()) else {
+            return;
+        };
+        let root = temp_root("dash");
+        let file = root.join("app.db");
+        seed(&tool.binary, &file, "CREATE TABLE t(a);");
+        let ctx = context(&root);
+
+        for statement in ["-version", "  -Ac", "--version", "-- why\nDELETE FROM t"] {
+            match tool.write(&json!({"path": "app.db", "statement": statement}), &ctx) {
+                Err(ToolError::InvalidArgument(why)) => {
+                    assert!(why.contains("'-'"), "{statement:?}: {why}")
+                }
+                Err(other) => panic!("{statement:?} must be refused up front, got {other:?}"),
+                Ok(outcome) => panic!(
+                    "{statement:?} was run as an option and answered: {}",
+                    outcome.to_model
+                ),
+            }
+        }
+        assert_eq!(sink.asked(), 0, "an option was put to the user as a write");
+        assert_eq!(
+            ask(
+                &tool.binary,
+                &file,
+                "SELECT group_concat(name) FROM sqlite_master;"
+            ),
+            "t",
+            "an option changed the schema"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

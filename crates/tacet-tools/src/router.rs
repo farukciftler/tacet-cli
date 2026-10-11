@@ -128,6 +128,16 @@ pub enum IntentProfile {
     /// that instruction never reached the model, because the tool never reached
     /// the prompt.
     Clipboard,
+    /// WORK STARTED IN ANOTHER CODING AGENT — a Claude Code, Codex or
+    /// Antigravity session the user wants found or continued (RG-19).
+    ///
+    /// ITS OWN PROFILE FOR THE SAME REASON AS `Data`: both tools are addon
+    /// tools, and with no profile they score only on overlap, so "continue my
+    /// claude code session" put `find_file` and `read_document` — which share
+    /// "session" and "continue" with nothing — ahead of the one tool that can
+    /// answer it. Nothing in the other profiles wants these words: a user who
+    /// says where they LEFT OFF in an agent is not asking for a file.
+    Sessions,
 }
 
 impl IntentProfile {
@@ -170,7 +180,7 @@ impl IntentProfile {
     /// The STANDING guarantees are `every_expected_tool_reaches_the_model` and
     /// `a_connected_server_does_not_push_the_expected_tool_out_of_the_budget`
     /// over in `tacet_eval::routing`.
-    pub const ALL: [IntentProfile; 14] = [
+    pub const ALL: [IntentProfile; 15] = [
         IntentProfile::Document,
         IntentProfile::DocEdit,
         IntentProfile::Clock,
@@ -186,10 +196,13 @@ impl IntentProfile {
         // APPENDED, per the rule at the top of this array: both lose their ties.
         IntentProfile::Data,
         IntentProfile::Clipboard,
+        // APPENDED, and it loses its ties too (RG-19).
+        IntentProfile::Sessions,
     ];
 
     pub fn name(&self) -> &'static str {
         match self {
+            IntentProfile::Sessions => "sessions",
             IntentProfile::Extract => "extract",
             IntentProfile::Data => "data",
             IntentProfile::Clipboard => "clipboard",
@@ -722,6 +735,54 @@ impl IntentProfile {
                 // "the table of contents". The database sense is carried by the
                 // company it keeps ("rows in the users table" fires on "rows").
             ],
+            IntentProfile::Sessions => &[
+                // THE AGENTS BY NAME. "claude code" and not bare "claude": the
+                // company's name is also a person's, and only the product is a
+                // place work was left. Matched as written in any language — a
+                // product name is not translated.
+                "claude code",
+                "codex",
+                "antigravity",
+                // WHAT A PERSON SAYS WHEN THEY WANT TO GO ON. Bare "session"
+                // and bare "continue" are NOT here: "continue the list" and
+                // "the session is at 3pm" are not about another agent, and both
+                // words appear in requests for every other profile.
+                //
+                // NOR IS A BARE POSSESSIVE. "my session" and "that session"
+                // were here and the RG-19 review measured them firing on "remind
+                // me of my session with the dentist" (10) and "that session of
+                // parliament was long" (12): an appointment and a sitting are
+                // owned and pointed at as easily as a transcript. What is left
+                // carries the resumption, the plural listing, or the other
+                // agent.
+                //
+                // NOR A QUALIFIER WITHOUT ITS VERB. "my last session" and
+                // "leave off" were here after the second review, and the third
+                // measured them (`tacet why`, built binary) putting
+                // `sessions_list` FIRST for "my last session with the dentist
+                // cost 300 dollars, add 18% tax" (15) and for "calculate the
+                // total but leave off the VAT" (9, tying `calculate`). "Last"
+                // and "previous" are said of appointments; "leave off" is said
+                // of a line item. They stay only behind the continuation verb,
+                // and "left off" only behind the "where" that makes it a place
+                // in a piece of work.
+                "continue my session",
+                "resume my session",
+                "continue my last session",
+                "resume my last session",
+                "continue my previous session",
+                "resume my previous session",
+                "my sessions",
+                "other agent",
+                "agent session",
+                "coding session",
+                "where i left off",
+                "where we left off",
+                "where did i leave off",
+                "where did we leave off",
+                "where i stopped",
+                "pick up where",
+            ],
             IntentProfile::Clipboard => &[
                 "clipboard",
                 "copied",
@@ -853,6 +914,43 @@ impl IntentProfile {
                 // satiri" — read the first ten lines of a file — scored as a
                 // database question. "kayit" (record) has no such second
                 // reading in this catalog.
+            ],
+            IntentProfile::Sessions => &[
+                // "oturum" ALONE IS NOT HERE. It was, on the claim that it had
+                // no second everyday sense, and the RG-19 review measured the
+                // claim false: "oturum aç" / "oturum kapat" is signing in and
+                // out, "mahkeme oturumu" is a sitting of court, and each scored
+                // 6. Every possessive inflection is a sign-out too ("tüm
+                // oturumlarımı kapat"), so no stem of the bare word is safe.
+                // What is left pins the word to the day it was left AND to the
+                // first person, or to a continuation; a request that names the
+                // agent fires on the name above.
+                //
+                // "dunku oturum" / "onceki oturum" WERE HERE and the RG-19
+                // third review measured them putting `sessions_list` first for
+                // "Meclisin dünkü oturumunda" (12, a sitting of parliament) and
+                // "mahkemenin önceki oturumunda" (13, a court). A parliament's
+                // or a court's sitting is "oturumu-n-da"; the user's own is
+                // "oturumum-…". Matching is by term START, so "oturumum" reaches
+                // "oturumuma", "oturumumu" and "oturumumda" and nothing else.
+                "dunku oturumum",
+                "onceki oturumum",
+                "oturumuma devam",
+                "oturumumdan devam",
+                // The Turkish "other agent", reaching "diğer ajanlardaki".
+                "diger ajan",
+                // "kaldigim" ALONE IS NOT HERE, and a benchmark is why:
+                // "bodrumda kaldigimiz otel" (the hotel we stayed at) folds to
+                // the same stem. NOR IS "kaldigim yer": the third review
+                // measured "Antalya'da kaldığım yerin adresi neydi" (the place I
+                // stayed, 12) heading the list with `sessions_list`, and
+                // "kaldığım yerden" is still where-I-stay ("kaldığım yerden
+                // havalimanı ne kadar uzak"). Only the continuation verb makes it
+                // the place a piece of work was left.
+                "kaldigim yerden devam",
+                "kaldigimiz yerden devam",
+                "gorevine devam",
+                "gorevime devam",
             ],
             IntentProfile::Clipboard => &[
                 "pano",
@@ -1440,6 +1538,15 @@ impl IntentProfile {
                 "db", "sql", "sqlite", "database", "rows", "records", "query",
             ],
             IntentProfile::Clipboard => &["clipboard", "paste", "copy"],
+            // "session" IS IN BOTH TOOLS' NAMES, so a fired profile lifts the
+            // pair by `NAME_WEIGHT` and nothing else by more than the capped
+            // description share. "sessions" is in ONE of them, and that is on
+            // purpose: `sessions_list` is the call a model without an id needs
+            // first. With "session" alone the two tied and both lost to the
+            // learned Extract boost on "where did I leave off in codex?"
+            // (`message_intent` first, `sessions_list` fourth — measured by
+            // `the_session_tools_are_reachable_by_the_plainest_phrasings`).
+            IntentProfile::Sessions => &["session", "sessions", "agent", "transcript"],
             IntentProfile::Document => &[
                 // "spreadsheet" WAS ADDED HERE AND THEN TAKEN BACK OUT, and the
                 // measurement is worth more than the line would have been.
@@ -2412,6 +2519,85 @@ mod tests {
                 "`clipboard` is not among the {} tools shown for {message:?}: {:?}",
                 shown.len(),
                 shown.iter().map(|t| t.name()).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// RG-19: the phrasings a user who worked in another agent actually types —
+    /// the ones the R&D brief lists, in both languages — reach BOTH session
+    /// tools, and `sessions_list` (the call a model without an id needs) heads
+    /// the list.
+    #[test]
+    fn the_session_tools_are_reachable_by_the_plainest_phrasings() {
+        let catalog = catalog_with_addons();
+        let router = Router::new();
+        for message in [
+            "continue my claude code session",
+            "where did I leave off in codex?",
+            "show my antigravity conversations",
+            "pick up where I left off yesterday",
+            "list my sessions from the other agents",
+            "dünkü claude code oturumumda ne yapıyordum",
+            "codex'te kaldığım yerden devam et",
+            "şu antigravity görevine devam edelim",
+            "dünkü oturumuma bakar mısın",
+        ] {
+            let shown: Vec<String> = router
+                .select(message, &catalog)
+                .iter()
+                .map(|t| t.name().to_string())
+                .collect();
+            assert_eq!(
+                shown.first().map(String::as_str),
+                Some("sessions_list"),
+                "`sessions_list` does not head the tools shown for {message:?}: {shown:?}"
+            );
+            assert!(
+                shown.iter().any(|n| n == "session_read"),
+                "`session_read` is not among the tools shown for {message:?}: {shown:?}"
+            );
+        }
+    }
+
+    /// The other direction: the words the Sessions triggers were chosen to
+    /// avoid do not fire the profile. Each of these is a request for some
+    /// other tool, or for none.
+    #[test]
+    fn everyday_words_do_not_score_as_another_agent() {
+        for message in [
+            "continue the list",
+            "the session starts at 3pm",
+            "geçen sene bodrumda kaldığımız otel çok güzeldi",
+            "devam et",
+            "read notes.md",
+            // RG-19 second review: "oturum" is also signing in and out, and a
+            // sitting of court; "my session" is also an appointment. Each of
+            // these scored 6 to 12 before the triggers were narrowed.
+            "Gmail'e oturum açamıyorum, şifremi sıfırla",
+            "oturum kapatma süresini hesapla",
+            "tüm oturumlarımı kapat",
+            "mahkeme oturumu saat kaçta",
+            "remind me of my session with the dentist",
+            "that session of parliament was long",
+            "the last session of the conference ran late",
+            // RG-19 third review, measured with `tacet why` on the built
+            // binary: each of these put `sessions_list` FIRST, above the tool
+            // the message is for. A qualifier alone ("leave off", "my last
+            // session", "dünkü oturum", "kaldığım yer") is shared with VAT,
+            // a dentist, a parliament, a court and a hotel.
+            "calculate the total but leave off the VAT",
+            "my last session with the dentist cost 300 dollars, add 18% tax",
+            "Meclisin dünkü oturumunda kaç milletvekili vardı",
+            "mahkemenin önceki oturumunda ne karar çıktı",
+            "Antalya'da kaldığım yerin adresi neydi",
+            // The reviewer's suggested repair, "kaldigim yerden", still fires
+            // on where-I-stay; this is why the trigger carries "devam".
+            "kaldığım yerden havalimanı ne kadar uzak",
+        ] {
+            assert_eq!(
+                score_intent(message).score(IntentProfile::Sessions),
+                0,
+                "{message:?} scored as a question about another agent's session"
             );
         }
     }

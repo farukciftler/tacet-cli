@@ -22,7 +22,7 @@ Tacet.
 > put that in a spreadsheet called countdown
 
 [create_document] countdown.xlsx · written
-Done — countdown.xlsx, one row, with a live =DATEDIF() formula.
+Done — countdown.xlsx, one row, with a live =SUM() under Days left.
 ```
 
 ---
@@ -50,11 +50,13 @@ not](#where-this-is-not-novel) says which is which, with citations.
 
 The four claims below are the ones this project would defend in that room.
 
-**A call that has started cannot be finished invalidly.** Once the model emits `calculate(`, a pushdown automaton masks the logits at every step. Malformed JSON, a field that isn't in the schema, an out-of-range number, a missing required key — none of them can be *generated*. Not validated after the fact: unrepresentable. Sampling runs after masking, so no sampling strategy can escape it.
+**A call that has started cannot be finished invalidly.** Once the model emits `calculate(`, a pushdown automaton masks the logits at every step. Malformed JSON, a field that isn't in the schema, an out-of-range number, a number the tool layer cannot read back as the type it asked for (`-0` in an integer, a value past u64), an enum value or key whose JSON spelling the grammar got wrong, a missing required key — none of them can be *generated*. Not validated after the fact: unrepresentable. Sampling runs after masking, so no sampling strategy can escape it.
+
+**And what runs is the call the automaton passed.** That was not true until the audit of 9 Oct 2026 measured it (H5): the step that strips a `<think>` block from the output was blind text surgery, so a `</think>` written inside a call's arguments could cut the validated call into a different one before it was parsed and run. It no longer edits a call. A tag inside an argument stays in the argument. A grammar call — `name(` or bare JSON — with both `<think>` and `</think>` in its values runs exactly as written, because it parses and so the split can prove where it ends: `cargo test -p tacet-engine --lib thinking::tests::a_proven_split_has_one_reading`. A recovered call — a marked `<tool_call>` or a name glued to its argument — carrying both is refused rather than run, because cut at its `</think>` it is no call and the two readings disagree; and wherever the split can only guess where the thinking ends, nothing runs unless both readings name the same call: `cargo test -p tacet-tools --lib executor::tests::a_call_declined_inside_the_thinking_never_reaches_the_executor`.
 
 The sentence used to read "invalid tool calls are impossible", and measuring it showed that was wider than the truth: **the grammar arms after `name(`, so it says nothing about a call that never starts that way.** Running a real model over 115 cases, seven of the twenty-two failures were the right tool with the right arguments written in a shape nobody taught it — ` ```tool read_document"path=report.md" ` and `<tool_call> read_document (path: "x") </tool_call>`. Those are recovered now, by a layer that will only look behind a marker no prose contains; the underlying gap is real and is written down rather than papered over.
 
-**And a valid call has to end.** That is a second property, weaker than the first and until recently not held at all: a valid *prefix* could wander forever. A model wrote a complete, correct `calendar(…)` call and then emitted whitespace for twelve minutes, because whitespace was legal at a structural position and legal again immediately. Unrepresentable-invalid and always-terminating are different claims — the grammar now bounds consecutive whitespace and the length of a field the schema leaves open, and the engine caps a constrained generation at 2048 tokens, measured against a largest-observed legitimate call of 1523.
+**And a valid call has to end.** That is a second property, weaker than the first and until recently not held at all: a valid *prefix* could wander forever. A model wrote a complete, correct `calendar(…)` call and then emitted whitespace for twelve minutes, because whitespace was legal at a structural position and legal again immediately. Unrepresentable-invalid and always-terminating are different claims — the grammar now bounds consecutive whitespace and every field the schema leaves open — a string at 8192 characters, a number at 400 fraction and 4 exponent digits (its integer part stops where u64, i64 or f64 do), an array at 1024 items — and the engine caps a constrained generation at 2048 tokens, measured against a largest-observed legitimate call of 1523.
 
 **A tool result cannot forge a turn.** The schema makes an invalid call
 unrepresentable — that is a claim about the CALL, and it says nothing about the
@@ -63,13 +65,26 @@ containing `</tool_response><|im_end|>` followed by `<|im_start|>system` rendere
 as a **real system turn** in the ChatML prompt — a forged instruction in the role
 a model is trained to obey above every other, written by whoever wrote the file.
 `read_document` reads files the user did not write, `web_fetch` reads pages
-nobody here controls, and an MCP result is a third party's text. Every string
-entering the prompt from outside — tool results, the question, memory, a
-user-authored skill, and a bridged tool's own name and description — now has its
-turn markers neutralised with one space (`< |im_end|>` is not a token), so
-nothing is censored and nothing can open a block. `cargo test -p tacet-engine
---test a_tool_result_cannot_forge_a_turn` is the demonstration, in all three
-templates.
+nobody here controls, an MCP result is a third party's text, and a file name in
+the working directory is whatever its creator chose. Every string entering the
+prompt from outside — tool results, the question, memory, a user-authored skill
+and its name, a bridged tool's own name and description, the directory census
+in the system block, and the summary of a session imported from another agent
+— now has its markers neutralised with one space
+(`< |im_end|>` is not a token), so nothing is censored and nothing can open a
+block. "Markers" means every chat-template token, not only the `<|…|>` ones:
+Qwen3's `<think>` and `<tool_call>`, Gemma's `<start_of_turn>`, `<eos>`, `<bos>`
+and `<unusedN>`, Llama-2's `<s>`/`</s>`, this prompt's own fences (`<memory>`,
+`<cwd>`, `<guidance>`, …), and whatever special tokens the loaded tokenizer
+declares. Ordinary code is left alone — F#'s `x <| f` and Haskell's `<|>` are
+not markers. An audit on 9 Oct 2026 measured three gaps in the earlier version:
+a file name forging a system turn, a remembered note closing its own
+`</memory>` fence, and `<think>` passing as a live token. `cargo test -p
+tacet-engine --test a_tool_result_cannot_forge_a_turn --test
+a_file_name_cannot_forge_a_turn --test every_marker_from_outside_is_text` is
+the demonstration, in all three templates; for the imported summary it is `cargo
+test -p tacet-tools --lib
+sessions_tool::tests::a_transcript_cannot_forge_the_summary_or_close_the_seed`.
 
 **And then the whole prompt was printed and read, which found three more.** The
 `<memory>` block was **fenced twice** — a nested tag with a stray closing one in
@@ -81,7 +96,9 @@ order, introduced by the change that closed the forged-turn hole. None of the
 three failed a test and none of them would have: they are visible only by
 looking at what the model is actually sent.
 
-**The network monopoly is checkable by eye.** Exactly two crates may open a socket, and the HTTP dependency appears in exactly those two manifests. You do not have to trust a privacy claim you cannot audit — `grep -v '^\s*#' crates/*/Cargo.toml | grep ureq` is the audit, and `cargo test -p tacet-cli --test network_monopoly` is the same audit as a failing build: it asserts that exactly those two manifests declare an HTTP client, that no other client was swapped in under a different name, and that nobody reached a socket through `std::net` instead — scanning every `.rs` file under `crates/*/{src,tests,examples,benches}`, not just the library code. (One honest asterisk: if you install the `shell` addon and put `curl` on its allow-list, you have handed a program the network. That is why `shell` sits behind the approval gate — see [Addons](#addons).)
+**Memory is now shared safely between sessions.** Two terminals used to be two copies of `memory.json`, and whichever saved last won: session A remembered X, session B remembered Y, and only Y was left (audit M20, measured). A save now takes a lock file, re-reads the file and replays only its own changes, so neither session can undo what the other did. A file that does not parse is no longer opened as an empty memory: the last good copy, `memory.json.bak`, is loaded instead, and the damaged file is moved aside as `memory.json.damaged-*`, never overwritten. To wipe memory by hand, delete `memory.json` and `memory.json.bak` together. `forget` deletes one note: a word that matches several notes deletes nothing and asks which one. A note can no longer carry a tag (`</memory>`, `<|im_start|>`, `<think>` …) into the prompt.
+
+**The network monopoly is checkable by eye.** Exactly two crates may open a socket, and the HTTP dependency appears in exactly those two manifests. You do not have to trust a privacy claim you cannot audit — `grep -v '^\s*#' crates/*/Cargo.toml | grep ureq` is the audit, and `cargo test -p tacet-cli --test network_monopoly` is the same audit as a failing build. It reads every manifest as TOML (renames, dotted keys, target tables and workspace inheritance included) and walks the dependency graph cargo resolves, and asserts that only those two crates reach an HTTP client, whether declared or one crate removed. It asserts that no other crate reaches the network without one: no `std::net` socket, no DNS lookup, no socket-layer crate (`libc`, `nix`, `rustix`, the Windows bindings) declared under any name or reached with its socket feature on, no libc or Winsock socket call under any name a file gives it, and no foreign function outside a five-name allow-list (`setsid`, `killpg`, `poll`, `signal`, `raise`), in any file a crate compiles — its whole directory, `build.rs`, and whatever `#[path]`, `include!` or the manifest points rustc at — and that every crate cargo builds from this repository lives under `crates/`, where that scan reads. It asserts that no other crate starts a program whose job is the network (`docker`, `curl`, `ssh`, …) without a row that says why; the only rows are `tacet addon`'s local SearXNG setup in `tacet-cli/src/addon.rs`, which runs `docker compose` only after a y/N approval. And it asserts that no crate, those two included, starts another agent's CLI (`claude`, `codex`, `agy`) unless that path is either an external tool behind the approval gate (today none is) or a command you type that the model cannot reach. Today there is exactly one such command: `tacet handoff note codex <id> --program <path>`. It starts the Codex binary at the path you give as `codex app-server`, after a y/N that names the resolved file and says it runs with your Codex login and can reach the network. No model turn is started. The test fails if anything but `tacet handoff` calls the function that starts it, if anything but the command-line dispatch names `tacet handoff` itself, or if one of those files implements a model tool. (One honest asterisk: if you install the `shell` addon and put `curl` on its allow-list, you have handed a program the network. That is why `shell` sits behind the approval gate — see [Addons](#addons).)
 
 **Nothing leaves the device by default.** Everything with outside reach is an *addon* you install deliberately: web search against your own SearXNG, HTTP against hosts you name, a shell against programs you list. Until you install one, its tools are not merely disabled — they are **absent from the catalog the model is shown**, so it cannot call them or claim it did.
 
@@ -91,12 +108,12 @@ looking at what the model is actually sent.
 |---|---|
 | Name | a tool that isn't in the catalog — the model cannot invent a callable |
 | Schema | arguments that don't validate, even if the grammar was bypassed |
-| Approval | outbound data in a session that has touched personal data |
-| Cancel | anything, the moment you interrupt the turn |
+| Approval | outbound data in a session that has touched personal data; any `shell` or `db_write` call once the session has read text from outside the machine (a web page, an HTTP or MCP answer, an imported transcript); every call to an MCP server marked `always_ask` — and with nobody at a terminal to ask, the answer is no |
+| Cancel | the rest of the turn, the moment you press ctrl-c — `shell`, `run_code` and `write_code` end their process group within about a second, and `git` kills the `git` it started (the call's 120 s deadline stops it the same way); any other tool that has not stopped after 3 s is abandoned rather than waited for, and the turn says it was left running, not that it stopped (whatever that tool was doing may still finish on its own thread). The press arrives two ways. With no turn indicator (`--json`, or stdout piped) it is a signal, driven at the binary by `cargo test -p tacet-cli --test ctrl_c_reaches_the_running_tool` — run on macOS (10 Oct 2026), not yet on Linux, and on Windows that path is not wired. At a terminal it is a key the indicator reads, and the same file types it: `at_a_terminal::ctrl_c_typed_during_a_tool_stops_it_and_the_shell_lives_on` runs the shell on a pty through `script(1)`, presses ctrl-c during `shell sleep 9`, and holds that the chip comes back within 5 s, the `sleep` is gone and the next message is answered — run on macOS (11 Oct 2026; with the tool's cancel token unwired it reads `exit 0 · 9554 ms`, the audit's defect), not on Linux, whose `script` is spelled differently. The key thread alone is `cargo test -p tacet-cli --bin tacet ui::tests::ctrl_c_marks_the_cancellation_and_other_keys_are_swallowed`; the 3 s abandonment is only a unit test — `cargo test -p tacet-tools --lib executor::guarded::a_cancelled_tool_that_will_not_stop_is_abandoned_after_the_grace` |
 
 **Bulk data never enters the model.** A tool that reads a 40 000-row spreadsheet puts the data in a store and hands the model a short summary plus a reference. The next tool that needs it fetches it by reference. The context window is a budget, not a bottleneck.
 
-**Almost no dependencies.** OOXML (`.xlsx`, `.docx`) generation, zip, deflate and CRC32 are written by hand. So is the MCP client — JSON-RPC 2.0 over Streamable HTTP with SSE, OAuth, elicitation and task polling, in **3,342 non-test lines across twelve files** (4,667 with the tests; 11 `use std` lines in 6 of them; re-derived 6 Sep 2026). That sentence said "~430 lines with a single `use std`" for a long time: true at the first commit, and never re-derived while the protocol grew. The claim it is here to support survives the correction — there is no client library underneath, and 3,342 lines of plain Rust is still a thing one person can read — but a number in a paragraph about auditability has to be the real one.
+**Almost no dependencies.** OOXML (`.xlsx`, `.docx`) generation, zip, deflate and CRC32 are written by hand. So is the MCP client — JSON-RPC 2.0 over Streamable HTTP with SSE, OAuth, elicitation and task polling, in **3,503 non-test lines across twelve files** (5,067 with the tests; 11 `use std` lines in 6 of them; re-derived 10 Oct 2026, counting each file's lines above its first `#[cfg(test)]`). That sentence said "~430 lines with a single `use std`" for a long time: true at the first commit, and never re-derived while the protocol grew. The claim it is here to support survives the correction — there is no client library underneath, and 3,503 lines of plain Rust is still a thing one person can read — but a number in a paragraph about auditability has to be the real one.
 
 The direct dependency list is `serde`, `serde_json`, `thiserror`, `clap`, `crossterm` and `ureq`. Behind the off-by-default `candle` feature there are three more: `candle-core`, `candle-transformers` and `tokenizers`. Adding to that list is an architectural decision documented at the top of the file, not a convenience.
 
@@ -105,7 +122,7 @@ One honest note on what "the full list" means: those are the DIRECT dependencies
 * `ureq` brings `rustls`, which brings `ring`, and `ring` compiles C. Nothing here calls it and it changes no claim about what the program does, but it is what sets the build prerequisite on Windows: not the MSVC linker it looks like, but a C compiler, however you get one. Measured, with the three routes and their sizes, in [CONTRIBUTING](https://github.com/farukciftler/tacet-cli/blob/main/CONTRIBUTING.md).
 * `tokenizers` brings `onig` → `onig_sys` → `cc`, and `esaxx-rs` alongside it — a **second** C build, on the `candle` feature. This paragraph disclosed the first and not the second, which made the off-by-default feature look cheaper than it is. It is off by default and the CLI runs without it; if you build with it, you are building C.
 
-**And the transitive half is checked rather than argued.** `cargo deny check` runs on every push over the full graph with all features on — advisories, licences, wildcards, and sources. The two things it found on its first run are in [`deny.toml`](https://github.com/farukciftler/tacet-cli/blob/main/deny.toml) with a reason and a date rather than silenced: `paste` is unmaintained (a proc macro under candle, no runtime, no safe upgrade, not ours to fix), and `webpki-roots` carries `CDLA-Permissive-2.0` because it is Mozilla's root CA store — data, not code. `unknown-git` and `unknown-registry` are hard failures, because those can only be caused from inside this repository.
+**And the transitive half is checked rather than argued.** `cargo deny check` runs on every push to `main` and every pull request, over the full graph with all features on — advisories, licences, wildcards, and sources. Sources, bans and licences gate the merge; advisories run as a separate job that is allowed to fail, because a new advisory against a transitive crate is news, not a defect in the pull request. The two things it found on its first run are in [`deny.toml`](https://github.com/farukciftler/tacet-cli/blob/main/deny.toml) with a reason and a date rather than silenced: `paste` is unmaintained (a proc macro under candle, no runtime, no safe upgrade, not ours to fix), and `webpki-roots` carries `CDLA-Permissive-2.0` because it is Mozilla's root CA store — data, not code. `unknown-git` and `unknown-registry` are hard failures, because those can only be caused from inside this repository.
 
 ## Install
 
@@ -115,8 +132,17 @@ cargo install tacet-cli --features candle  # CPU
 cargo install tacet-cli                    # no inference; still runs eval, tools and the addon flow
 ```
 
-All eleven crates were published on 6 Sep 2026, so `cargo install tacet-cli` is
-this page. It resolved to **0.1.25** until then — a build with no `bench`
+**`cargo install tacet-cli` installs the last published release, and this page
+describes `main`, which is ahead of it.** The last publish was `tacet-cli`
+0.1.29 on 7 Sep 2026; every fix from the audit of 9 Oct 2026 — and the
+`agent-sessions` addon and `tacet handoff` below — is unreleased, and
+[CHANGELOG](https://github.com/farukciftler/tacet-cli/blob/main/CHANGELOG.md) lists it under *Unreleased*. To run what this page
+describes before the next release, install from a checkout:
+`cargo install --path crates/tacet-cli --features metal`.
+
+This paragraph used to say "`cargo install tacet-cli` is this page", which was
+true on the day all eleven crates were published (6 Sep 2026) and stopped being
+true with the next commit. It resolved to **0.1.25** until then — a build with no `bench`
 subcommand, which this page names twenty times, pinned to `tacet-engine ^0.1.9`,
 one release below the **0.1.10** floor for constrained generation on Metal. A Mac
 user following the line above was installing the `constraint rejected the token:
@@ -131,17 +157,17 @@ answering — which meant the failure looked like a working product giving bad
 replies, and nobody reported it. `tacet --version` prints the build it actually is:
 
 ```bash
-tacet --version        # tacet 0.1.26 (metal)  ← the part in brackets is the engine
+tacet --version        # tacet 0.1.29 (metal)  ← the part in brackets is the engine
 ```
 
 Or grab a prebuilt binary from [Releases](https://github.com/farukciftler/tacet-cli/releases) — macOS (Apple Silicon
 and Intel), Linux and Windows.
 
-Check for a newer version at any time — this is the only command that talks to GitHub, and only when you run it:
+Update at any time — `tacet update` asks GitHub for the newest release, and only when you run it:
 
 ```bash
-tacet update            # tells you what's available
-tacet update --install  # downloads and replaces the binary, with your confirmation
+tacet update            # downloads the newest release and replaces the binary — after asking
+tacet update --check    # only looks: says whether a newer version exists, writes nothing
 ```
 
 **This command replaces the running binary, so it is worth saying what backs it.**
@@ -170,7 +196,9 @@ tacet config set update.check off   # never
 ```
 
 The check is throttled to once every 24 hours, prints a single line when a newer
-version exists, stays silent when it fails, and never runs when output is piped.
+version exists and stays silent when it fails. It runs only at the end of an
+interactive session with both stdout and stderr on a terminal — never after
+`tacet -m`/`--message`, under `--json`, or when output is piped or captured.
 
 ## Quickstart
 
@@ -217,7 +245,7 @@ Metal, counting only answers that are unreadable rather than wrong:
 
 Gemma3's four were walls of `</tool.`, `Do not be.` eight times over, and a
 digit stuck in a loop where the date belonged. Re-derive it yourself with
-`scripts/smoke.sh ~/models/<folder>`; it needs a model and about four minutes.
+`scripts/smoke.sh ~/models/<folder>`; it needs a model and about four minutes on a built tree — it builds the binary first.
 
 **No separate tokenizer file needed.** Tacet reads the tokenizer *out of the
 GGUF* — vocabulary, merges and token types — so a file from Ollama or LM Studio
@@ -242,9 +270,9 @@ Out of the box, with nothing installed:
 
 Documents are real OOXML — an `.xlsx` produced by Tacet contains a working `=SUM()`, not a pre-computed number.
 
-`git` is **read-only**: status, log, diff, show. It reads a diff so the model can write a commit message; it does not commit, push, or change a branch.
+`git` is **read-only**: status, diff, log. It reads a diff so the model can write a commit message; it does not commit, push, or change a branch. Nor does the repository get to run anything through it: hooks, fsmonitor, external diffs, textconv, filter drivers, gpg and promisor fetches named in a repository's own `.git/config` are switched off on every call. That needs git 2.31 or newer; an older git is refused with `git_unsupported` rather than run unprotected.
 
-`archive` lists or extracts a `.zip` with the workspace's own inflate. It refuses the whole archive — never one entry — when a name would escape the destination, an entry is a symlink, the declared sizes cross the caps, or a name repeats: four gates that run on the central directory, so both actions apply them. The CRC and the declared-vs-actual size are proven on **extract** only, because listing decodes nothing — which is why a listing labels its numbers "declared" rather than reporting them as sizes. Extraction always goes into a **new** directory whose name is rotated until it is free, so there is no argument through which it could overwrite something.
+`archive` lists or extracts a `.zip` with the workspace's own inflate. It refuses the whole archive, never just one entry, in any of these cases: a name would escape the destination; an entry is a symlink; the declared sizes cross the caps; a name repeats or is both a file and another entry's folder; two entries share the same bytes; a central record names a different entry than its local header; or a deflate stream is a run of more than 1024 blocks that decode to nothing. Every gate up to the last runs on the central directory and the local headers, so both actions apply them. The last one, like the CRC and the declared-vs-actual size, is checked on **extract** only, because listing decodes nothing: an archive built from that flood lists as one 0-byte entry and is refused when it is extracted. That is why a listing labels its numbers "declared" and does not report them as sizes. The CRC is checked for every entry, including one whose recorded CRC is 0 (that used to be skipped). Extraction always goes into a **new** directory, whose name is rotated until it is free, so no argument can make it overwrite anything. Extraction is all-or-nothing: if any write fails, for example because the destination filesystem folds two names into one (APFS treats NFC and NFD spellings as the same name), the new directory is removed. It is removed only if it is still the directory that run created. A directory swapped for a link, or for anything else, is left in place and the error says so.
 
 `checksum` is SHA-256 over a file: the digest, or a comparison against a published one, or against a second file. A mismatch comes back as an answer, not an error.
 
@@ -270,20 +298,25 @@ tacet addon close shell          # keep the config, take the tool away
 | `shell` | `shell` | only the programs you list, and **no shell interpretation** |
 | `workspace` | *(no new tool)* | named directories the file tools may also reach |
 | `http` | `http` | only the exact hosts you list, HTTPS only, no redirects |
-| `db` | `db`, and `db_write` only if you list a file | read-only SQLite by default, over the `sqlite3` binary already on your machine |
+| `db` | `db`, and `db_write` only if you list a file and the session is at a terminal | read-only SQLite by default, over the `sqlite3` binary already on your machine |
 | `clipboard` | `clipboard` | reads and writes the system clipboard |
+| `agent-sessions` | `sessions_list`, `session_read`; `tacet chat --from <agent>:<id>` and `/resume-from` | read-only: each agent's own session folder for Claude Code, Codex and Antigravity — looked up when a session is read, so an agent installed later is found — or only the folders the install names, if you name any; credentials refused by name; no network, and the other agent and its model are never run. Reporting back is `tacet handoff`, which needs no addon — see [Other agents' sessions](#other-agents-sessions) |
 
 Two things worth knowing before you install `shell`:
 
 **There is no shell.** The command runs as `program` + a list of arguments, never through `sh -c`, so `; rm -rf /` arrives as an *argument* — nothing parses it. And the allow-list is not checked after the fact: it **is** the argument's schema, so the constrained decoder cannot generate a program name outside it.
 
-**Allowing a program allows everything that program can do.** `curl` is network access; `git` can push. So `shell` sits behind the same approval question as `web_search` and `http`: once a turn has touched personal data, every call that could carry it off the machine stops and asks you first.
+**Allowing a program allows everything that program can do.** `curl` is network access; `git` can push. So `shell` sits behind the same approval question as `web_search` and `http`: once a turn has touched personal data, every call that could carry it off the machine stops and asks you first. The question is only ever put to a person at a terminal. In a `--message` run, or a shell whose stdin is a pipe, the answer is a silent no and nothing is read from the pipe — a `y` on the next line is your next message, not consent. At the question only `y` or `yes` and Enter is a yes; Enter alone, Esc, ctrl-c and ctrl-d all say no, and ctrl-c there refuses the call without ending the shell.
 
-**Writing to a database is a second tool, not a flag.** `db` is read-only and stays read-only: its lock is `sqlite3 -readonly`, measured on your own binary before the tool is built. If you want a database changed, you name the file — `data/app.db`, relative to the project — while installing the `db` addon, and a *separate* `db_write` tool appears. Name nothing and it does not exist, which is the only gate that holds: the SQL is free text, so a model that has the tool can always spell `DROP TABLE`, and the answer is for the tool not to be there.
+There is a second question, and it does not depend on personal data. Once the session has read text from outside the machine (a web page, an `http` or MCP answer, a transcript imported from another agent), every `shell` and `db_write` call asks first, because that text may be what told the model to run it. The question says this in its own words. It does not claim that data will be sent. A "no" covers that one command only.
 
-Every `db_write` call is measured before it happens. The statement runs first against a **copy** of the file, and what you are shown is the difference that copy actually took: objects created, dropped or redefined, row counts moved, journal mode changed. Then it asks. Nothing is written until you say yes, the copy that was measured is left beside the database as `<name>.tacet-backup`, and the question is asked again for the next statement — a "no" is about one statement, not about the session.
+**Writing to a database is a second tool, not a flag.** `db` is read-only and stays read-only: its lock is `sqlite3 -readonly`, measured on your own binary before the tool is built. If you want a database changed, you name the file — `data/app.db`, relative to the project — while installing the `db` addon, and a *separate* `db_write` tool appears. Name nothing and it does not exist — and neither does it in a session with nobody at a terminal to approve it (a `--message` run, or a piped stdin), since a tool whose every call has to be refused only costs the model a turn. Not existing is the only gate that holds: the SQL is free text, so a model that has the tool can always spell `DROP TABLE`, and the answer is for the tool not to be there.
+
+Every `db_write` call is measured before it happens. The statement runs first against a **copy** of the file, and what you are shown is the difference that copy actually took: objects created, dropped or redefined, row counts moved, journal mode changed. Then it asks you, at the terminal: `Apply it? [y/N]`. (Until 10 Oct 2026 that question could not be answered at an interactive terminal at all: the turn indicator erased it and swallowed the `y`, and the shell sat waiting until it was killed, so nothing was ever written — audit H1. `cargo test -p tacet-cli --test consent_reaches_the_person` now installs the addon with a writable file, types `y` and then `n` at this question through a pseudo-terminal on macOS, and counts the rows the file holds afterwards; on Linux and Windows that path has not been run.) Nothing is written until you say yes, the copy that was measured is left beside the database as `<name>.tacet-backup`, and the question is asked again for the next statement — a "no" is about one statement, not about the session.
 
 Two things it does **not** promise. It is not one statement: `sqlite3` re-parses the string it is given, so `SELECT 1; DROP TABLE t` runs both halves — measured, and the reason the effect is shown rather than the statement filtered. And allowing a file allows everything SQL can do to that file, `DROP` and a `WHERE`-less `UPDATE` included. What holds is the file boundary: `-safe` refuses `ATTACH`, `VACUUM INTO` and `writefile()`, all three measured at startup, so the statement cannot reach a second file.
+
+**Continuing another agent's work.** With `agent-sessions` installed, `tacet chat --from claude:<id>` (or `codex:`, `antigravity:`), or `/resume-from <agent>:<id>` inside the shell, reads that session and sends a summary of it (goal, last request, open plan, files touched, last steps) above your next question. The summary is capped at 1,200 characters, about 480 tokens. The full transcript stays in the session's store, and the model gets only a reference to it. The session starts tainted and is treated as outside text, so outbound and host-acting tools ask first. If the other session worked in a different folder, Tacet asks before moving there, and it never moves in a `--message` run or a piped shell. `/resume-from` with no argument lists the sessions you can continue.
 
 Third-party tools do not plug in here — they plug in through [MCP](#mcp).
 
@@ -362,13 +395,172 @@ was one omission with a date on it: `Memory`, `Web`, `Archive` and `Integrity`
 were given triggers in the other five languages when a natively-authored
 benchmark in each was gated; `Files`, `Document` and `DocEdit` were not. So
 "再加一行" — *add another line* — reached no profile at all and `edit_document`
-sat outside the nine. All eleven now route, `eval --routing` is unchanged at
-166/166 with mean rank 1.33, and `every_benchmark_step_can_pass` runs the check
+sat outside the nine. All eleven now route, `eval --routing` was unchanged at
+166/166 with mean rank 1.33 (it is 177/177 at 1.32 since the eleven
+agent-session cases joined it), and `every_benchmark_step_can_pass` runs the check
 over the whole corpus on every `cargo test`.
 
 ## MCP
 
 Connect servers you run yourself in `~/.tacet/mcp.json`. Their tools join the catalog and pass through the same four gates as built-in ones — a remote tool gets no privileges a local tool doesn't have.
+
+A server's answers always taint the session and always count as outside text, and no setting can turn that off. The one per-connection safety setting only makes a server stricter: `always_ask` asks before every call to it, whether or not the session is tainted.
+
+```json
+{
+  "connections": [
+    { "name": "home server", "url": "https://example.com/mcp", "always_ask": true }
+  ]
+}
+```
+
+## Other agents' sessions
+
+If you also use Claude Code, Codex or Antigravity, the work they did is on your
+disk, in three formats nobody documents as stable. With the `agent-sessions`
+addon installed, Tacet can list those sessions, read one, and carry on from it
+— `tacet chat --from claude:<id>` or `/resume-from` (see
+[Addons](#addons)). `tacet handoff` reports back what Tacet did, so the other
+agent sees it the next time you open the session there. The design, the threat
+model and every version range are in
+[docs/adr/0001-agent-sessions.md](https://github.com/farukciftler/tacet-cli/blob/main/docs/adr/0001-agent-sessions.md); the
+reporting-back protocol, with the rule text to paste into each agent's
+instructions, is [docs/agent-handoff.md](https://github.com/farukciftler/tacet-cli/blob/main/docs/agent-handoff.md).
+
+**What it reads.** Only the folders the install names, which by default are each
+agent's own: `$CLAUDE_CONFIG_DIR` or `~/.claude`, `$CODEX_HOME` or `~/.codex`,
+and the three `~/.gemini/antigravity*` roots. Inside them only `.jsonl`, `.json`
+and `.md` files are opened, through one function that refuses credentials by
+name on both the given and the resolved path — `auth.json`, `.credentials.json`,
+`state.vscdb`, `*.key`, a `.claude/settings*` file, anything with `token` or
+`secret` in its name, and copies of those — and refuses a symlink to one or (on
+Unix) a hard-linked second name for one. Antigravity's conversation databases are
+SQLite with protobuf inside; they are dated for the listing and never opened. A
+Codex rollout compressed to `.jsonl.zst` is listed and refused with the advice
+to run `zstd -d`, because reading it would need a new dependency. These roots
+are handed to the two session tools and to nothing else: `read_document` cannot
+reach `~/.codex/auth.json` because you installed this addon. Reading trusts
+the versions somebody measured — Claude Code 2.1.263–2.1.293, and Antigravity
+IDE 2.5.5 on macOS only, where the version is read from the installed app's
+`product.json` and trusted only for a session written after that file — and
+reads any other version, every Codex version and every `agy` session with a
+warning you see. Antigravity's own files record no version, so a read the
+installed IDE cannot vouch for carries that warning, naming the version that
+was measured. `agy` 1.1.10 was measured too, but its version cannot be read
+without running the binary, so no `agy` read reaches that range.
+
+**What reaches the model.** A summary capped at 1,200 characters (goal, last
+request, open plan, a line for each of Antigravity's `implementation_plan.md`
+and `walkthrough.md`, files touched, last steps), with every chat-template
+marker in it neutralised, and a reference to the full transcript — those two
+documents included, whole — in the session's own store. Reading a transcript taints the session and counts as outside text, so
+every outbound tool, `shell` and `db_write` asks first.
+
+**No network, and no other program.** The readers are file reads. The addon
+declares no network, nothing behind it starts the other agent or its model, and
+reading a session costs nothing. `cargo test -p tacet-cli --test
+network_monopoly` fails the build if any crate starts `claude`, `codex` or
+`agy` where a model tool could reach it. The one command that starts another
+agent's binary is one you type, `tacet handoff note codex <id> --program
+<path>`, described in [What makes it different](#what-makes-it-different)
+above.
+
+**How it reports back.** Continuing a session starts a *handoff record*,
+`<config>/handoff/<agent>-<id>.json` with a rendered `.md` twin, which Tacet and
+the other agents update through `tacet handoff update`. It starts with the
+session as Tacet found it, labelled as the other agent's own work, and no
+tasks: what it reports as progress is only what `tacet handoff update` has
+written since. It holds a summary of the other agent's transcript, so `tacet
+sessions --purge` deletes it along with your conversations, the receipt log
+and the transcript backups `handoff note` keeps. Getting it to the other
+agent has two paths, and the first is the one to use:
+
+* **The agent's own hook** (`tacet handoff install claude|codex|antigravity`).
+  Claude Code runs `tacet handoff hook claude` when a session starts or is
+  resumed and puts the record in front of the model (measured below — except
+  a `--fork-session` resume, which runs no hook). Codex is documented to do the
+  same, and Antigravity to get it as a PreInvocation `ephemeralMessage` from a
+  hook named `tacet-handoff`, in the shape its own documentation gives;
+  neither has been seen doing it (**Not measured** below). Antigravity CLI
+  1.1.10 loaded Tacet's hook entry on 11 Oct 2026 and never ran it: it read
+  the workspace `.agents/hooks.json` as one named hook, then stopped at Google
+  sign-in before any model call. No session file is touched; the only thing
+  of the agent's ever written is its settings file, by `install --path
+  <file>`, after showing the change and asking, with the old file kept beside
+  it.
+* **A note in the agent's own files**, opt-in and fail-closed. `tacet handoff
+  note claude <id>` appends one user-role entry, `[Note from Tacet, a local
+  assistant, not from the user] …`, chained to the session's last entry; `--fork`
+  writes it into a copy under a new id and leaves the original untouched. Each
+  write asks y/N (no terminal, no write), refuses a session the agent has open,
+  refuses a version nobody measured a write on, backs the file up first, and
+  rebuilds the chain afterwards — truncating the file back if the earlier
+  history would no longer load. The Codex rollout append and Antigravity's
+  `task.md` checkboxes exist and are refused on every version until a write is
+  measured on one. `note codex --program <path>` sends the note through Codex's
+  own app-server and has only been run against a stand-in server.
+
+**Measured, 9 Oct 2026, on one Mac (Apple M4 Pro, macOS 26) with Claude Code
+2.1.285**: four experiments on two throwaway sessions, run headless with
+`claude -p`:
+
+| | written into the transcript | what `--resume` did |
+|---|---|---|
+| E2 | a user + assistant pair, chained to the last entry | loaded it, and the model believed it had written the assistant text itself |
+| E3 | one user-role note from Tacet | loaded it and credited Tacet, not the user |
+| E4 | the same note with a wrong `parentUuid` | **dropped every earlier message** from the context, silently |
+| E5 | nothing; `--resume --fork-session` | a new session id; the original file's sha256 unchanged |
+
+That table is why only the user role is ever written (E2), why the chain is
+re-checked after every write and rolled back (E4), and why `--fork` exists (E5).
+The experiment cost about one dollar in model turns, which is why it is run by a
+person and never in CI; `scripts/session-roundtrip.sh` repeats it. It was
+repeated on 11 Oct 2026 on the same version: E1, E3, E4 and E5 as measured (E3
+once the script's judge learned to read past Markdown emphasis — re-judged from
+the saved output, not a new paid run), and E2 differed: the model did not claim
+the appended assistant text as its own. Only the user role is written either
+way, so nothing follows from it. The Claude
+Code write range is that one version, 2.1.285.
+
+**The SessionStart hook measured on 11 Oct 2026 with Claude Code 2.1.285**, on
+the same Mac (macOS 26.5.2): four headless `claude -p` turns (they reported
+$1.37 between them) in a throwaway project whose `.claude/settings.json` held
+exactly what `tacet handoff install claude` prints. A `--resume`, and a fresh
+start under `--session-id`, each with a record written beforehand, ran the
+hook: Claude Code logged that it "provided additionalContext", kept that
+context in the transcript, and the model — asked without naming Tacet —
+quoted a task title only the record held and said Tacet had left it. A start
+with no record left nothing in the transcript. The `systemMessage` was stored
+in the transcript as a hook system message; `-p` has no screen, so whether the
+interactive one shows it was not seen. `--resume --fork-session` ran no
+SessionStart hook at all, Tacet's or any other: the fork answered from the
+copy of the record the earlier resume had left in its history, and missed a
+task added since. Resume the original session, not a fork, to hand it the
+current record. **Not measured:** every Codex
+path, its hook included (Codex was not installed on that machine; its reader is
+built from Codex's source and tested on fixtures), whether Claude Code's
+interactive screen shows the hook's `systemMessage`, the Antigravity hook
+running and its `ephemeralMessage` reaching the model, and any write into
+Antigravity's files (the GUI was not driven). The Antigravity hook got as far
+as being loaded, on the same Mac on 11 Oct 2026: three `agy -p` starts in a
+throwaway workspace holding exactly what `tacet handoff install antigravity
+--path` writes, the CLI logging "loaded 1 named hooks" (0 with the file moved
+aside), and each stopping at Google sign-in before a model call, because the
+session running it reached the Mac over SSH, where the CLI could not use the
+stored sign-in. docs/agent-handoff.md has the table and the one signed-in run
+that is left.
+
+**Whose terms apply.** Claude Code's documentation says its transcript format
+"is internal to Claude Code and changes between versions", which is why reading
+outside the measured range warns and writing outside it is refused.
+Antigravity's terms (§6) say that using third-party software to access
+Antigravity is a violation, and its FAQ says writing to its storage is not
+supported. Tacet reads files you own on your own disk to show you your own
+work; it does not drive Antigravity, call its model or use its credentials, and
+it writes nothing of Antigravity's unless you pass
+`--experimental-write-task-md`, which is refused on every version today and
+prints that warning when you try. Whether reading your Antigravity history this
+way is within the terms you accepted is your call to make, not this page's.
 
 ## Architecture
 
@@ -384,6 +576,8 @@ tacet-cli ──────────► terminal shell; drives the turn loop
    │                  FakeEngine (default) / CandleEngine (--features candle)
    │
    ├── tacet-tools ─► concrete tools + ToolExecutor + Router
+   │        │             sessions: other agents' transcripts (read), the
+   │        │             handoff record, the opt-in write-back
    │        ├── tacet-zip ──► hand-written zip/deflate/crc32 → OOXML
    │        └── tacet-web ──► THE ONLY CRATE WITH A SOCKET (with tacet-mcp):
    │                          search, page fetch, the SSRF gate, the addon registry
@@ -392,7 +586,7 @@ tacet-cli ──────────► terminal shell; drives the turn loop
    ├── tacet-memory ► notes on disk, injected only when relevant
    │
    └── tacet-kernel► the CONTRACT: Tool, ArgSchema, ToolOutcome, DataStore,
-                      Catalog, Constrainer
+                      Catalog, Constrainer, defang
 ```
 
 Arrows are dependency direction. `tacet-kernel` depends on nothing, so the contract never bends under pressure from an implementation. `tacet-engine` deliberately does not know `tacet-grammar`: the contract lives in the kernel, its implementation in the grammar, so a run without constraints doesn't compile grammar code it never uses.
@@ -463,14 +657,23 @@ tacet eval --tool-selection --model qwen3-4b --turkish   # Turkish only
 finished case to that directory the moment it ends, and a later run skips what
 is already there — so a Ctrl-C at case 180, a closed lid or a reclaimed rented
 box costs the current case rather than the 47 minutes behind it. The directory
-is stamped with the model fingerprint, the engine and the catalog on the first
-case, and a run against a different one **exits non-zero** instead of quietly
-restarting: cases from two builds assembled into one report would be a mixture
+is stamped with the model fingerprint, the engine, the catalog, the commit, a
+hash of any uncommitted edits (untracked files included), a hash of the prompt
+text and tool descriptions, the router options and a hash of every case. A run
+against a different stamp, or holding a case rewritten since it was measured,
+**exits non-zero** instead of quietly restarting: cases from two builds assembled into one report would be a mixture
 presented as a measurement, and nothing in the JSON would say so.
 
 ```bash
-tacet eval --tool-selection --model qwen3-4b --journal /tmp/nightly --json > after.json
+tacet eval --tool-selection --model qwen3-4b --journal ~/.tacet/journal/qwen3-4b --json > after.json
 ```
+
+Keep the journal out of `/tmp`. The point of it is to outlive the session that
+started it, and `/tmp` is the one place that is emptied behind your back: a run
+here that wrote to `/tmp` with no journal was stopped at case 150 and the
+directory was cleared before it could be read — 48 minutes with nothing to
+resume from. `scripts/nightly-eval.sh` picks the directory for you, under
+`~/.tacet/nightly/`, keyed by what was built (see CONTRIBUTING).
 
 | | |
 |---|---|
@@ -482,9 +685,12 @@ tacet eval --tool-selection --model qwen3-4b --journal /tmp/nightly --json > aft
 
 Qwen3-4B-Instruct-2507 Q4_K_M on Metal, 184 cases in both languages, **47.7 min**
 — the weights `tacet models download qwen3-4b` fetches, pinned by digest, with
-the fingerprint recorded in the baseline. Re-measured 6 Sep 2026 on this commit,
-and the baseline in `crates/tacet-eval/baselines/` is that run, with `wall_ms`
-populated, so the wall clock is re-derivable rather than remembered.
+the fingerprint recorded in the baseline. Measured 6 Sep 2026 and committed in
+e9787ba; the baseline in `crates/tacet-eval/baselines/` is that run, with
+`wall_ms` populated, so the wall clock is re-derivable rather than remembered. It
+has not been re-run since the eval started building each pass's prompt the way
+the shell does (audit M22, M23, October 2026), so today's code may score these
+weights differently.
 
 **These numbers are LOWER than the ones this page carried this morning, and the
 drop is the instrument getting more honest rather than the model getting worse.**
@@ -498,8 +704,8 @@ clean a confirmation as this kind of change gets:
   broke    3   write_code-script, tr-web-site-oku, tr-web-arama
   delta    -1.6 points   95% CI [-3.8, +0.0]
   verdict: NOT DISTINGUISHABLE from no change at 95%.
-           this instrument needs 368 paired cases to call a 1.6-point effect;
-           this suite has 184.
+           at these rates (0 fixed, 3 broke) this instrument needs about 338
+           paired cases to call a 1.6-point effect; this suite has 184.
 ```
 
 Nothing was fixed, three things broke, and they are by name the three the change
@@ -551,29 +757,42 @@ answer happened to write a tool's name.
 **This block is the Metal run; the model table further down is the same suite on
 a rented RTX 3090**, and that table has NOT been re-measured — it still reads
 against the older code, which is why the two now differ on more than the answer
-axis. The 3090 wall times remain hand-recorded, because `wall_ms` can only be
-populated by whoever runs the card.
+axis. The model table's 3090 wall times remain hand-recorded, because `wall_ms`
+can only be populated by whoever runs the card.
 
 **And the GPU run is now a committed artifact, not a remembered number.** The
 same 184 cases on a rented RTX 3090 (vast.ai, CUDA 12.4, driver 580.159.03,
-6 Sep 2026): **7m 34s against Metal's 47.7 min — 6.3×**, with the report in
-[`baselines/qwen3-4b-cuda-3090.json`](https://github.com/farukciftler/tacet-cli/blob/main/crates/tacet-eval/baselines/qwen3-4b-cuda-3090.json).
+6 Sep 2026): **7m 07s against Metal's 47.7 min — 6.7×**, with the report in
+[`baselines/qwen3-4b-cuda-3090.json`](https://github.com/farukciftler/tacet-cli/blob/main/crates/tacet-eval/baselines/qwen3-4b-cuda-3090.json):
+tool selection 125/160, irrelevance 24/24, step chain 153/190, answer 41/47.
 The whole rental cost about twenty cents; `cargo build --features cuda` took
 2m 47s on fourteen cores.
+
+That file is the second 3090 run of the day. The first, which this paragraph
+quoted as 7m 34s and 6.3×, was replaced in the same directory by a later run the
+same evening, at 4af5484 (the batch that made `CutOff` zero) — seven commits after
+the first run's 511f8db, and two of the six between them change what the model is
+shown and how its answer is scored (384d41e, the skill guides; 1f41fc2, four
+places the harness threw a right answer away). The paragraph was not
+re-derived with it until 10 Oct 2026. Both figures now come from `wall_ms` in
+the two committed files, and `the_readme_quotes_the_baselines` fails the build
+if this page and those files disagree again.
 
 **The catalog was 12 tools there against 15 here, and that is the trap this
 comparator was built for.** `calendar` is macOS-only; `run_code` and
 `write_code` need a sandbox, and inside an unprivileged container `bwrap` cannot
 create a namespace at all (`Operation not permitted`) — so all three were absent
-and 21 cases would have read as regressions. `--compare` excluded them by name:
+and 23 cases would have read as regressions. `--compare` excluded them by name.
+Re-derived 10 Oct 2026 from the two committed files, no model needed:
 
 ```
 these two runs were on DIFFERENT DEVICES (metal -> cuda). The token budget
 follows the device's KV cache …
-these two runs did not have the same tools, so 21 case(s) … are EXCLUDED
+these two runs did not have the same tools, so 23 case(s) … are EXCLUDED
   not in after: calendar, run_code, write_code
-paired on 163 cases
-  delta +3.7 points   95% CI [-0.6, +8.0]   p = 0.1796
+paired on 161 cases
+  delta    +2.5 points   95% CI [-1.9, +6.8]
+  sign test p = 0.4240
   verdict: NOT DISTINGUISHABLE from no change at 95%.
 ```
 
@@ -589,22 +808,34 @@ below is device, not variance.
 which is the result worth having, because it says the numbers on this page are
 about the model and not about the card. The device line is new: `kv_cache_budget`
 is 2.5 GB on Metal against 8 GB on CUDA, so the generation cap was ~14,000 tokens
-on one and 52,019 on the other, and ten of the cases that moved are ones that had
-more room to think. That is a difference between two machines, and the comparator
-says so instead of letting it read as a difference between two builds.
+on one and 52,019 on the other, and in the first comparison (the 3090 run since
+replaced) ten of the cases that moved were ones that had more room to think.
+That is a difference between two machines, and the comparator says so instead of
+letting it read as a difference between two builds. One more thing the
+comparator cannot say, so this page does: the committed Metal file predates the
+batch the committed 3090 file was run after, so the pair above is two builds as
+well as two machines — and still not distinguishable from no change.
 
-**Six minutes on a GPU — and the model matters more than the card.** The same
-184 cases on a rented RTX 3090: 6.4 minutes with these weights, and 53.7 minutes
-with `Qwen/Qwen3-4B`, the *other* model of the same name and size, which spends a
-median of 237 generated tokens per turn against 19. Before reaching for a bigger
-card, check which file is loaded. And when you do reach for one: running several
-copies of the suite side by side wins nothing, because one stream already
-saturates the card (measured — two streams give ~28 tok/s each where one gives
+**Seven minutes on a GPU — and the model matters more than the card.** The same
+184 cases on a rented RTX 3090: 7m 07s with these weights in the committed run
+above, and 53.7 minutes with `Qwen/Qwen3-4B`, the *other* model of the same name
+and size, which spends a median of 237 generated tokens per turn against 19. That
+second figure, and the token medians, were recorded by hand on a rented 3090 in
+the first days of September 2026 (first quoted on 5 Sep), against the code of that
+date, with no report kept — like the model table below, they cannot be re-derived
+from this repository. That run also sent the hybrid model no soft switch — the
+eval did not append one until audit M23 — so it is `Qwen/Qwen3-4B` in its
+default thinking mode, not under the `/no_think` the shell puts on most turns,
+and the gap a user of the shell would see between the two files has not been
+measured. Two builds apart, a gap of more than seven to one is still
+the point. Before reaching for a bigger card, check which file is loaded. And
+when you do reach for one: running several copies of the suite side by side
+wins nothing, because one stream already saturates the card (measured — two streams give ~28 tok/s each where one gives
 ~55). Batching several sequences into a single forward pass is the thing that
 scales, and `cargo run --release --example batch_decode --features candle,cuda`
 measures where it stops: 124 tok/s at batch 1, 504 at batch 32 on that card.
 
-**Turkish scores higher than English** — 61/69 against 96/115 — which is the
+**Turkish scores higher than English** — 61/69 against 99/115 — which is the
 opposite of what the effort spent on Turkish defects would suggest, and it is only
 visible because the two now run together. The routing eval always measured both;
 this one measured one language at a time and never both, so the expensive
@@ -616,8 +847,11 @@ tool on "thanks, that's all" is worse than no assistant, and that is the failure
 this number rules out.
 
 **The failures, because a score without a diagnosis is a number to be proud of
-rather than one to act on.** Twenty-seven of the 184 cases failed, and they are
-not scattered. Counted off the baseline itself:
+rather than one to act on.** This diagnosis is of the run before the one in the
+table: the baseline as first committed in 3c2c3e4 (4 Sep 2026), which the
+corrected scoring replaced two days later, and it is the run the fix below was
+made against. Twenty-seven of its 184 cases failed (the table's run: 24), and
+they are not scattered. Counted off that file:
 
 | | |
 |---|---|
@@ -656,17 +890,23 @@ paired on 184 cases
 
 Nine of the twelve are the cases named above. The table further up is the **Metal**
 baseline and has not been re-measured since, so it still reads pre-fix — the two
-numbers are from different machines and `--compare` refuses to pair across
-either a different model or a different catalog, which is why this one is quoted
-on its own terms rather than folded into the table.
+numbers are from different machines: `--compare` refuses to pair two different
+models, and when the catalogs differ it leaves out every case that touches a tool
+one side lacked and lists them, which is why this one is quoted on its own terms
+rather than folded into the table.
 
 **And the "after" report behind this verdict is not in the repository.**
 CONTRIBUTING asks that a claimed model improvement arrive as a PR that updates
 the baseline and pastes the verdict; this pasted the verdict from a rented box
-and left the other half where nobody can pair against it. `baselines/` holds two
-files and neither is a 3090 run. The fix is not to re-word this paragraph, it is
-to commit the report — with `identity.model_path` reduced to a bare file name,
-which `cargo test -p tacet-eval --test baselines` already enforces.
+and left the other half where nobody can pair against it. `baselines/` does hold
+two 3090 runs — `qwen3-4b-cuda-3090.json` and `tr-corpus-qwen3-4b-cuda.json` —
+but neither is the "after" of this pair: the first passes 149 of its 184 cases
+whole, not the 155 above, and the second is a different benchmark. Both were
+committed the next day, 6 Sep 2026, after further batches of changes. (This paragraph said `baselines/` held two files and
+neither was a 3090 run; it holds seven, re-counted 10 Oct 2026.) The fix is
+still not to re-word this paragraph but to re-run and commit the report — with
+`identity.model_path` reduced to a bare file name, which `cargo test -p
+tacet-eval --test baselines` already enforces.
 
 **A refusal is usually ours.** An earlier run had six of them, and the cause was
 the system prompt: it opened with *"an assistant that runs entirely on the
@@ -686,9 +926,12 @@ fixed 8   broke 5
 delta +2.6 points   95% CI [-3.5, +8.7]
 sign test p = 0.5811
 verdict: NOT DISTINGUISHABLE from no change at 95%.
-         this instrument needs 230 paired cases to call a 2.6-point effect;
-         this suite has 115.
+         at these rates (8 fixed, 5 broke) this instrument needs about 712
+         paired cases to call a 2.6-point effect; this suite has 115.
 ```
+
+The block was re-derived on 10 Oct 2026 when the sizing began counting broken
+cases as well as fixed ones; it had said 230.
 
 Two runs of anything differ by a case or two for no reason. If you take one number
 away from this section, take that one — and note that the instrument volunteered
@@ -737,12 +980,23 @@ the gate below; what survived is what a fresh install can actually be asked.
 expectation that could be scored there. The report is at
 [`baselines/tr-corpus-qwen3-4b-cuda.json`](https://github.com/farukciftler/tacet-cli/blob/main/crates/tacet-eval/baselines/tr-corpus-qwen3-4b-cuda.json).
 
-| axis | Turkish corpus | the 184-case suite, same model |
+| axis | Turkish corpus | the 184-case suite, same model, same kind of card (RTX 3090) |
 |---|---|---|
-| tool selection | **105/145** · 72.4% | 85.0% |
-| irrelevance | **95/97** · 97.9% | 100% |
-| step chain | 243/289 · 84.1% | 87.4% |
-| answer quality | 213/289 · 73.7% | 80.9% |
+| tool selection | **105/145** · 72.4% | 125/160 · 78.1% — **125/140 · 89.3%** skipping what the box lacked |
+| irrelevance | **95/97** · 97.9% | 24/24 · 100% |
+| step chain | 243/289 · 84.1% | 153/190 · 80.5% |
+| answer quality | 213/289 · 73.7% | 41/47 · 87.2% |
+
+The right-hand column is
+[`baselines/qwen3-4b-cuda-3090.json`](https://github.com/farukciftler/tacet-cli/blob/main/crates/tacet-eval/baselines/qwen3-4b-cuda-3090.json),
+the same kind of rented card on the same day (6 Sep 2026) — not provably the
+same machine: the suite's report has `web_search` and `web_fetch` in its
+catalog, and the corpus report says its box had no web tools. It used to be the **Metal** run (85.0%, 100%,
+87.4%, 80.9%), which made a comparison of two corpora also a comparison of two
+machines and two builds. And the two columns score a missing tool differently:
+the corpus ran with `--skip-missing`, so a case whose tool the box lacked was
+not scored, while the suite counts its 20 such cases — every one a failure —
+against the model. Skipping them the same way is the bold figure.
 
 **The answer axis moved 195 → 213 in one commit, and none of it is the model.**
 The language gate demanded evidence FOR the language and failed an answer when it
@@ -753,8 +1007,10 @@ Turkish answers were being failed by the instrument. On the mixed 184-case suite
 the same fix is worth three; on a corpus that is entirely Turkish it is worth
 eighteen, which is what a blind spot looks like when you point a set at it.
 
-**Thirteen points below the curated suite on tool selection, and that gap is the
-reason the corpus was written.** These are sentences a Turkish user would
+**16.9 points below the curated suite on tool selection, with missing tools
+skipped on both sides, and that gap is the reason the corpus was written.** (5.7 if the suite's
+missing-tool failures are left in. This said "thirteen points", against the
+Metal column.) These are sentences a Turkish user would
 actually type, including a group that holds the job constant and varies only the
 register; the older suite's Turkish half was written alongside the English one
 and reads like it. The corpus is harder because it is more like the field.
@@ -781,8 +1037,8 @@ Three things about the format are deliberate:
 **`requires` is not paperwork.** It is what makes the runner *stop* when the
 machine lacks a tool, instead of scoring every case that needs it as a model
 failure and publishing that as a result — the same defect `eval --compare` was
-taught to refuse when a Linux run paired against a macOS baseline read nineteen
-absent-tool failures as a regression.
+taught to leave out of its verdict when a Linux run paired against a macOS
+baseline read nineteen absent-tool failures as a regression.
 
 **And it found the same thing again, in Turkish, at four times the scale.** Of
 297 verified Turkish questions, **30 expected a tool the router never shows** —
@@ -832,8 +1088,10 @@ model, and a second model is a second thing to be wrong.
 The score is out of 100 with the four axes printed beside it, and the weights are
 in the source rather than in someone's head — **irrelevance 0.40, tool 0.30, step
 0.20, answer 0.10**. The safety axis is heaviest on purpose: a model that fires a
-tool at "thanks, that's all" must not be able to buy that back with tool
-accuracy, and a test asserts it cannot. An axis with no cases is left out and the
+tool at "thanks, that's all" pays for it dearly: at the suite's proportions
+one irrelevance failure costs 1.67 points and a tool case landed with its step
+earns 0.29, so it takes six of them to buy one back (91.1 -> 91.2 on the top row
+of the model table). Two tests pin that exchange rate: `bench.rs` holds the arithmetic in both directions, and `the_readme_quotes_the_baselines` derives this sentence from the weights and the top row. An axis with no cases is left out and the
 rest renormalised, not scored as zero — a benchmark made only of irrelevance
 cases is a legitimate benchmark.
 
@@ -846,10 +1104,37 @@ noted. **Score is out of 100** with the weights above — irrelevance 0.40, tool
 | model | score | tool selection | irrelevance gate | step chain | answer | wall |
 |---|---|---|---|---|---|---|
 | **Qwen3-4B-Instruct-2507** | **91.1** | 133/160 · 83.1% | **24/24** | 162/190 | 43/47 | 6.4 min |
-
 | Qwen3-8B | 81.3 | 128/160 · 80.0% | **20/24** | 153/190 | 37/47 | 54.6 min |
 | Qwen3-0.6B (Q8_0) | 64.0 | 52/160 · 32.5% | **24/24** | 79/190 | 28/47 | 21.3 min |
 | FunctionGemma-270M (F16) | 47.4 | **0/160** | **24/24** | 24/190 | 23/47 | 28.6 min |
+
+**These four rows are hand-recorded and cannot be re-measured here.** They were
+taken on a rented RTX 3090 on or before 5 Sep 2026 — they were first committed in
+ae0893a that morning, and the rental's own commits run from 00:07 to 01:35 the
+night before — against the code of that date, and no JSON report was kept for
+any of them; the box is gone, and re-running them
+means downloading four sets of weights onto a rented GPU again. What was
+re-checked on 10 Oct 2026 is the arithmetic — each row's score recomputed from
+its own counts with the weights above, by `the_readme_quotes_the_baselines` —
+and not the measurement. The top row is not
+[`baselines/qwen3-4b-cuda-3090.json`](https://github.com/farukciftler/tacet-cli/blob/main/crates/tacet-eval/baselines/qwen3-4b-cuda-3090.json),
+which is a later run of the same weights on the same kind of card (125/160,
+153/190, 41/47, 7m 07s); the rows are kept as they were taken so that the four
+models are compared on one build. Until the table was split by a stray blank
+line (fixed 10 Oct 2026) GitHub rendered the last three rows as loose text.
+
+**Qwen3-8B and Qwen3-0.6B were measured in a mode the shell does not give you by
+default.** Both are hybrid builds: a turn with no soft switch on it runs in
+their default thinking mode, and when these rows were taken the eval sent no
+switch at all. The shell puts one on every ChatML turn, and under the default
+`thinking = auto` that is `/no_think` on 180 of the suite's 190 turns and
+`/think` on 10 (audit M23; the eval now appends the same switch, from
+`tacet_engine::thinking_switch`). So those two rows are the hybrid models
+thinking on every turn — the nearest a user comes to that is `thinking = on` —
+and not what a default install gets from the same weights. How far their
+scores and wall clocks would move under the shell's switch has not been
+measured, for the reason above. Qwen3-4B-Instruct-2507 has no thinking mode
+for the switch to turn off.
 
 **Read the score with its floor in mind, and the floor is not 40.** A model that
 never calls anything passes every irrelevance case, which is 0.40 of the weight —
@@ -872,11 +1157,14 @@ is, which is more than the gap between two of them.
 **The 8B is worse than the 4B, and the axis it loses on is the safety one.**
 Twenty of twenty-four on the irrelevance gate means four messages that must not
 reach a tool did. Bigger did not mean better here, and it cost eight times the
-wall clock.
+wall clock — in the thinking mode it was measured in, not under the
+`/no_think` the shell sends on most turns; how much of the gap is the 8B and
+how much is the mode is not measured.
 
 **gemma-3-12b is absent because it does not terminate.** On the same card and the
 same suite it emitted a median of **2048 tokens per turn** — exactly the
-constrained ceiling — against Qwen3-8B's 280, with three of five sampled turns
+constrained ceiling — against Qwen3-8B's 280 (itself taken with no soft switch,
+in its default thinking mode), with three of five sampled turns
 stopping on `Length` rather than on a finished call. At 18 tok/s against the 8B's
 47 that is 124 seconds per case, and a full run is six hours. The verbosity is
 the finding; the score was not worth the rent.
@@ -910,6 +1198,15 @@ having one.
 | Qwen3-4B | 76.9% → **97.4%** | 86.7% → **100.0%** | 66.7% → **97.4%** |
 | Qwen3-0.6B | 20.5% → 23.1% | 100.0% → 100.0% | 7.7% → 10.3% |
 | FunctionGemma-270M | 0% → 0% | — | 0% → 0% |
+
+**The 0.6B row was asked without the soft switch.** `bench gap` sent the bare
+message until audit M23 (it now appends what the shell would under
+`thinking = auto`), and Qwen3-0.6B is a hybrid build, so that row is the model
+in its default thinking mode, not under the `/no_think` a default install sends
+on most turns; what it does under the switch has not been measured. The 4B row
+is less certain: `tacet models download qwen3-4b` was moved from the hybrid
+build to the 2507 instruct one, which has no thinking mode to switch, during
+the same rental, and which file that run loaded is not on record.
 
 **`valid if started` reaching exactly 100% is the front-page claim, measured.**
 Unconstrained, the 4B writes a malformed call roughly one time in seven; with the
@@ -1000,9 +1297,12 @@ over the 569 train cases gave 865 pairs, 851 of them usable.
 
 **THE COST IS THE ROW TO READ.** Teaching a 135M model to reach for tools costs
 it restraint: irrelevance falls from 41/44 to 36/44 — five messages that must not
-reach a tool now do. This is why the composite weights irrelevance at 0.40: a
-gain in tool accuracy is not allowed to quietly buy a loss in restraint, and it
-is why 51 of 119 tools found still only moves the composite from 46.4 to 59.9.
+reach a tool now do. Weighting irrelevance at 0.40 makes that loss expensive,
+not impossible: a large enough gain in tool accuracy still buys it, and here it
+did — with the five counted against it, 51 of 119 tools found moves the
+composite from 46.4 to 59.9. The composite going up is not the verdict; the
+irrelevance column beside it is the part that got worse, and why this is the row
+to read.
 
 **Slot filling finally moved, and what moved it was data.** `search_filter` goes
 from calling nothing to picking the right tool 16 times out of 17 — and from 0 to
@@ -1093,7 +1393,8 @@ signal that only ever raises a score and never overrules one, takes that to
 **102** — it catches 15 of the 18 requests no substring can reach, including the
 ones that name no place at all. Measured against `eval --routing`, which is the
 guard for exactly this: 166/166 reach and 166/166 in the top three, unchanged, at
-pressure 0 and 20. An earlier version of the same head, trained without the other
+pressure 0 and 20 (177/177 and 177/177 since the eleven agent-session cases
+joined the suite, re-derived 10 Oct 2026 on macOS). An earlier version of the same head, trained without the other
 tools' work as negatives, called 38% of the other suites' messages an extraction
 request and cost fourteen of those top-three positions — which is why it is in
 the repository with its false-positive rate measured rather than asserted.
@@ -1121,7 +1422,7 @@ serve):
 | | en | ru | es | fr | zh | de | tr |
 |---|---|---|---|---|---|---|---|
 | score | 91.1 | **94.4** | 94.1 | 91.8 | 91.0 | 88.5 | **84.5** |
-| tool | 133/160 | 31/34 | 28/30 | 29/33 | 28/34 | 26/32 | 23/33 |
+| tool | 136/160 | 31/34 | 28/30 | 29/33 | 28/34 | 26/32 | 23/33 |
 | irrelevance | 24/24 | 13/13 | 13/13 | 13/13 | 13/13 | 13/13 | 13/13 |
 
 **The irrelevance gate holds in all seven** — **78 of 78** across the six cores,
@@ -1134,7 +1435,11 @@ are the 184-case English+Turkish baseline (`crates/tacet-eval/baselines/qwen3-4b
 — a different instrument, four times larger, 66 of whose cases are Turkish. It
 sits in this table because it is the only English number there is, not because it
 is the seventh member of the set. Read the six cores across the row; read `en`
-against the tables higher up the page.
+against the tables higher up the page. It is also the one column measured on
+Metal rather than on the rented card. Its tool figure said 133/160 — the model
+table's 3090 row — under a citation of a file that says 136/160; the column
+now quotes the file it names (re-derived 10 Oct 2026, and pinned by
+`the_readme_quotes_the_baselines`). The score is 91.1 either way.
 
 What moves is tool selection, and Turkish is now the weakest rather than the
 strongest, which is the reverse of what the English/Turkish suite shows. The two
@@ -1255,7 +1560,7 @@ says nothing about a call that never starts that way.
 ### What is actually distinctive
 
 1. **Always-terminating, as a claim separate from unrepresentable-invalid.**
-   Bounded consecutive whitespace, a bounded open-schema field, a 2048-token cap
+   Bounded consecutive whitespace, bounded open-schema strings, numbers and arrays, a 2048-token cap
    measured against a largest-observed legitimate call of 1523. Unbounded
    whitespace wander is a known live failure in this category and nobody
    advertises a termination bound. The measurement that produced it — a complete,
@@ -1300,8 +1605,8 @@ of distributional distortion it is not — the +20.5 points of *started* calls a
 |---|---|
 | macOS (arm64) | **Verified.** Full suite runs here: build, clippy `-D warnings`, tests, eval. |
 | Linux (arm64) | **Published, not yet run on a board.** Release binaries are built natively on an ARM runner and `tacet update` has always known this triple — the release simply did not carry it until v0.1.27, so a Raspberry Pi could download nothing and was told the platform was unpublished. A guard now fails the build if the updater asks for a target the release workflow does not build. What is still unmeasured is everything after the download: nobody has run the shell, the sandbox or a model on ARM64 Linux. This is the platform the work in [esp32/](https://github.com/farukciftler/tacet-cli/blob/main/esp32/) is heading towards, so it will be measured rather than assumed. |
-| Linux | **The sandbox is measured, and on a default install it is OFF.** Measured on a stock Ubuntu 24.04 (4 Sep 2026), not only in CI: as an ordinary user `bwrap --unshare-net` fails with `loopback: Failed RTM_NEWADDR: Operation not permitted`, because the distro ships `kernel.apparmor_restrict_unprivileged_userns=1`. So `run_code` and `write_code` are **absent from the catalog** — the honest-refusal path, working as designed, but it is the DEFAULT on the most common Linux rather than an edge case. The shell says so on startup — the line that reports `run_code` as off now names the sysctl and the one-line remedy, rather than leaving "no sandbox" as the whole explanation. As **root** on the same machine the shield verifies and both tools appear, which is why testing with sudo hides the problem. What the shield itself does is measured: with the restriction lifted, `the_network_is_really_cut`, `the_sandbox_cannot_be_escaped` and the timeout kill all pass against a real `bwrap` 0.9.0 — **1069 tests, 0 failures** (33 binaries) — the record of a sandbox measurement on that machine on that date, not the current size of the suite, which is 1241 tests in 64 binaries on macOS as of 7 Sep 2026. Run under `TACET_SANDBOX_MUST_RUN=1`, the flag that makes the 23 tests that used to skip execute or fail the build (22 at that measurement; `nothing_survives_the_call` has joined them since, and the count is asserted against this page by `the_skip_count_the_documents_quote_is_the_count_in_the_source`). Still unmeasured: nobody has held a conversation with the interactive shell on Linux. |
-| Windows | **Measured for the first time, on a real machine.** Windows Server 2019 (Kamatera, 4 Sep 2026), Rust 1.98.1: the workspace builds and **1037 tests pass, 0 failures** (31 binaries; the suite has grown to 64 binaries since, and that machine has not been re-run). Two things that CI cannot see, because GitHub's runner is not a user's machine: (1) a clean Windows has no MSVC linker, so `cargo build` stops at ``error: linker `link.exe` not found`` until ~2 GB of Visual Studio Build Tools is installed — see CONTRIBUTING; (2) a Windows build prints a `dead_code` warning for `O_NOFOLLOW`, which no job fails on because `clippy -D warnings` runs only on ubuntu. That warning is real: the symlink second belt is Unix-only. The FIRST belt was measured there and holds — `create_new` on an existing symlink gives `os error 80` and leaves the target untouched. Still unmeasured: the interactive shell, and `0600` stamping is deliberately not applied here (`set_permissions` only flips a read-only flag, which would give the appearance of protection without the substance). |
+| Linux | **The sandbox is measured, and on a default install it is OFF.** Measured on a stock Ubuntu 24.04 (4 Sep 2026), not only in CI: as an ordinary user `bwrap --unshare-net` fails with `loopback: Failed RTM_NEWADDR: Operation not permitted`, because the distro ships `kernel.apparmor_restrict_unprivileged_userns=1`. So `run_code` and `write_code` are **absent from the catalog** — the honest-refusal path, working as designed, but it is the DEFAULT on the most common Linux rather than an edge case. The shell says so on startup — the line that reports `run_code` as off now names the sysctl and the one-line remedy, rather than leaving "no sandbox" as the whole explanation. As **root** on the same machine the shield verifies and both tools appear, which is why testing with sudo hides the problem. What the shield itself does is measured: with the restriction lifted, `the_network_is_really_cut`, `the_sandbox_cannot_be_escaped` and the timeout kill all pass against a real `bwrap` 0.9.0 — **1069 tests, 0 failures** (33 binaries, 4 Sep 2026) — the record of a sandbox measurement on that machine on that date, not the current size of the suite, which is 1993 tests in 104 test binaries (doc-tests included; 10 more ignored) on macOS as of 11 Oct 2026, re-counted from `cargo test --workspace` on an Apple M4 Pro (it was 1241 in 64 on 7 Sep 2026). Run under `TACET_SANDBOX_MUST_RUN=1`, the flag that makes the 26 tests that used to skip execute or fail the build (22 at that measurement; `nothing_survives_the_call`, `a_loose_socket_in_tmp_is_shadowed_under_bwrap`, `a_stop_ends_the_verification_run_and_delivers_nothing` and `a_stop_ends_the_syntax_check_and_delivers_nothing` have joined them since, and the count is asserted against this page by `the_skip_count_the_documents_quote_is_the_count_in_the_source`). Still unmeasured: nobody has held a conversation with the interactive shell on Linux. |
+| Windows | **Measured for the first time, on a real machine.** Windows Server 2019 (Kamatera, 4 Sep 2026), Rust 1.98.1: the workspace builds and **1037 tests pass, 0 failures** (31 binaries; the suite has grown to 104 binaries since, and that machine has not been re-run). Two things that CI cannot see, because GitHub's runner is not a user's machine: (1) a clean Windows has no MSVC linker, so `cargo build` stops at ``error: linker `link.exe` not found`` until ~2 GB of Visual Studio Build Tools is installed — see CONTRIBUTING; (2) a Windows build prints a `dead_code` warning for `O_NOFOLLOW`, which no job fails on because `clippy -D warnings` runs only on ubuntu. That warning is real: the symlink second belt is Unix-only. The FIRST belt was measured there and holds — `create_new` on an existing symlink gives `os error 80` and leaves the target untouched. Still unmeasured: the interactive shell, and `0600` stamping is deliberately not applied here (`set_permissions` only flips a read-only flag, which would give the appearance of protection without the substance). |
 
 Where a guarantee holds on one platform and not another, the code says so at the point where it matters. `0600` permission stamping, for example, is deliberately not applied on Windows — there `set_permissions` only flips a read-only flag, which would produce the *appearance* of protection without the substance.
 

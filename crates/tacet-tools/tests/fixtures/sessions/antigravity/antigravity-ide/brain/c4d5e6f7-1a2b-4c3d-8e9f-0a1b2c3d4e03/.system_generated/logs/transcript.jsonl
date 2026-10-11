@@ -1,0 +1,2 @@
+{"step_index":0,"type":"USER_INPUT","source":"USER_EXPLICIT","status":"DONE","created_at":"2026-10-08T14:00:00Z","content":"<USER_REQUEST>\nSummarise the open pull requests\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-10-08T17:00:00+03:00.\n\nThe user's current state is as follows:\nActive Document: /Users/dev/src/rollover app/README.md\n</ADDITIONAL_METADATA>"}
+{"step_index":1,"type":"PLANNER_RESPONSE","source":"MODEL","status":"RUNNING","created_at":"2026-10-08T14:00:05Z","content":"Looking at the list now."}

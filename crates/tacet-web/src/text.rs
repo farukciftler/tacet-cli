@@ -76,22 +76,34 @@ fn simplify_punctuation(text: &str) -> String {
 /// If the closing tag never arrives (broken HTML) everything to the end of the
 /// block is dropped: folding the content of an unterminated `<script>` into the
 /// text is exactly what we want to avoid.
+///
+/// LINEAR, AND IT WAS NOT (audit L9). The page is lower-cased ONCE, up front,
+/// and both copies are walked by the same index. The old `after_block`
+/// lower-cased EVERYTHING AFTER THE CURSOR for every block it dropped, so the
+/// work was the page length times the number of blocks: `<svg></svg>` repeated
+/// 64 000 times (704 KB) took 0.69 s, and a 2 MiB page — `MAX_BODY`, and
+/// `web_search` fetches two — about 6 s, from a hostile page that only has to
+/// repeat one empty tag. `to_ascii_lowercase` touches ASCII bytes only, so the
+/// two strings have the same length and the same char boundaries; an index
+/// found in one is valid in the other.
 fn drop_blocks(html: &str) -> String {
+    let lower = html.to_ascii_lowercase();
     let mut output = String::with_capacity(html.len());
-    let mut rest = html;
-    'outer: while let Some(i) = rest.find('<') {
-        output.push_str(&rest[..i]);
-        let body = &rest[i..];
+    let mut cursor = 0;
+    'outer: while let Some(found) = html[cursor..].find('<') {
+        let i = cursor + found;
+        output.push_str(&html[cursor..i]);
+        let body = &html[i..];
         for name in DROPPED_BLOCKS {
             if is_opening(body, name) {
-                rest = after_block(body, name);
+                cursor = after_block(&lower, i, name);
                 continue 'outer;
             }
         }
         output.push('<');
-        rest = &rest[i + 1..];
+        cursor = i + 1;
     }
-    output.push_str(rest);
+    output.push_str(&html[cursor..]);
     output
 }
 
@@ -105,23 +117,21 @@ fn is_opening(body: &str, name: &str) -> bool {
     !body.starts_with("</") && tag_starts(body, name)
 }
 
-/// Moves from the opening tag PAST the block.
+/// The index just PAST the block that opens at `from`, in the page that
+/// `lower` is the lower-cased copy of (see `drop_blocks` for why a copy).
 ///
-/// The closing tag's `>` is swallowed too: leaving the body AT THE START of the
-/// closing tag makes the calling loop find the same closing tag again and
+/// The closing tag's `>` is swallowed too: leaving the cursor AT THE START of
+/// the closing tag makes the calling loop find the same closing tag again and
 /// progress stops. If there is no closing tag at all (broken HTML) everything
 /// to the end of the page is dropped — folding the content of an unterminated
 /// `<script>` into the text is exactly what we avoid.
-fn after_block<'a>(body: &'a str, name: &str) -> &'a str {
-    // `to_ascii_lowercase` only touches ASCII bytes, the length does not
-    // change; that is why the index coming out of it is valid on `body`.
-    let lower = body.to_ascii_lowercase();
-    let Some(j) = lower.find(&format!("</{name}")) else {
-        return "";
+fn after_block(lower: &str, from: usize, name: &str) -> usize {
+    let Some(j) = lower[from..].find(&format!("</{name}")).map(|j| from + j) else {
+        return lower.len();
     };
-    match body[j..].find('>') {
-        Some(k) => &body[j + k + 1..],
-        None => "",
+    match lower[j..].find('>') {
+        Some(k) => j + k + 1,
+        None => lower.len(),
     }
 }
 
@@ -468,6 +478,37 @@ mod tests {
     fn consecutive_dropped_blocks_do_not_loop_forever() {
         let h = "<script>a</script><style>b</style><script>c</script><p>end</p>";
         assert_eq!(to_text(h), "end");
+    }
+
+    /// A HOSTILE PAGE MUST NOT COST QUADRATIC TIME (audit L9). One empty
+    /// dropped block repeated to `MAX_BODY` (2 MiB): before the fix every
+    /// dropped block lower-cased the whole rest of the page, ~6 s per page on
+    /// the audit's machine and two pages per `web_search`. Measured on this
+    /// test itself (debug build, Apple Silicon, 10 Oct 2026): the old code took
+    /// 332 s, the linear one finishes the whole text module in 0.12 s. The
+    /// 1.5 s bound leaves room for a loaded CI box and still sits two orders of
+    /// magnitude below the quadratic cost.
+    #[test]
+    fn many_dropped_blocks_cost_linear_time() {
+        let unit = "<svg></svg><SVG></SVG>";
+        let mut page = unit.repeat((2 * 1024 * 1024) / unit.len());
+        page.push_str("<p>çay ready</p>");
+        let started = std::time::Instant::now();
+        let text = to_text(&page);
+        let took = started.elapsed();
+        assert_eq!(text, "çay ready", "the blocks were not all dropped");
+        assert!(
+            took < std::time::Duration::from_millis(1500),
+            "2 MiB of empty blocks took {took:?} — the drop is quadratic again"
+        );
+    }
+
+    /// Mixed case and multi-byte text around a dropped block: the index found
+    /// in the lower-cased copy must land on the same byte in the original.
+    #[test]
+    fn the_lowercased_copy_and_the_page_stay_in_step() {
+        assert_eq!(to_text("ığ<ScRiPt>x</sCrIpT>ü<STYLE>y</Style >ş"), "ığüş");
+        assert_eq!(to_text("a<svg>never closed ğ"), "a");
     }
 
     /// A multi-byte character after `&`: the naive `body[..12]` slice would

@@ -29,6 +29,9 @@
 # USAGE
 #   scripts/smoke.sh                       # the model the catalog pins
 #   scripts/smoke.sh ~/models/gemma3-4b    # any folder with model.gguf
+#   TACET_SMOKE_FEATURES=candle scripts/smoke.sh   # CPU-only Linux
+#
+# It BUILDS FIRST (see below), so there is no separate `cargo build` to forget.
 #
 # The exit code is the number of messages that failed, so it gates a release.
 
@@ -39,8 +42,71 @@ cd "$REPO" || exit 1
 export PATH="$HOME/.cargo/bin:$PATH"
 
 MODEL_DIR="${1:-}"
-BIN="$REPO/target/release/tacet"
-[ -x "$BIN" ] || { echo "build first: cargo build --release -p tacet-cli --features metal" >&2; exit 127; }
+
+# THE BINARY IS BUILT HERE, FROM THIS CHECKOUT, BEFORE ANYTHING IS MEASURED.
+#
+# This used to check only that `target/release/tacet` EXISTED and then measure
+# whatever was there. `scripts/nightly-eval.sh` builds into that same path, from
+# whatever commit was checked out at 03:07 — so the release gate could pass on
+# last night's binary while the tag pointed at this morning's code. That is the
+# exact failure nightly-eval.sh's own build step was written to stop ("a number
+# attributed to a commit it did not measure"), reintroduced one script over.
+#
+# On an up-to-date tree cargo's fingerprint check makes this a no-op of about a
+# second, which is why it runs every time rather than behind a flag somebody
+# would forget. The feature defaults match nightly-eval.sh's (metal on macOS,
+# cuda on Linux) so the two scripts do not relink each other's binary;
+# `TACET_SMOKE_FEATURES=candle` is the CPU-only Linux box.
+if [ -n "${TACET_SMOKE_FEATURES:-}" ]; then
+  FEATURES="$TACET_SMOKE_FEATURES"
+else
+  case "$(uname -s)" in
+    Linux) FEATURES="cuda" ;;
+    *) FEATURES="metal" ;;
+  esac
+fi
+FEATURE_ARGS=(--features "$FEATURES")
+[ "$FEATURES" = "none" ] && FEATURE_ARGS=()
+# THE PATH IS CARGO'S ANSWER, NOT A GUESS. This first built and then measured a
+# hard-coded `target/release/tacet` — but `CARGO_TARGET_DIR`, `build.target-dir`
+# and `build.target` all move where a release build lands, and with any of them
+# set the fresh build went elsewhere while the check measured whatever older
+# binary sat in `target/`. `--print-features` below would still pass whenever
+# that stale binary had the same features: the very failure this build exists to
+# stop. So cargo is asked, in its own JSON, for the executable it just produced
+# (`fresh` or not, a `compiler-artifact` line names it), and that file is what
+# gets measured. Rendered diagnostics still go to the terminal on stderr.
+if ! build_json="$(cargo build --release -p tacet-cli --bin tacet \
+  ${FEATURE_ARGS[@]+"${FEATURE_ARGS[@]}"} --message-format=json-render-diagnostics)"; then
+  echo "the build failed; nothing was measured" >&2
+  exit 127
+fi
+BIN="$(printf '%s\n' "$build_json" \
+  | jq -r 'select(.reason == "compiler-artifact" and .target.name == "tacet"
+             and (.target.kind | index("bin"))) | .executable // empty' 2>/dev/null \
+  | tail -1)"
+if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
+  echo "cargo did not report a tacet executable (is jq installed?); nothing was measured" >&2
+  exit 127
+fi
+
+# AND THE BINARY IS ASKED WHAT IT IS, rather than trusted to be what was just
+# asked for. `--print-features` is the same question `tacet update --install`
+# puts to a downloaded binary; a mismatch here means the file on disk is not the
+# build above, and measuring it would be measuring something else.
+got="$("$BIN" --print-features 2>/dev/null)"
+if [ "$got" != "$FEATURES" ]; then
+  echo "$BIN reports features '$got', expected '$FEATURES'; refusing to measure it" >&2
+  exit 127
+fi
+# A build with no inference feature answers every message from FakeEngine. That
+# is fine for the detector self-test below and meaningless as a release gate,
+# where it would read as six clean answers from a model that never ran.
+if [ "$FEATURES" = "none" ] && [ -z "${TACET_SMOKE_SCRIPT+x}" ]; then
+  echo "TACET_SMOKE_FEATURES=none builds no model; that is only for smoke-selftest.sh" >&2
+  exit 127
+fi
+echo "measuring $(git rev-parse --short HEAD 2>/dev/null)$(git diff --quiet HEAD 2>/dev/null || echo -dirty), features $FEATURES, $BIN" >&2
 
 if [ -n "$MODEL_DIR" ]; then
   export TACET_MODEL="$MODEL_DIR/model.gguf"

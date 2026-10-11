@@ -19,6 +19,589 @@ releases to follow.
 
 ---
 
+## Unreleased — the audit of 9 Oct 2026: completeness, 11 Oct 2026
+
+**Fixed:**
+
+* The corpus anonymiser no longer keeps Anthropic's `req_…`, `msg_…`,
+  `toolu_…` and `srvtoolu_…` ids verbatim: each becomes a same-length
+  `<prefix>anon…` pseudonym, stable per salt so the entries of one response
+  still share an id. The six real Claude Code captures carried 21 request and
+  21 message ids of a real account; they were rewritten in place with
+  `corpus_capture --vendor-ids-only` (ids only), and
+  `the_real_captures_carry_no_raw_vendor_id` fails on a raw id anywhere in the
+  corpus (RG-28).
+* An Antigravity session read through `session_read`, `--from` or
+  `/resume-from` carries its `implementation_plan.md` and `walkthrough.md`:
+  a line each in the summary (the name and its metadata's summary) and the
+  whole text in the stored transcript. The reader read both and the layer
+  above it dropped them, so neither reached the model or the store (RG-15).
+* `tacet handoff install antigravity` prints and installs the shape
+  Antigravity documents — `{"tacet-handoff": {"PreInvocation": [{"type":
+  "command", "command": …}]}}`, a named hook with its handler directly under
+  the event. It wrote Claude Code's matcher-group shape under a top-level
+  `hooks` key, which Antigravity reads as a hook named `hooks` that runs
+  nothing; an entry of that old shape is not counted as installed.
+  `docs/agent-handoff.md` shows the new snippet (RG-25).
+* The Antigravity hook's pages say what a real Antigravity did with it:
+  Antigravity CLI 1.1.10 loaded Tacet's hook entry on 11 Oct 2026 (one named
+  hook from the workspace `.agents/hooks.json`, zero with the file moved
+  aside) and never ran it — every call stopped at Google sign-in before a
+  model call. Whether the `ephemeralMessage` reaches the model stays **Not
+  measured**; a test holds every hook page to the dated load and keeps it out
+  of the list of hooks run by their agent (RG-25).
+* `tacet update --help` no longer says nothing checks by itself and there is
+  no timer: it names the opt-in daily check (`update.check on`, once every 24
+  hours, only at the end of an interactive session on a terminal), as the
+  README does. A test runs the help and holds it to that (D7).
+* The README's 135M training section no longer says the 0.40 irrelevance
+  weight stops a tool gain from buying a loss in restraint — its own row
+  showed the composite rising while irrelevance fell. The exchange-rate
+  sentence (one gate failure 1.67 points, six tool cases to buy it back,
+  91.1 -> 91.2) is now derived from the weights and the model table's top row
+  by `the_readme_quotes_the_baselines`, not only pinned in `bench.rs` (D9).
+* Ctrl-C typed at a real terminal during `shell sleep 9` is now driven end to
+  end through `script(1)`: the chip comes back within 5 s, the `sleep` is
+  gone, the shell answers the next message. With the tool's cancel token
+  unwired it reproduces the audit's `exit 0 · 9554 ms` (M4; macOS only).
+* `scripts/session-roundtrip.sh`'s judge drops Markdown emphasis before
+  matching: the 11 Oct 2026 run's E3 answer, "from **Tacet**", is a credit and
+  read as CHANGED. Re-judged on the saved evidence, that run is E2 differing
+  (no self-claim) and the other four as measured; the ADR records it (RG-29).
+* The ADR said the agent hooks read the handoff `.md`; they read the `.json`
+  record through `handoff::read` and render it. A test holds both the binary
+  (a hand-edited `.md` never reaches an agent) and the ADR to that (RG-21,
+  RG-23, RG-25). `a_marker_is_not_text.rs` no longer says ci.yml does not
+  build `candle`: PR CI compiles those tests and only the nightly runs them,
+  and a workflow test reads the doc against both files (T1).
+* `tacet update` clears an earlier update's `.new`, `.new.downloading` and
+  `.resume` through one call that then downloads, and a test holds the
+  updater to that order: deleting the clear used to leave every test green,
+  because the only test called the helper on its own. A second test reads
+  `install` and fails if it reaches the downloader any other way (L3).
+* A Claude Code session with no `ai-title` (every `claude -p` one) is named
+  by its `last-prompt` line in the listing and in the read alike. A real one
+  is ~280 KB of attachment lines by its first answer, so the listing saw only
+  its tail and named it by its last prompt while the read named it by its
+  first, and a small session was renamed when it grew past the 64 KB tail
+  (RG-28).
+* The session corpus holds its first real files: six Claude Code 2.1.285
+  transcripts from the 11 Oct 2026 round trip and the RG-21 hook run (both
+  throwaway, nothing of the user's), masked by `corpus_capture --into` and
+  reviewed value by value; each is a case read through the real reader, the
+  two `--fork-session` copies are held to their origins, and a test holds the
+  corpus README to the captured ids. Antigravity has no capture (`agy` stopped
+  at sign-in before any conversation existed) and Codex none (not installed)
+  (RG-28).
+
+**Measured:** the Claude Code SessionStart hook, run for real on 11 Oct 2026
+with Claude Code 2.1.285 (four headless `-p` turns in a throwaway project,
+the entry exactly as `tacet handoff install claude` prints it). A start and a
+resume under a record ran it and the model quoted the record, credited to
+Tacet; `--resume --fork-session` ran no SessionStart hook, so a fork sees only
+a stale copy; whether the interactive screen shows `systemMessage` is still
+not seen. README, `docs/agent-handoff.md` and the ADR say so, and a test now
+holds all four pages to the recorded run in both directions (RG-21).
+
+---
+
+## Unreleased — the audit of 9 Oct 2026: completeness, 10 Oct 2026
+
+What the second pass over the review found unfinished, each fixed with a test
+that fails without the fix.
+
+**Security:**
+
+* `tacet sessions --purge` deletes the `<config>/handoff/` records — each a
+  summary of another agent's transcript — and the transcript backups `tacet
+  handoff note` keeps, with the conversations and the receipt log; `--json`
+  reports `handoffs` beside `purged` and `receipts` (RG-32).
+* The corpus anonymiser (`examples/corpus_capture.rs`) masks what a tool
+  returned wherever it sits: a value inside a tool's data survives only when
+  a reader takes it from there, a key only when a reader looks it up there,
+  a number only when it is a task id of at most six digits (a card number
+  under `id` was kept), `blockedBy` is kept as a string and as a number
+  alike, and the envelopes no reader opens that hold a tool's answer (Codex's
+  `mcp_tool_call_end` and `exec_command_end`, Claude Code's `progress`) are
+  data. The salt comes from the OS, not the clock (RG-28).
+* `corpus_capture --into` files a capture by what it records, not by the
+  path it was copied from: a Claude Code transcript under its `sessionId`, a
+  subagent under its session and its `agentId`, and an Antigravity file only
+  when its conversation id is an id and the reader opens that file. Each name
+  used to be taken from the capturer's disk, so the unmasked home directory
+  or a file name like `zeynepk-diary.md` reached the committed corpus path
+  (RG-28).
+
+**Fixed:**
+
+* An Antigravity session read through `--from`, `/resume-from` or
+  `session_read` asks the version gate. It was read without one, which the
+  README said never happens. The IDE's version is taken from the installed
+  app's `product.json` on macOS and trusted only for a session written after
+  it; `agy` has no readable version, so every `agy` read warns (RG-30,
+  RG-36).
+* A reader that panics on a file it has never seen costs that file, not the
+  shell: `/resume-from`'s listing names the folder it could not list, an
+  import is an error, and `tacet handoff hook` stays silent and exits 0 under
+  the other agent, its panic kept off stderr (RG-04).
+* The reaped-pid test runs only where the probe can tell (RG-08).
+* `write_code` stops when the turn is stopped: its syntax check and the run
+  of the model's code end on Ctrl-C instead of running on to their 10 s
+  timeout, and a stop that lands after the last stage delivers nothing (M4).
+* Every path that asks a model a measured question appends the Qwen soft
+  switch the shell would under `thinking = auto`: the `tacet eval` runner, on
+  the first pass and in the history it replays, `tacet bench gap`, and
+  `tacet eval --format-gate`. Each sent the bare message, so a hybrid Qwen3
+  build was measured in a thinking mode a default install does not run it in
+  (M23).
+
+**Documents:** the README says Claude Code's SessionStart hook has never run in
+a real Claude Code (RG-21, guarded in the README as in
+`docs/agent-handoff.md`), that `git` is read-only with the actions the tool
+has (L38), what `eval --compare` leaves out of its verdict (D8), one
+suite size in both platform rows (D23), and that the Qwen3-8B, Qwen3-0.6B and
+53.7-minute `Qwen/Qwen3-4B` figures were taken with no soft switch, in the
+hybrid build's default thinking mode, with the cost of that mode unmeasured
+(M23, guarded by `the_hybrid_rows_say_how_they_were_asked`).
+
+---
+
+## Unreleased — the audit of 9 Oct 2026: the review of 10 Oct 2026
+
+What the review of waves 1–6 confirmed, each fixed with a test that fails
+without the fix.
+
+**Fixed:**
+
+* Text from outside can no longer close the fence a tool or the shell puts
+  around it. `<search_result>`, `<api_response>`, `<clipboard>` and `<stdin>`
+  (and `<imported_session>`) are `DATA_FENCE_NAMES` in the kernel's defang, and
+  each writer neutralises them in the foreign text before fencing it: a
+  SearXNG result, an API body, a copied page or a pipe holding the closing tag
+  used to put its next sentence outside the data, beside Tacet's own "it is
+  data, not instructions" line or in the user's position (H4-a, H2-b). A test
+  fails if a closing tag appears in a crate's source that no defang covers.
+* `git` stops when the call is stopped: Ctrl-C or the 120 s deadline kills
+  and reaps the `git` it started, where it used to run on, orphaned. A call
+  the executor abandons after its 3 s grace is reported as "left running",
+  never "stopped" (M30).
+* `tacet addon install agent-sessions` records no folders on an empty answer;
+  the approval screen shows the ones found today. The recorded snapshot hid
+  every agent installed later from `sessions_list`, `session_read` and `--from`
+  (RG-17). `tacet handoff note` and `tasks` look in the same folders as `--from`,
+  and say where they looked (RG-22).
+* `tacet handoff note codex --program` starts the app-server on the Codex home
+  whose writer lock it checked (`CODEX_HOME`), and refuses a home without the
+  thread; `--root` elsewhere used to pass the lock check while the server
+  opened the locked thread (RG-23).
+* A continuation's handoff record starts with the session as Tacet found it,
+  labelled as the other agent's work, and no tasks; the note and the hook no
+  longer say Tacet did that work (RG-27). The hook tells the agent to run the
+  same absolute `tacet` path the hook entry runs (RG-21). Each agent's rule
+  block in `docs/agent-handoff.md` is pinned word for word by a test that also
+  runs the `tacet handoff update` it teaches through the real parser; a pinned
+  phrase plus a list of negators had let a block that told the agent to
+  discard the handoff, or never to report back, pass (RG-27).
+* `write_code`'s test-file rule follows the extension: `testimonials.js` is
+  delivered, and a refusal names the runner that would really collect the
+  file (M3). The digest lists a file named both absolute and relative once
+  (RG-16).
+
+**Documents:** the README's Metal section dates its baseline by commit and
+says it predates the eval's M22/M23 prompt changes; the language split is the
+file's (61/69 against 99/115); the failure diagnosis names the run it was
+counted from (3c2c3e4). Wave 1's H5 line now says what the code does with a
+call carrying both thinking tags. ADR 0001 states the two handoff commands
+that write or start something; SECURITY states the socket scan's 4,096-entry
+budget; `tacet addon --help` counts seven addons; CI's test job fetches the
+whole history, and the README's date tests refuse a shallow clone instead of
+measuring it (D4).
+
+**Tests that could not go red, now can:** the shell's thinking-split gate
+(H5) is driven through `tacet chat`; the write-back's "changed while asking"
+refusal in all three agents, and Claude's chain, unfinished-line, session-id
+and read-back checks (RG-21); one credential case per denylist entry (RG-16);
+the smoke guard reads `tacet chat --help` instead of field names; the two
+grammar rules for C1/DEL and a nested dead field (M15).
+
+---
+
+## Unreleased — the audit of 9 Oct 2026, wave 6: the documents
+
+No change to what the program does and no API changes: the README, its
+crates.io mirror, SECURITY, CONTRIBUTING, this file, one comment in the
+workspace manifest, two tests that hold the documents to the tree, and three
+tests that measure what the page already said: `db_write`'s question answered
+through a pseudo-terminal, both ways, and a stopped tool that will not stop
+abandoned after its 3 s grace.
+
+**Fixed:**
+
+* The 3090 wall time is the committed report's, 7m 07s and 6.7×, not the
+  replaced run's 7m 34s and 6.3×; the comparator block under it is re-derived
+  from the two committed files (23 cases excluded, 161 paired, +2.5 points,
+  not distinguishable) (D1).
+* `baselines/` holds seven files, two of them 3090 runs, and neither is the
+  "after" report of the +4.9 verdict, which is still not committed; the runs
+  are dated 6 Sep 2026, the day after the verdict, by the corpus report's own
+  date (D2).
+* The Turkish corpus is compared with the 184-case suite on the same kind of
+  card the same day — not provably the same machine, since the suite's catalog
+  has the web tools and the corpus box had none — not with the Metal run: 72.4% against 78.1%, or 89.3% with the twenty cases
+  whose tool that box lacked skipped the way the corpus skipped them — a 16.9
+  point gap, not "thirteen" (D3).
+* The model table is one table again (a blank line split it), and it says
+  that its four rows are hand-recorded on or before 5 Sep 2026 (first
+  committed in ae0893a) and cannot be
+  re-measured here (D4). The seven-language table's `en` column quotes the file
+  it cites, 136/160, not 133/160 (D5).
+* The journal example writes under `~/.tacet`, not `/tmp` (D10); the version
+  example is 0.1.29 (D11); "`cargo install tacet-cli` is this page" now says
+  what is unreleased and how to install from a checkout (D12).
+* SECURITY names the real config directory — `$TACET_HOME`, else
+  `$XDG_CONFIG_HOME/tacet`, else `~/.tacet` — not `~/.config/tacet` (D13). The
+  workspace manifest's version comment names `tacet-zip` alone as inheriting
+  the workspace version; `tacet-skills` left it on 7 Sep 2026 (D14).
+* The headline claims re-checked against the fixes that made them true: what
+  runs is the call the grammar validated, a grammar call carrying both thinking
+  tags runs as written and only a recovered one is refused, each half citing
+  the test that pins it (D19, after H5 and L25); the summary of
+  an imported session is on the list of defanged inputs (D20, after H3 and H4);
+  the Cancel gate says what an abandoned tool still does, which of its two
+  paths — the signal and the key — each test shows, that the key path and the
+  3 s abandonment are unit tests only, and that the signal path is run on
+  macOS only and not wired on Windows (D21, after M4); the `db_write` question
+  says when it became answerable at a terminal, and a pty test now answers it
+  — the earlier citation drove only the outbound approval (D22, after H1). The test count is re-measured and
+  dated (D23).
+* CONTRIBUTING's gate list is the list CI runs, the pressure run and the fmt
+  `--check` included, and a test now holds that direction too. The paragraph
+  under it names the three things beyond the list that can fail a pull
+  request — `cargo deny check`, the Linux `bwrap` preflight, and
+  `TACET_SANDBOX_MUST_RUN=1` on the Linux `cargo test` — and how to run the
+  last one locally (RG-36, review).
+* Every 3090 wall time on the page, in any of the forms a hand-copied time
+  takes ("6 min", "7 minutes", "7m 34s"), is a committed report's or sits in a
+  paragraph that says no report was kept; the sentence that said "the 3090
+  wall times remain hand-recorded" says the model table's (D1, review).
+
+**Added:**
+
+* README *Other agents' sessions*: what the `agent-sessions` addon reads and
+  refuses, what reaches the model, that nothing opens a socket or starts the
+  other agent, how `tacet handoff` reports back, the 9 Oct 2026 Claude Code
+  experiment with its machine and version, what was not measured, and
+  Antigravity's terms. SECURITY scopes the readers and `tacet handoff`;
+  CONTRIBUTING says how a version range is widened (RG-36).
+* `crates/tacet-cli/tests/the_readme_quotes_the_baselines.rs`: the Metal
+  table, the BFCL tables, the 3090 runs' wall times and dates, the Turkish
+  corpus comparison and the seven-language `en` column are read back from the
+  files in `crates/tacet-eval/baselines/`, the
+  comparator block is re-run on the two committed reports, and the model
+  table's scores are recomputed from their own counts. (This line said "every
+  number the README quotes" until the review of 10 Oct 2026 found the language
+  split and the failure diagnosis checked by nothing; they are now, below.) It starts the binary
+  under test as `eval --compare`, so it is a reviewed row in
+  `network_monopoly`'s `RUNTIME_SPAWN_SITES`.
+* `crates/tacet-cli/tests/the_docs_match_the_tree.rs`: the version example,
+  the journal path, the config directory, the manifest comment, an undated test
+  count, a table split by a blank line, CI steps missing from CONTRIBUTING's
+  list, a cited test path that selects no test (cargo's filter is a substring,
+  so a wrong path runs zero tests green), a quoted `[y/N]` question its cited
+  test never waits for, a refusal claim that does not cite the executor, and a
+  "last publish" that is not CHANGELOG's newest each fail the build.
+* `consent_reaches_the_person` answers `db_write`'s `Apply it? [y/N]` under a
+  pty with `y` and with `n` and counts the rows the file holds after;
+  `executor::guarded` abandons a cancelled tool that ignores the stop after
+  `ABANDON_GRACE`, and not before.
+
+**The audit's IDs, all six waves.** Every ID below is named by a commit on this
+branch (re-counted from the log on 10 Oct 2026), and that commit's message
+carries its test and the proof that the test fails without the fix; what could
+not be run on the machine that wrote it (a Linux box, a Windows box,
+real weights, Codex, the Antigravity GUI) is said in that commit and, for the
+session work, in `docs/agent-handoff.md`.
+
+* H1–H7 (with H2-a/b/c and H4-a/b/c); M1–M30; L1–L38; T1–T5.
+* D1–D23: D6, D7, D15 in wave 3; D8, D9, D16, D17, D18 alongside the code they
+  describe; the rest here.
+* RG-01 to RG-37: the readers and the shared layer in waves 2 and 4, the
+  write-back in wave 5, the documents (RG-36) here; RG-05, RG-06, RG-07, RG-16,
+  RG-30, RG-35 and RG-37 are recorded in `docs/adr/0001-agent-sessions.md`.
+
+---
+
+## Unreleased — the audit of 9 Oct 2026, wave 5
+
+Not published, and kept apart from waves 1 to 4 so a reader can tell which
+round a line belongs to. `tacet_tools::sessions::writeback` is new public API
+in `tacet-tools`; nothing existing changed shape.
+
+**Added:**
+
+* `tacet handoff` (`hook`, `install`, `show`, `update`, `note`, `tasks`): Tacet's
+  progress reported back to the agent a session came from (RG-21 to RG-27,
+  RG-31). Every write into another agent's files asks y/N first, and with
+  nobody at the terminal the answer is no. Codex rollout appends and
+  Antigravity `task.md` writes are refused on every version until a write is
+  measured; see `docs/agent-handoff.md` for what is measured and what is not.
+* `tacet handoff note codex <id> --program <path>` is the one place Tacet
+  starts another agent's CLI: the binary at the path you give, as
+  `app-server`, after a y/N naming the resolved file. No model turn is
+  started. The network-monopoly test now holds that no model tool can reach
+  it (RG-23, RG-33).
+
+**Fixed (before it shipped):**
+
+* `tacet handoff install --path` merged the hook into the settings file
+  before asking, then wrote that merge after the yes. A change made while the
+  question was on screen (Claude Code rewrites its own `settings.json` on
+  `/model`) was lost. It now re-reads the file after the yes and writes
+  nothing if it changed. The temporary file is created 0600 rather than at
+  the umask's 0644, so a settings file holding an API key is never briefly
+  world-readable (RG-21).
+* The guard that the Codex app-server is reached only from `tacet handoff`
+  checked only who names the spawning function. A model tool that ran the
+  `handoff` subcommand itself passed it. The guard now also checks who names
+  the subcommand's module and job type (RG-23).
+
+## Unreleased — the audit of 9 Oct 2026, wave 4
+
+Not published, and kept apart from waves 1 to 3 so a reader can tell which
+round a line belongs to. `tacet_tools::sessions_tool` is new public API in
+`tacet-tools`; nothing existing changed shape.
+
+**Added:**
+
+* The `agent-sessions` addon (off by default), with `sessions_list` and
+  `session_read`, `tacet chat --from <agent>:<id>` and `/resume-from`
+  (RG-17, RG-18, RG-19, RG-20). A continuation stores the full transcript and
+  sends a summary plus a reference to it. The folder a transcript names is
+  entered only on a yes, and the question cannot carry terminal control
+  characters. No program is started and no network is opened.
+
+**Fixed (before it shipped):**
+
+* The router's session triggers no longer fire on a qualifier alone: "leave
+  off the VAT", "my last session with the dentist", a parliament's or a
+  court's "dünkü/önceki oturumu" and "kaldığım yer" (where I stayed) each put
+  `sessions_list` first and now score nothing (RG-19).
+* A test now runs `tacet why` over a written `addons.json` and fails if an
+  open `agent-sessions` addon does not put both readers in the catalog, or a
+  closed one does (RG-17).
+
+---
+
+## Unreleased — the audit of 9 Oct 2026, wave 3
+
+Not published either, and kept apart from waves 1 and 2 for the same reason.
+No library API changes in this wave: everything below is the `tacet` binary,
+a test corpus and a script.
+
+**Security:**
+
+* A pipe into `--message`, a replayed transcript (`--continue`, `--session`)
+  and an injected memory note taint the session from the start, so an
+  outbound call after any of them asks first; before, only a tool could taint
+  (H2-b). The `--message` help no longer says "NO DATA LEAVES" (D15).
+* Receipts (format 2) keep a tool chip's kind, its outcome by one of five
+  fixed names and its length — never its words: a failed chip's sentence,
+  built from the call's input, stays out (L27, RG-32). `tacet sessions
+  --purge` deletes `receipts.jsonl`, its head and its lock.
+* While a turn runs, a SIGINT cancels the turn and the running tool instead of
+  ending the shell — under `--json` and with stdout piped too (M4).
+
+**Fixed:**
+
+* `receipts.head` records the count and the last hash, and `tacet log` reports
+  a cut tail, an emptied log, and a missing head as not intact. A head is
+  never rebuilt from a log that already holds format-2 receipts, so deleting
+  it no longer hides a cut: such a log reads "head missing" until
+  `tacet sessions --purge` (L26). The hash is unkeyed and the help no longer
+  calls the log tamper-proof.
+* Appends from several sessions hold a lock with a per-acquisition token; a
+  stale lock has one taker (L28).
+* A `--continue` chain keeps every earlier turn, and "latest" is the file
+  written last (L29); the privacy notice says a continued conversation is
+  copied into each new file (L27, L29).
+* The daily update check runs only at the end of an interactive session with
+  stdout and stderr on a terminal — never after `--message`, under `--json`,
+  or piped (D7). The README now says what the bare `tacet update` does: it
+  downloads and installs after asking; `--check` only looks (D6).
+* The updater removes an earlier download's leftovers with the staged binary
+  (L3); `probe_features` gives up on a binary after 10 s (L7).
+* Codex reader: an ordinal of `u64::MAX` in a paginated rollout no longer
+  overflows the gap count (RG-28).
+* `scripts/session-roundtrip.sh` (RG-29): E3 reads "same" — the outcome that
+  lets a Claude Code version join the write range — only when the answer
+  credits Tacet with the note and does not credit the user; an answer that
+  merely says "Tacet", or quotes the note's header, no longer passes. E2 tells
+  a claim of authorship from a denial anywhere in the sentence. E1 checks both
+  sessions answered READY. A run that differs or stops after a paid turn
+  keeps its scratch directory (raw output and transcript copies), names any
+  session filed outside the predicted project directory, and counts E1's
+  cost; a stop before the first turn leaves no scratch behind.
+
+---
+
+## Unreleased — the audit of 9 Oct 2026, wave 2
+
+Nothing below is published yet either. It sits apart from wave 1 so a reader
+can tell which round of fixes a line belongs to; when both are published they
+go out under one version per crate, with the bumps named in both lists.
+
+**Breaking, for the next release of each crate:**
+
+* `tacet-kernel` (additive, but `tacet-tools` needs it): `Tool` gains
+  `external_content()`, `acts_on_host()` and `deadline()`, all defaulted;
+  `ToolContext` carries a `CancelToken` (`cancel_token()`, `with_cancel_token`)
+  and the outside-text flag.
+* `tacet-mcp`: `ConnectionSetting` has a new public `always_ask` field (a struct
+  literal breaks).
+* `tacet-tools`: `ApprovalRequest` has a new public `reason: ApprovalReason`
+  field; `executor::quiet_tool_panics`, `executor::ABANDON_GRACE`.
+
+**Security:**
+
+* An MCP server's answers taint the session (H2-a). Once the session has read
+  text from outside the machine — a web page, an `http` or MCP answer, an
+  imported transcript — every `shell` and `db_write` call asks first, and the
+  question names that reason instead of claiming data will be sent (H2-c,
+  RG-01). A per-connection `always_ask` in `mcp.json` asks before every call to
+  that server; no setting turns the taint off.
+* Every tool call runs on a worker thread under `catch_unwind` with a per-tool
+  deadline: a panic is a failed call, not the end of the session, and a tool
+  that does not stop is left behind after 3 s with the turn saying so (M30,
+  RG-04). Ctrl-C reaches a running tool: `shell` and `run_code` end their
+  process group, SIGTERM then SIGKILL, within about a second (M4).
+* A consent question (outbound approval, `db_write`, an MCP server's question)
+  reaches the person at the terminal, and only them. The turn indicator steps
+  aside while a question is open, so the question is no longer erased and `y`⏎
+  no longer swallowed. The answer is read raw, with its own echo, so Esc (alone
+  or followed by Enter), ctrl-c and ctrl-d decline, and ctrl-c no longer kills
+  the shell. With stdin piped, the question is never asked: the answer is no,
+  nothing is read from the pipe, and the session is not given `db_write` (H1,
+  RG-03, L31).
+* Tool-chip failure reasons and every server string that `tacet mcp try` and
+  the MCP start-up report print are made into one line, with escapes removed
+  (M13, M14). `tacet mcp try` sends the same OAuth token the chat would (L10).
+
+**New, additive (not reachable until the `agent-sessions` addon, RG-17):**
+
+* `tacet-tools`: `sessions::claude` — `ClaudeSource` (a `SessionSource` for
+  Claude Code), `ClaudeRead`, `pid_alive`, `project_dir_name`,
+  `project_dir_matches`, `LIST_TAIL_BYTES`, `MAX_TRANSCRIPT_BYTES`,
+  `CONFIG_DIR_VAR` (RG-08, RG-09, RG-10).
+* `tacet-tools`: `sessions::codex` — `CodexSource`, a `SessionSource` for Codex
+  CLI rollouts, written from openai/codex's source and fixture-tested only;
+  a `.jsonl.zst` rollout is listed and refused with the `zstd -d` advice
+  (RG-11, RG-12, RG-13).
+* `tacet-tools`: `sessions::antigravity` — `AntigravitySource`, a
+  `SessionSource` over the step logs and `task.md` under the three
+  `~/.gemini/antigravity*` roots; the conversation databases are dated, never
+  opened (RG-14, RG-15). A title is what the user typed inside
+  `<USER_REQUEST>`, Antigravity's `<ADDITIONAL_METADATA>` block is kept as a
+  system note rather than the user's words, and the workspace is
+  `run_command`'s `Cwd` — the shape measured over 50 real logs on 10 Oct 2026.
+
+---
+
+## Unreleased — the audit of 9 Oct 2026, wave 1
+
+Nothing below is published yet. When it is, the crates whose public API changed
+need the bumps named here, and the `[workspace.dependencies]` floors move with
+them.
+
+**Breaking, for the next release of each crate:**
+
+* `tacet-mcp` → 0.3.0: `auth::begin(&AuthSetting, server_url)`,
+  `auth::refresh_request_body(…, resource)`, and a new public `resource` field on
+  `auth::Authorization` and `auth::Token` (a struct literal for either breaks).
+  `tacet-tools` must take the new version.
+* `tacet-memory`: `MemoryStore::save` takes `&mut self`; `MemoryStore::forget`
+  returns `Forgotten` instead of `usize`. New: `Forgotten`, `LoadProblem`,
+  `MemoryStore::load_problem`, `neutralize_markup`. The workspace floor (0.1.2)
+  goes up to the release that has them.
+* `tacet-engine`: `Generation` gains public `raw` and `executable` fields — build
+  it with `Generation::new`. New: `Generation::split_against`, `MIN_ANSWER`,
+  `CONVERSATION_KEPT`, `token::MIN_QUESTION_KEPT`, `TokenCounter::prompt_ceiling`,
+  the `thinking_switch` module. `TokenCounter::validate` refuses only above `prompt_ceiling()`.
+* `tacet-kernel`: `defang` and `register_markers`; `ArgSchema::json_number_value`;
+  `ArgSchema::choice` panics on an empty set.
+
+**Security:**
+
+* The prompt defang lives in `tacet_kernel::defang` and covers every
+  chat-template marker (`<think>`, `<tool_call>`, `<eos>`, `<bos>`, `</s>`,
+  `<unusedN>`, `<start_of_turn>`, …), this prompt's `<memory>`/`<cwd>` fences
+  and the loaded tokenizer's special tokens; it now reaches the directory census
+  and the system block. Skill names are normalised to `[a-z0-9-]{1,32}`.
+  Ordinary code such as `x <| f` and `<|>` is no longer altered (H3, H4, L37).
+* The thinking split cannot edit or launch a call: a `<think>` inside a call's
+  arguments stays in the argument, and when the split can only guess where a
+  block ends nothing runs unless both readings name the same call (H5). A block
+  that is never closed counts as a guess when the search stepped over a
+  `</think>` inside a call, so a call declined in the thinking is not run. A
+  call with both `<think>` and `</think>` in its values is never edited: a
+  grammar call (`name(` or bare JSON) runs exactly as written, because it
+  parses and the split can prove where it ends; a recovered call (a marked
+  `<tool_call>` or a name glued to its argument) carrying both is refused. (This
+  line said every such call was refused until the review of 10 Oct 2026;
+  `thinking::tests::a_proven_split_has_one_reading` runs the grammar one.)
+* `git` no longer lets a repository's own config run programs (fsmonitor,
+  hooks, `diff.external`, textconv, filter drivers including submodules',
+  `gpg.program`, promisor `ext::` fetch). Requires git ≥ 2.31; an older git
+  answers `git_unsupported` (H6).
+* `run_code` (Linux) shadows every socket `/proc/net/unix` lists, the LXD,
+  Incus, Multipass and MicroK8s API sockets, and sockets in a working folder
+  outside `$HOME`; each scan root has its own budget, so a big working folder no
+  longer starves `/tmp` (H7). `write_code` refuses `toxfile`, `dangerfile`,
+  `conanfile`, `serverless`, `truffle-config`, the ipython/jupyter config
+  family, any `.py` name the user's python can import as an installed
+  package, and the names of tools started as `python -m <name>` (pip, pytest,
+  mypy, black, ruff, coverage, …), installed or not (M3). `run_code` canonicalises
+  `$HOME` in the command it spawns, not only in the library (M2).
+* No `ureq` agent reads `ALL_PROXY`/`HTTPS_PROXY`/`HTTP_PROXY` any more, in
+  `tacet-web` or `tacet-mcp`; MCP refuses userinfo in an address, follows no
+  redirect and sends the RFC 8707 `resource` on login (M12, L1).
+* `db` / `db_write` refuse a statement that begins with `-`, which sqlite3 read
+  as a command-line option (L18).
+
+**Fixed:**
+
+* `tacet-grammar`: closed-set values and keys are compiled to their JSON
+  spelling; numbers are checked by the tool layer's own parser; numbers (400
+  fraction / 4 exponent digits) and arrays without `max` (1024 items) now end
+  (M15, M16, L25).
+* A 4096-token window no longer refuses ordinary turns: `fit` refuses only when
+  fewer than `MIN_ANSWER` (256) tokens would be left, or when the question could
+  keep fewer than `MIN_QUESTION_KEPT` (8) of its tokens (or the history none)
+  beside the fixed part; a typed question is no longer cut from the front; the in-call loop detector treats JSON keys as
+  structure again (L21, L22).
+* The shell and the eval build each pass's prompt in one function
+  (`tacet_eval::turn_prompt::build_turn_prompt`), tools inside the budget and
+  `fit` inside it too; the eval records a refused prompt as `refused for the
+  window` (M22). The Qwen soft switch is one rule for both (M23). A journal is
+  stamped with the commit, the uncommitted edits, the prompt text and every
+  case (M24). `--compare` sizes the suite from both the fixed and the broken
+  cases (L30).
+* `archive`: refuses empty-block deflate floods, overlapping entries and
+  mismatched central/local names; verifies every CRC, a recorded 0 included
+  (the CRC and the empty-block limit on extract only, since listing decodes
+  nothing);
+  extraction is all-or-nothing and its rollback removes only the directory the
+  run made (M8, L11, L14).
+* `calculate` reads `1,000` as a thousand and has one percent rule; `calendar`
+  no longer moves a date into the next month on the 29th-31st and no longer
+  panics on a multi-byte offset (M9, M17).
+* Two sessions share `memory.json` without losing each other's notes; a
+  damaged file is set aside and the last good copy loaded; `forget` deletes one
+  note or asks (M20).
+* Documents: a 1.5 KiB sheet can no longer claim a million cells; the second
+  `O_NOFOLLOW` belt uses each architecture's own bit (M6, L15).
+
+---
+
 ## Published 2026-09-07 — a marker is not text
 
 Three crates, hours after the last release, because a user hit a crash on it.

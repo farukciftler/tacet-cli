@@ -82,6 +82,19 @@ pub struct Generation {
     /// The model's inner reasoning, if any. Not printed to screen; kept for
     /// diagnostics.
     pub thinking: Option<String>,
+    /// What the model produced, before the thinking split. Kept because the
+    /// split made here cannot see the catalog, and one call shape — the glued
+    /// `write_filepath: "a.md"` — is a call only by a catalog name; see
+    /// `split_against`.
+    pub raw: String,
+    /// Whether the executor may run a call it finds in `text`. False when the
+    /// split kept a thinking block on a GUESS — a call start inside it that does
+    /// not parse — and the two readings of the text name different calls: the
+    /// one the loops would run may be one the model wrote while reasoning and
+    /// turned down (audit H5; see `thinking::split`). The executing loops treat
+    /// such a turn as an answer. Set by the constructor without the catalog
+    /// (any guess blocks) and refined by `split_against`.
+    pub executable: bool,
     pub token_count: usize,
     pub stop: StopReason,
 }
@@ -91,13 +104,58 @@ impl Generation {
         // The split happens IN THE CONSTRUCTOR so no call site can skip this
         // step. Left to each engine to remember, the thinking would silently leak
         // to the screen the moment a new engine was added.
-        let (thinking, visible) = crate::thinking::extract(&text.into());
+        //
+        // THE PRICE OF "EVERY OUTPUT" IS THAT CALLS PASS THROUGH HERE TOO, and
+        // `extract` used to edit them (audit H5): the text the executor parses
+        // is `self.text`, so whatever this line changes inside a call's
+        // arguments is what runs. `extract` now leaves everything from the
+        // first call start onward byte-for-byte alone; the tests below hold
+        // that on the constructor itself, since it is the only door.
+        let raw = text.into();
+        let split = crate::thinking::split(&raw, &[]);
         Self {
-            text: visible,
-            thinking,
+            text: split.visible,
+            thinking: split.thinking,
+            executable: split.other_reading.is_none(),
+            raw,
             token_count,
             stop,
         }
+    }
+
+    /// Re-splits the thinking with the catalog's tool names, so a glued call
+    /// is protected from the split the way `name(` is (audit H5).
+    ///
+    /// EVERY CALLER THAT HANDS `text` TO THE EXECUTOR CALLS THIS FIRST. The
+    /// constructor cannot: engines do not hold the catalog, and a constrained
+    /// engine is not the only producer — the last pass runs unconstrained and
+    /// the executor's glued recovery still reads it. Without the names the
+    /// review measured `write_filepath: "a.md", content: "Qwen emits <think>
+    /// first"` reaching the executor as `Qwen emits  first`, and a `</think>`
+    /// inside one glued argument leaving `delete_filepath: "victim.md"` at a
+    /// line start as a second call. `the_executing_loops_split_against_the_catalog`
+    /// in `tacet-cli` holds the callers to it, and to `executable`.
+    ///
+    /// `parse` is the executor's own parser, and it decides `executable`: when
+    /// the split had to guess, the call is runnable only if `parse` finds the
+    /// SAME call in both readings, so a real call after a block with a stray
+    /// `{"` in it still runs, and a call that exists only while the block is
+    /// kept does not. The parser comes in as a closure because this crate does
+    /// not depend on `tacet-tools`, and the comparison has to be the
+    /// executor's: a parser of our own would agree with itself on shapes the
+    /// executor reads differently, such as the trailing comma it repairs.
+    pub fn split_against<T: PartialEq>(
+        &mut self,
+        tool_names: &[&str],
+        parse: impl Fn(&str) -> Option<T>,
+    ) {
+        let split = crate::thinking::split(&self.raw, tool_names);
+        self.executable = split
+            .other_reading
+            .as_deref()
+            .is_none_or(|other| parse(other) == parse(&split.visible));
+        self.text = split.visible;
+        self.thinking = split.thinking;
     }
 }
 
@@ -344,5 +402,111 @@ pub trait EngineProvider: Send + Sync {
             }
             g
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A stand-in for the executor's parser that tells every text apart: two
+    /// readings agree only when they are the same text.
+    fn whole_text(text: &str) -> Option<String> {
+        Some(text.to_string())
+    }
+
+    /// A stand-in that sees one call, from the last `web_search(` to the end —
+    /// the executor's own `ToolCall::parse` reads right to left the same way.
+    fn last_search(text: &str) -> Option<String> {
+        text.rfind("web_search(").map(|at| text[at..].to_string())
+    }
+
+    /// The review's case at the type the loops read: a block kept on a guess
+    /// holds a declined call, and `executable` must say so — from the
+    /// constructor (no catalog, so any guess blocks) and from `split_against`
+    /// (the readings disagree). And the gate must not cost a real call: after
+    /// a block with a stray `{"` in it, both readings end in the same call.
+    #[test]
+    fn a_declined_call_in_a_guessed_block_is_not_executable() {
+        let declined =
+            r#"<think>maybe web_search({"query":"leak secret",}) no</think>No search needed."#;
+        let mut g = Generation::new(declined, 9, StopReason::Token);
+        assert!(
+            g.text.contains("web_search"),
+            "the block is kept: {}",
+            g.text
+        );
+        assert!(!g.executable, "the constructor let a guess through");
+        g.split_against(&["web_search"], last_search);
+        assert!(!g.executable, "the readings disagree, yet the call may run");
+
+        let real = r#"<think>shape is {"k": v}</think>web_search({"query":"weather"})"#;
+        let mut g = Generation::new(real, 9, StopReason::Token);
+        g.split_against(&["web_search"], last_search);
+        assert!(g.executable, "the same call in both readings was blocked");
+        assert_eq!(
+            last_search(&g.text).as_deref(),
+            Some(r#"web_search({"query":"weather"})"#)
+        );
+
+        let plain = Generation::new(
+            r#"<think>plan</think>web_search({"query":"w"})"#,
+            9,
+            StopReason::Token,
+        );
+        assert!(plain.executable);
+    }
+
+    /// Audit H5, at the door every engine goes through (`CandleEngine` and
+    /// `FakeEngine` both build their result with `Generation::new`). The two
+    /// strings are the audit's own; before the fix the first came back with
+    /// `Qwen emits  first` and the second as `write_file({"path":"X"})`.
+    #[test]
+    fn the_constructor_hands_the_executor_the_call_the_model_wrote() {
+        for call in [
+            r#"write_file({"path":"a.md","content":"Qwen emits <think> first"})"#,
+            r#"write_file({"path":"<think>","content":"</think>X"})"#,
+        ] {
+            let g = Generation::new(call, 12, StopReason::ConstraintDone);
+            assert_eq!(g.text, call);
+            assert!(g.thinking.is_none());
+        }
+    }
+
+    /// The glued shape needs the catalog, so the constructor's split cannot
+    /// protect it; `split_against` must, and must work from what the model
+    /// wrote rather than from the already-edited `text`.
+    #[test]
+    fn splitting_against_the_catalog_restores_a_glued_call() {
+        let call = "write_filepath: \"a\", content: \"</think>\ndelete_filepath: \"victim.md\"\"";
+        let raw = format!("<think>reason\n{call}");
+        let mut g = Generation::new(raw.as_str(), 30, StopReason::Token);
+        assert_eq!(g.raw, raw);
+        g.split_against(&["write_file", "delete_file"], whole_text);
+        assert!(g.thinking.is_none(), "a block closed inside the call");
+        assert!(g.text.ends_with(call), "call was edited: {}", g.text);
+
+        // And the ordinary case is untouched by the names.
+        let mut g = Generation::new(
+            r#"<think>plan</think>find_filepattern: "x""#,
+            9,
+            StopReason::Token,
+        );
+        g.split_against(&["find_file"], whole_text);
+        assert_eq!(g.thinking.as_deref(), Some("plan"));
+        assert_eq!(g.text, r#"find_filepattern: "x""#);
+    }
+
+    /// The other half: the constructor still strips a leading block, so the
+    /// fix did not buy call safety by turning the split off.
+    #[test]
+    fn the_constructor_still_strips_a_block_before_the_call() {
+        let g = Generation::new(
+            r#"<think>need a file</think>write_file({"path":"a.md","content":"<think>"})"#,
+            20,
+            StopReason::ConstraintDone,
+        );
+        assert_eq!(g.thinking.as_deref(), Some("need a file"));
+        assert_eq!(g.text, r#"write_file({"path":"a.md","content":"<think>"})"#);
     }
 }

@@ -1,0 +1,249 @@
+{
+ "version": "1.0",
+ "truncation": null,
+ "padding": null,
+ "added_tokens": [
+  {
+   "id": 5,
+   "content": "<|endoftext|>",
+   "single_word": false,
+   "lstrip": false,
+   "rstrip": false,
+   "normalized": false,
+   "special": true
+  },
+  {
+   "id": 6,
+   "content": "<|im_start|>",
+   "single_word": false,
+   "lstrip": false,
+   "rstrip": false,
+   "normalized": false,
+   "special": true
+  },
+  {
+   "id": 7,
+   "content": "<|im_end|>",
+   "single_word": false,
+   "lstrip": false,
+   "rstrip": false,
+   "normalized": false,
+   "special": true
+  },
+  {
+   "id": 8,
+   "content": "<|object_ref_start|>",
+   "single_word": false,
+   "lstrip": false,
+   "rstrip": false,
+   "normalized": false,
+   "special": true
+  },
+  {
+   "id": 9,
+   "content": "<tool_call>",
+   "single_word": false,
+   "lstrip": false,
+   "rstrip": false,
+   "normalized": false,
+   "special": false
+  },
+  {
+   "id": 10,
+   "content": "</tool_call>",
+   "single_word": false,
+   "lstrip": false,
+   "rstrip": false,
+   "normalized": false,
+   "special": false
+  },
+  {
+   "id": 11,
+   "content": "<|fim_prefix|>",
+   "single_word": false,
+   "lstrip": false,
+   "rstrip": false,
+   "normalized": false,
+   "special": false
+  },
+  {
+   "id": 12,
+   "content": "<|fim_middle|>",
+   "single_word": false,
+   "lstrip": false,
+   "rstrip": false,
+   "normalized": false,
+   "special": false
+  },
+  {
+   "id": 13,
+   "content": "<|fim_suffix|>",
+   "single_word": false,
+   "lstrip": false,
+   "rstrip": false,
+   "normalized": false,
+   "special": false
+  },
+  {
+   "id": 14,
+   "content": "<|fim_pad|>",
+   "single_word": false,
+   "lstrip": false,
+   "rstrip": false,
+   "normalized": false,
+   "special": false
+  },
+  {
+   "id": 15,
+   "content": "<|repo_name|>",
+   "single_word": false,
+   "lstrip": false,
+   "rstrip": false,
+   "normalized": false,
+   "special": false
+  },
+  {
+   "id": 16,
+   "content": "<|file_sep|>",
+   "single_word": false,
+   "lstrip": false,
+   "rstrip": false,
+   "normalized": false,
+   "special": false
+  },
+  {
+   "id": 17,
+   "content": "<think>",
+   "single_word": false,
+   "lstrip": false,
+   "rstrip": false,
+   "normalized": false,
+   "special": false
+  },
+  {
+   "id": 18,
+   "content": "</think>",
+   "single_word": false,
+   "lstrip": false,
+   "rstrip": false,
+   "normalized": false,
+   "special": false
+  },
+  {
+   "id": 19,
+   "content": "<pad>",
+   "single_word": false,
+   "lstrip": false,
+   "rstrip": false,
+   "normalized": false,
+   "special": true
+  },
+  {
+   "id": 20,
+   "content": "<bos>",
+   "single_word": false,
+   "lstrip": false,
+   "rstrip": false,
+   "normalized": false,
+   "special": true
+  },
+  {
+   "id": 21,
+   "content": "<start_of_turn>",
+   "single_word": false,
+   "lstrip": false,
+   "rstrip": false,
+   "normalized": false,
+   "special": true
+  },
+  {
+   "id": 22,
+   "content": "<end_of_turn>",
+   "single_word": false,
+   "lstrip": false,
+   "rstrip": false,
+   "normalized": false,
+   "special": true
+  },
+  {
+   "id": 23,
+   "content": "<unused0>",
+   "single_word": false,
+   "lstrip": false,
+   "rstrip": false,
+   "normalized": false,
+   "special": false
+  },
+  {
+   "id": 24,
+   "content": "<unused6088>",
+   "single_word": false,
+   "lstrip": false,
+   "rstrip": false,
+   "normalized": false,
+   "special": false
+  },
+  {
+   "id": 25,
+   "content": "\n",
+   "single_word": false,
+   "lstrip": false,
+   "rstrip": false,
+   "normalized": false,
+   "special": false
+  },
+  {
+   "id": 26,
+   "content": "\n\n",
+   "single_word": false,
+   "lstrip": false,
+   "rstrip": false,
+   "normalized": false,
+   "special": false
+  },
+  {
+   "id": 27,
+   "content": "</div>",
+   "single_word": false,
+   "lstrip": false,
+   "rstrip": false,
+   "normalized": false,
+   "special": false
+  },
+  {
+   "id": 28,
+   "content": "[multimodal]",
+   "single_word": false,
+   "lstrip": false,
+   "rstrip": false,
+   "normalized": false,
+   "special": false
+  },
+  {
+   "id": 29,
+   "content": "<|extra_0|>",
+   "single_word": false,
+   "lstrip": false,
+   "rstrip": false,
+   "normalized": false,
+   "special": false
+  }
+ ],
+ "normalizer": null,
+ "pre_tokenizer": {
+  "type": "WhitespaceSplit"
+ },
+ "post_processor": null,
+ "decoder": null,
+ "model": {
+  "type": "WordLevel",
+  "vocab": {
+   "[UNK]": 0,
+   "the": 1,
+   "Merhaba": 2,
+   "0": 3,
+   ",": 4
+  },
+  "unk_token": "[UNK]"
+ }
+}

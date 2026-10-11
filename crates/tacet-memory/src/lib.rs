@@ -32,8 +32,12 @@
 pub mod note;
 pub mod store;
 
-pub use note::{KEY_LIMIT, MIN_TEXT, MemoryKind, MemoryNote, TEXT_LIMIT, TOTAL_CAP, fix_keys};
-pub use store::{INJECTION_LIMIT, MAX_NOTES, MemoryError, MemoryStore, NoteWatcher};
+pub use note::{
+    KEY_LIMIT, MIN_TEXT, MemoryKind, MemoryNote, TEXT_LIMIT, TOTAL_CAP, fix_keys, neutralize_markup,
+};
+pub use store::{
+    Forgotten, INJECTION_LIMIT, LoadProblem, MAX_NOTES, MemoryError, MemoryStore, NoteWatcher,
+};
 
 #[cfg(test)]
 mod tests {
@@ -58,7 +62,7 @@ mod tests {
         assert!(prompt.contains("The user is a vegetarian."));
         assert!(prompt.chars().count() <= INJECTION_LIMIT);
 
-        assert_eq!(store.forget("vegetarian"), 1);
+        assert_eq!(store.forget("vegetarian").deleted(), 1);
         assert!(
             store
                 .injection_text("suggest a restaurant for tonight")

@@ -229,16 +229,109 @@ impl Suite {
     }
 
     fn cases(self) -> Vec<SelectionCase> {
+        let (english, turkish) = agent_session_cases();
         match self {
-            Suite::English => selection_cases(),
-            Suite::Turkish => turkish_selection_cases(),
+            Suite::English => {
+                let mut c = selection_cases();
+                c.extend(english);
+                c
+            }
+            Suite::Turkish => {
+                let mut c = turkish_selection_cases();
+                c.extend(turkish);
+                c
+            }
             Suite::Both => {
                 let mut c = selection_cases();
+                c.extend(english);
                 c.extend(turkish_selection_cases());
+                c.extend(turkish);
                 c
             }
         }
     }
+}
+
+/// THE `agent-sessions` CASES (RG-19), routed here and NOWHERE ELSE.
+///
+/// NOT IN `selection_cases`, and the reason is the model measurement, not this
+/// one: those cases also run against real weights, with the measurement-mode
+/// catalog, which never holds an addon tool that reads the user's own history
+/// (`catalog::production_catalog`'s note on why `shell` and `db` are absent
+/// there applies with more force to another agent's transcript). Added there,
+/// they would be eleven cases every model run fails by construction, and every
+/// published selection number would move for a reason that is not the model.
+///
+/// THE PHRASINGS ARE THE R&D BRIEF'S, in both languages, plus the read-by-id
+/// shape. A message that names no id expects `sessions_list`: without an id
+/// the only useful first call is the listing.
+fn agent_session_cases() -> (Vec<SelectionCase>, Vec<SelectionCase>) {
+    let case = |name: &str, message: &str, expected: &str| SelectionCase {
+        name: name.into(),
+        category: crate::tool_selection::Category::Tool,
+        steps: vec![crate::tool_selection::SelectionStep::new(
+            message,
+            Some(expected),
+        )],
+    };
+    let list = tacet_tools::sessions_tool::LIST_TOOL;
+    let read = tacet_tools::sessions_tool::READ_TOOL;
+    let english = vec![
+        case(
+            "sessions-claude-continue",
+            "Continue my Claude Code session from this morning",
+            list,
+        ),
+        case(
+            "sessions-codex-left-off",
+            "Where did I leave off in Codex?",
+            list,
+        ),
+        case(
+            "sessions-antigravity-list",
+            "Show my Antigravity conversations",
+            list,
+        ),
+        case(
+            "sessions-pick-up",
+            "Pick up where I left off in my last session",
+            list,
+        ),
+        case(
+            "sessions-read-by-id",
+            "Read my claude code session 11111111-0000-4000-8000-111111111111",
+            read,
+        ),
+        case(
+            "sessions-continue-my-session",
+            "Let's continue my session in the other agent",
+            list,
+        ),
+    ];
+    let turkish = vec![
+        case(
+            "tr-oturum-claude",
+            "Dünkü Claude Code oturumumda ne yapıyordum?",
+            list,
+        ),
+        case("tr-oturum-codex", "Codex'te kaldığım yerden devam et", list),
+        case(
+            "tr-oturum-antigravity",
+            "Şu Antigravity görevine devam edelim",
+            list,
+        ),
+        case(
+            "tr-oturum-liste",
+            "Diğer ajanlardaki oturumlarımı listele",
+            list,
+        ),
+        case(
+            "tr-oturum-oku",
+            "11111111-0000-4000-8000-111111111111 numaralı claude code oturumunu oku",
+            read,
+        ),
+    ];
+    (english, turkish)
 }
 
 /// Runs the routing measurement over a suite.
@@ -356,6 +449,25 @@ pub fn run_routing_filtered(
     // The routing measurement runs no model and executes nothing, so the code
     // budget in the `HostCatalog` has no bearing on it; only the tools do.
     let mut catalog = crate::tool_selection::selection_catalog(&env, &memory).catalog;
+    // THE `agent-sessions` TOOLS, APPENDED WHERE PRODUCTION APPENDS THEM — after
+    // everything, behind their own gate (`catalog::production_catalog_gated`).
+    // The routing measurement executes nothing, so the roots are an empty list
+    // and no folder of the user's is read; what is measured is the router with
+    // the addon installed, which is the harder case for the other 166: two
+    // more tools competing for the same nine slots.
+    //
+    // MEASURED 10 Oct 2026 on one Mac, `eval --routing`: before the two tools
+    // and the Sessions profile, 15 tools, REACH 166/166, TOP 3 166/166, MEAN
+    // RANK 1.33. After, 17 tools and the eleven cases above: REACH 177/177,
+    // TOP 3 177/177, MEAN RANK 1.32 — and a case-by-case diff of the two JSON
+    // reports moved none of the 166 (rank sum 220 both). The same 177/177 at
+    // `--routing-pressure 20`. The first wording of the two descriptions
+    // did move four of them; see `SessionsListTool::description`.
+    for tool in tacet_tools::sessions_tool::tools(tacet_tools::sessions_tool::SessionRoots::Only(
+        Vec::new(),
+    )) {
+        catalog.add(tool);
+    }
     let mut remote_names: Vec<String> = Vec::new();
     for (name, description) in REMOTE_SHAPES.iter().take(pressure) {
         let full = format!("serverim_{name}");
@@ -465,6 +577,52 @@ mod tests {
             unexplained.is_empty(),
             "these cases expect a tool that is not in the catalog: {unexplained:?}"
         );
+    }
+
+    /// RG-19: the `agent-sessions` cases are in the run, the catalog they are
+    /// routed against holds the two tools, and every one of them lands in the
+    /// first three — in both languages, with and without a connected server.
+    #[test]
+    fn the_agent_session_cases_land_in_the_first_three() {
+        use tacet_tools::sessions_tool::{LIST_TOOL, READ_TOOL};
+        for pressure in [0, 20] {
+            let report = run_routing_filtered(Suite::Both, None, pressure).expect("routing runs");
+            for name in [LIST_TOOL, READ_TOOL] {
+                assert!(
+                    report.catalog.iter().any(|c| c == name),
+                    "{name} is not in the routing catalog"
+                );
+            }
+            let cases: Vec<&RoutingOutcome> = report
+                .outcomes
+                .iter()
+                .filter(|o| o.expected == LIST_TOOL || o.expected == READ_TOOL)
+                .collect();
+            assert_eq!(
+                cases.len(),
+                11,
+                "the eleven session cases are not all routed"
+            );
+            assert!(
+                cases.iter().any(|o| o.case.starts_with("tr-")),
+                "no Turkish session case was routed"
+            );
+            let low: Vec<String> = cases
+                .iter()
+                .filter(|o| o.rank.is_none_or(|r| r > 3))
+                .map(|o| {
+                    format!(
+                        "{} rank {:?} for {:?}: {:?}",
+                        o.case, o.rank, o.message, o.selected
+                    )
+                })
+                .collect();
+            assert!(
+                low.is_empty(),
+                "at pressure {pressure} these session cases fell out of the first three:\n{}",
+                low.join("\n")
+            );
+        }
     }
 
     /// The report's own arithmetic. A table that disagrees with its JSON is

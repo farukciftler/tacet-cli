@@ -46,7 +46,7 @@ use crate::create_document::{
     write_document,
 };
 use crate::data_store::Table;
-use crate::read_document::parse_xlsx;
+use crate::read_document::parse_workbook;
 
 /// The name suffix of the edited file. The original is NEVER OVERWRITTEN:
 /// changing the data in the user's hands irreversibly means permanent loss on a
@@ -439,17 +439,28 @@ impl EditDocumentTool {
         // file) and the warning goes to the model as a fact.
         let mut warning = String::new();
         let table: Option<Table> = if format.table_shape() {
-            let previous = fs::read(&path).ok().and_then(|b| parse_xlsx(&b).ok());
+            let previous = fs::read(&path).ok().and_then(|b| parse_workbook(&b).ok());
             let new = from_markdown(&new_content).filter(|t| !t.rows.is_empty());
             if let (Some(o), Some(y)) = (&previous, &new)
-                && o.column_count() > 0
-                && y.column_count() < o.column_count()
+                && o.table.column_count() > 0
+                && y.column_count() < o.table.column_count()
             {
                 warning = format!(
                     "; warning: the new table has {} columns, the original had {}",
                     y.column_count(),
-                    o.column_count()
+                    o.table.column_count()
                 );
+            }
+            // THE OTHER SHEETS ARE NAMED, NOT SILENTLY LEFT BEHIND (audit L17).
+            // The edited copy is built from one markdown table, so it holds
+            // one sheet; the "(edited)" file used to be reported with no word
+            // about the sheets it does not carry. Carrying them over would
+            // mean copying parts that point into the original's shared
+            // strings and styles — a second writer for a format this crate
+            // writes by hand. The original is never touched, so saying so is
+            // enough for nothing to be lost: the user still has every sheet.
+            if let Some(note) = previous.as_ref().and_then(|o| o.left_behind_note()) {
+                warning.push_str(&format!("; warning: {note}"));
             }
             new
         } else {
@@ -860,6 +871,105 @@ mod tests {
         assert_eq!(narrow.state, ToolState::Written);
         assert!(narrow.to_model.contains("warning"), "{}", narrow.to_model);
         assert!(narrow.to_model.contains("3"), "{}", narrow.to_model);
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// 7b) AUDIT L17: the edited copy of a multi-sheet workbook holds one sheet,
+    ///     and the model is TOLD which sheets it does not hold. It used to come
+    ///     back as a plain "file_edited" — the other sheets gone without a word.
+    #[test]
+    fn the_sheets_an_edit_leaves_behind_are_named() {
+        let root = temp_dir("sheets");
+        let workbook = "<workbook xmlns:r=\"r\"><sheets>\
+             <sheet name=\"Budget\" sheetId=\"1\" r:id=\"rId1\"/>\
+             <sheet name=\"Q2 &amp; Q3\" sheetId=\"2\" r:id=\"rId2\"/>\
+             <sheet name=\"Notes\" sheetId=\"3\" r:id=\"rId3\"/>\
+             </sheets></workbook>";
+        let rels = "<Relationships>\
+             <Relationship Id=\"rId1\" Type=\"x/worksheet\" Target=\"worksheets/sheet1.xml\"/>\
+             <Relationship Id=\"rId2\" Type=\"x/worksheet\" Target=\"worksheets/sheet2.xml\"/>\
+             <Relationship Id=\"rId3\" Type=\"x/worksheet\" Target=\"worksheets/sheet3.xml\"/>\
+             </Relationships>";
+        let sheet = "<worksheet><sheetData>\
+             <row><c r=\"A1\" t=\"inlineStr\"><is><t>Item</t></is></c><c r=\"B1\" t=\"inlineStr\"><is><t>Cost</t></is></c></row>\
+             <row><c r=\"A2\" t=\"inlineStr\"><is><t>rent</t></is></c><c r=\"B2\"><v>900</v></c></row>\
+             </sheetData></worksheet>";
+        let bytes = tacet_zip::pack(&[
+            tacet_zip::ZipEntry::new("xl/workbook.xml", workbook.as_bytes()),
+            tacet_zip::ZipEntry::new("xl/_rels/workbook.xml.rels", rels.as_bytes()),
+            tacet_zip::ZipEntry::new("xl/worksheets/sheet1.xml", sheet.as_bytes()),
+            tacet_zip::ZipEntry::new("xl/worksheets/sheet2.xml", sheet.as_bytes()),
+            tacet_zip::ZipEntry::new("xl/worksheets/sheet3.xml", sheet.as_bytes()),
+        ])
+        .unwrap();
+        fs::write(root.join("budget.xlsx"), &bytes).unwrap();
+
+        let mut ctx = context(&root, Arc::new(SharedStore::new()));
+        let outcome = hold(EditDocumentTool::new().run(
+            json!({
+                "path": "budget.xlsx",
+                "new_content": "| Item | Cost |\n| --- | --- |\n| rent | 900 |\n| food | 300 |"
+            }),
+            &mut ctx,
+        ));
+        assert_eq!(outcome.state, ToolState::Written, "{}", outcome.to_model);
+        let m = &outcome.to_model;
+        assert!(m.contains("3 sheets"), "{m}");
+        assert!(m.contains("\"Q2 & Q3\"") && m.contains("\"Notes\""), "{m}");
+        assert!(
+            !m.contains("\"Budget\""),
+            "the edited sheet is not a lost one: {m}"
+        );
+        // The original is untouched — the warning's promise.
+        assert_eq!(fs::read(root.join("budget.xlsx")).unwrap(), bytes);
+
+        // A one-sheet workbook (what create_document writes) gets no such line.
+        let single = xlsx_uret(&root, "single", Table::new(["A"], vec![vec!["1".into()]]));
+        let plain = hold(EditDocumentTool::new().run(
+            json!({"path": single.file_name().unwrap().to_string_lossy(), "new_content": "| A |\n| --- |\n| 2 |"}),
+            &mut ctx,
+        ));
+        assert!(!plain.to_model.contains("sheets"), "{}", plain.to_model);
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// 7c) AUDIT L17, SECOND REVIEW: a workbook whose rels are missing is read
+    ///     through the `sheet1.xml` fallback, and nothing says which name that
+    ///     sheet has. The warning used to name EVERY sheet as "not in" the
+    ///     copy — the one just edited among them.
+    #[test]
+    fn an_edit_of_an_unlinked_sheet_does_not_call_it_left_behind() {
+        let root = temp_dir("unlinked");
+        let workbook = "<workbook><sheets>\
+             <sheet name=\"Budget\" sheetId=\"1\" r:id=\"rId1\"/>\
+             <sheet name=\"Notes\" sheetId=\"2\" r:id=\"rId2\"/>\
+             </sheets></workbook>";
+        let sheet = "<worksheet><sheetData>\
+             <row><c r=\"A1\" t=\"inlineStr\"><is><t>Item</t></is></c></row>\
+             <row><c r=\"A2\" t=\"inlineStr\"><is><t>rent</t></is></c></row>\
+             </sheetData></worksheet>";
+        let bytes = tacet_zip::pack(&[
+            tacet_zip::ZipEntry::new("xl/workbook.xml", workbook.as_bytes()),
+            tacet_zip::ZipEntry::new("xl/worksheets/sheet1.xml", sheet.as_bytes()),
+        ])
+        .unwrap();
+        fs::write(root.join("budget.xlsx"), &bytes).unwrap();
+
+        let mut ctx = context(&root, Arc::new(SharedStore::new()));
+        let outcome = hold(EditDocumentTool::new().run(
+            json!({"path": "budget.xlsx", "new_content": "| Item |\n| --- |\n| food |"}),
+            &mut ctx,
+        ));
+        assert_eq!(outcome.state, ToolState::Written, "{}", outcome.to_model);
+        let m = &outcome.to_model;
+        assert!(
+            m.contains("2 sheets"),
+            "the other sheet went unmentioned: {m}"
+        );
+        assert!(
+            !m.contains("\"Budget\"") && !m.contains("\"Notes\""),
+            "a sheet that may be the edited one is named as left behind: {m}"
+        );
         fs::remove_dir_all(&root).ok();
     }
 

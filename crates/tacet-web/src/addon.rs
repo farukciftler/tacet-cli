@@ -83,6 +83,11 @@ pub const DB: &str = "db";
 /// The system clipboard. Asks nothing at install time.
 pub const CLIPBOARD: &str = "clipboard";
 
+/// Other coding agents' sessions — Claude Code, Codex CLI, Antigravity — READ
+/// from their local files (RG-17). Never written, never run: see the row in
+/// `DEFINITIONS` and docs/adr/0001-agent-sessions.md.
+pub const AGENT_SESSIONS: &str = "agent-sessions";
+
 /// LEGACY ADDON NAME. Registries written before the rename hold `web-arama`;
 /// `parse` maps it onto `WEB_SEARCH` so an existing installation keeps working.
 pub const LEGACY_WEB_SEARCH: &str = "web-arama";
@@ -98,6 +103,21 @@ pub const DIRECTORIES_KEY: &str = "directories";
 
 /// The allowed host list (`http`).
 pub const HOSTS_KEY: &str = "hosts";
+
+/// The session folders `agent-sessions` may READ.
+///
+/// READ-ONLY AND FOR TWO TOOLS ONLY. Unlike `DIRECTORIES_KEY` these roots do
+/// not widen the file tools' reach: `~/.claude` holds `settings.json` and
+/// `~/.codex` holds `auth.json`, and `read_document` has no credential
+/// denylist. The session readers do (`tacet_tools::sessions::secrets`), so the
+/// roots are handed to them and to nothing else.
+///
+/// EMPTY MEANS EACH AGENT'S OWN DEFAULT (`$CLAUDE_CONFIG_DIR` or `~/.claude`,
+/// `$CODEX_HOME` or `~/.codex`, the three `~/.gemini/antigravity*`), looked
+/// up each time a session is read. The install SHOWS the ones that exist on
+/// the approval screen and records none of them: a recorded snapshot hid every
+/// agent installed afterwards (review of 10 Oct 2026).
+pub const ROOTS_KEY: &str = "roots";
 
 /// The database files that may be WRITTEN (`db`).
 ///
@@ -665,6 +685,40 @@ impl Definition {
 /// Adding a sixth means adding a row here and nothing else on this side; the
 /// tool itself and the catalog line are the tool layer's job.
 pub const DEFINITIONS: &[Definition] = &[
+    // READS ANOTHER AGENT'S FILES AND NOTHING ELSE (RG-17, RG-34). The two
+    // tools open no socket and start no program: `claude -p`, `codex exec` and
+    // `agy -p` are PAID MODEL TURNS on the network (~$0.2–0.6 a call in the
+    // E7 measurement of 9 Oct 2026), so nothing behind this row runs them —
+    // a summary is built here, from the files, for free. `network: false` is
+    // therefore the truth and not an omission.
+    //
+    // THE WARNING NAMES BOTH GATES THE TOOLS TRIP, because a user who opens
+    // this addon and then sees `shell` ask before every command deserves to
+    // have been told why: a transcript is personal data (taint) AND text
+    // written outside this session (H2-c).
+    Definition {
+        name: AGENT_SESSIONS,
+        summary: "reads Claude Code, Codex and Antigravity sessions from their own files",
+        tools: &["sessions_list", "session_read"],
+        effect: "the `sessions_list` and `session_read` tools are in the catalog; they read the \
+                 folders below and never write to them.",
+        network: false,
+        warning: "a transcript holds your code, your commands and your prompts. Once one is read, \
+                  every tool that could send data out or run a command asks you first. Tacet \
+                  never starts the other agent or its model — reading a session costs nothing.",
+        settings: &[Setting {
+            key: ROOTS_KEY,
+            prompt: "session folders to read (optional — empty means each agent's own folder)",
+            help: "one absolute path per line: /Users/you/.claude (empty = each agent's own folder)",
+            shape: Shape::Directory,
+            many: true,
+            secret: false,
+            // NOT REQUIRED: the default is each agent's own folder, and a
+            // user who has only Claude Code installed should not be made to
+            // type a path to get it.
+            required: false,
+        }],
+    },
     Definition {
         name: CLIPBOARD,
         summary: "reads and writes the system clipboard",
@@ -1370,6 +1424,44 @@ mod tests {
                 .unwrap()
                 .many
         );
+    }
+
+    /// RG-17: `agent-sessions` is a row like the others — installable by name,
+    /// CLOSED until a record says otherwise — and its row says what its tools
+    /// are and that it opens no network. The tool names are the ones
+    /// `tacet_tools::sessions_tool` answers to; the catalog test on that side
+    /// holds the other half.
+    #[test]
+    fn the_agent_sessions_row_reads_folders_and_opens_no_network() {
+        let d = definition(AGENT_SESSIONS).expect("agent-sessions is installable");
+        assert_eq!(d.tools, ["sessions_list", "session_read"]);
+        assert!(
+            !d.network,
+            "reading a local file is not a network surface; the row must not say it is"
+        );
+        let roots = d.setting(ROOTS_KEY).expect("the roots setting");
+        assert!(
+            !roots.required,
+            "the roots default to each agent's own folder"
+        );
+        assert!(roots.many, "one folder per agent, at least");
+        assert_eq!(roots.shape, Shape::Directory);
+        assert!(!roots.secret);
+        // RG-34 is said on the consent screen, not only in a comment.
+        assert!(
+            d.warning.contains("never starts the other agent"),
+            "{}",
+            d.warning
+        );
+        // OFF UNTIL INSTALLED: an empty registry opens nothing, and a closed
+        // record does not either.
+        assert!(!Record::empty().is_open(AGENT_SESSIONS));
+        let mut r = Record::empty();
+        r.add(Addon::new(AGENT_SESSIONS, AGENT_SESSIONS));
+        r.set_state(AGENT_SESSIONS, false);
+        assert!(!r.is_open(AGENT_SESSIONS));
+        r.set_state(AGENT_SESSIONS, true);
+        assert!(r.is_open(AGENT_SESSIONS));
     }
 
     /// A CREDENTIAL IS NEVER ECHOED. The registry file is 0600 already; what

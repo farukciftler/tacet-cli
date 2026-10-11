@@ -571,6 +571,30 @@ impl DbTool {
                 "the query must be SQL, not a sqlite3 dot-command".into(),
             ));
         }
+        // THE SAME HOLE ONE CHARACTER OVER, and this one is not cosmetic. sqlite3
+        // scans EVERY argument for options, the ones after the database name
+        // included, so a query beginning with `-` is parsed as a command-line
+        // flag and never reaches the SQL parser at all. MEASURED (sqlite3
+        // 3.51.0, `-readonly -safe -batch -ascii -header t.db <query>`):
+        // `-version` printed the version and exited 0, so the model was told
+        // "no_rows" about a query that never ran; `-Ax` switched the shell into
+        // archive-EXTRACT mode, and on a file holding an `sqlar` table it got
+        // as far as "cannot use the writefile() function in safe mode" — `-safe`
+        // is what stopped that being files written to disk, not anything here.
+        // WHY A REFUSAL AND NOT `--`: 3.51.0 does honour `--` as end-of-options
+        // (`… t.db -- "-version"` became a SQL syntax error), but the floor
+        // this tool accepts is whatever passes `verify_lock`, i.e. 3.34, and
+        // `--` was not measured there; a refusal holds on every version. It
+        // costs nothing a model could use: the one SQL form that begins with
+        // `-`, a leading `-- comment`, never worked as an argument either — it
+        // died as "unknown option: - c".
+        if query.starts_with('-') {
+            return Err(ToolError::InvalidArgument(
+                "the query must not begin with '-': sqlite3 reads that as a command-line \
+                 option, not SQL (drop any leading '--' comment)"
+                    .into(),
+            ));
+        }
 
         // THE SANDBOX GATE — CALLED, NOT REWRITTEN. This is what stops both
         // `../../Library/Mail/Envelope Index` and a symlink planted inside the
@@ -959,6 +983,63 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// A LEADING `-` IS AN OPTION TO SQLITE3, NOT SQL (audit L18). Before the
+    /// refusal `-version` printed the version, exited 0, and the model was told
+    /// "no_rows: the query ran and matched nothing" — a fact about a query that
+    /// never ran (measured with the guard removed, 2026-10-10). The binary is not needed for the refusal itself,
+    /// so on a machine without one the test still runs against a path that can
+    /// never be started — reverting the guard then fails as "could not be run"
+    /// instead of `InvalidArgument`, which is red all the same.
+    #[test]
+    fn a_query_that_begins_with_a_dash_is_refused_as_an_option() {
+        let real = DbTool::discover().map(|t| t.binary);
+        let tool = DbTool {
+            binary: real
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("/nonexistent/sqlite3")),
+            store: None,
+        };
+        let root = temp_root("dash");
+        let file = root.join("app.db");
+        match &real {
+            Some(binary) => seed(binary, &file, "CREATE TABLE t(a);"),
+            None => std::fs::write(&file, b"").expect("placeholder"),
+        }
+        let ctx = context(&root);
+
+        for query in [
+            "-version",
+            "  -version",
+            "--version",
+            "-Ax",
+            "-- why\nSELECT 1",
+        ] {
+            match tool.query(&json!({"path": "app.db", "query": query}), &ctx) {
+                Err(ToolError::InvalidArgument(why)) => {
+                    assert!(why.contains("'-'"), "{query:?}: {why}")
+                }
+                Err(other) => panic!("{query:?} must be refused up front, got {other:?}"),
+                Ok(outcome) => panic!(
+                    "{query:?} was run as an option and answered: {}",
+                    outcome.to_model
+                ),
+            }
+        }
+
+        // The refusal is about the FIRST character only: a minus inside SQL is
+        // arithmetic, and a guard that broke it would be the one deleted next.
+        if real.is_some() {
+            let outcome = tool
+                .query(
+                    &json!({"path": "app.db", "query": "SELECT 1 - 3 AS d"}),
+                    &ctx,
+                )
+                .expect("a minus inside SQL is SQL");
+            assert!(outcome.to_model.contains("-2"), "{}", outcome.to_model);
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// THE HAPPY PATH — a security gate that also refuses the legitimate case is

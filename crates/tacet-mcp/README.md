@@ -82,7 +82,18 @@ do not write the token into a file that falls into a git repository.
 local network addresses (`localhost`, `127.0.0.0/8`, `10/8`, `172.16/12`,
 `192.168/16`, `*.local`). The rule lives in `client::validate_url`, i.e. in the
 network layer itself: with an address that is not accepted, not even a client
-OBJECT comes into existence.
+OBJECT comes into existence. An address with userinfo (`user:pass@host`, or the
+`localhost:8080@evil.example` shape that used to pass as local) is refused
+outright, whatever the scheme; a credential belongs in `key`/`key_env`/`auth`.
+The same rule is applied again at the socket, in `HttpTransport::post`, so the
+OAuth token request is held to it too. Redirects are never followed (a 3xx is
+reported as the server's answer), and proxy environment variables
+(`ALL_PROXY`/`HTTPS_PROXY`/`HTTP_PROXY`) are ignored: the request goes to the
+address in `mcp.json` and nowhere else.
+
+`tacet mcp login` sends the RFC 8707 `resource` parameter (the connection's
+`url`) on the authorization, token and refresh requests, so the token is minted
+for that server alone.
 
 ## Network identity — what lands in the far side's log
 

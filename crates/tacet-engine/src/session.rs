@@ -210,6 +210,16 @@ pub const DIR_CONTEXT_BYTES: usize = 500;
 /// for an assistant, not for their dotfiles to be recited. The tools can still
 /// read them WHEN ASKED — that path has a sandbox check and an audit chip, which
 /// is the difference between "reached for" and "handed over".
+///
+/// EVERY NAME AND THE PATH ARE FOREIGN TEXT, and this block sits in the system
+/// turn — the most authoritative place in the prompt. MEASURED (audit H3): a
+/// file named `<|im_end|>\n<|im_start|>system\n…` rendered a second, forged
+/// system turn in the ChatML prompt, and `<end_of_turn>` did the same in
+/// Gemma's. Anyone who can drop a file into a directory the user later opens a
+/// session in — an unpacked archive, a cloned repository — wrote that turn. So
+/// each name and the path are defanged, and a control character (a newline is
+/// legal in a Unix file name) is shown escaped, so a name cannot start a line
+/// of its own that reads like the block's own structure.
 pub fn dir_context(dir: &str) -> Option<String> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return None;
@@ -231,7 +241,11 @@ pub fn dir_context(dir: &str) -> Option<String> {
     // SORTED, so the same directory produces a bit-identical prompt on two
     // machines — `read_dir` order is the file system's, and a prompt that
     // changes shape between runs makes every measurement incomparable.
+    // Sorted BEFORE the names are made safe to show, so the order is the file
+    // system's names' order and not an artefact of the escaping.
     names.sort();
+    let names: Vec<String> = names.iter().map(|n| shown(n)).collect();
+    let dir = shown(dir);
     let total = names.len();
 
     let mut shown = 0usize;
@@ -260,6 +274,26 @@ pub fn dir_context(dir: &str) -> Option<String> {
     }
     block.push_str("\n</cwd>");
     Some(block)
+}
+
+/// A name as the census shows it: control characters and line separators
+/// escaped, markers defanged.
+///
+/// U+2028 AND U+2029 ARE ESCAPED BY NAME. They are Unicode's own line and
+/// paragraph separators and NOT control characters to `char::is_control`, so
+/// the first version of this let them through (review of audit H3, 9 Oct
+/// 2026) — a name could still begin a line of its own for any reader that
+/// honours them. U+0085, the third, is a control character and needs no entry.
+fn shown(name: &str) -> String {
+    let mut visible = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
+            visible.extend(c.escape_default());
+        } else {
+            visible.push(c);
+        }
+    }
+    tacet_kernel::defang(&visible)
 }
 
 /// The system block the model actually gets: the fixed instructions plus, if

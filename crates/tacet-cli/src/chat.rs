@@ -31,7 +31,7 @@ use crate::ui::{
 use crate::{
     CANCEL, EXTERNAL_TOOLS, EngineChoice, STDIN_CONTEXT_LIMIT, TerminalApproval, TerminalAsk,
     VERIFYING_TOOLS, announce_transcript, byte_text, print_grammar, read_piped_stdin,
-    refresh_session, session_catalog, sessions, setup_engine, stdin_fence, thinking_switch,
+    refresh_session, session_catalog, sessions, setup_engine, stdin_fence, thinking_switch_for,
     to_engine_turns, tool_record,
 };
 use crate::{addon, config, filter, format, receipt, session, update};
@@ -41,8 +41,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tacet_engine::{
-    EngineProvider, Prompt, SamplingSetting, TokenCounter, Turn, WEB_NUDGE, dir_context,
-    system_text, wait,
+    EngineProvider, SamplingSetting, TokenCounter, Turn, WEB_NUDGE, dir_context, system_text, wait,
 };
 use tacet_eval::FakeSelector;
 use tacet_grammar::CallConstraint;
@@ -74,6 +73,9 @@ pub struct ChatRun {
     pub json: bool,
     pub continue_session: bool,
     pub session_id: Option<String>,
+    /// `--from <agent>:<id>`: another coding agent's session to continue
+    /// (RG-20). Validated by `model::parse_ref` when it is used.
+    pub from: Option<String>,
     /// How generation samples. Already RESOLVED here (flag > config > default) —
     /// `chat` does not read the config file itself, the same way it does not
     /// resolve the model name itself.
@@ -189,13 +191,17 @@ pub fn chat(run: ChatRun) -> ExitCode {
         json,
         continue_session,
         session_id,
+        from,
         sampling,
     } = run;
-    let dir = dir.as_str();
+    // OWNED AND MUTABLE: a continuation may move the session into the folder
+    // the other agent worked in (RG-20), and only after the user says yes.
+    let mut dir: String = dir;
     let model_name = model_name.as_str();
     let color = Color::setup();
     let screen = Screen::setup();
     let interactive = single_message.is_none();
+    interrupt::install();
     // `--json` OWNS THE WHOLE OF STDOUT. Every human decoration below asks this
     // question rather than `interactive`, because the two are not the same: a
     // `--json` run in a terminal is still a machine-readable run.
@@ -277,9 +283,14 @@ pub fn chat(run: ChatRun) -> ExitCode {
     // `--continue`, so it wins; asking for both is not an error worth refusing
     // a shell over.
     let mut resumed: Vec<Turn> = Vec::new();
+    // The same turns in the FILE's shape, for the new session to carry (L29).
+    let mut resumed_stored: Vec<session::Turn> = Vec::new();
     if let Some(id) = &session_id {
         match session::Session::load(id) {
-            Some(turns) => resumed = to_engine_turns(&turns),
+            Some(turns) => {
+                resumed = to_engine_turns(&turns);
+                resumed_stored = turns;
+            }
             // NOT SILENT. A typo'd id that quietly opened an empty session is
             // the shape of failure this whole module exists to avoid: the user
             // would talk to a model that has forgotten everything and blame the
@@ -294,7 +305,10 @@ pub fn chat(run: ChatRun) -> ExitCode {
         }
     } else if continue_session {
         match session::Session::latest() {
-            Some(turns) => resumed = to_engine_turns(&turns),
+            Some(turns) => {
+                resumed = to_engine_turns(&turns);
+                resumed_stored = turns;
+            }
             None => eprintln!(
                 "{}",
                 color.paint(
@@ -304,6 +318,10 @@ pub fn chat(run: ChatRun) -> ExitCode {
             ),
         }
     }
+    // THE NEW FILE CARRIES THE OLD TURNS (audit L29) — see
+    // `Session::continuing`. Without this a chain of `--continue` runs kept
+    // only the last link.
+    chat_session = chat_session.map(|s| s.continuing(resumed_stored));
     if !resumed.is_empty() && human {
         println!(
             "{}",
@@ -323,7 +341,38 @@ pub fn chat(run: ChatRun) -> ExitCode {
     }
     let mut injection_state = InjectionState::new();
 
-    let (mut catalog, mut code_state) = session_catalog(&store, &memory, &color, interactive);
+    // IS THERE SOMEBODY TO ASK — not the same question as `interactive`
+    // (audit L31). With no `--message` and a PIPE on stdin the loop is
+    // interactive, but stdin is the script feeding it messages: a consent
+    // question read from there took the next message as its answer, and a
+    // `y` meant as a message approved a tainted `shell` call. So such a session
+    // gets what a one-shot run gets — the silent "no" and no `db_write` (a tool
+    // that can only ever be refused is a trap; see `session_catalog`). The
+    // prompts check the same thing themselves (`ui::Prompt::open`); deciding it
+    // here as well is what keeps the catalog honest about it.
+    let can_ask = somebody_to_ask(interactive, &ui::Terminal);
+
+    // ANOTHER AGENT'S SESSION TO CONTINUE (RG-20). Read BEFORE the context is
+    // built, because continuing may move the working folder, and every tool
+    // resolves paths against that folder from its first call. A reference
+    // that cannot be read ends the run: the user asked for THAT session, and
+    // a shell that quietly opened without it would answer as if it had it.
+    let mut seed: Option<String> = None;
+    if let Some(reference) = &from {
+        match continuation(reference) {
+            Ok(imported) => {
+                dir = settle_dir(&imported, &dir, can_ask && screen.tty(), &color, human);
+                announce_continuation(&imported, &color, human);
+                seed = Some(imported.seed_storing(&*store as &dyn CoreDataStore));
+            }
+            Err(e) => {
+                eprintln!("{}", color.paint(YELLOW, &format!("(--from: {e})")));
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    let (mut catalog, mut code_state) = session_catalog(&store, &memory, &color, can_ask);
 
     // THE ADDON GATE'S VALUE IS READ AT SESSION START — AT THE SAME MOMENT as
     // the catalog. The catalog is set up at session start too; reading the two at
@@ -339,10 +388,10 @@ pub fn chat(run: ChatRun) -> ExitCode {
     let mcp_names = mcp::feed_catalog(&mut catalog, &mut mcp_load);
     report_mcp(&mcp_load, &color);
 
-    // THE APPROVAL GATE: a real question in interactive mode, SilentDeny in
-    // diagnostic mode.
+    // THE APPROVAL GATE: a real question when somebody can answer it,
+    // SilentDeny in diagnostic mode and on a piped stdin.
     let mut executor = ToolExecutor::new(catalog.clone());
-    if interactive {
+    if can_ask {
         executor = executor.with_gate(TerminalApproval);
     } else {
         executor = executor.with_gate(SilentDeny);
@@ -366,11 +415,24 @@ pub fn chat(run: ChatRun) -> ExitCode {
         Arc::clone(&screen),
         interactive,
     ));
-    let mut ctx = ToolContext::new(
+    let mut ctx = session_context(
         Arc::clone(&store) as Arc<dyn CoreDataStore>,
-        dir,
+        dir.as_str(),
         Arc::clone(&traces) as Arc<dyn Reporter>,
     );
+    // PERSONAL DATA THAT CAME IN WITHOUT A TOOL TAINTS FROM THE START (audit
+    // H2-b) — see `PersonalInput`. Memory is the third door and it opens per
+    // turn, below, where the notes are chosen.
+    if let Some(why) = starting_taint(piped.is_some(), !resumed.is_empty()) {
+        taint_session(&executor, &mut ctx, why);
+    }
+    // An imported session is BOTH halves of RG-01: the user's own work
+    // (taint) and text another program wrote (outside text). Marked here,
+    // before the first tool of the first turn can run, the same as the tools
+    // that read one mark it after their call.
+    if seed.is_some() {
+        mark_imported(&executor, &mut ctx);
+    }
 
     // The remote tools get a floor in the budget: a catalog the model is never
     // shown is a catalog that does not exist as far as the answer is concerned.
@@ -397,8 +459,8 @@ pub fn chat(run: ChatRun) -> ExitCode {
     // the prompt would change shape mid-conversation for reasons the user never
     // did, which is precisely the kind of drift that makes a measurement
     // meaningless. See `dir_context` for the measured token cost.
-    let dir_block = dir_context(dir);
-    let system = system_text(dir_block.as_ref());
+    let mut dir_block = dir_context(&dir);
+    let mut system = system_text(dir_block.as_ref());
     // TOKEN ACCOUNTING. No new counter WAS INVENTED: the prompt side comes from
     // `TokenCounter`'s truncation report (`final_estimate` — the real prompt size
     // AFTER truncation), the generation side from the engine's reported
@@ -609,6 +671,44 @@ pub fn chat(run: ChatRun) -> ExitCode {
                 );
                 return ExitCode::FAILURE;
             }
+            // `/resume-from` CHANGES THE SESSION ITSELF — the working folder,
+            // the taint, the next turn's question — so it is handled here,
+            // where those live, and not in `slash`, which is handed only what
+            // a command may read or print (RG-20).
+            if message.split_whitespace().next() == Some(RESUME_FROM) {
+                match message.split_whitespace().nth(1) {
+                    None => print_continuable(&color),
+                    Some(reference) => match continuation(reference) {
+                        Ok(imported) => {
+                            let moved =
+                                settle_dir(&imported, &dir, can_ask && screen.tty(), &color, true);
+                            if moved != dir {
+                                dir = moved;
+                                // The folder is part of the context and of the
+                                // system text; both are rebuilt.
+                                ctx = context_in(
+                                    &ctx,
+                                    Arc::clone(&store) as Arc<dyn CoreDataStore>,
+                                    dir.as_str(),
+                                    Arc::clone(&traces) as Arc<dyn Reporter>,
+                                );
+                                dir_block = dir_context(&dir);
+                                system = system_text(dir_block.as_ref());
+                            }
+                            mark_imported(&executor, &mut ctx);
+                            announce_continuation(&imported, &color, true);
+                            seed = Some(imported.seed_storing(&*store as &dyn CoreDataStore));
+                        }
+                        Err(e) => {
+                            println!("{}", color.paint(YELLOW, &format!("({e})")));
+                        }
+                    },
+                }
+                if single_message.is_some() {
+                    break;
+                }
+                continue;
+            }
             // Menus REPLAY commands (see SlashResult::Replay): the loop feeds
             // the produced command back through the same gate, so a menu pick
             // and a typed command are literally the same code path. The depth
@@ -670,7 +770,7 @@ pub fn chat(run: ChatRun) -> ExitCode {
                                 &store,
                                 &memory,
                                 &color,
-                                interactive,
+                                can_ask,
                                 &mut mcp_load,
                                 &engine,
                                 &mut catalog,
@@ -736,7 +836,7 @@ pub fn chat(run: ChatRun) -> ExitCode {
                     &store,
                     &memory,
                     &color,
-                    interactive,
+                    can_ask,
                     &mut mcp_load,
                     &engine,
                     &mut catalog,
@@ -769,6 +869,9 @@ pub fn chat(run: ChatRun) -> ExitCode {
         // `ToolExecutor` (see the "the old turn's word does not bind the new one"
         // note there).
         CANCEL.store(false, Ordering::Relaxed);
+        // From here to the end of the turn a SIGINT cancels the turn instead
+        // of ending the process — see `interrupt` (audit M4).
+        interrupt::turn(true);
         let ticket = executor.new_turn();
         traces.reset();
         if let Some(s) = &code_state {
@@ -803,9 +906,17 @@ pub fn chat(run: ChatRun) -> ExitCode {
             Some(p) => format!("{}\n\n{message}", stdin_fence(p)),
             None => message.clone(),
         };
-        // Selective thinking (Qwen soft switch) — see `thinking_switch`.
+        // THE CONTINUED SESSION'S SUMMARY, ONCE, above the first real question
+        // (RG-20) — data first, instruction last, as with the pipe. It then
+        // lives in the history with that question, so later turns keep it
+        // until the window has to drop it, like any other early turn.
+        asked = seed_question(&mut seed, asked);
+        // Selective thinking (Qwen soft switch) — see `thinking_switch_for`.
         if engine.template() == tacet_engine::Template::ChatML {
-            asked.push_str(thinking_switch(&message));
+            asked.push_str(thinking_switch_for(
+                config::get_str("thinking").as_deref(),
+                &message,
+            ));
         }
 
         // The tool budget derives ONLY from the user message.
@@ -845,6 +956,14 @@ pub fn chat(run: ChatRun) -> ExitCode {
         // MEMORY INJECTION (600 limit): the notes matching the message, in the
         // system block.
         let memory_text = memory.with(|s| s.injection_text(&message)).flatten();
+        // A NOTE IN THE PROMPT IS PERSONAL DATA IN THE PROMPT (audit H2-b,
+        // `PersonalInput::Memory`). Measured by the audit of 9 Oct 2026: a
+        // passport number remembered in one session was injected in the next,
+        // and web_search went out with no question, because only a TOOL could
+        // taint. Tainted here, before the first call of the turn can run.
+        if memory_text.is_some() {
+            taint_session(&executor, &mut ctx, PersonalInput::Memory);
+        }
 
         let mut answer = String::new();
         // The tokens of this USER turn. The inner loop (the tool turns) goes to
@@ -938,24 +1057,59 @@ pub fn chat(run: ChatRun) -> ExitCode {
             } else {
                 system.clone()
             };
-            let mut prompt = Prompt::new(&system_now, question).with_history(previous);
-            if !final_turn {
-                prompt = prompt.with_tools(&selected);
-            }
-            if let Some(g) = &guide {
-                prompt = prompt.with_guide(g);
-            }
-            if let Some(n) = note {
-                prompt = prompt.with_note(n);
-            }
-            if let Some(m) = &memory_text {
-                prompt = prompt.with_memory(m);
-            }
-            let report = counter.truncate(&mut prompt);
-            turn_prompt += report.final_estimate;
+            // BUILT AND SHRUNK IN THE EVAL'S FUNCTION, not here. The two used to
+            // be separate copies in a different order — the eval truncated and
+            // then attached the tools, so its budget never saw the `<tools>`
+            // block (audit M22: on a 4096 window the shell sent 3 016 tokens
+            // where the eval sent 4 502). One function cannot disagree with
+            // itself; `tests/the_shell_budgets_its_tools.rs` runs this binary
+            // and fails if the order is reversed there.
+            //
+            // `fit`, NOT `truncate` ALONE (audit L21, second pass), and the fit
+            // is inside that function too. The shell truncated and never
+            // validated, so a prompt whose instructions and tool descriptions
+            // were over the cap on their own went to the model with the
+            // question cut to nothing and a generation cap past the window — on
+            // a 2048-token model, every turn. Nothing is sent now; the turn ends
+            // the way an engine error ends it, with the numbers. Refused only
+            // when even the minimum answer does not fit beside the question, or
+            // a fragment of it — see `MIN_ANSWER` and `MIN_QUESTION_KEPT`; a
+            // 4096 window under the full shell prompt is sent.
+            let built = tacet_eval::turn_prompt::build_turn_prompt(
+                &counter,
+                tacet_eval::turn_prompt::TurnParts {
+                    system: &system_now,
+                    question,
+                    history: previous,
+                    tools: (!final_turn).then_some(&selected),
+                    guide: guide.as_deref(),
+                    note,
+                    memory: memory_text.as_deref(),
+                },
+            );
+            let (prompt, report) = match built {
+                Ok(built) => built,
+                Err(e) => {
+                    let refusal = window_refusal(&e, counter.budget);
+                    eprintln!("\n{}", color.paint(YELLOW, &refusal));
+                    turn_error = Some(refusal);
+                    any_turn_failed = true;
+                    settled = true;
+                    break;
+                }
+            };
+            // THE SIZE OF WHAT IS SENT, in the engine's own template. The
+            // truncation report's `final_estimate` is the LARGEST of every
+            // template's rendering (`prompt_estimate`, conservative on purpose
+            // so a budget holds whichever template loads), and reporting that
+            // made `tokens.context` disagree with the wire `--show-prompt`
+            // prints: 3177 against 3160 on the scripted engine, measured 10 Oct
+            // 2026 when the two fixes met (`the_shell_budgets_its_tools`).
+            let sent = TokenCounter::estimate(&prompt.text_with_template(engine.template()));
+            turn_prompt += sent;
             // The context-fullness measure is the size of the LAST prompt: that
             // is the room left in the window, not a cumulative total.
-            last_context = report.final_estimate;
+            last_context = sent;
             // ONCE PER USER TURN. The prompt is rebuilt for every tool round,
             // so this used to print two or three times inside a single answer
             // (measured: "(2 turns dropped)" then "(4 turns dropped)" twice) —
@@ -1149,7 +1303,7 @@ pub fn chat(run: ChatRun) -> ExitCode {
                     screen.write(&formatted);
                 }
             };
-            let generation = match wait(
+            let mut generation = match wait(
                 engine.generate_streaming(
                     &prompt,
                     // NO CONSTRAINT ON THE LAST PASS — see `final_turn`. Leaving
@@ -1191,6 +1345,15 @@ pub fn chat(run: ChatRun) -> ExitCode {
                 }
             };
             turn_generation += generation.token_count;
+            // THE SPLIT AGAIN, WITH THE CATALOG (audit H5). The engine's split
+            // cannot see tool names, so a glued call
+            // (`write_filepath: "a.md"`) was cut like prose and the executor
+            // ran the edited text. Everything below — the executor, the answer,
+            // the history — reads `text`, so this is the one place to fix it.
+            // The executor's parser rides along to set `executable`: a block
+            // the split kept on a guess holds the calls the model declined in
+            // it, and `executable` is how the call below learns not to run one.
+            generation.split_against(&executor.catalog().names(), |t| executor.parse_call(t));
             // Diagnostic dump (env-gated, the same key as in `LiveReporter`): the
             // model's RAW generation — the call shape (a grammared `name({...})`
             // or the bare JSON that falls into the recovery path) and, if present,
@@ -1359,7 +1522,11 @@ pub fn chat(run: ChatRun) -> ExitCode {
             // the shell disagreeing with the prompt it just sent, and it costs
             // the user the answer.
             let last_pass = turn + 1 == tacet_eval::MAX_TURNS;
-            let executed = if last_pass {
+            // NOR WHEN THE TWO READINGS OF THE THINKING DISAGREE (audit H5): the
+            // call in `text` may be one the model wrote inside its reasoning
+            // and turned down. What it shows is then the turn's answer — the
+            // kept block included, so the user can see why nothing ran.
+            let executed = if last_pass || !generation.executable {
                 None
             } else {
                 wait(executor.execute_raw(&generation.text, ticket, &mut ctx))
@@ -1464,6 +1631,10 @@ pub fn chat(run: ChatRun) -> ExitCode {
             }
         }
 
+        // No tool runs past this point in the turn; a SIGINT ends the process
+        // again.
+        interrupt::turn(false);
+
         last_turn_prompt = turn_prompt;
         last_turn_generation = turn_generation;
         session_tokens += turn_prompt + turn_generation;
@@ -1481,14 +1652,17 @@ pub fn chat(run: ChatRun) -> ExitCode {
         }
 
         // THE RECEIPT CHAIN — every trace of this turn, witnessed by pure
-        // code (see receipt.rs; `tacet log` shows and verifies them).
+        // code (see receipt.rs; `tacet log` shows and verifies them). The
+        // whole trace goes in and only its shape is kept: a chip's words are
+        // the user's data (a remembered note, a query, an imported transcript
+        // line) and never reach that file (audit L27, RG-32).
         {
             let at = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
             for t in traces.traces() {
-                receipt::append(at, &t.icon, &t.text, &format!("{:?}", t.state));
+                receipt::record(at, &t);
             }
         }
 
@@ -1634,7 +1808,10 @@ pub fn chat(run: ChatRun) -> ExitCode {
     // nothing. At start-up it would delay the first paint and block on the
     // network; mid-session it would interrupt. It prints only if the user
     // turned the check on, and stays silent when the check fails.
-    if let Some(line) = update::daily_notice(&color) {
+    // A CONVERSATION, NOT A RUN (audit D7): never after `--message` or under
+    // `--json`, and `daily_notice` itself refuses when either stream is not a
+    // terminal.
+    if let Some(line) = update::daily_notice(&color, interactive && human) {
         eprintln!();
         eprintln!("{line}");
     }
@@ -1646,6 +1823,502 @@ pub fn chat(run: ChatRun) -> ExitCode {
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
+}
+
+/// The context every tool of the session runs under, LISTENING TO CTRL-C.
+///
+/// WHY THE TOKEN IS WIRED HERE (audit M4, review of 10 Oct 2026). The chat
+/// thread is blocked inside `wait(executor.execute_raw(..))` for as long as a
+/// tool runs, so the `executor.cancel()` in the turn loop — which runs between
+/// generation and execution — can never reach a tool that is already running.
+/// What does keep running is the indicator's key thread, which stores into
+/// `CANCEL`; a context watching that static is the only path from the key to
+/// `run_guarded` and to `shell`/`run_code`'s child. With a plain
+/// `ToolContext::new` here, `shell sleep 9` ran to `exit 0 · 9018 ms` under a
+/// Ctrl-C pressed at second one, and every library test stayed green because
+/// each built its own watching context.
+///
+/// `CANCEL` is cleared at the top of every turn, so watching it never stops
+/// the NEXT turn's tools.
+fn session_context(
+    store: Arc<dyn CoreDataStore>,
+    dir: impl Into<std::path::PathBuf>,
+    reporter: Arc<dyn Reporter>,
+) -> ToolContext {
+    ToolContext::new(store, dir, reporter)
+        .with_cancel_token(tacet_kernel::context::CancelToken::watching(&CANCEL))
+}
+
+/// The context for a new working folder, carrying what the old one knew.
+///
+/// THE FLAGS ARE PUT BACK BEFORE ANYTHING CAN RUN. A context is where a tool
+/// reads whether the session holds personal data or outside text; a fresh one
+/// says "clean". `/resume-from` moving the folder in the middle of a session
+/// that a pipe, a replay, a note or an earlier tool had already tainted would
+/// otherwise hand the next turn a clean context — the H2-b hole reopened by a
+/// `cd`. `mark_imported` sets both flags again right after, but only for the
+/// import; this keeps whatever set them before.
+fn context_in(
+    old: &ToolContext,
+    store: Arc<dyn CoreDataStore>,
+    dir: impl Into<std::path::PathBuf>,
+    reporter: Arc<dyn Reporter>,
+) -> ToolContext {
+    let mut ctx = session_context(store, dir, reporter);
+    if old.session_tainted() {
+        ctx.taint();
+    }
+    if old.saw_external_content() {
+        ctx.mark_external_content();
+    }
+    ctx
+}
+
+/// Ctrl-C AS A SIGNAL — the half of audit M4 the key thread cannot reach.
+///
+/// On a terminal the turn indicator holds raw mode, ISIG is off, and Ctrl-C
+/// arrives as a KEY that its thread turns into `CANCEL` (see `swallow_key` and
+/// `session_context`). With no indicator — `--json`, or stdout piped
+/// (`tacet -m … | less`) — the terminal is cooked and Ctrl-C is a SIGINT. Its
+/// default action killed tacet on the spot, and the tool it was waiting on
+/// lives in its own process group (`shell` and `run_code` call `setsid` so a
+/// timeout can end the whole group), so the signal never reached it: the
+/// command ran on as an orphan with nothing left to stop it.
+///
+/// So while a turn runs, the FIRST SIGINT does what the key does — it sets
+/// `CANCEL`, the tool's token sees it, and the group is ended the way the
+/// executor ends it. A SECOND SIGINT in the same turn, or any SIGINT between
+/// turns, is the default again: the process ends. A hung turn can therefore
+/// never trap the user, and Ctrl-C at an idle prompt still quits.
+///
+/// No crate: `signal` and `raise` are in the C library every unix links, the
+/// same way `poll` is (main.rs). Both are async-signal-safe, and so is the
+/// atomic the handler touches; nothing else runs inside it.
+#[cfg(unix)]
+mod interrupt {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    unsafe extern "C" {
+        fn signal(signum: i32, handler: usize) -> usize;
+        fn raise(signum: i32) -> i32;
+    }
+
+    /// The same number on Linux and macOS.
+    const SIGINT: i32 = 2;
+    const SIG_DFL: usize = 0;
+
+    static TURN_RUNNING: AtomicBool = AtomicBool::new(false);
+
+    extern "C" fn on_sigint(_: i32) {
+        if TURN_RUNNING.load(Ordering::SeqCst) && !crate::CANCEL.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        // SAFETY: both calls are on the async-signal-safe list. The signal is
+        // blocked while this handler runs, so the raised one is delivered —
+        // with the default action — the moment it returns.
+        unsafe {
+            signal(SIGINT, SIG_DFL);
+            raise(SIGINT);
+        }
+    }
+
+    pub fn install() {
+        // SAFETY: installs a handler that touches two atomics and the two
+        // async-signal-safe calls above. The C library's `signal` gives BSD
+        // semantics on macOS and glibc — the handler stays installed and an
+        // interrupted read restarts.
+        unsafe {
+            signal(SIGINT, on_sigint as extern "C" fn(i32) as usize);
+        }
+    }
+
+    /// Marks a turn as running (or over). Between turns a SIGINT ends the
+    /// process, as it always did.
+    pub fn turn(running: bool) {
+        TURN_RUNNING.store(running, Ordering::SeqCst);
+    }
+}
+
+#[cfg(not(unix))]
+mod interrupt {
+    /// NOT MEASURED ON WINDOWS: console Ctrl-C there is a different mechanism
+    /// (`SetConsoleCtrlHandler`), and it is left as it was rather than guessed.
+    pub fn install() {}
+    pub fn turn(_: bool) {}
+}
+
+/// The ways the user's own data reaches the prompt WITHOUT a tool running.
+///
+/// WHY THIS LIST EXISTS (audit H2-b). The approval gate in front of every
+/// outbound tool asks only once the session is tainted, and only a tool could
+/// taint it — a tool that read a file, the clipboard, the machine. Three doors
+/// put personal data into the prompt with no tool at all, and each was
+/// measured or read leaking past the gate:
+/// * `Piped` — `printf 'AWS_SECRET…' | tacet chat --message …` sent the piped
+///   secret to web_search without a question;
+/// * `Resumed` — `--continue` / `--session` replay a transcript, which holds
+///   whatever the earlier session was given;
+/// * `Memory` — a note remembered in one session ("passport U1234567") was
+///   injected in the next, and web_search went out unasked.
+/// * `Imported` — `--from` / `/resume-from` put a summary of ANOTHER agent's
+///   session in front of the model (RG-20): the user's code and commands,
+///   arriving with no tool call to taint on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersonalInput {
+    Piped,
+    Resumed,
+    Memory,
+    Imported,
+}
+
+impl PersonalInput {
+    /// The doors a `--message` run can open. Memory is not one: a one-shot run
+    /// keeps its memory in RAM and starts it empty (see `chat`).
+    #[cfg(test)]
+    pub const ALL: [PersonalInput; 3] = [
+        PersonalInput::Piped,
+        PersonalInput::Resumed,
+        PersonalInput::Imported,
+    ];
+
+    /// How `--message`'s help names this door — held to it by
+    /// `the_message_help_promises_only_what_the_gate_does`.
+    #[cfg(test)]
+    pub fn help_phrase(self) -> &'static str {
+        match self {
+            PersonalInput::Piped => "piped input",
+            PersonalInput::Resumed => "a resumed session",
+            PersonalInput::Memory => "a remembered note",
+            PersonalInput::Imported => "an imported agent session",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Continuing another agent's session (RG-20)
+// ---------------------------------------------------------------------------
+
+/// The in-shell verb. A constant because the turn loop matches it and
+/// `input::COMMANDS` lists it, and the two must not drift.
+pub const RESUME_FROM: &str = "/resume-from";
+
+/// Reads `<agent>:<id>` for a continuation.
+///
+/// THE ADDON GATE IS ASKED HERE TOO, not only by the catalog. `--from` is the
+/// user's own flag and needs no model to call a tool — but the folders the
+/// readers may open are the ones the user approved when installing
+/// `agent-sessions`, and with the addon closed there is no such approval.
+fn continuation(reference: &str) -> Result<tacet_tools::sessions_tool::Imported, String> {
+    use tacet_web::addon;
+    if !addon::is_open(addon::AGENT_SESSIONS) {
+        return Err(format!(
+            "reading another agent's session needs the {} addon: `tacet addon install {}` \
+             (inside the shell: `/addon install {}`), or `/addon on {}` if it is installed",
+            addon::AGENT_SESSIONS,
+            addon::AGENT_SESSIONS,
+            addon::AGENT_SESSIONS,
+            addon::AGENT_SESSIONS
+        ));
+    }
+    let (agent, id) =
+        tacet_tools::sessions::model::parse_ref(reference).map_err(|e| e.to_string())?;
+    let imported = tacet_tools::sessions_tool::import(
+        &tacet_tools::sessions_tool::SessionRoots::Registry,
+        agent,
+        &id,
+    )?;
+    // THE HANDOFF STARTS WITH THE CONTINUATION, so the other agent's hook has
+    // a record to show when the user goes back. A failure here is said and
+    // does not stop the continuation: the work can go on without the record,
+    // and a record that already holds the other agent's progress is never
+    // overwritten (`start_handoff`).
+    match tacet_tools::sessions::handoff::default_dir() {
+        Some(dir) => {
+            if let Err(e) = tacet_tools::sessions_tool::start_handoff(&dir, &imported.digest) {
+                eprintln!("(the handoff record was not started: {e})");
+            }
+        }
+        None => eprintln!(
+            "(the handoff record was not started: the config directory could not be resolved)"
+        ),
+    }
+    Ok(imported)
+}
+
+/// Taints the session AND marks it as holding outside text — the two flags a
+/// session read through `session_read` gets from the executor, given here to
+/// a session that was seeded without a tool.
+fn mark_imported(executor: &ToolExecutor, ctx: &mut ToolContext) {
+    taint_session(executor, ctx, PersonalInput::Imported);
+    executor.inherit_external_content(true);
+    ctx.mark_external_content();
+}
+
+/// The question with the continued session's summary above it, the first time
+/// only: the seed is taken, so the next question goes as typed.
+fn seed_question(seed: &mut Option<String>, asked: String) -> String {
+    match seed.take() {
+        Some(s) => format!("{s}\n\n{asked}"),
+        None => asked,
+    }
+}
+
+/// Where the session should work after a continuation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DirChoice {
+    Stay,
+    Move(String),
+}
+
+/// Whether to move into the folder the other agent worked in.
+///
+/// THE FOLDER CAME OUT OF A TRANSCRIPT, so it is a suggestion from a file
+/// another program wrote, and moving there widens what every file tool can
+/// reach. So: only when somebody can be asked, only when they say yes, and
+/// only to a folder that exists and is not the one already open. A `--message`
+/// run or a piped shell never moves.
+fn dir_choice(
+    target: Option<&std::path::Path>,
+    current: &str,
+    can_ask: bool,
+    ask: impl FnOnce(&str) -> bool,
+) -> DirChoice {
+    let Some(target) = target else {
+        return DirChoice::Stay;
+    };
+    let Ok(real) = target.canonicalize() else {
+        return DirChoice::Stay;
+    };
+    if !real.is_dir()
+        || std::path::Path::new(current)
+            .canonicalize()
+            .is_ok_and(|c| c == real)
+    {
+        return DirChoice::Stay;
+    }
+    let real = real.display().to_string();
+    // THE QUESTION SHOWS THE NAMES THROUGH `visible`, the move takes the real
+    // one. Git on macOS checks out a directory whose name holds ESC, and the
+    // other agent records it as its cwd: printed raw, `ESC[2K ESC[1G` erases
+    // the line and the user approves a folder they never saw named.
+    let (shown, here) = (visible(&real), visible(current));
+    if can_ask
+        && ask(&format!(
+            "that session worked in {shown} — work there instead of {here}?"
+        ))
+    {
+        DirChoice::Move(real)
+    } else {
+        DirChoice::Stay
+    }
+}
+
+/// What the terminal is given in place of a name read from a transcript: each
+/// control character becomes U+FFFD. A PLACEHOLDER RATHER THAN A DELETION in a
+/// question about a folder, so the user sees that the name holds something
+/// the screen cannot show instead of reading a tidier name that is not the
+/// one on disk.
+fn visible(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
+        .collect()
+}
+
+/// The line `settle_dir` prints after a move, through `visible` for the same
+/// reason as the question.
+fn working_in(to: &str) -> String {
+    format!("(working in {})", visible(to))
+}
+
+/// `dir_choice` against the terminal, with what was decided said out loud.
+fn settle_dir(
+    imported: &tacet_tools::sessions_tool::Imported,
+    current: &str,
+    can_ask: bool,
+    color: &Color,
+    human: bool,
+) -> String {
+    match dir_choice(imported.digest.cwd.as_deref(), current, can_ask, |q| {
+        ui::ask_yes_no(color, q)
+    }) {
+        DirChoice::Move(to) => {
+            if human {
+                println!("{}", color.paint(DIM, &working_in(&to)));
+            }
+            to
+        }
+        DirChoice::Stay => current.to_string(),
+    }
+}
+
+/// What the user is told when a continuation starts: which session, how much
+/// of it the model sees, and every warning the reader raised — a cut chain or
+/// an unmeasured version must not be news to them at the third wrong answer.
+/// On stderr, so `--json` keeps stdout to itself.
+fn announce_continuation(
+    imported: &tacet_tools::sessions_tool::Imported,
+    color: &Color,
+    human: bool,
+) {
+    for (code, line) in continuation_notice(&imported.digest, human) {
+        eprintln!("{}", color.paint(code, &line));
+    }
+}
+
+/// The lines `announce_continuation` prints, with their colour.
+///
+/// EVERY LINE GOES THROUGH `visible` HERE TOO, not only through `one_line`. The warnings are the reader's, and a reader copies the
+/// transcript's own `version` into them: the review's probe put
+/// `ESC]0;pwned BEL ESC[2J` there and it reached stderr byte for byte. The
+/// digest is clean today; this is the line that keeps a future field that
+/// skips `one_line` off the terminal, the way `print_continuable` keeps titles
+/// off it.
+fn continuation_notice(
+    d: &tacet_tools::sessions_tool::Digest,
+    human: bool,
+) -> Vec<(&'static str, String)> {
+    let printable = |s: String| visible(&s);
+    let mut lines = Vec::new();
+    if human {
+        lines.push((
+            DIM,
+            printable(format!(
+                "(continuing {} session {} — a summary of its {} entries goes in front of \
+                 your next message; it counts as personal data and outside text, so \
+                 outbound and host-acting tools will ask first)",
+                d.agent.display_name(),
+                d.id,
+                d.entries
+            )),
+        ));
+    }
+    for w in &d.warnings {
+        lines.push((YELLOW, printable(format!("({w})"))));
+    }
+    if d.live {
+        lines.push((
+            YELLOW,
+            format!(
+                "({} still has this session open; what is read may already be behind it)",
+                d.agent.display_name()
+            ),
+        ));
+    }
+    lines
+}
+
+/// `/resume-from` with no argument: the sessions that could be continued, as
+/// the references to type.
+fn print_continuable(color: &Color) {
+    if !tacet_web::addon::is_open(tacet_web::addon::AGENT_SESSIONS) {
+        if let Err(e) = continuation("") {
+            println!("{}", color.paint(YELLOW, &format!("({e})")));
+        }
+        return;
+    }
+    // Each reader's `discover` runs under `guarded` inside `list_sessions`
+    // (RG-04): there is no executor above this call, so a reader panicking on
+    // one malformed file would otherwise end the shell.
+    let tacet_tools::sessions_tool::Listing {
+        sessions: list,
+        failed,
+    } = tacet_tools::sessions_tool::list_sessions(
+        &tacet_tools::sessions_tool::SessionRoots::Registry,
+        &tacet_tools::sessions::AgentKind::ALL,
+    );
+    for f in &failed {
+        println!("{}", color.paint(YELLOW, &visible(&format!("({f})"))));
+    }
+    if list.is_empty() {
+        println!(
+            "{}",
+            color.paint(DIM, "(no Claude Code, Codex or Antigravity session found)")
+        );
+        return;
+    }
+    println!(
+        "{}",
+        color.paint(DIM, &format!("usage: {RESUME_FROM} <agent>:<id>"))
+    );
+    for s in list.iter().take(10) {
+        // A title is a transcript's first request: folded, defanged and
+        // stripped of control characters, so a title cannot move the cursor
+        // or recolour the terminal it is printed on.
+        let title: String = tacet_tools::sessions_tool::one_line(&s.title, 60)
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect();
+        println!(
+            "  {}:{}  {}",
+            s.agent.slug(),
+            s.id,
+            color.paint(DIM, &title)
+        );
+    }
+}
+
+/// Does the session start tainted, and through which door. Memory is decided
+/// per turn, where the notes are chosen.
+fn starting_taint(piped: bool, resumed: bool) -> Option<PersonalInput> {
+    if piped {
+        Some(PersonalInput::Piped)
+    } else if resumed {
+        Some(PersonalInput::Resumed)
+    } else {
+        None
+    }
+}
+
+/// Taints BOTH halves of the session: the executor's flag is what the gate
+/// reads, the context's is what a rebuilt executor and a worker inherit.
+/// One-way, like every taint — only a chat reset clears it.
+///
+/// THE DOOR IS NAMED in the diagnostic dump (`TACET_TRACE_DUMP`, the same key
+/// as the raw generation): a question that was refused "for no reason" is
+/// answered by the line that says which input tainted the session.
+fn taint_session(executor: &ToolExecutor, ctx: &mut ToolContext, why: PersonalInput) {
+    if tacet_kernel::env_var("TACET_TRACE_DUMP").is_some() && !executor.session_tainted() {
+        eprintln!("(session tainted: {why:?})");
+    }
+    executor.inherit_taint(true);
+    ctx.taint();
+}
+
+/// What the user reads when a turn is refused for the window.
+///
+/// It names the window, the measured prompt and the way out, because the only
+/// fix is outside the conversation: `fit` refuses only when the part that is
+/// never cut — the instructions, the tool descriptions, and the memory notes
+/// the question matched — leaves no room for the conversation (a cut
+/// instruction makes the model forget who it is). A shorter question or a
+/// `/clear` changes nothing, and saying only "budget exceeded" sends the user
+/// to try exactly those.
+///
+/// NOT "OVER WITHOUT YOUR QUESTION" (review of L21, third pass). That was true
+/// while only a fixed part over the ceiling was refused. A fixed part a few
+/// tokens under it is refused too now, because the question could keep only
+/// a fragment (`MIN_QUESTION_KEPT`), and there the claim is false by those
+/// few tokens. "No room for your question" is true of both.
+///
+/// THE NUMBER IS THE WHOLE PROMPT, question included, and it is called that.
+/// The first version of this text called it "the instructions and tool
+/// descriptions alone" and left memory out of the list (review of audit L21):
+/// both were false, and a refusal is read word for word because it is the
+/// only explanation the user gets.
+fn window_refusal(error: &tacet_engine::EngineError, window: usize) -> String {
+    match error {
+        tacet_engine::EngineError::BudgetExceeded { measured, budget } => format!(
+            "not sent: this model's window is {window} tokens and this prompt, your \
+             question included, comes to ~{measured} — over the {budget} a prompt may \
+             take and still leave room for an answer. The instructions, tool \
+             descriptions and matching memory notes are never cut, and they leave no \
+             room for your question: the word or two that would fit is a question \
+             you did not ask, so your question was not cut, and a shorter one will \
+             not help. A model with a larger context window is needed (or fewer MCP \
+             tools)."
+        ),
+        other => format!("not sent: {other}"),
+    }
 }
 
 /// `tacet 0.1.9 (metal)` — the version AND what it can do.
@@ -2189,43 +2862,131 @@ fn slash(
 
 /// Reports the MCP load to the user — none of it is silently swallowed.
 pub fn report_mcp(load: &mcp::LoadOutcome, color: &Color) {
+    for (ink, line) in mcp_report_lines(load) {
+        eprintln!("{}", color.paint(ink, &line));
+    }
+}
+
+/// The lines `report_mcp` prints, with their ink. PURE, so what reaches the
+/// terminal can be measured without one.
+///
+/// EVERY STRING A SERVER WROTE GOES THROUGH `one_line` (audit M14). A remote
+/// tool name, a skip reason quoting the schema type it choked on, a connection
+/// error carrying the server's own words — all of it was `eprintln!`ed raw on
+/// every shell start, and a hostile server's `"y\u{1b}[31mRED"` coloured the
+/// user's terminal (audit harness, 9 Oct 2026; the reason path carried
+/// `\u{1b}[5mBLINK`). The connection name is the user's own config and is
+/// cleaned anyway: one funnel is cheaper than an argument about which field is
+/// trusted.
+fn mcp_report_lines(load: &mcp::LoadOutcome) -> Vec<(&'static str, String)> {
+    let mut lines = Vec::new();
     for (connection, reason) in &load.connection_errors {
-        eprintln!(
-            "{}",
-            color.paint(
-                YELLOW,
-                &format!(
-                    "(mcp: the '{connection}' connection could not be established — {reason})"
-                )
-            )
-        );
+        lines.push((
+            YELLOW,
+            format!(
+                "(mcp: the '{}' connection could not be established — {})",
+                ui::one_line(connection),
+                ui::one_line(reason)
+            ),
+        ));
     }
     for skipped in &load.skipped {
-        eprintln!(
-            "{}",
-            color.paint(
-                DIM,
-                &format!(
-                    "(mcp: the '{}' tool was skipped [{}] — {})",
-                    skipped.remote_name, skipped.connection, skipped.reason
-                )
-            )
-        );
+        lines.push((
+            DIM,
+            format!(
+                "(mcp: the '{}' tool was skipped [{}] — {})",
+                ui::one_line(&skipped.remote_name),
+                ui::one_line(&skipped.connection),
+                ui::one_line(&skipped.reason)
+            ),
+        ));
     }
     for note in &load.notes {
-        eprintln!("{}", color.paint(DIM, &format!("(mcp: {note})")));
+        lines.push((DIM, format!("(mcp: {})", ui::one_line(note))));
     }
     if !load.tools.is_empty() {
-        eprintln!(
-            "{}",
-            color.paint(
-                DIM,
-                &format!(
-                    "(mcp: {} remote tools added to the catalog)",
-                    load.tools.len()
-                )
-            )
+        lines.push((
+            DIM,
+            format!(
+                "(mcp: {} remote tools added to the catalog)",
+                load.tools.len()
+            ),
+        ));
+    }
+    lines
+}
+
+/// The `can_ask` of a chat session: an interactive loop AND a person on stdin.
+///
+/// A FUNCTION OF ITS OWN so the second half can be measured: the line it
+/// replaced (`interactive && stdin.is_terminal()`) could be reverted to
+/// `interactive` with every test staying green (review of L31), and that
+/// revert hands a piped session `db_write` — a tool that can only ever be
+/// refused — and a gate that asks a pipe.
+fn somebody_to_ask(interactive: bool, console: &dyn ui::Console) -> bool {
+    interactive && console.is_terminal()
+}
+
+#[cfg(test)]
+mod somebody_to_ask_tests {
+    use super::*;
+
+    struct Stdin(bool);
+
+    impl ui::Console for Stdin {
+        fn is_terminal(&self) -> bool {
+            self.0
+        }
+        fn read_answer(&self) -> Option<String> {
+            panic!("deciding whether to ask must not read an answer")
+        }
+    }
+
+    /// AUDIT L31, the chat layer: interactive is not enough, a pipe is nobody.
+    #[test]
+    fn an_interactive_loop_on_a_pipe_has_nobody_to_ask() {
+        assert!(
+            !somebody_to_ask(true, &Stdin(false)),
+            "a piped interactive session was treated as a person"
         );
+        assert!(somebody_to_ask(true, &Stdin(true)));
+        assert!(
+            !somebody_to_ask(false, &Stdin(true)),
+            "a one-shot run asks nobody"
+        );
+    }
+}
+
+#[cfg(test)]
+mod mcp_report_tests {
+    use super::*;
+
+    /// AUDIT M14: a server's words reach the screen as text, never as commands.
+    #[test]
+    fn a_hostile_server_cannot_write_escapes_into_the_startup_report() {
+        let hostile = "y\u{1b}[31mRED\u{7}\u{9b}2J\r\nfake prompt [y/N]";
+        let load = mcp::LoadOutcome {
+            connection_errors: vec![(hostile.into(), hostile.into())],
+            skipped: vec![mcp::SkippedTool {
+                connection: hostile.into(),
+                remote_name: hostile.into(),
+                reason: format!("unsupported type: {hostile}"),
+            }],
+            notes: vec![hostile.into()],
+            ..Default::default()
+        };
+        let lines = mcp_report_lines(&load);
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        for (_, line) in &lines {
+            for bad in ['\u{1b}', '\u{7}', '\u{9b}', '\r', '\n'] {
+                assert!(
+                    !line.contains(bad),
+                    "{bad:?} reached the terminal: {line:?}"
+                );
+            }
+            // Still readable: hiding what the server said would hide the error.
+            assert!(line.contains("RED"), "{line:?}");
+        }
     }
 }
 
@@ -2312,5 +3073,471 @@ mod sampling_tests {
             .line()
             .is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod window_refusal_tests {
+    use super::*;
+
+    /// AUDIT L21, THE CALL SITE. `TokenCounter::fit` is tested in the engine;
+    /// what is tested here is that the shell's turn loop is what calls it. The
+    /// loop is one 1500-line function with a terminal on both ends and no
+    /// seam to drive it through, so the guard reads the source: the bug was a
+    /// `truncate` with no `validate` after it, and that is a fact about the
+    /// text of the two files involved.
+    ///
+    /// TWO FILES SINCE M22: the loop builds each pass's prompt in
+    /// `tacet_eval::turn_prompt::build_turn_prompt`, shared with the eval, and
+    /// the `fit` is in there. So the guard holds both ends — this file calls
+    /// that function and no `truncate` of its own, and that function fits.
+    /// Reverting either to `counter.truncate(&mut prompt)` turns this red.
+    #[test]
+    fn the_turn_loop_fits_the_prompt_instead_of_only_truncating_it() {
+        let source = include_str!("chat.rs");
+        let body = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the file has a body");
+        assert!(
+            body.contains("tacet_eval::turn_prompt::build_turn_prompt("),
+            "the turn loop no longer builds its prompt in the shared function"
+        );
+        assert!(
+            !body.contains("counter.truncate(&mut prompt)"),
+            "the turn loop truncates without refusing what still does not fit — \
+             a fixed part over the cap would go out with the question deleted"
+        );
+        let shared = include_str!("../../tacet-eval/src/turn_prompt.rs");
+        let shared_body = shared
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the file has a body");
+        assert!(
+            shared_body.contains("counter.fit(&mut prompt)?"),
+            "the shared prompt builder no longer calls `TokenCounter::fit`"
+        );
+        assert!(
+            !shared_body.contains("counter.truncate(&mut prompt)"),
+            "the shared prompt builder truncates without refusing what still does \
+             not fit"
+        );
+    }
+
+    /// AUDIT M23, THE CALL SITE — the same hole M22 had. The test of the
+    /// shell's switch (`the_shells_switch_is_the_engines`) holds
+    /// `thinking_switch_for`; the turn loop called a wrapper around it, and a
+    /// private rule put into the wrapper left every tacet-cli test green
+    /// (review of 10 Oct 2026). The wrapper is gone; this keeps the loop on the
+    /// tested function and keeps a second `fn thinking_switch` from coming back
+    /// in main.rs.
+    #[test]
+    fn the_turn_loop_calls_the_tested_switch() {
+        let body = include_str!("chat.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the file has a body");
+        let squeezed: String = body.split_whitespace().collect();
+        assert!(
+            squeezed.contains(
+                "asked.push_str(thinking_switch_for(config::get_str(\"thinking\").as_deref(),&message"
+            ),
+            "the turn loop no longer appends the switch `the_shells_switch_is_the_engines` tests"
+        );
+        let main = include_str!("main.rs");
+        assert_eq!(
+            main.matches("fn thinking_switch").count(),
+            1,
+            "main.rs has a second thinking-switch function; the loop must call the tested one"
+        );
+    }
+
+    /// The refusal names the window and the measured size, and says the
+    /// question was left alone — the user's next move depends on knowing that
+    /// a shorter question will not help.
+    ///
+    /// AND IT SAYS WHAT THE NUMBER IS (review of L21): the measured size is
+    /// the whole prompt with the question in it, and memory is part of what
+    /// is never cut. The first text called the number "the instructions and
+    /// tool descriptions alone" and did not mention memory.
+    #[test]
+    fn the_refusal_names_the_window_and_the_fixed_part() {
+        let text = window_refusal(
+            &tacet_engine::EngineError::BudgetExceeded {
+                measured: 1912,
+                budget: 1792,
+            },
+            2048,
+        );
+        for needle in [
+            "2048",
+            "1912",
+            "1792",
+            "question included",
+            "memory",
+            "not cut",
+            "larger context window",
+        ] {
+            assert!(text.contains(needle), "{needle:?} missing from: {text}");
+        }
+        assert!(
+            !text.contains("alone"),
+            "the number includes the question: {text}"
+        );
+        // Near the ceiling the fixed part is a few tokens UNDER it on its
+        // own, and the turn is refused because the question has no room —
+        // so the text may not claim the prompt is over without it.
+        assert!(
+            text.contains("no room for your question")
+                && !text.contains("over without your question"),
+            "the refusal misstates why: {text}"
+        );
+    }
+
+    /// EACH FUNCTION KEEPS ITS OWN DOC. `window_refusal` was once inserted
+    /// between `version_line`'s doc comment and `pub fn version_line`, and
+    /// rustdoc merged the two blocks onto `window_refusal` — the refusal was
+    /// documented as "the version AND what it can do" and `version_line` had
+    /// no documentation at all. Nothing compiles differently, so only a read
+    /// of the text can see it.
+    #[test]
+    fn version_line_and_window_refusal_each_keep_their_own_doc() {
+        let source = include_str!("chat.rs");
+        let doc_of = |item: &str| -> String {
+            let at = source
+                .find(item)
+                .unwrap_or_else(|| panic!("{item} is gone"));
+            let mut doc: Vec<&str> = source[..at]
+                .lines()
+                .rev()
+                .take_while(|line| line.trim_start().starts_with("///"))
+                .collect();
+            doc.reverse();
+            doc.join("\n")
+        };
+        let version = doc_of("\npub fn version_line()");
+        assert!(
+            version.starts_with("/// `tacet 0.1.9 (metal)`"),
+            "version_line lost its doc:\n{version}"
+        );
+        assert!(!version.contains("refused"), "{version}");
+        let refusal = doc_of("\nfn window_refusal(");
+        assert!(
+            refusal.starts_with("/// What the user reads when a turn is refused"),
+            "window_refusal's doc does not start where it should:\n{refusal}"
+        );
+        assert!(!refusal.contains("what it can do"), "{refusal}");
+    }
+}
+
+#[cfg(test)]
+mod cancel_wiring_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+    use tacet_kernel::{ArgSchema, Field, Tool, ToolError, ToolFuture, ToolOutcome, boxed};
+    use tacet_tools::executor::ToolCall;
+
+    /// Stands in for `shell sleep 9`: runs until told to stop, the way `shell`
+    /// and `run_code` poll the context between reads of their child. Ten
+    /// seconds, so the red run of this guard finishes rather than hangs.
+    struct Sleeper;
+    impl Tool for Sleeper {
+        fn name(&self) -> &str {
+            "sleeper"
+        }
+        fn description(&self) -> &str {
+            "Waits."
+        }
+        fn schema(&self) -> ArgSchema {
+            ArgSchema::object(vec![Field::new("note", ArgSchema::text())])
+        }
+        fn run<'a>(&'a self, _a: serde_json::Value, ctx: &'a mut ToolContext) -> ToolFuture<'a> {
+            boxed(async move {
+                let started = Instant::now();
+                while started.elapsed() < Duration::from_secs(10) {
+                    if ctx.is_cancelled() {
+                        return ToolOutcome::failed(&ToolError::Other("stopped".into()));
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                ToolOutcome::read_ok("slept", "exit 0")
+            })
+        }
+    }
+
+    /// AUDIT M4, THE SHELL'S END (review of 10 Oct 2026). The library tests
+    /// each build their own watching context, so they stayed green while the
+    /// shell built a plain one and a Ctrl-C during `shell sleep 9` set `CANCEL`
+    /// and nothing else. This drives the context `chat()` builds: the key
+    /// thread's store into `CANCEL` must stop a tool already running under the
+    /// executor, within a second.
+    ///
+    /// ONE TEST, NOT TWO: `CANCEL` is the process's one flag, and two tests
+    /// firing it in parallel would stop each other's tools.
+    #[test]
+    fn the_shells_ctrl_c_stops_a_tool_already_running() {
+        let ctx = session_context(
+            Arc::new(SharedStore::new()) as Arc<dyn CoreDataStore>,
+            std::env::temp_dir(),
+            Arc::new(TraceCollector::new()) as Arc<dyn Reporter>,
+        );
+        CANCEL.store(false, Ordering::SeqCst);
+        assert!(!ctx.is_cancelled(), "a fresh turn must not start stopped");
+        CANCEL.store(true, Ordering::SeqCst);
+        let heard = ctx.is_cancelled();
+        CANCEL.store(false, Ordering::SeqCst);
+        assert!(
+            heard,
+            "the session context does not hear the shell's Ctrl-C flag"
+        );
+        // The turn-start reset must release it again, or one Ctrl-C would stop
+        // every later tool of the session.
+        assert!(!ctx.is_cancelled());
+
+        let catalog: ToolCatalog = [Arc::new(Sleeper) as Arc<dyn Tool>].into_iter().collect();
+        let executor = ToolExecutor::new(catalog);
+        let mut ctx = ctx;
+        let presser = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(300));
+            CANCEL.store(true, Ordering::SeqCst);
+        });
+        let start = Instant::now();
+        let outcome = wait(executor.execute(
+            &ToolCall::new("sleeper", serde_json::json!({})),
+            executor.active_turn(),
+            &mut ctx,
+        ));
+        let elapsed = start.elapsed();
+        presser.join().expect("presser");
+        CANCEL.store(false, Ordering::SeqCst);
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "a Ctrl-C pressed 300 ms in did not reach the running tool: it ran {elapsed:?} ({:?})",
+            outcome.reason
+        );
+    }
+
+    /// The test above holds `session_context`; this holds the loop to it. A
+    /// `ToolContext::new` written back into `chat()` would leave the function
+    /// tested and the shell deaf again.
+    #[test]
+    fn the_turn_loop_builds_its_context_with_the_ctrl_c_token() {
+        let body = include_str!("chat.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the file has a body");
+        let squeezed: String = body.split_whitespace().collect();
+        assert!(
+            squeezed.contains("letmutctx=session_context("),
+            "chat() no longer builds its tool context through `session_context`"
+        );
+        assert_eq!(
+            squeezed.matches("ToolContext::new(").count(),
+            1,
+            "a second `ToolContext::new` in chat.rs builds a context that does not hear Ctrl-C"
+        );
+    }
+}
+
+#[cfg(test)]
+mod continuation_tests {
+    use super::*;
+
+    fn context() -> ToolContext {
+        session_context(
+            Arc::new(SharedStore::new()) as Arc<dyn CoreDataStore>,
+            std::env::temp_dir(),
+            Arc::new(tacet_kernel::SilentReporter) as Arc<dyn Reporter>,
+        )
+    }
+
+    /// RG-20 / RG-01: a session seeded from another agent starts BOTH tainted
+    /// and marked as holding outside text, in the executor the gate reads and
+    /// in the context a rebuilt executor inherits from — before any tool has
+    /// run, so the first `shell` or `web_search` of the first turn already
+    /// asks.
+    #[test]
+    fn an_imported_session_starts_tainted_and_outside() {
+        let executor = ToolExecutor::new(ToolCatalog::new());
+        let mut ctx = context();
+        assert!(!executor.session_tainted() && !executor.saw_external_content());
+        mark_imported(&executor, &mut ctx);
+        assert!(executor.session_tainted(), "the import did not taint");
+        assert!(
+            executor.saw_external_content(),
+            "the import did not mark outside text, so host-acting tools would not ask"
+        );
+        assert!(ctx.session_tainted() && ctx.saw_external_content());
+    }
+
+    /// RG-20: the summary goes above the FIRST question and only that one.
+    #[test]
+    fn the_seed_goes_in_front_of_the_first_question_only() {
+        let mut seed = Some("<imported_session>S</imported_session>".to_string());
+        let first = seed_question(&mut seed, "what next?".into());
+        assert!(first.starts_with("<imported_session>S</imported_session>"));
+        assert!(first.ends_with("what next?"), "the question must stay last");
+        assert_eq!(seed, None, "the seed was not consumed");
+        assert_eq!(seed_question(&mut seed, "and then?".into()), "and then?");
+    }
+
+    /// RG-20: the folder a transcript names is only ever a suggestion — taken
+    /// on a yes from somebody who can be asked, never otherwise, and never
+    /// asked about at all when there is nothing to move to.
+    #[test]
+    fn the_session_folder_is_entered_only_on_a_yes() {
+        let here = std::env::temp_dir().join(format!("tacet-cont-here-{}", std::process::id()));
+        let there = std::env::temp_dir().join(format!("tacet-cont-there-{}", std::process::id()));
+        std::fs::create_dir_all(&here).unwrap();
+        std::fs::create_dir_all(&there).unwrap();
+        let current = here.to_str().unwrap();
+        let real_there = there.canonicalize().unwrap().display().to_string();
+
+        assert_eq!(
+            dir_choice(Some(&there), current, true, |_| true),
+            DirChoice::Move(real_there)
+        );
+        assert_eq!(
+            dir_choice(Some(&there), current, true, |_| false),
+            DirChoice::Stay
+        );
+        // Nobody to ask: no question, no move.
+        assert_eq!(
+            dir_choice(Some(&there), current, false, |_| panic!("asked a pipe")),
+            DirChoice::Stay
+        );
+        // Nothing to move to: no question either.
+        for target in [
+            here.as_path(),
+            std::path::Path::new("/no/such/folder/tacet"),
+        ] {
+            assert_eq!(
+                dir_choice(Some(target), current, true, |_| panic!("asked for nothing")),
+                DirChoice::Stay
+            );
+        }
+        assert_eq!(
+            dir_choice(None, current, true, |_| panic!("asked for nothing")),
+            DirChoice::Stay
+        );
+        let _ = std::fs::remove_dir_all(&here);
+        let _ = std::fs::remove_dir_all(&there);
+    }
+
+    /// RG-20 second review: the yes/no that decides whether every file tool's
+    /// reach moves holds no control character, though the folder it names
+    /// does — a real directory, the kind a cloned repository can carry — and
+    /// the line after the move holds none either. The move itself still goes
+    /// to the folder on disk, not to the cleaned-up name.
+    #[test]
+    fn the_folder_question_cannot_drive_the_terminal() {
+        let base = std::env::temp_dir().join(format!("tacet-cont-esc-{}", std::process::id()));
+        let there = base.join("repo\u{1b}[2J\u{1b}[1Gsub");
+        let here = base.join("here\u{7}");
+        std::fs::create_dir_all(&there).unwrap();
+        std::fs::create_dir_all(&here).unwrap();
+        let real_there = there.canonicalize().unwrap().display().to_string();
+
+        let mut asked = String::new();
+        let choice = dir_choice(Some(&there), here.to_str().unwrap(), true, |q| {
+            asked = q.to_string();
+            true
+        });
+        assert!(!asked.is_empty(), "nobody was asked");
+        assert!(
+            !asked.chars().any(char::is_control),
+            "a control character reaches the folder question: {asked:?}"
+        );
+        assert!(
+            asked.contains("repo\u{FFFD}[2J"),
+            "the question must show that the name holds something: {asked:?}"
+        );
+        assert_eq!(choice, DirChoice::Move(real_there.clone()));
+
+        let line = working_in(&real_there);
+        assert!(
+            !line.chars().any(char::is_control),
+            "a control character reaches the moved line: {line:?}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// RG-20 review: `/resume-from` that moves the folder builds a new
+    /// context, and a new context says "clean". Each flag the old one held is
+    /// carried, separately — a session tainted by a pipe but never shown a
+    /// page must not come out marked as outside text, nor the reverse lose
+    /// its mark. The folder binary test cannot reach this: the move needs a
+    /// terminal to ask on.
+    #[test]
+    fn a_new_folder_keeps_the_flags_the_session_had() {
+        let there = std::env::temp_dir().join("tacet-context-in");
+        let build = |old: &ToolContext| {
+            context_in(
+                old,
+                Arc::new(SharedStore::new()) as Arc<dyn CoreDataStore>,
+                there.clone(),
+                Arc::new(tacet_kernel::SilentReporter) as Arc<dyn Reporter>,
+            )
+        };
+
+        let clean = build(&context());
+        assert_eq!(clean.working_dir, there, "the folder did not move");
+        assert!(!clean.session_tainted() && !clean.saw_external_content());
+
+        let mut tainted = context();
+        tainted.taint();
+        let moved = build(&tainted);
+        assert!(moved.session_tainted(), "the move dropped the taint");
+        assert!(!moved.saw_external_content());
+
+        let mut outside = context();
+        outside.mark_external_content();
+        let moved = build(&outside);
+        assert!(
+            moved.saw_external_content(),
+            "the move dropped the outside-text mark"
+        );
+        assert!(!moved.session_tainted());
+    }
+
+    /// RG-20 review: what `--from` and `/resume-from` print on stderr holds no
+    /// control character, whatever the digest carries — built here past
+    /// `one_line`, the way a future field that skipped it would arrive.
+    #[test]
+    fn the_continuation_notice_cannot_drive_the_terminal() {
+        let d = tacet_tools::sessions_tool::Digest {
+            agent: tacet_tools::sessions::AgentKind::Codex,
+            id: "abc\u{1b}[2J".into(),
+            cwd: None,
+            updated: None,
+            version: None,
+            live: true,
+            goal: None,
+            last_ask: None,
+            plan: Vec::new(),
+            files: Vec::new(),
+            steps: Vec::new(),
+            warnings: vec!["version 9.9\u{1b}]0;pwned\u{7}\u{1b}[2J is not measured".into()],
+            artifacts: Vec::new(),
+            entries: 3,
+        };
+        let lines = continuation_notice(&d, true);
+        assert_eq!(lines.len(), 3, "intro, the warning, the live note");
+        for (_, line) in &lines {
+            assert!(
+                !line.chars().any(char::is_control),
+                "a control character reaches stderr: {line:?}"
+            );
+        }
+        assert!(lines[1].1.contains("pwned"), "the warning itself is kept");
+        assert_eq!(continuation_notice(&d, false).len(), 2);
+    }
+
+    /// The in-shell verb is in the command list the `/` popup and `/help`
+    /// read, under the same constant the turn loop matches.
+    #[test]
+    fn resume_from_is_a_listed_command() {
+        assert!(input::COMMANDS.iter().any(|c| c.name == RESUME_FROM));
+        assert!(input::is_command(&format!("{RESUME_FROM} codex:abc")));
     }
 }

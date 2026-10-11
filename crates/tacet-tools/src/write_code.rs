@@ -24,9 +24,17 @@
 //! gate the model comes through there are at most two real runs in a turn, and
 //! the third is rejected without ever seeing the engine (code-spec §5.4).
 //!
-//! THE VERIFICATION FOLDER IS HIDDEN (`sandbox/code/`): the by-products of the
-//! execution step (files the script opens, `__pycache__`) must not leak into
-//! the user's directory. The ONLY thing delivered is the verified source file.
+//! THE VERIFICATION FOLDER IS HIDDEN AND FRESH (`.tacet-sandbox-<nonce>/`,
+//! made for the call and deleted after it): the by-products of the execution
+//! step (files the script opens, `__pycache__`) must not leak into the user's
+//! directory. The ONLY thing delivered is the verified source file.
+//!
+//! NOR IS EVERY NAME DELIVERED. Some file names are executed by other programs
+//! without the user ever running them — `conftest.py` by pytest, `*.config.js`
+//! by eslint/jest/vite, `setup.py` by pip — OUTSIDE the sandbox and with the
+//! user's privileges. Verification proves the script runs; it does not make it
+//! safe to leave where a tool will run it unasked (audit M3). See
+//! `auto_executed_name`.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -40,8 +48,9 @@ use tacet_kernel::{
 
 use crate::run_code::{
     CODE_CAP, CodeOutcome, CodeState, Interpreter, MAX_ATTEMPTS, MODEL_OUTPUT_CAP, NetworkShield,
-    error_text, language_from_source, looks_like_python, run_program, truncate,
+    error_text, language_from_source, looks_like_python, run_program_until, truncate,
 };
+use tacet_kernel::context::CancelToken;
 
 /// The timeout of the execution verification. The same base as `run_code`'s
 /// default; the model CANNOT CHOOSE a duration here — a script to be delivered
@@ -177,6 +186,320 @@ fn safe_stem(file_name: &str) -> String {
     }
 }
 
+/// Stems that another program EXECUTES on its own when it finds them in a
+/// directory, compared case-insensitively (APFS and NTFS are case-insensitive
+/// by default, so `ConfTest.py` IS `conftest.py` to pytest there).
+///
+/// The audit's list (M3) plus the neighbours that follow the same rule:
+/// pytest's `conftest`; `setup` (pip/setuptools); `sitecustomize` /
+/// `usercustomize` (imported by every python start that has the directory on
+/// its path); `__init__` / `__main__` (they turn the folder into something
+/// python imports or runs); the task runners nox, fabric, invoke (`tasks`),
+/// doit, paver, gulp, grunt and jake; tox 4's `toxfile` (imported from the
+/// tox root as an inline plugin on a bare `tox`) and danger-js's `dangerfile`
+/// (run by default) — both found missing by the review of 10 Oct 2026, the
+/// first in noxfile's own family; gatsby's four lifecycle files. Test files
+/// are a family, not a list — see `test_runner_collects`. `makefile`, `envrc`,
+/// `package` and `pyproject` cannot be produced with a `.py`/`.js` extension in
+/// a way that make, direnv, npm or pip would read, and are refused anyway: the
+/// name alone is what a user's eye trusts in a listing.
+const AUTO_EXECUTED_STEMS: &[(&str, &str)] = &[
+    ("conftest", "pytest"),
+    ("setup", "pip and setuptools"),
+    ("sitecustomize", "every python start"),
+    ("usercustomize", "every python start"),
+    ("__init__", "python's import system"),
+    ("__main__", "python's import system"),
+    ("noxfile", "nox"),
+    ("toxfile", "tox"),
+    ("dangerfile", "danger"),
+    ("fabfile", "fabric"),
+    ("tasks", "invoke"),
+    ("dodo", "doit"),
+    ("pavement", "paver"),
+    ("gulpfile", "gulp"),
+    ("gruntfile", "grunt"),
+    ("jakefile", "jake"),
+    ("gatsby-config", "gatsby"),
+    ("gatsby-node", "gatsby"),
+    ("gatsby-browser", "gatsby"),
+    ("gatsby-ssr", "gatsby"),
+    // The review of 10 Oct 2026, read from each tool's documentation (none of
+    // them is installed here): `conan install .` executes conanfile.py the way
+    // `pip install .` executes setup.py; the Serverless Framework loads
+    // serverless.js on `sls deploy`; every `truffle` command loads
+    // truffle-config.js (truffle.js before v5); IPython and Jupyter load their
+    // `*_config.py` from the working folder.
+    ("conanfile", "conan"),
+    ("serverless", "the Serverless Framework"),
+    ("truffle-config", "truffle"),
+    ("truffle", "truffle"),
+    ("ipython_config", "ipython"),
+    ("ipython_kernel_config", "ipython"),
+    ("makefile", "make"),
+    ("gnumakefile", "make"),
+    ("envrc", "direnv"),
+    ("package", "npm"),
+    ("pyproject", "pip"),
+];
+
+/// Why `stem` must not be delivered, or `None` if it may.
+///
+/// A DOT LEFT IN THE STEM IS REFUSED OUTRIGHT, not checked against a list. The
+/// family it closes is open-ended — `eslint.config`, `jest.config`,
+/// `vite.config`, `karma.conf`, `jest.setup`, `*.test`, `*.spec`, and the next
+/// tool's tomorrow — and every member of it is a dotted stem. `safe_stem` has
+/// already removed the one dot a legitimate name carries (the extension the
+/// model added itself), so what is left is a second one.
+///
+/// `extension` is the one the tool will deliver under (`interpreter.extension`):
+/// a standard-library name is only refused for `py`, see `PYTHON_STDLIB`.
+fn auto_executed_name(stem: &str, extension: &str) -> Option<String> {
+    if stem.contains('.') {
+        return Some(format!(
+            "'{stem}' contains a dot: names such as x.config.js, x.conf.js or x.test.js are \
+             loaded automatically by build and test tools"
+        ));
+    }
+    let lower = fold_case(stem);
+    if let Some(runner) = test_runner_collects(&lower, extension) {
+        return Some(format!(
+            "'{stem}' is a test file name: {runner} imports and runs every file named like it"
+        ));
+    }
+    if let Some((_, runner)) = AUTO_EXECUTED_STEMS.iter().find(|(name, _)| *name == lower) {
+        return Some(format!(
+            "'{stem}' is a file name that {runner} runs automatically"
+        ));
+    }
+    // Jupyter's config files are a family: jupyter_config, jupyter_server_config,
+    // jupyter_notebook_config, jupyter_lab_config, and whatever the next
+    // application under the `jupyter` command is called.
+    if lower.starts_with("jupyter") && lower.ends_with("_config") {
+        return Some(format!(
+            "'{stem}' is a file name that jupyter loads automatically"
+        ));
+    }
+    if extension == "py"
+        && PYTHON_STDLIB
+            .split_ascii_whitespace()
+            .any(|module| fold_case(module) == lower)
+    {
+        return Some(format!(
+            "'{stem}' is the name of a python standard-library module: every python script \
+             in the folder that runs `import {stem}` imports and runs this file instead"
+        ));
+    }
+    if extension == "py"
+        && PYTHON_M_ENTRY_POINTS
+            .split_ascii_whitespace()
+            .any(|tool| fold_case(tool) == lower)
+    {
+        return Some(format!(
+            "'{stem}' is the name of a tool started with `python -m {stem}`: run in this \
+             folder, that command runs this file instead of the tool"
+        ));
+    }
+    None
+}
+
+/// Why `stem` must not be delivered as `.py` because `python` — the
+/// interpreter the user's own scripts in that folder run under — can import an
+/// INSTALLED package of that name, which the delivered file would shadow.
+///
+/// THE STANDARD LIBRARY WAS NOT THE WHOLE CLASS (review of 10 Oct 2026):
+/// `requests.py`, `numpy.py`, `pandas.py` shadow a third-party package by the
+/// same `sys.path` rule `PYTHON_STDLIB` measured for `json.py`, and no snapshot
+/// can list what this user has installed. So the interpreter is asked:
+/// `importlib.util.find_spec(name)` finds without importing, and `-I` keeps
+/// the current directory and the user's environment variables out of
+/// `sys.path`, so the answer is about installed packages only. The name is an
+/// argument, never code. Only a printed marker counts — an interpreter that
+/// prints nothing (or is a stand-in, as in the tests) refuses nothing, and the
+/// standard-library snapshot still holds.
+fn installed_module_shadowed(python: &Path, stem: &str) -> Option<String> {
+    let identifier = stem
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !identifier {
+        return None;
+    }
+    let out = std::process::Command::new(python)
+        .args([
+            "-I",
+            "-c",
+            "import importlib.util, sys\n\
+             print('TACET_IMPORTABLE' if importlib.util.find_spec(sys.argv[1]) else 'TACET_ABSENT')",
+            stem,
+        ])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    (String::from_utf8_lossy(&out.stdout).trim() == "TACET_IMPORTABLE").then(|| {
+        format!(
+            "'{stem}' is the name of a python package installed for {}: every python script \
+             in the folder that runs `import {stem}` imports and runs this file instead",
+            python.display()
+        )
+    })
+}
+
+/// The tools a user starts as `python -m <name>` from a project folder, which a
+/// `<name>.py` in that folder REPLACES: `-m` puts the current directory first
+/// on `sys.path`, so the documented way of running pytest or pip runs the
+/// delivered file, outside the sandbox, with the user's privileges. MEASURED
+/// on 10 Oct 2026 with python 3.12 (Homebrew) by the review and python 3.9.6
+/// (`/usr/bin/python3`) here: a folder holding `pip.py`, `pytest.py`,
+/// `mypy.py`, `black.py`, `ruff.py` and `coverage.py`, each printing a marker,
+/// printed the marker for every `python3 -m <name> --version`. The same
+/// reasoning as `PYTHON_STDLIB` — a name resolved through the folder runs the
+/// delivered file — for names python does not ship.
+///
+/// THIS LIST AND `installed_module_shadowed` COVER DIFFERENT HALVES. The
+/// interpreter check refuses a package that IS installed; `python -m pytest`
+/// runs `./pytest.py` whether or not pytest is installed (a missing tool is
+/// exactly when a user reaches for `python -m`), so these names are refused
+/// even where the interpreter does not know them, or is not there to ask.
+///
+/// THE GAP THAT REMAINS, written down so nobody believes it closed: `python -m
+/// x` runs `./x.py` for ANY `x`, and a third-party package that is not yet
+/// installed shadows a later `import` the same way. Refusing every name on
+/// PyPI is not possible; this list is the commands a user types out of habit
+/// in a project folder, and an uninstalled package name outside it is still
+/// delivered.
+const PYTHON_M_ENTRY_POINTS: &str = "\
+    pip pip3 pipx pytest setuptools wheel build twine virtualenv coverage mypy black \
+    flake8 pylint ruff isort pyflakes pycodestyle bandit tox nox poetry pdm hatch \
+    IPython jupyter jupyterlab sphinx mkdocs pre_commit";
+
+/// The top-level names of python's standard library, which a `<name>.py` in
+/// the working folder SHADOWS: python puts the script's own directory first
+/// on `sys.path`, so the user's next `python3 their_script.py` there that says
+/// `import json` runs the delivered `json.py` — outside the sandbox, with the
+/// user's privileges. The same class as `sitecustomize`, and wider: nothing
+/// has to be installed, only imported. MEASURED with python 3.12 on macOS: a
+/// folder holding `json.py` (printing a marker) and `other.py` (`import json`)
+/// printed the marker when `other.py` ran. `JSON.py` and `\u{17F}tring.py` did
+/// NOT shadow (importlib matches the directory listing case-sensitively unless
+/// `PYTHONCASEOK` is set), and neither did `sys.py` (a built-in module is found
+/// before the path is searched) — the folded comparison over-refuses those,
+/// which costs the model one rename and covers a `PYTHONCASEOK` user.
+///
+/// A SNAPSHOT, NOT A DEPENDENCY: `sys.stdlib_module_names` of python 3.12,
+/// plus the five modules 3.12 removed (`distutils`, `imp`, `asynchat`,
+/// `asyncore`, `smtpd` — an older python on the user's PATH still imports
+/// them) and the two top-level packages 3.14 added (`annotationlib`,
+/// `compression`). A module a later python adds is a gap until it is added
+/// here. `.js` names are not checked: node resolves a bare `require('json')`
+/// to `node_modules` or a built-in, never to `./json.js`.
+const PYTHON_STDLIB: &str = "\
+    __future__ _abc _aix_support _ast _asyncio _bisect _blake2 _bz2 _codecs _codecs_cn \
+    _codecs_hk _codecs_iso2022 _codecs_jp _codecs_kr _codecs_tw _collections \
+    _collections_abc _compat_pickle _compression _contextvars _crypt _csv _ctypes _curses \
+    _curses_panel _datetime _dbm _decimal _elementtree _frozen_importlib \
+    _frozen_importlib_external _functools _gdbm _hashlib _heapq _imp _io _json _locale \
+    _lsprof _lzma _markupbase _md5 _msi _multibytecodec _multiprocessing _opcode _operator \
+    _osx_support _overlapped _pickle _posixshmem _posixsubprocess _py_abc _pydatetime \
+    _pydecimal _pyio _pylong _queue _random _scproxy _sha1 _sha2 _sha3 _signal \
+    _sitebuiltins _socket _sqlite3 _sre _ssl _stat _statistics _string _strptime _struct \
+    _symtable _thread _threading_local _tkinter _tokenize _tracemalloc _typing _uuid \
+    _warnings _weakref _weakrefset _winapi _wmi _zoneinfo abc aifc annotationlib \
+    antigravity argparse array ast asynchat asyncio asyncore atexit audioop base64 bdb \
+    binascii bisect builtins bz2 cProfile calendar cgi cgitb chunk cmath cmd code codecs \
+    codeop collections colorsys compileall compression concurrent configparser contextlib \
+    contextvars copy copyreg crypt csv ctypes curses dataclasses datetime dbm decimal \
+    difflib dis distutils doctest email encodings ensurepip enum errno faulthandler fcntl \
+    filecmp fileinput fnmatch fractions ftplib functools gc genericpath getopt getpass \
+    gettext glob graphlib grp gzip hashlib heapq hmac html http idlelib imaplib imghdr imp \
+    importlib inspect io ipaddress itertools json keyword lib2to3 linecache locale logging \
+    lzma mailbox mailcap marshal math mimetypes mmap modulefinder msilib msvcrt \
+    multiprocessing netrc nis nntplib nt ntpath nturl2path numbers opcode operator optparse \
+    os ossaudiodev pathlib pdb pickle pickletools pipes pkgutil platform plistlib poplib \
+    posix posixpath pprint profile pstats pty pwd py_compile pyclbr pydoc pydoc_data \
+    pyexpat queue quopri random re readline reprlib resource rlcompleter runpy sched \
+    secrets select selectors shelve shlex shutil signal site smtpd smtplib sndhdr socket \
+    socketserver spwd sqlite3 sre_compile sre_constants sre_parse ssl stat statistics \
+    string stringprep struct subprocess sunau symtable sys sysconfig syslog tabnanny \
+    tarfile telnetlib tempfile termios textwrap this threading time timeit tkinter token \
+    tokenize tomllib trace traceback tracemalloc tty turtle turtledemo types typing \
+    unicodedata unittest urllib uu uuid venv warnings wave weakref webbrowser winreg \
+    winsound wsgiref xdrlib xml xmlrpc zipapp zipfile zipimport zlib zoneinfo";
+
+/// The name a case-insensitive file system would LOOK UP for `stem`.
+///
+/// `to_lowercase()` WAS NOT ENOUGH, MEASURED on this Mac's APFS: a file created
+/// as `confte\u{17F}t.py` (long s), `confte\u{FB06}.py` (st ligature),
+/// `\u{17F}etup.py`, `ma\u{212A}efile.py` (Kelvin sign), `pa\u{DF}e.py` and
+/// `con\u{FB01}g.py` each made `isfile("<ascii name>.py")` true, and the
+/// review measured `python3 setup.py` executing a folder's `\u{17F}etup.py`
+/// and pytest's `spec_from_file_location("conftest", "conftest.py")` executing
+/// `confte\u{17F}t.py`. APFS compares with Unicode full case folding, and the
+/// lower-case of `\u{17F}` is `\u{17F}` itself, so the list above never matched.
+///
+/// LOWER, UPPER, LOWER reproduces full case folding for every alphanumeric
+/// code point that folds into ASCII (checked over the whole range against
+/// Python's `str.casefold`: ß, ẞ, ſ, the Kelvin sign and the seven Latin
+/// ligatures) without a Unicode-table dependency. It folds ONE letter more than
+/// APFS does — the Turkish dotless ı becomes `i`, which APFS keeps distinct
+/// (`ınit.py` did not answer for `init.py`) — and that only ever over-refuses a
+/// name one letter away from a refused one.
+///
+/// WHY THE STEM KEEPS ITS NON-ASCII LETTERS rather than `safe_stem` turning
+/// them into `_`: the delivered file is named for the user, and `asal_sayılar`
+/// arriving as `asal_say_lar` would be the tool damaging a Turkish user's
+/// ordinary name to close a hole that this comparison closes on its own.
+fn fold_case(stem: &str) -> String {
+    stem.to_lowercase().to_uppercase().to_lowercase()
+}
+
+/// The test runner that would collect — and so EXECUTE — a file with this
+/// (lower-case, dot-free) stem and `extension` when the user types its bare
+/// command in the folder, or `None`.
+///
+/// A RECORDED DECISION, NOT AN ACCIDENT: test files are refused. The first
+/// version of the M3 fix closed `conftest.py` and let `test_ideas.py` through
+/// — and had a test asserting `test_ideas` was an ordinary name — although a
+/// bare `pytest` imports every `test_*.py` and `*_test.py` in the folder, which
+/// runs their top level outside the sandbox with the user's privileges: the
+/// same path as `conftest.py`, by the very tool the audit named. The patterns
+/// are each runner's DEFAULT collection glob, as documented, AND EACH IS
+/// KEYED ON THE EXTENSION ITS RUNNER COLLECTS:
+///   * `.py` — pytest `python_files`: `test_*.py`, `*_test.py`;
+///     `python -m unittest` discovery: `test*.py` — any stem STARTING with
+///     `test`, which is why `testimonials.py` is refused too; that is the
+///     runner's rule, not ours, and the model is told which runner and can
+///     pick another name without losing an attempt;
+///   * `.js` — `node --test`: `test.js`, `test-*.js`, `*-test.js`,
+///     `*_test.js` (and `*.test.js`, which the dotted-stem rule already
+///     refuses); jest `testMatch` `?(*.)+(spec|test).js`: a bare `spec`.
+///
+/// EXTENSION-BLIND, THIS REFUSED `testimonials.js` (review of 10 Oct 2026,
+/// reproduced on the fake engine): unittest's `test*` rule was applied to
+/// JavaScript, which unittest never reads and no node runner's glob matches,
+/// and the model was told `python -m unittest` would run it.
+///
+/// What is NOT refused, and why: a name that merely contains the word
+/// (`latest`, `contest`, `attestation`) matches none of these globs.
+fn test_runner_collects(lower: &str, extension: &str) -> Option<&'static str> {
+    match extension {
+        "py" if lower.starts_with("test_") || lower.ends_with("_test") => Some("pytest"),
+        "py" if lower.starts_with("test") => Some("python -m unittest"),
+        "js" | "mjs" | "cjs"
+            if lower == "test"
+                || lower.starts_with("test-")
+                || lower.ends_with("-test")
+                || lower.ends_with("_test") =>
+        {
+            Some("node --test")
+        }
+        "js" | "mjs" | "cjs" if lower == "spec" => Some("jest"),
+        _ => None,
+    }
+}
+
 /// Produces a NON-COLLIDING target path in the working directory: `name.py`, `name-2.py`, ...
 ///
 /// Overwriting an existing file would be wrong in both directions: the user's
@@ -224,13 +547,19 @@ impl Tool for WriteCodeTool {
         // a script waiting on `input()` fails verification.
         // The "ONE LINE per element" sentence comes FROM MEASUREMENT and should
         // be read together with the schema (see `schema`): a single escaped string was breaking the model.
+        // The sandbox sentence says what the shield GUARANTEES on both
+        // platforms — no network, writes confined — and no more: "NO access to
+        // files outside the working folder" was false under bwrap, where the
+        // rest of the system outside home is readable (audit L20), and implied
+        // the script could see the working folder, which since M5 it cannot.
+        // No "but": see the routing note on run_code's descriptions.
         "Writes a code file for the user, VERIFIES it and saves it into the working folder. \
          Call this when the user wants a script or program AS A FILE they can keep and run \
          later ('write me a python script that...', 'save the script to a file'). Pass \
          the code as `lines`: an array where each element is ONE line of code - the tool \
          joins them, so never write \\n yourself. Indentation is just leading spaces inside \
          the line. The code is first syntax-checked, then RUN in an isolated sandbox with NO \
-         network and NO access to files outside the working folder; the file is saved ONLY if \
+         network that can write nowhere except its own temporary folder; the file is saved ONLY if \
          it runs without errors. Write a COMPLETE, SELF-CONTAINED script: never read user \
          input (stdin is closed), use example values instead, and end with a small demo print \
          so the run PROVES the code works. If you only need to READ a result and no file was \
@@ -309,6 +638,43 @@ impl Tool for WriteCodeTool {
         boxed(async move {
             if let Err(h) = self.schema().validate(&args) {
                 return ToolOutcome::failed(&h);
+            }
+
+            // A NAME THAT ANOTHER TOOL WOULD RUN UNASKED IS REFUSED BEFORE ANYTHING
+            // ELSE (audit M3): the verified file would otherwise sit in the
+            // user's directory waiting for pytest, eslint or pip to execute it
+            // outside the sandbox. It is checked BEFORE the attempt counter: the
+            // engine is never reached, so the refusal must not cost the model one
+            // of its two real runs — it only has to pick another name.
+            //
+            // The extension is resolved the way `execute` will resolve it — the
+            // source, then the name, then `language` — because whether a
+            // standard-library name shadows anything depends on it being `.py`.
+            if let Some(name) = args.get("file_name").and_then(|v| v.as_str())
+                && let Some(why) = {
+                    let code = args
+                        .get("lines")
+                        .and_then(|v| v.as_array())
+                        .map(|s| join_lines(s))
+                        .unwrap_or_default();
+                    let language = args.get("language").and_then(|v| v.as_str());
+                    let interpreter = self.resolve_interpreter(name, language, &code);
+                    let stem = safe_stem(name);
+                    auto_executed_name(&stem, interpreter.extension).or_else(|| {
+                        (interpreter.extension == "py")
+                            .then(|| installed_module_shadowed(&interpreter.path, &stem))
+                            .flatten()
+                    })
+                }
+            {
+                return ToolOutcome::new(
+                    "Unsafe file name",
+                    ToolState::Failed("auto-executed file name".into()),
+                    format!(
+                        "error: {why}, outside the sandbox. Call write_code again with a plain \
+                         descriptive file_name such as 'prime_numbers'."
+                    ),
+                );
             }
 
             // The counter is incremented BEFORE THE DENIAL DECISION — exactly as in run_code.
@@ -392,11 +758,16 @@ impl WriteCodeTool {
             Err(h) => return ToolOutcome::failed(&h),
         };
 
-        // Verification happens in a HIDDEN folder: by-products must not leak into the user's directory.
-        let verification = sandbox.join("code");
-        if let Err(h) = std::fs::create_dir_all(&verification) {
-            return ToolOutcome::failed(&ToolError::Io(h));
-        }
+        // Verification happens in a FRESH, HIDDEN folder made for this call and
+        // deleted after it: by-products must not leak into the user's
+        // directory. It used to be `<cwd>/code` — the user's own `code/`
+        // directory if they had one, followed if it was a link (audit M5; the
+        // full account is at `run_code::run`).
+        let verification =
+            match crate::sandbox_path::fresh_private_dir(&sandbox, &crate::run_code::nonce()) {
+                Ok(v) => v,
+                Err(h) => return ToolOutcome::failed(&h),
+            };
         // THE NAME IS UNPREDICTABLE AND THE WRITE NEVER FOLLOWS A LINK.
         // `verify-{pid}-{code.len()}` was fully determined: the pid is fixed for
         // the session and the length is the model's to choose, so a first call
@@ -409,24 +780,35 @@ impl WriteCodeTool {
             crate::run_code::nonce(),
             interpreter.extension
         ));
-        if let Err(h) = crate::run_code::create_script(&script, code.as_bytes()) {
-            return ToolOutcome::failed(&ToolError::Io(h));
-        }
-        let outcome = self.validate_and_deliver(
-            code,
-            file_name,
-            interpreter,
-            &sandbox,
-            &script,
-            last_attempt,
-        );
-        // The verification script is deleted ON EVERY PATH (the same rationale as run_code).
-        std::fs::remove_file(&script).ok();
+        let outcome = match crate::run_code::create_script(&script, code.as_bytes()) {
+            Ok(()) => self.validate_and_deliver(
+                code,
+                file_name,
+                interpreter,
+                &sandbox,
+                &script,
+                last_attempt,
+                ctx.cancel_token(),
+            ),
+            Err(h) => ToolOutcome::failed(&ToolError::Io(h)),
+        };
+        // The verification folder is deleted ON EVERY PATH (the same rationale as run_code).
+        std::fs::remove_dir_all(&verification).ok();
         outcome
     }
 
-    /// Two-stage verification + delivery. The SINGLE write point is at the end
-    /// of this function: none of its error branches can leave a file behind.
+    /// Two-stage verification + delivery. The SINGLE write point is `deliver`,
+    /// called at the end of this function: none of its error branches can
+    /// leave a file behind.
+    ///
+    /// BOTH STAGES LISTEN TO THE TURN'S STOP (audit M4). They used to go through
+    /// `run_program`, which hands its child a token nobody holds: a Ctrl-C while
+    /// the model's script looped reached the executor, which abandoned the call
+    /// after its 3 s grace, while the sandboxed process ran on to its own 10 s
+    /// timeout with nobody waiting for it. A stopped stage is an error, so the
+    /// write at the end is never reached; a stop that lands between the stages'
+    /// polls is caught by `deliver` itself.
+    #[allow(clippy::too_many_arguments)]
     fn validate_and_deliver(
         &self,
         code: &str,
@@ -435,17 +817,19 @@ impl WriteCodeTool {
         sandbox: &Path,
         script: &Path,
         last_attempt: bool,
+        cancel: &CancelToken,
     ) -> ToolOutcome {
         let verification = script.parent().unwrap_or(sandbox);
 
         // STAGE 1 — syntax.
         let args = syntax_check_args(interpreter, script);
-        match run_program(
+        match run_program_until(
             &self.shield,
             verification,
             &interpreter.path,
             &args,
             SYNTAX_CHECK_TIMEOUT,
+            cancel,
         ) {
             Ok(CodeOutcome::Succeeded { .. }) => {}
             Ok(CodeOutcome::Error(message)) => {
@@ -491,12 +875,13 @@ impl WriteCodeTool {
 
         // STAGE 2 — execution. Output IS NOT REQUIRED: what is delivered is the
         // file, the output is only evidence. But it must finish without an error.
-        let run = run_program(
+        let run = run_program_until(
             &self.shield,
             verification,
             &interpreter.path,
             &[script.into()],
             EXECUTION_TIMEOUT,
+            cancel,
         );
         let (output, ms) = match run {
             Ok(CodeOutcome::Succeeded { output, ms, .. }) => (output, ms),
@@ -537,52 +922,83 @@ impl WriteCodeTool {
             Err(h) => return ToolOutcome::failed(&h),
         };
 
-        // STAGE 3 — delivery. The verified SOURCE is written (not the script
-        // itself, the same content): the file name is the name the user asked
-        // for, the permissions are 0600 (the document layer's rule — privacy on device starts with the file permission).
-        let body = safe_stem(file_name);
-        let target = match empty_target(sandbox, &body, interpreter.extension) {
-            Ok(h) => h,
-            Err(h) => return ToolOutcome::failed(&h),
-        };
-        if let Err(h) = std::fs::write(&target, code.as_bytes()) {
-            return ToolOutcome::failed(&ToolError::Io(h));
-        }
-        // PLATFORM RECORD — THE 0600 STAMP EXISTS ONLY ON UNIX (the same
-        // as `create_document::finish_up` and `tacet_memory::store::narrow_permissions`
-        // rationale as written at the top of the document layer): on Windows
-        // `set_permissions` only flips the read-only flag, it does not restrict
-        // access; faking it would produce the illusion of "stamped" without
-        // providing privacy. Touching the ACL on Windows would need a new
-        // dependency; the gap is left DELIBERATELY and IS NOT MEASURED ON THIS MACHINE.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).ok();
-        }
-
-        let name = target
-            .file_name()
-            .map(|a| a.to_string_lossy().into_owned())
-            .unwrap_or(body);
-        let short = truncate(&output, MODEL_OUTPUT_CAP);
-        let output_note = if output.trim().is_empty() {
-            "(the run printed nothing — mention the file, do not invent output)".to_string()
-        } else if short.len() < output.len() {
-            format!("output:\n{short}\n(output truncated)")
-        } else {
-            format!("output:\n{short}")
-        };
-        ToolOutcome::written(
-            format!("Code verified · {name} · {ms} ms"),
-            format!(
-                "ok: {name} written to the working folder and verified by running it ({ms} ms).\n\
-                 {output_note}\n\
-                 Tell the user the file name and what it does; show the demo output if any."
-            ),
+        deliver(
+            code,
+            file_name,
+            interpreter.extension,
+            sandbox,
+            output,
+            ms,
+            cancel,
         )
-        .raw_output(output)
     }
+}
+
+/// STAGE 3 — delivery. The verified SOURCE is written (not the script
+/// itself, the same content): the file name is the name the user asked
+/// for, the permissions are 0600 (the document layer's rule — privacy on device starts with the file permission).
+///
+/// THE STOP IS READ ONCE MORE HERE, before anything is written (audit M4,
+/// review of f7001e9). The two stages only see it on a poll tick while a child
+/// runs, so a stop that lands after stage 2's process has exited — or before
+/// its first tick, when the script ends at once — reached this write anyway:
+/// the executor reported the turn stopped while a new file sat in the user's
+/// folder. A separate function so the test can hand it a stop that has
+/// already landed; no real process can place one between stage 2 and here.
+fn deliver(
+    code: &str,
+    file_name: &str,
+    extension: &str,
+    sandbox: &Path,
+    output: String,
+    ms: u128,
+    cancel: &CancelToken,
+) -> ToolOutcome {
+    if cancel.is_cancelled() {
+        return ToolOutcome::failed(&ToolError::Other(crate::run_code::STOPPED.into()));
+    }
+    let body = safe_stem(file_name);
+    let target = match empty_target(sandbox, &body, extension) {
+        Ok(h) => h,
+        Err(h) => return ToolOutcome::failed(&h),
+    };
+    if let Err(h) = std::fs::write(&target, code.as_bytes()) {
+        return ToolOutcome::failed(&ToolError::Io(h));
+    }
+    // PLATFORM RECORD — THE 0600 STAMP EXISTS ONLY ON UNIX (the same
+    // as `create_document::finish_up` and `tacet_memory::store::narrow_permissions`
+    // rationale as written at the top of the document layer): on Windows
+    // `set_permissions` only flips the read-only flag, it does not restrict
+    // access; faking it would produce the illusion of "stamped" without
+    // providing privacy. Touching the ACL on Windows would need a new
+    // dependency; the gap is left DELIBERATELY and IS NOT MEASURED ON THIS MACHINE.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).ok();
+    }
+
+    let name = target
+        .file_name()
+        .map(|a| a.to_string_lossy().into_owned())
+        .unwrap_or(body);
+    let short = truncate(&output, MODEL_OUTPUT_CAP);
+    let output_note = if output.trim().is_empty() {
+        "(the run printed nothing — mention the file, do not invent output)".to_string()
+    } else if short.len() < output.len() {
+        format!("output:\n{short}\n(output truncated)")
+    } else {
+        format!("output:\n{short}")
+    };
+    ToolOutcome::written(
+        format!("Code verified · {name} · {ms} ms"),
+        format!(
+            "ok: {name} written to the working folder and verified by running it ({ms} ms).\n\
+             {output_note}\n\
+             Tell the user the file name and what it does; show the demo output if any."
+        ),
+    )
+    .raw_output(output)
 }
 
 // ---------------------------------------------------------------------------
@@ -642,7 +1058,7 @@ mod tests {
     /// panic carrying `diagnose()`. The gate is defined once, in
     /// `run_code::sandbox_must_run`, because the tests it silences are skipped
     /// by the same absent shield and must be re-enabled by the same switch:
-    /// 8 here and 15 in run_code.rs on Linux. Those two figures are DERIVED from
+    /// 10 here and 16 in run_code.rs on Linux. Those two figures are DERIVED from
     /// the source and checked against this sentence by
     /// `the_skip_count_the_documents_quote_is_the_count_in_the_source`; written
     /// out by hand they were "eight and sixteen", and sixteen was wrong. The syntax-check path
@@ -717,6 +1133,9 @@ mod tests {
         assert_eq!(safe_stem("prime numbers"), "prime_numbers");
         assert_eq!(safe_stem(""), "script");
         assert_eq!(safe_stem("...."), "script");
+        // Non-ASCII letters stay: the user's own name is not mangled (the
+        // auto-executed check folds case instead, see `fold_case`).
+        assert_eq!(safe_stem("asal_say\u{0131}lar"), "asal_say\u{0131}lar");
     }
 
     /// 1b) JOINING: the lines join with `\n`, indentation is preserved, a
@@ -739,6 +1158,408 @@ mod tests {
         assert_eq!(join_lines(&[]), "");
         // If an element CONTAINS a real line break it is left alone.
         assert_eq!(join_lines(&[json!("a\nb"), json!("c")]), "a\nb\nc");
+    }
+
+    /// 1c) THE AUTO-EXECUTED NAMES (audit M3): each one is refused, in any
+    ///     case, with or without the extension the model may add, and an
+    ///     ordinary name — including one that merely CONTAINS a listed word —
+    ///     still passes.
+    #[test]
+    fn names_another_tool_would_run_are_refused() {
+        for name in [
+            "conftest",
+            "conftest.py",
+            "ConfTest",
+            "setup.py",
+            "sitecustomize",
+            "__init__",
+            "__main__.py",
+            "noxfile",
+            "toxfile",
+            "toxfile.py",
+            "ToxFile",
+            "dangerfile",
+            "dangerfile.js",
+            "Dangerfile",
+            "gulpfile.js",
+            "Gruntfile",
+            "gatsby-config",
+            "Makefile",
+            // conan, serverless, truffle, ipython, jupyter (review of 10 Oct 2026).
+            "conanfile",
+            "conanfile.py",
+            "serverless",
+            "serverless.js",
+            "truffle-config",
+            "truffle",
+            "ipython_config",
+            "jupyter_config",
+            "jupyter_server_config",
+            "jupyter_notebook_config.py",
+            ".envrc",
+            "package",
+            "pyproject",
+            "eslint.config",
+            "eslint.config.js",
+            "jest.config.mjs",
+            "vite.config",
+            "karma.conf",
+            "jest.setup",
+            "utils.test",
+            // Letters APFS case-folds INTO ASCII (see `fold_case`): each of
+            // these answers a lookup for the plain name on this Mac.
+            "confte\u{017F}t",
+            "confte\u{FB06}",
+            "confte\u{017F}t.py",
+            "\u{017F}etup",
+            "\u{017F}etup.py",
+            "ma\u{212A}efile",
+            "te\u{FB06}_ideas",
+            // Invoke's task file, in the fabfile/noxfile family.
+            "tasks",
+            "Tasks.py",
+            // Test files: pytest's two globs and unittest's `test*` (see
+            // `test_runner_collects`; node's and jest's are asked for `.js`
+            // in `a_test_file_name_is_refused_for_the_runner_that_reads_it`).
+            "test_ideas",
+            "Test_Ideas.py",
+            "parser_test",
+            "PARSER_TEST.py",
+            "testimonials",
+            "test",
+            "test-utils",
+            // Standard-library names: the folder's next `import json` runs
+            // the delivered file instead (see `PYTHON_STDLIB`).
+            "json",
+            "json.py",
+            "random",
+            "typing",
+            "csv",
+            "logging",
+            "string",
+            "datetime",
+            "turtle",
+            "cProfile",
+            "distutils",
+            "annotationlib",
+            // Tools started as `python -m <name>`: run in the folder, the
+            // command runs the delivered file (see `PYTHON_M_ENTRY_POINTS`).
+            "pip",
+            "pytest",
+            "Pytest.py",
+            "setuptools",
+            "mypy",
+            "black",
+            "ruff",
+            "coverage",
+            "IPython",
+            "jupyter",
+        ] {
+            assert!(
+                auto_executed_name(&safe_stem(name), "py").is_some(),
+                "{name:?} would be delivered"
+            );
+        }
+        for name in [
+            "prime_numbers",
+            "prime.py",
+            "my_setup_notes",
+            "configure_grid",
+            "package_size",
+            // They contain the word, and match no runner's glob.
+            "latest",
+            "contest",
+            "attestation",
+            "task_list",
+            "my_tests_notes",
+            "tox_results",
+            "danger_zone",
+            // A Turkish name keeps its letters and is still delivered.
+            "asal_say\u{0131}lar",
+            "\u{00E7}arp\u{0131}m_tablosu",
+            // A standard-library name with something around it imports nothing.
+            "json_report",
+            "my_random",
+            "typing_speed",
+            "jupyter_notes",
+            "truffles",
+            "my_serverless_notes",
+            // A tool name with something around it is no `-m` target.
+            "pip_notes",
+            "pytest_results",
+        ] {
+            assert_eq!(
+                auto_executed_name(&safe_stem(name), "py"),
+                None,
+                "{name:?} is an ordinary name"
+            );
+        }
+        // A python name shadows nothing as a `.js` file: node never
+        // resolves a bare `require('json')` to `./json.js`.
+        for name in ["json", "random", "string", "pip", "pytest"] {
+            assert_eq!(
+                auto_executed_name(&safe_stem(name), "js"),
+                None,
+                "{name:?}.js shadows no python module"
+            );
+        }
+    }
+
+    /// THIRD-PARTY PACKAGES ARE SHADOWED THE SAME WAY (audit M3, review of 10
+    /// Oct 2026). A stand-in interpreter answers for `requests` and not for
+    /// anything else, which tests the plumbing; a real python on this machine,
+    /// when there is one, answers for the stdlib's `json` and not for a name
+    /// nothing installs, which tests the question asked.
+    #[cfg(unix)]
+    #[test]
+    fn an_installed_package_name_is_not_delivered_as_py() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("tacet-findspec-{}", crate::run_code::nonce()));
+        std::fs::create_dir_all(&dir).expect("fixture");
+        let fake = dir.join("python3");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\nif [ \"$4\" = requests ]; then echo TACET_IMPORTABLE; else echo TACET_ABSENT; fi\n",
+        )
+        .expect("fixture");
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let refused = installed_module_shadowed(&fake, "requests");
+        let kept = installed_module_shadowed(&fake, "prime_numbers");
+        // A name python cannot import is never asked about.
+        let dashed = installed_module_shadowed(&fake, "my-requests");
+        // An interpreter that prints nothing refuses nothing.
+        let silent = installed_module_shadowed(Path::new("/usr/bin/true"), "requests");
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            refused.as_deref().is_some_and(|w| w.contains("installed")),
+            "{refused:?}"
+        );
+        assert_eq!(kept, None);
+        assert_eq!(dashed, None);
+        assert_eq!(silent, None);
+
+        // Only an interpreter that RUNS: macOS's /usr/bin/python3 is a stub
+        // until the command-line tools are installed.
+        let runs = |p: &Path| {
+            std::process::Command::new(p)
+                .args(["-I", "-c", "print('TACET_RUNS')"])
+                .stdin(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .output()
+                .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "TACET_RUNS")
+        };
+        if let Some(python) = [
+            "/usr/bin/python3",
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3",
+        ]
+        .iter()
+        .map(Path::new)
+        .find(|p| p.exists() && runs(p))
+        {
+            assert!(
+                installed_module_shadowed(python, "json").is_some(),
+                "{} could not find `json`: the question is not being asked",
+                python.display()
+            );
+            assert_eq!(
+                installed_module_shadowed(python, "zz_tacet_no_such_module_q"),
+                None
+            );
+        }
+    }
+
+    /// The shield-free stand-in: `/bin/echo` "verifies" every script by
+    /// printing the command line it was given, so these tests reach the
+    /// delivery path — and can read where the verification ran — on any unix,
+    /// with no sandbox installed.
+    #[cfg(unix)]
+    fn echo_tool() -> WriteCodeTool {
+        WriteCodeTool::new(
+            NetworkShield::SandboxExec {
+                tool: PathBuf::from("/bin/echo"),
+            },
+            vec![Interpreter {
+                key: "python",
+                path: PathBuf::from("/usr/bin/true"),
+                extension: "py",
+            }],
+            Arc::new(CodeState::new()),
+        )
+    }
+
+    /// M3, review of 10 Oct 2026: a test-file rule applies to the language
+    /// whose runner collects it, and names THAT runner. `testimonials.js`
+    /// was refused for a `python -m unittest` reason, and so were
+    /// `testing_utils.js` and `testdata.js`, which no node runner reads.
+    #[test]
+    fn a_test_file_name_is_refused_for_the_runner_that_reads_it() {
+        for (name, ext, runner) in [
+            ("test", "js", "node --test"),
+            ("test-utils", "js", "node --test"),
+            ("utils-test", "js", "node --test"),
+            ("parser_test", "js", "node --test"),
+            ("spec", "js", "jest"),
+            ("test_ideas", "py", "pytest"),
+            ("parser_test", "py", "pytest"),
+            ("testimonials", "py", "python -m unittest"),
+        ] {
+            let why = auto_executed_name(name, ext)
+                .unwrap_or_else(|| panic!("{name}.{ext} would be delivered"));
+            assert!(why.contains(runner), "{name}.{ext}: {why}");
+        }
+        for (name, ext) in [
+            ("testimonials", "js"),
+            ("testing_utils", "js"),
+            ("testdata", "js"),
+            ("hello_page", "js"),
+            // Python's runners use `_`, not `-`; jest's bare name is JS only.
+            ("utils-test", "py"),
+            ("spec", "py"),
+        ] {
+            assert_eq!(auto_executed_name(name, ext), None, "{name}.{ext}");
+        }
+    }
+
+    /// 1d) THE REFUSAL HAPPENS BEFORE ANYTHING RUNS AND COSTS NO ATTEMPT (M3).
+    ///     No file of that name appears, nothing is executed, and the model
+    ///     still has both of its runs for the corrected name.
+    #[cfg(unix)]
+    #[test]
+    fn an_auto_executed_name_is_refused_before_anything_runs() {
+        let tool = echo_tool();
+        let root = temp_dir("auto-exec");
+        let mut ctx = context(&root);
+        for name in [
+            "conftest",
+            "eslint.config",
+            "setup",
+            "test_ideas",
+            "tasks",
+            "json",
+        ] {
+            let outcome =
+                hold(tool.run(json!({"file_name": name, "lines": ["print(1)"]}), &mut ctx));
+            assert!(
+                matches!(outcome.state, ToolState::Failed(_)),
+                "{name}: {}",
+                outcome.to_model
+            );
+            assert!(
+                outcome.to_model.contains("runs automatically")
+                    || outcome.to_model.contains("loaded automatically")
+                    || outcome.to_model.contains("imports and runs"),
+                "{}",
+                outcome.to_model
+            );
+        }
+        let left: Vec<_> = std::fs::read_dir(&root)
+            .expect("list")
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert!(left.is_empty(), "something was written: {left:?}");
+        assert_eq!(
+            tool.state.next_attempt(),
+            1,
+            "a refused name consumed one of the two real runs"
+        );
+        assert!(
+            !ctx.session_tainted(),
+            "nothing ran, nothing may be tainted"
+        );
+
+        // The corrected name goes through.
+        tool.state.new_turn();
+        let ok = hold(tool.run(
+            json!({"file_name": "prime_numbers", "lines": ["print(1)"]}),
+            &mut ctx,
+        ));
+        assert_eq!(ok.state, ToolState::Written, "{}", ok.to_model);
+        assert!(root.join("prime_numbers.py").is_file());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 1d') THE STANDARD-LIBRARY REFUSAL FOLLOWS THE DELIVERED EXTENSION. The
+    ///      check runs before `execute` picks the interpreter, so the call site
+    ///      resolves it itself; were it to assume `.py`, a JavaScript `json.js`
+    ///      — which shadows nothing — would be refused for a python reason.
+    #[cfg(unix)]
+    #[test]
+    fn a_stdlib_name_is_refused_only_for_python() {
+        let tool = WriteCodeTool::new(
+            NetworkShield::SandboxExec {
+                tool: PathBuf::from("/bin/echo"),
+            },
+            vec![Interpreter {
+                key: "js",
+                path: PathBuf::from("/usr/bin/true"),
+                extension: "js",
+            }],
+            Arc::new(CodeState::new()),
+        );
+        let root = temp_dir("stdlib-js");
+        let mut ctx = context(&root);
+        let outcome = hold(tool.run(
+            json!({"file_name": "json", "lines": ["console.log(1)"]}),
+            &mut ctx,
+        ));
+        assert_eq!(outcome.state, ToolState::Written, "{}", outcome.to_model);
+        assert!(root.join("json.js").is_file(), "json.js was not delivered");
+        // The call the review made: unittest's `test*` is not a JS rule.
+        let outcome = hold(tool.run(
+            json!({"file_name": "testimonials", "lines": ["console.log(42)"]}),
+            &mut ctx,
+        ));
+        assert_eq!(outcome.state, ToolState::Written, "{}", outcome.to_model);
+        assert!(root.join("testimonials.js").is_file());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 1e) VERIFICATION RUNS IN A FRESH FOLDER, NOT IN THE USER'S `code/` (M5).
+    ///
+    /// It used to be `<cwd>/code`: a user's real `code/` directory was the
+    /// verification sandbox, and a `code` that was a link sent the script into
+    /// the link's target. Here `code` IS such a link, to a directory outside.
+    #[cfg(unix)]
+    #[test]
+    fn verification_runs_in_a_fresh_folder_not_in_code() {
+        let tool = echo_tool();
+        let root = temp_dir("fresh-verify");
+        let outside = temp_dir("fresh-verify-target");
+        std::os::unix::fs::symlink(&outside, root.join("code")).expect("link");
+        let mut ctx = context(&root);
+
+        let outcome = hold(tool.run(
+            json!({"file_name": "total", "lines": ["print(55)"]}),
+            &mut ctx,
+        ));
+        assert_eq!(outcome.state, ToolState::Written, "{}", outcome.to_model);
+        let echoed = outcome.raw_output.clone().unwrap_or_default();
+        let sandbox = echoed
+            .split_whitespace()
+            .find_map(|w| w.strip_prefix("SBOX="))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| panic!("no SBOX= in {echoed}"));
+        assert_ne!(sandbox, root.join("code"), "verification ran in code/");
+        assert_eq!(sandbox.parent(), Some(root.as_path()));
+        assert!(
+            sandbox
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(crate::sandbox_path::SANDBOX_PREFIX)),
+            "{}",
+            sandbox.display()
+        );
+        assert!(!sandbox.exists(), "the verification folder was left behind");
+        assert_eq!(
+            std::fs::read_dir(&outside).expect("list").count(),
+            0,
+            "something was written through the code/ link"
+        );
+        assert!(root.join("total.py").is_file(), "the delivery is missing");
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&outside).ok();
     }
 
     /// 2) The language guess from the extension.
@@ -858,6 +1679,156 @@ mod tests {
             outcome.to_model
         );
         assert!(!root.join("crashing.py").exists() && !root.join("crashing.js").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 5b) A STOP ENDS THE VERIFICATION RUN (audit M4). The model's code loops;
+    ///     the turn is stopped 300 ms in. Before the fix the stop never reached
+    ///     the child — both stages ran under a token nobody held — so the call
+    ///     sat out the full 10 s `EXECUTION_TIMEOUT` and came back "timed out",
+    ///     the executor having long since abandoned it. `run_code`'s twin of
+    ///     this is `an_infinite_loop_is_killed_on_timeout_or_on_a_stop`, and the
+    ///     bound is the same one.
+    #[test]
+    fn a_stop_ends_the_verification_run_and_delivers_nothing() {
+        let Some(tool) = tool_or_skip() else { return };
+        tool.state.new_turn();
+        let root = temp_dir("stop");
+        let token = CancelToken::new();
+        let mut ctx = context(&root).with_cancel_token(token.clone());
+        let lines = match tool.interpreters[0].key {
+            "python" => json!(["while True:", "    pass"]),
+            _ => json!(["while (true) {}"]),
+        };
+        let stopper = {
+            let token = token.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(300));
+                token.cancel();
+            })
+        };
+        let started = std::time::Instant::now();
+        let outcome = hold(tool.run(json!({"file_name": "spinning", "lines": lines}), &mut ctx));
+        let elapsed = started.elapsed();
+        stopper.join().expect("stopper");
+
+        assert!(
+            elapsed < Duration::from_millis(300) + Duration::from_millis(1500),
+            "the stop took {elapsed:?}; the looping script ran on to its own timeout"
+        );
+        assert_eq!(
+            outcome.state,
+            ToolState::Failed(crate::run_code::STOPPED.into()),
+            "{}",
+            outcome.to_model
+        );
+        assert!(!root.join("spinning.py").exists() && !root.join("spinning.js").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 5c) A STOP ENDS THE SYNTAX CHECK TOO (audit M4, stage 1). 5b cannot see
+    ///     this half: real code clears `node --check` / `py_compile` in
+    ///     milliseconds, so a check that ignored the stop would still pass it.
+    ///     A check that never ends is needed, and no interpreter offers one, so
+    ///     the interpreter is swapped for `yes`: handed `--check <script>` or
+    ///     `-m py_compile <script>` it prints them forever, never forks (the
+    ///     macOS profile denies `process-fork`), and lives where both shields
+    ///     let a program be read. Measured with stage 1 back on a token nobody
+    ///     holds: the call ran out the 10 s `SYNTAX_CHECK_TIMEOUT` (10.01 s on
+    ///     macOS, 10 Oct 2026); with the turn's token it ends on the stop.
+    #[cfg(unix)]
+    #[test]
+    fn a_stop_ends_the_syntax_check_and_delivers_nothing() {
+        let Some(mut tool) = tool_or_skip() else {
+            return;
+        };
+        let yes = Path::new("/usr/bin/yes");
+        assert!(yes.exists(), "the stand-in for a check that never ends");
+        let key = tool.interpreters[0].key;
+        tool.interpreters = vec![Interpreter {
+            key,
+            path: yes.to_path_buf(),
+            extension: tool.interpreters[0].extension,
+        }];
+        tool.state.new_turn();
+        let root = temp_dir("stop-check");
+        let token = CancelToken::new();
+        let mut ctx = context(&root).with_cancel_token(token.clone());
+        let stopper = {
+            let token = token.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(300));
+                token.cancel();
+            })
+        };
+        let started = std::time::Instant::now();
+        let outcome = hold(tool.run(
+            json!({"file_name": "checked", "lines": ["x = 1"]}),
+            &mut ctx,
+        ));
+        let elapsed = started.elapsed();
+        stopper.join().expect("stopper");
+
+        assert!(
+            elapsed < Duration::from_millis(300) + Duration::from_millis(1500),
+            "the stop took {elapsed:?}; the syntax check ran on to its own timeout"
+        );
+        assert_eq!(
+            outcome.state,
+            ToolState::Failed(crate::run_code::STOPPED.into()),
+            "{}",
+            outcome.to_model
+        );
+        assert!(!root.join("checked.py").exists() && !root.join("checked.js").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 5d) A STOP THAT LANDS AFTER THE LAST STAGE DELIVERS NOTHING (audit M4,
+    ///     review of f7001e9). 5b and 5c stop a child that is still running;
+    ///     the stages read the stop only on a poll tick, so one that lands once
+    ///     stage 2's process has exited — or a script that ends before the
+    ///     first tick — went straight on to the write. `deliver` is handed the
+    ///     verified code and a stop that has already landed: nothing may be
+    ///     written. The same call on a live token writes the file, so an empty
+    ///     folder here means the stop was obeyed, not that delivery is broken.
+    ///     No interpreter is involved, so this does not skip.
+    #[test]
+    fn a_stop_after_the_last_stage_delivers_nothing() {
+        let root = temp_dir("stop-late");
+        let stopped = CancelToken::new();
+        stopped.cancel();
+        let outcome = deliver("print(1)\n", "late", "py", &root, "1".into(), 5, &stopped);
+        assert_eq!(
+            outcome.state,
+            ToolState::Failed(crate::run_code::STOPPED.into()),
+            "{}",
+            outcome.to_model
+        );
+        let left: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name())
+            .collect();
+        assert!(left.is_empty(), "a stopped turn delivered {left:?}");
+
+        let live = deliver(
+            "print(1)\n",
+            "late",
+            "py",
+            &root,
+            "1".into(),
+            5,
+            &CancelToken::new(),
+        );
+        assert!(
+            !matches!(live.state, ToolState::Failed(_)),
+            "{}",
+            live.to_model
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("late.py")).unwrap(),
+            "print(1)\n"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 

@@ -501,6 +501,25 @@ fn started_a_call(text: &str, names: &[&str]) -> bool {
     })
 }
 
+/// The question `bench gap` puts to the model: the step's message with the Qwen
+/// soft switch the shell would append under the default `thinking = auto`.
+///
+/// AUDIT M23 HAD A SECOND PATH. The selection eval was fixed to append the
+/// switch, and this command kept sending the bare message — so its Qwen3-0.6B
+/// row is a hybrid build in a thinking mode a default install does not run it
+/// in. The router still reads `step.message`, as the shell's router reads the
+/// user's own words; only what the model is asked changes.
+fn gap_question(template: tacet_engine::Template, message: &str) -> String {
+    format!(
+        "{message}{}",
+        tacet_engine::thinking_switch::soft_switch(
+            template,
+            tacet_engine::thinking_switch::ThinkingSetting::Auto,
+            message,
+        )
+    )
+}
+
 pub fn bench_gap(path: &str, model_name: &str, as_json: bool) -> ExitCode {
     let color = Color::setup();
     let file = match read(path) {
@@ -548,7 +567,8 @@ pub fn bench_gap(path: &str, model_name: &str, as_json: bool) -> ExitCode {
             let selected: tacet_kernel::ToolCatalog =
                 router.select(&step.message, &catalog).into_iter().collect();
             let constraint = tacet_grammar::CallConstraint::new(&vocab, &selected);
-            let prompt = tacet_engine::Prompt::new(tacet_eval::SYSTEM_INSTRUCTIONS, &step.message)
+            let asked = gap_question(engine.template(), &step.message);
+            let prompt = tacet_engine::Prompt::new(tacet_eval::SYSTEM_INSTRUCTIONS, &asked)
                 .with_tools(&selected);
             for (armed, label) in [(false, "off"), (true, "on")] {
                 let c: Option<&dyn tacet_engine::Constrainer> = if armed {
@@ -819,7 +839,50 @@ fn peak_memory_mib() -> Option<u64> {
 
 #[cfg(test)]
 mod gap_tests {
-    use super::{BenchScore, report_json_with_score, started_a_call};
+    use super::{BenchScore, gap_question, report_json_with_score, started_a_call};
+
+    /// AUDIT M23 ON THE `bench gap` PATH: a ChatML model is asked with the
+    /// switch the shell would put on the same message, and a model without
+    /// the convention gets the bare message (NOT VACUOUS: suffixing every
+    /// prompt would pass the first two lines and fail the third).
+    #[test]
+    fn the_gap_asks_a_chatml_model_what_the_shell_asks() {
+        use tacet_engine::Template;
+        assert_eq!(
+            gap_question(Template::ChatML, "What is 2 plus 2?"),
+            "What is 2 plus 2? /no_think"
+        );
+        assert_eq!(
+            gap_question(Template::ChatML, "Summarise the quarterly budget"),
+            "Summarise the quarterly budget /think"
+        );
+        assert_eq!(
+            gap_question(Template::Gemma, "What is 2 plus 2?"),
+            "What is 2 plus 2?"
+        );
+    }
+
+    /// AND THE COMMAND CALLS IT — the hole M22 and M23 both had: a tested
+    /// helper beside a loop that builds its prompt some other way.
+    #[test]
+    fn bench_gap_builds_its_prompt_from_the_switched_question() {
+        let body: String = include_str!("bench_cmd.rs")
+            .split("pub fn bench_gap(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("bench_gap's body")
+            .split_whitespace()
+            .collect();
+        assert!(
+            body.contains("letasked=gap_question(engine.template(),&step.message);")
+                && body.contains("Prompt::new(tacet_eval::SYSTEM_INSTRUCTIONS,&asked)"),
+            "bench gap no longer asks the model the switched question"
+        );
+        assert!(
+            !body.contains("SYSTEM_INSTRUCTIONS,&step.message"),
+            "bench gap sends the bare message again"
+        );
+    }
 
     /// THE GENERATIONS THAT BROKE THE MEASUREMENT, kept verbatim. Every string
     /// here was produced by an unconstrained Qwen3-0.6B on

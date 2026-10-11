@@ -27,9 +27,11 @@
 //! behaviour — treating a gate we cannot close as "probably closed" and running
 //! model code is exactly what this file stands against. The user learns THE
 //! REASON from `diagnose()`.
-//! 2. **FILES** — the same profile locks writing into the sandbox and also
-//!    closes the user's home directory TO READING. The interpreter's own
-//!    library (dyld, stdlib) stays readable; closed off, python3 would not start at all.
+//! 2. **FILES** — the same profile locks writing into the sandbox, and READING
+//!    is an allowlist: the per-call sandbox plus the system paths an
+//!    interpreter needs to start (see `profile`). The sandbox is a FRESH,
+//!    EMPTY directory made for the one call and deleted after it
+//!    (`sandbox_path::fresh_private_dir`), never a folder the user already has.
 //! 3. **TIME** — a mandatory timeout (10 s by default). If it is exceeded the
 //!    process is KILLED (`kill` + `wait`), no zombie is left behind.
 //! 4. **OUTPUT** — a byte cap. So an infinite loop does not eat all the memory,
@@ -51,6 +53,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use tacet_kernel::context::CancelToken;
 use tacet_kernel::{
     ArgSchema, Field, Tool, ToolContext, ToolError, ToolFuture, ToolOutcome, ToolResult, ToolState,
     TraceUpdate, boxed,
@@ -97,6 +100,18 @@ unsafe extern "C" {
 /// `SIGKILL` is 9 on every unix (POSIX fixes the first fifteen numbers).
 #[cfg(unix)]
 const SIGKILL: i32 = 9;
+/// `SIGTERM` is 15, from the same fixed range.
+#[cfg(unix)]
+const SIGTERM: i32 = 15;
+
+/// After a stop (audit M4), the time between SIGTERM and SIGKILL — the same
+/// half second `shell` gives, so a Ctrl-C ends either tool's process inside the
+/// ~1 s the audit asks for.
+const TERM_GRACE: Duration = Duration::from_millis(500);
+
+/// The chip sentence for a run that was stopped. The model never sees it — a
+/// stopped turn is answered by the executor's own fixed text.
+pub(crate) const STOPPED: &str = "the script was stopped";
 
 // ---------------------------------------------------------------------------
 // The network shield
@@ -182,7 +197,7 @@ impl NetworkShield {
     /// `args` is free: a direct run passes `[script]`, while a syntax check
     /// (`write_code`) carries a flag such as `["--check", script]`. The shield
     /// profile is THE SAME on both paths — even the verification step cannot get out of the sandbox.
-    fn wrap(&self, sandbox: &Path, program: &Path, args: &[OsString]) -> Command {
+    fn wrap(&self, sandbox: &Path, home: &Path, program: &Path, args: &[OsString]) -> Command {
         match self {
             NetworkShield::SandboxExec { tool } => {
                 let mut k = Command::new(tool);
@@ -192,7 +207,7 @@ impl NetworkShield {
                 let mut sandbox_param = OsString::from(format!("{PARAM_SANDBOX}="));
                 sandbox_param.push(sandbox);
                 let mut home_param = OsString::from(format!("{PARAM_HOME}="));
-                home_param.push(shield_home());
+                home_param.push(home);
                 k.arg("-D")
                     .arg(sandbox_param)
                     .arg("-D")
@@ -208,10 +223,17 @@ impl NetworkShield {
                 // `HOME` is passed as a PARAMETER and is not read inside the
                 // function: an environment variable is process-wide and
                 // changing it in a test would break other tests running in
-                // parallel (`profile()` reads `HOME` too). A pure function = a
-                // measurable function.
-                let home = std::env::var_os("HOME").map(PathBuf::from);
-                k.args(bwrap_args(sandbox, home.as_deref()));
+                // parallel. A pure function = a measurable function. It
+                // arrives CANONICAL (see `canonical_home`): `--tmpfs` over a
+                // link name covers the link, not the directory behind it.
+                // `HOME=/` still reaches `bwrap_args`, whose guard refuses to
+                // cover the root — nothing is covered rather than everything.
+                // A home that does not exist is not covered: `--tmpfs` on a
+                // missing path makes bwrap `mkdir` inside the read-only root,
+                // which fails and takes the whole shield down.
+                let home = Some(home).filter(|h| h.is_dir());
+                let shadows = shadows_for(sandbox, home, &ShadowHost::from_env());
+                k.args(bwrap_args(sandbox, home, &shadows));
                 // `--` IS REQUIRED: everything after it is the child's command
                 // line, not bwrap's. Without it a script flag such as `--check`
                 // would be taken for bwrap's own argument.
@@ -249,7 +271,38 @@ const BWRAP_PATHS: &[&str] = &["/usr/bin/bwrap", "/bin/bwrap", "/usr/local/bin/b
 /// silent hole. What DOES run these exact arguments is the ubuntu leg of CI
 /// (see `SANDBOX_MUST_RUN`) — the argument-order test below has always checked
 /// the LIST, and only that job checks that the kernel accepts it.
-fn bwrap_args(sandbox: &Path, home: Option<&Path>) -> Vec<OsString> {
+///
+/// THE SOCKETS (audit H7). `--unshare-net` separates IP and the ABSTRACT unix
+/// namespace; it does nothing to a unix socket that is a FILE. `--ro-bind / /`
+/// made every such file visible, and `connect` on a socket is not a write, so a
+/// read-only mount does not stop it: the session bus (`systemd-run --user`
+/// starts a process outside the sandbox, with the network and past
+/// `--die-with-parent`), `docker.sock` (root on the host), an ssh-agent, an X11
+/// display (keystrokes into the user's terminal), a tmux server (`tmux -S …
+/// send-keys`). `shadows` covers them, in two shapes:
+///   * `Shadow::Dir`    -> `--tmpfs {dir}`: the runtime directories that exist
+///     to hold sockets (`/run`, `/var/run`, `$XDG_RUNTIME_DIR`, `/tmp/.X11-unix`);
+///   * `Shadow::Socket` -> `--ro-bind /dev/null {socket}`: a single socket
+///     living in a directory that also holds ordinary files (`/tmp`, the
+///     working folder, `/var/lib/incus`), where a tmpfs over the whole
+///     directory would hide more than the socket. A bind of a device file over
+///     a socket file is legal (both are non-directories) and `connect` on the
+///     result fails.
+///
+/// WHAT IS COVERED: the runtime directories, the daemon sockets in
+/// `DAEMON_SOCKETS`, every socket `/proc/net/unix` lists as bound in this
+/// network namespace (`bound_sockets_from` — any directory, any depth), and a
+/// two-level scan of `/tmp`, `$TMPDIR` and the working folder (see
+/// `socket_scan_roots`). WHAT IS STILL OPEN, STATED AS A LIMIT: a socket bound
+/// in ANOTHER network namespace (a container's, visible on the host's
+/// filesystem) is not in this namespace's list, and is shadowed only if one of
+/// the other rules names it. None of this has been run on Linux by the person
+/// who wrote it (there is no Linux here); the ubuntu CI leg is where
+/// `verify_shield` measures it.
+///
+/// They go AFTER the home tmpfs and BEFORE the sandbox bind, for the same
+/// reason the home tmpfs does.
+fn bwrap_args(sandbox: &Path, home: Option<&Path>, shadows: &[Shadow]) -> Vec<OsString> {
     let mut a: Vec<OsString> = vec![
         "--unshare-net".into(),
         "--unshare-pid".into(),
@@ -276,6 +329,21 @@ fn bwrap_args(sandbox: &Path, home: Option<&Path>) -> Vec<OsString> {
         a.push("--tmpfs".into());
         a.push(home.into());
     }
+    for shadow in shadows {
+        match shadow {
+            // The same `/` guard as the home directory, for the same reason.
+            Shadow::Dir(dir) if dir.is_absolute() && dir != Path::new("/") => {
+                a.push("--tmpfs".into());
+                a.push(dir.into());
+            }
+            Shadow::Socket(socket) if socket.is_absolute() => {
+                a.push("--ro-bind".into());
+                a.push("/dev/null".into());
+                a.push(socket.into());
+            }
+            _ => {}
+        }
+    }
     a.push("--bind".into());
     a.push(sandbox.into());
     a.push(sandbox.into());
@@ -284,13 +352,373 @@ fn bwrap_args(sandbox: &Path, home: Option<&Path>) -> Vec<OsString> {
     a
 }
 
+/// One thing the Linux shield covers so the script cannot `connect` to it (see
+/// `bwrap_args`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Shadow {
+    Dir(PathBuf),
+    Socket(PathBuf),
+}
+
+/// The directories that exist to hold sockets, unresolved. `/var/run` is a link
+/// to `/run` on every current distribution; `plan_shadows` resolves and
+/// deduplicates, so it costs one `canonicalize`.
+fn socket_dirs(xdg_runtime: Option<&std::ffi::OsStr>) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = ["/run", "/var/run", "/tmp/.X11-unix"]
+        .iter()
+        .map(PathBuf::from)
+        .collect();
+    if let Some(xdg) = xdg_runtime.filter(|x| !x.is_empty()) {
+        dirs.push(PathBuf::from(xdg));
+    }
+    dirs
+}
+
+/// Daemon sockets that live OUTSIDE the runtime directories, so neither a
+/// `Shadow::Dir` nor the `/tmp` scan reaches them (audit H7, review of 10 Oct
+/// 2026). Each is root on the host to whoever may `connect`: the LXD and Incus
+/// APIs can exec in a container that HAS the network, or start a privileged
+/// one that mounts the host's `/`. Ubuntu Server ships LXD as a snap and puts
+/// the first user in the `lxd` group, and bwrap here keeps the user's groups
+/// (there is no `--unshare-user`), so the group permission does not stop the
+/// script. `--ro-bind / /` is what exposed them, and `connect` is not a write.
+///
+/// Paths from LXD's and Incus's own documentation, not measured: there is no
+/// Linux machine where this was written. The `-user` / `.user` sockets are the
+/// restricted per-user endpoints; restricted is still a container API.
+/// They are shadowed one by one, never by a tmpfs over the directory:
+/// `/var/lib/incus` also holds the containers' storage, and a missing entry is
+/// dropped by `plan_shadows`, so listing a daemon this host lacks costs a stat.
+///
+/// Multipass (sudo-group access on Ubuntu: VM launch and host mounts) and
+/// MicroK8s's containerd were found missing by the second review of the same
+/// day, from their documentation too. The list is the floor, not the coverage:
+/// `bound_sockets` reads every socket the kernel has bound, wherever it is.
+const DAEMON_SOCKETS: &[&str] = &[
+    "/var/snap/lxd/common/lxd/unix.socket",
+    "/var/snap/lxd/common/lxd-user/unix.socket",
+    "/var/lib/lxd/unix.socket",
+    "/var/lib/incus/unix.socket",
+    "/var/lib/incus/unix.socket.user",
+    "/var/snap/multipass/common/multipass_socket",
+    "/var/snap/microk8s/common/run/containerd.sock",
+];
+
+/// The filesystem paths of the unix sockets bound in this network namespace,
+/// read from the text of `/proc/net/unix`.
+///
+/// WHY THE KERNEL'S LIST AND NOT A LONGER HAND-KEPT ONE (review of 10 Oct
+/// 2026): `DAEMON_SOCKETS` and the two-level scan cover the places someone
+/// thought of, and every review found another daemon outside them. The kernel
+/// lists every bound socket — its `Path` column — whatever directory it is in
+/// and however deep. Abstract sockets (`@name`) are skipped: they live in the
+/// network namespace, which `--unshare-net` already replaces. Only absolute
+/// paths are kept; a relative one names nothing the child can resolve.
+///
+/// Format (`net/unix/af_unix.c`): a header line, then `Num RefCount Protocol
+/// Flags Type St Inode Path`, the path last and optional, and it may contain
+/// spaces — so it is the rest of the line after the seventh field.
+fn bound_sockets_from(proc_net_unix: &str) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for line in proc_net_unix.lines().skip(1) {
+        let mut rest = line.trim_start();
+        for _ in 0..7 {
+            let Some(end) = rest.find(char::is_whitespace) else {
+                rest = "";
+                break;
+            };
+            rest = rest[end..].trim_start();
+        }
+        if rest.starts_with('/') {
+            let path = PathBuf::from(rest.trim_end());
+            if !out.contains(&path) {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
+/// What the shield plan reads from the host, gathered in one place so the plan
+/// itself (`shadows_for`) is a pure function a test can feed fixtures: the
+/// environment is process-wide and a test that changed it would race the
+/// others.
+#[derive(Debug, Clone, Default)]
+struct ShadowHost {
+    xdg_runtime: Option<OsString>,
+    tmpdir: Option<OsString>,
+    ssh_auth_sock: Option<OsString>,
+    daemon_sockets: Vec<PathBuf>,
+    /// Every socket the kernel lists as bound (`bound_sockets_from`), on
+    /// Linux; empty where there is no `/proc/net/unix`.
+    bound_sockets: Vec<PathBuf>,
+}
+
+impl ShadowHost {
+    fn from_env() -> ShadowHost {
+        ShadowHost {
+            xdg_runtime: std::env::var_os("XDG_RUNTIME_DIR"),
+            tmpdir: std::env::var_os("TMPDIR"),
+            ssh_auth_sock: std::env::var_os("SSH_AUTH_SOCK"),
+            daemon_sockets: DAEMON_SOCKETS.iter().map(PathBuf::from).collect(),
+            // Only what IS a socket now: a path the kernel still lists after
+            // it was unlinked and replaced by a directory would make bwrap's
+            // file-over-directory bind fail, and with it the whole shield.
+            bound_sockets: std::fs::read_to_string("/proc/net/unix")
+                .map(|t| bound_sockets_from(&t))
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|p| is_socket_now(p))
+                .collect(),
+        }
+    }
+}
+
+/// Whether `path` is a unix socket right now, without following a link.
+fn is_socket_now(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        path.symlink_metadata()
+            .is_ok_and(|m| m.file_type().is_socket())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+/// Everything the Linux shield covers for one run in `sandbox` (see
+/// `bwrap_args`): the runtime directories, the known daemon sockets, the ssh
+/// agent, and the loose sockets found by scanning the temp directories and the
+/// folder the sandbox was made in.
+fn shadows_for(sandbox: &Path, home: Option<&Path>, host: &ShadowHost) -> Vec<Shadow> {
+    let roots = socket_scan_roots(host.tmpdir.as_deref(), sandbox.parent(), home);
+    let mut sockets = host.daemon_sockets.clone();
+    sockets.extend(host.bound_sockets.iter().cloned());
+    sockets.extend(scan_sockets(&roots, home));
+    plan_shadows(
+        socket_dirs(host.xdg_runtime.as_deref()),
+        sockets,
+        host.ssh_auth_sock.as_ref().map(PathBuf::from),
+        home,
+    )
+}
+
+/// The directories scanned for loose sockets: `/tmp`, `$TMPDIR` when it is
+/// somewhere else, and `workdir` — the folder the sandbox is made in — when it
+/// is NOT under the home directory.
+///
+/// THE WORKING FOLDER WAS MISSING (audit H7, review of 10 Oct 2026). A sandbox
+/// made in `/srv/app` sits next to whatever that folder holds, and
+/// `--ro-bind / /` shows all of it, a `gunicorn.sock` or a `.s.PGSQL.5432`
+/// included. Under the home directory there is nothing to scan: the home tmpfs
+/// already hides the folder, and the sandbox bind brings back only the sandbox.
+fn socket_scan_roots(
+    tmpdir: Option<&std::ffi::OsStr>,
+    workdir: Option<&Path>,
+    home: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut roots = vec![PathBuf::from("/tmp")];
+    if let Some(tmp) = tmpdir.filter(|t| !t.is_empty()) {
+        roots.push(PathBuf::from(tmp));
+    }
+    if let Some(work) = workdir.filter(|w| w.is_absolute() && *w != Path::new("/")) {
+        let real = work.canonicalize().unwrap_or_else(|_| work.to_path_buf());
+        if !home.is_some_and(|h| real.starts_with(h)) {
+            roots.push(real);
+        }
+    }
+    roots
+}
+
+/// How deep `scan_sockets` looks, and how many directory entries it reads in
+/// total before it stops. Two levels is where the sockets that matter live —
+/// `/tmp/tmux-1000/default`, `/tmp/ssh-XXXX/agent.N`, `/tmp/.s.PGSQL.5432`,
+/// `/tmp/dotnet-diagnostic-…-socket` — and the entry budget keeps a /tmp with a
+/// million files from turning every call into a directory walk.
+///
+/// THE BUDGET IS PER ROOT. It was one budget shared by every root, and the
+/// working folder was pushed last onto a stack and so walked FIRST: a folder
+/// outside $HOME with more than ~4,096 entries in two levels (any project with
+/// a `node_modules`) spent the whole budget before /tmp was opened, and every
+/// tmux, ssh-agent and `.s.PGSQL` socket there dropped out of the plan (review
+/// of 10 Oct 2026, measured on macOS with 5,000 files: the /tmp socket was
+/// shadowed beside a small folder and not beside the big one).
+///
+/// THE LIMIT IS A GAP AND IS STATED AS ONE: a socket deeper than two levels, or
+/// past the first 4,096 entries of its root, is not shadowed — unless the
+/// kernel lists it as bound (`bound_sockets`), which reaches every depth. Covering all of `/tmp` with a
+/// tmpfs instead would close it, but would also turn the child's view of a
+/// write outside the sandbox from "refused" into "accepted and discarded" —
+/// a different guarantee from the one `the_sandbox_cannot_be_escaped` holds
+/// bwrap to, and one that cannot be measured on the machine this was written on.
+const SOCKET_SCAN_DEPTH: usize = 2;
+const SOCKET_SCAN_BUDGET: usize = 4_096;
+
+/// The unix sockets reachable under `roots`, at most `SOCKET_SCAN_DEPTH`
+/// levels down.
+///
+/// A directory this process cannot read is skipped, and that is not a gap: a
+/// socket inside a directory we cannot search is a socket our own `connect`
+/// cannot reach either, so the child — the same uid — cannot reach it.
+/// Nothing is followed: `symlink_metadata` throughout, so a link in `/tmp`
+/// cannot send the walk somewhere else. `home` is not entered; its tmpfs covers
+/// everything inside it already.
+fn scan_sockets(roots: &[PathBuf], home: Option<&Path>) -> Vec<PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        let mut found = Vec::new();
+        for root in roots.iter().filter_map(|r| r.canonicalize().ok()) {
+            let mut budget = SOCKET_SCAN_BUDGET;
+            let mut queue: Vec<(PathBuf, usize)> = vec![(root, 0)];
+            'root: while let Some((dir, depth)) = queue.pop() {
+                if home.is_some_and(|h| dir.starts_with(h)) {
+                    continue;
+                }
+                let Ok(entries) = std::fs::read_dir(&dir) else {
+                    continue;
+                };
+                for entry in entries.flatten() {
+                    if budget == 0 {
+                        break 'root;
+                    }
+                    budget -= 1;
+                    let Ok(kind) = entry.file_type() else {
+                        continue;
+                    };
+                    if kind.is_socket() {
+                        found.push(entry.path());
+                    } else if kind.is_dir() && depth + 1 < SOCKET_SCAN_DEPTH {
+                        queue.push((entry.path(), depth + 1));
+                    }
+                }
+            }
+        }
+        found.sort();
+        found.dedup();
+        found
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (roots, home);
+        Vec::new()
+    }
+}
+
+/// Turns the candidates into the list `bwrap_args` covers: resolved, existing,
+/// deduplicated, and nothing that is already covered by something else.
+///
+/// A socket under a covered directory (or under the home directory) is dropped:
+/// after the tmpfs it does not exist, and asking bwrap to bind over it would
+/// make bwrap CREATE it first — a file nobody needs. A missing directory is
+/// dropped too, and that one matters: `--tmpfs` on a path that does not exist
+/// makes bwrap `mkdir` it inside a READ-ONLY root, which fails and takes the
+/// whole shield down with it.
+fn plan_shadows(
+    dirs: Vec<PathBuf>,
+    sockets: Vec<PathBuf>,
+    ssh_agent: Option<PathBuf>,
+    home: Option<&Path>,
+) -> Vec<Shadow> {
+    let mut covered: Vec<PathBuf> = Vec::new();
+    for dir in dirs {
+        let Ok(real) = dir.canonicalize() else {
+            continue;
+        };
+        if !real.is_dir() || real == Path::new("/") {
+            continue;
+        }
+        if home.is_some_and(|h| real.starts_with(h)) {
+            continue;
+        }
+        if covered.iter().any(|c| real.starts_with(c)) {
+            continue;
+        }
+        // A directory that CONTAINS one already listed replaces it.
+        covered.retain(|c| !c.starts_with(&real));
+        covered.push(real);
+    }
+    let mut shadows: Vec<Shadow> = covered.iter().cloned().map(Shadow::Dir).collect();
+
+    let mut loose: Vec<PathBuf> = Vec::new();
+    for socket in sockets
+        .into_iter()
+        .chain(ssh_agent)
+        .filter(|s| s.is_absolute())
+    {
+        // The PARENT is resolved, not the socket: a socket path that is itself a
+        // link would otherwise be replaced by its target and the link — the name
+        // the script would use — left reachable.
+        let (Some(parent), Some(name)) = (socket.parent(), socket.file_name()) else {
+            continue;
+        };
+        let Ok(real_parent) = parent.canonicalize() else {
+            continue;
+        };
+        let real = real_parent.join(name);
+        if real.symlink_metadata().is_err() {
+            continue;
+        }
+        if home.is_some_and(|h| real.starts_with(h)) || covered.iter().any(|c| real.starts_with(c))
+        {
+            continue;
+        }
+        if !loose.contains(&real) {
+            loose.push(real);
+        }
+    }
+    shadows.extend(loose.into_iter().map(Shadow::Socket));
+    shadows
+}
+
 /// The sandbox-exec profile.
 ///
-/// `(allow file-read*)` HAS TO BE LEFT wide: the interpreter reads its own
-/// library, the dyld cache and locale files; narrowed down, python3 does not
-/// start at all. Instead the real target is closed EXPLICITLY — the user's home
-/// directory — and the sandbox is opened back up. So it is not "read
-/// everything" but "read the system, do not read the user".
+/// READING IS AN ALLOWLIST (audit L20). It used to be `(allow file-read*)` minus
+/// the home directory, on the belief that "narrowed down, python3 does not
+/// start at all". That left everything OUTSIDE the home directory readable —
+/// MEASURED by the audit: the user's temp directory (46,797 entries), the
+/// temporary copies `db_write` makes, `/Users/Shared` and `/private/tmp` — while
+/// `description()` said "NO access to ANY file". The belief was measured too,
+/// on this machine (macOS 26.5.2, 9 Oct 2026): homebrew node 26.5.0 and homebrew
+/// python 3.12 both start under the list below, and python imports json,
+/// sqlite3, ssl, zoneinfo, socket and subprocess, compiles with py_compile and
+/// reports the local timezone; node reports the timezone through Intl. What
+/// does NOT start is `/usr/bin/python3`, the Xcode shim — and it did not start
+/// under the old profile either (it needs fork, see below).
+///
+/// Every entry is software, not user data: the OS (`/System`, `/usr`, `/bin`,
+/// `/sbin`, `/private/etc`, `/dev`), the timezone and dyld databases, and the
+/// three places this file looks for interpreters (`/usr/local` is under
+/// `/usr`, Homebrew's software directories, and python.org's
+/// `/Library/Frameworks`). `/Library/Developer/CommandLineTools` is the Xcode
+/// shim's own lookup.
+///
+/// HOMEBREW IS LISTED BY ITS SOFTWARE DIRECTORIES, NOT AS `/opt/homebrew`. The
+/// whole prefix was on this list once, and it holds user data too: `var/` is
+/// where `brew services` keep their state and `etc/` their configuration.
+/// MEASURED by the audit's review (9 Oct 2026): from inside the sandbox a script
+/// listed and read `/opt/homebrew/var/postgresql@17` — 894 files, 22.9 MB of a
+/// live database, `pg_hba.conf` included — and a properties file under `etc/`
+/// that can hold a token. The Intel prefix, `/usr/local`, sits under `/usr` and
+/// cannot be narrowed the same way, so its `var/` and `etc/` are DENIED after
+/// the allow instead (SBPL: the later rule wins).
+///
+/// ONE FILE UNDER `etc/` IS LET BACK IN, AND IT IS NOT OPTIONAL: Homebrew node
+/// reads OpenSSL's `openssl.cnf` at start, and when the open fails with EPERM
+/// (rather than ENOENT) it dies — MEASURED, macOS 26.5.2, node 26.5.0: "OpenSSL
+/// configuration error: BIO_new_file: Operation not permitted" under the
+/// narrowed list, and every `run_code` call would have failed. With only that
+/// file re-allowed, node and homebrew python 3.12 both start, python imports
+/// json, sqlite3, ssl and zoneinfo and `py_compile` passes, `node --check`
+/// passes, and `/opt/homebrew/var`, `/opt/homebrew/etc` and `openssl@3/cert.pem`
+/// all give EPERM. The regex names the config file and nothing beside it.
+/// `(literal "/")` lets a `readdir` of the root succeed, which some runtimes do
+/// on start; it lists names, not contents. The home-directory deny is KEPT
+/// even though the allowlist no longer covers `/Users`: it is the rule that
+/// still holds if a future entry ever does.
 ///
 /// `(allow file-read-metadata)` WAS ADDED LATER and closes a failure: before
 /// running a script, node calls `realpathSync`, which `lstat`s EVERY parent
@@ -339,11 +767,41 @@ fn bwrap_args(sandbox: &Path, home: Option<&Path>) -> Vec<OsString> {
 /// leaves the catalog — fail-closed with a reason in `diagnose()`, which is this
 /// file's rule, not a silent hole. Spawning processes was never part of what
 /// this tool promises.
+///
+/// `(allow signal)` IS TARGETED (audit M1). Unfiltered, the script could signal
+/// ANY process of the user: MEASURED by the audit, a `sleep 120` started
+/// outside died with 143 from a SIGTERM sent inside, and `process.kill(-1)`
+/// would take down tacet and every editor. `(target self)` is all an
+/// interpreter needs — node and python both ran the probes above under it — and
+/// `kill(<tacet's pid>, 0)` from inside now returns EPERM (measured, both
+/// interpreters), which `verify_shield` checks on every start.
 fn profile() -> &'static str {
     "(version 1)\
      (deny default)\
      (allow process-exec*)\
-     (allow file-read*)\
+     (allow file-read* \
+       (literal \"/\") \
+       (subpath \"/System\") \
+       (subpath \"/usr\") \
+       (subpath \"/bin\") \
+       (subpath \"/sbin\") \
+       (subpath \"/private/etc\") \
+       (subpath \"/private/var/db/timezone\") \
+       (subpath \"/private/var/db/dyld\") \
+       (subpath \"/dev\") \
+       (subpath \"/opt/homebrew/Cellar\") \
+       (subpath \"/opt/homebrew/opt\") \
+       (subpath \"/opt/homebrew/bin\") \
+       (subpath \"/opt/homebrew/lib\") \
+       (subpath \"/opt/homebrew/Frameworks\") \
+       (subpath \"/opt/homebrew/share\") \
+       (subpath \"/Library/Frameworks\") \
+       (subpath \"/Library/Developer/CommandLineTools\"))\
+     (deny file-read* \
+       (subpath \"/usr/local/var\") \
+       (subpath \"/usr/local/etc\"))\
+     (allow file-read* \
+       (regex #\"^/(opt/homebrew|usr/local)/etc/openssl@[0-9.]+/openssl\\.cnf$\"))\
      (deny file-read* (subpath (param \"HOMEDIR\")))\
      (allow file-read-metadata)\
      (allow file-read* (subpath (param \"SBOX\")))\
@@ -356,7 +814,7 @@ fn profile() -> &'static str {
        (global-name \"com.apple.CoreServices.coreservicesd\") \
        (global-name \"com.apple.SystemConfiguration.configd\"))\
      (allow ipc-posix-shm)\
-     (allow signal)\
+     (allow signal (target self))\
      (deny network*)"
 }
 
@@ -366,15 +824,33 @@ fn profile() -> &'static str {
 const PARAM_SANDBOX: &str = "SBOX";
 const PARAM_HOME: &str = "HOMEDIR";
 
-/// The home directory the profile closes to reading.
+/// Where the home-directory rule points when `HOME` is unusable: the directory
+/// every home lives under. An EMPTY value would make the deny rule match nothing
+/// and quietly open the user's whole home directory.
+#[cfg(target_os = "macos")]
+const FALLBACK_HOME: &str = "/Users";
+#[cfg(not(target_os = "macos"))]
+const FALLBACK_HOME: &str = "/home";
+
+/// The home directory AS THE KERNEL SEES IT (audit M2).
 ///
-/// A missing `HOME` falls back to `/Users`: an EMPTY value would make the deny
-/// rule match nothing and quietly open the user's whole home directory.
-fn shield_home() -> PathBuf {
-    match std::env::var_os("HOME") {
-        Some(h) if !h.is_empty() => PathBuf::from(h),
-        _ => PathBuf::from("/Users"),
-    }
+/// `sandbox-exec` matches `(subpath ...)` against the RESOLVED path of every
+/// access, so a deny written with a link in it matches nothing. `$HOME` went in
+/// raw: on a machine whose home is a link (a moved home, `/Users/me ->
+/// /Volumes/Data/me`) the deny rule was dead — MEASURED by the audit: with the
+/// canonical HOMEDIR the read gave EPERM, with the link alias a planted
+/// `TOP-SECRET-DUMMY` file was read. bwrap has the mirror problem: `--tmpfs`
+/// over a link covers the link, not the directory behind it.
+///
+/// A home that does not exist cannot be resolved; its raw value is kept, since
+/// there is nothing behind it to protect and an unresolved deny is still
+/// stricter than the fallback. A relative value is not a home at all.
+fn canonical_home(raw: Option<OsString>) -> PathBuf {
+    let raw = match raw {
+        Some(h) if !h.is_empty() && Path::new(&h).is_absolute() => PathBuf::from(h),
+        _ => return PathBuf::from(FALLBACK_HOME),
+    };
+    raw.canonicalize().unwrap_or(raw)
 }
 
 /// FAIL-CLOSED, second layer. `(param ...)` already makes splicing impossible;
@@ -482,6 +958,26 @@ pub fn run(
     code: &str,
     timeout: Duration,
 ) -> ToolResult<CodeOutcome> {
+    run_until(
+        shield,
+        interpreter,
+        sandbox,
+        code,
+        timeout,
+        &CancelToken::new(),
+    )
+}
+
+/// `run`, listening to `cancel`: a fired token ends the script's process group
+/// (SIGTERM, then SIGKILL) and the call returns an error saying it was stopped.
+pub fn run_until(
+    shield: &NetworkShield,
+    interpreter: &Interpreter,
+    sandbox: &Path,
+    code: &str,
+    timeout: Duration,
+    cancel: &CancelToken,
+) -> ToolResult<CodeOutcome> {
     if code.trim().is_empty() {
         return Err(ToolError::InvalidArgument("empty script".into()));
     }
@@ -489,23 +985,39 @@ pub fn run(
         return Err(ToolError::InvalidArgument("the script is too long".into()));
     }
 
-    // The script is written INSIDE the sandbox: the shield profile only lets
-    // that place be read, so keeping the script anywhere else would make it unreadable.
-    let runtime = sandbox.join("code");
-    std::fs::create_dir_all(&runtime)?;
+    // THE SANDBOX IS A FRESH DIRECTORY FOR THIS ONE CALL (audit M5), created
+    // under `sandbox` and deleted after it. It used to be `<sandbox>/code`: an
+    // ORDINARY name, so a user's real `code/` directory became readable and
+    // writable by the model's script, and a `code` that was a link sent the
+    // script to the link's target (`create_dir_all` follows it, and
+    // `O_NOFOLLOW` only guards the last component). Now the name is new on
+    // every call, `mkdir` refuses one that exists, and no component of the
+    // path may be a link (`sandbox_path::fresh_private_dir`).
+    //
+    // The script is written INSIDE it: the shield profile only lets that place
+    // be read, so keeping the script anywhere else would make it unreadable.
+    if !path_is_shield_safe(sandbox) {
+        return Err(ToolError::SandboxViolation(sandbox.to_path_buf()));
+    }
+    let runtime = crate::sandbox_path::fresh_private_dir(sandbox, &nonce())?;
     let script = runtime.join(format!("script-{}.{}", nonce(), interpreter.extension));
-    create_script(&script, code.as_bytes())?;
-
-    let outcome = run_program(
-        shield,
-        &runtime,
-        &interpreter.path,
-        &[script.clone().into()],
-        timeout,
-    );
-    // The script is deleted ON EVERY PATH: if model output piles up on disk the
-    // sandbox gets dirty and `find_file` lists them as if they were user documents.
-    std::fs::remove_file(&script).ok();
+    let outcome = match create_script(&script, code.as_bytes()) {
+        Ok(()) => run_program_until(
+            shield,
+            &runtime,
+            &interpreter.path,
+            &[script.clone().into()],
+            timeout,
+            cancel,
+        ),
+        Err(e) => Err(ToolError::Io(e)),
+    };
+    // THE WHOLE DIRECTORY GOES, ON EVERY PATH: if model output piles up on
+    // disk the working folder gets dirty and `find_file` lists it as if it
+    // were user documents. `remove_dir_all` does not follow a link the script
+    // planted inside — it unlinks it (std has done this race-free on unix
+    // since 1.58.1).
+    std::fs::remove_dir_all(&runtime).ok();
     outcome
 }
 
@@ -534,21 +1046,6 @@ pub(crate) fn nonce() -> String {
     format!("{}-{now:x}-{step:x}", std::process::id())
 }
 
-/// `O_NOFOLLOW` — the value differs per platform and there is no libc crate here
-/// (zero-dependency identity). `0` on an unknown platform means "no extra flag";
-/// `create_new` alone still refuses an existing path, so the gate never opens.
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-const O_NOFOLLOW: i32 = 0x0100;
-#[cfg(any(target_os = "linux", target_os = "android"))]
-const O_NOFOLLOW: i32 = 0x20000;
-#[cfg(not(any(
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "linux",
-    target_os = "android"
-)))]
-const O_NOFOLLOW: i32 = 0;
-
 /// Writes the script WITHOUT EVER FOLLOWING an existing path.
 ///
 /// THE ATTACK THIS CLOSES: a script running under the shield may create a
@@ -566,7 +1063,7 @@ const O_NOFOLLOW: i32 = 0;
 ///
 /// WINDOWS HAS ONLY THE FIRST BELT, AND IT HOLDS — measured rather than assumed.
 /// `custom_flags` is `#[cfg(unix)]`, so `O_NOFOLLOW` is never applied there (it
-/// is the `dead_code` warning a Windows build prints and no CI job fails on,
+/// used to be a `dead_code` constant on Windows that no CI job failed on,
 /// because `clippy -D warnings` runs only on ubuntu). The paragraph above rested
 /// the whole guarantee on what POSIX requires, and Windows is not POSIX — so the
 /// claim covered the one platform it did not apply to.
@@ -585,39 +1082,48 @@ pub(crate) fn create_script(script: &Path, code: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
+    // THE BIT IS PER ARCHITECTURE, from the table `create_document` keeps. This
+    // file had its own `0x20000` for every Linux, which on aarch64 — a published
+    // target — is `O_LARGEFILE`, so the second belt was silently absent there
+    // (audit L15 review; the first belt, `create_new`, still held).
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(O_NOFOLLOW);
+        options.custom_flags(crate::create_document::o_nofollow_for(
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        ));
     }
     let mut file = options.open(script)?;
     file.write_all(code)
 }
 
-/// Runs any program with the given arguments under the shield.
+/// The command `run_program` spawns, built from the RAW `$HOME` value.
 ///
-/// The generalisation of `run` and the shared path of `write_code`'s
-/// verification steps: a syntax check (`node --check f`, `python3 -m
-/// py_compile f`) wants a different command line from running the script
-/// DIRECTLY but still wants THE SAME shield, the same environment cleaning and
-/// the same timeout discipline. Had two separate runners been written, security
-/// fixes would have stayed in one of them.
-pub fn run_program(
+/// WHY THE RAW VALUE COMES IN AS A PARAMETER (review of 10 Oct 2026): the M2
+/// test used to check `canonical_home` on its own, so `run_program` going back
+/// to splicing raw `$HOME` into `HOMEDIR=` would have stayed green on every CI
+/// machine, none of which has a symlinked home. The canonicalisation now
+/// happens HERE, on the path `run_program` takes, and the test drives this
+/// function with a symlinked fixture — `HOME` itself is process-wide and
+/// cannot be changed from a test without breaking the tests beside it.
+fn shielded_command(
     shield: &NetworkShield,
     runtime: &Path,
     program: &Path,
     args: &[OsString],
-    timeout: Duration,
-) -> ToolResult<CodeOutcome> {
+    raw_home: Option<OsString>,
+) -> ToolResult<Command> {
     // FAIL-CLOSED BEFORE THE SHIELD IS BUILT (see `path_is_shield_safe`): if a
     // path cannot be safely represented we do not run at all. Refusing is the
     // natural extension of this file's rule that a shield we cannot set up means
     // the tool does not exist.
-    if !path_is_shield_safe(runtime) || !path_is_shield_safe(&shield_home()) {
+    let home = canonical_home(raw_home);
+    if !path_is_shield_safe(runtime) || !path_is_shield_safe(&home) {
         return Err(ToolError::SandboxViolation(runtime.to_path_buf()));
     }
 
-    let mut command = shield.wrap(runtime, program, args);
+    let mut command = shield.wrap(runtime, &home, program, args);
     command
         .current_dir(runtime)
         .stdin(Stdio::null())
@@ -641,9 +1147,9 @@ pub fn run_program(
 
     // ITS OWN SESSION / PROCESS GROUP. On the timeout path we must be able to
     // signal THE WHOLE TREE, not just the process we spawned: a child left
-    // behind keeps the stdout/stderr pipe ends open (see the join below) and
-    // goes on burning the user's CPU after the tool has already reported
-    // "timed out".
+    // behind keeps the stdout/stderr pipe ends open (see the join in
+    // `run_program`) and goes on burning the user's CPU after the tool has
+    // already reported "timed out".
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -657,6 +1163,42 @@ pub fn run_program(
             });
         }
     }
+    Ok(command)
+}
+
+/// Runs any program with the given arguments under the shield.
+///
+/// The generalisation of `run` and the shared path of `write_code`'s
+/// verification steps: a syntax check (`node --check f`, `python3 -m
+/// py_compile f`) wants a different command line from running the script
+/// DIRECTLY but still wants THE SAME shield, the same environment cleaning and
+/// the same timeout discipline. Had two separate runners been written, security
+/// fixes would have stayed in one of them.
+pub fn run_program(
+    shield: &NetworkShield,
+    runtime: &Path,
+    program: &Path,
+    args: &[OsString],
+    timeout: Duration,
+) -> ToolResult<CodeOutcome> {
+    run_program_until(shield, runtime, program, args, timeout, &CancelToken::new())
+}
+
+/// `run_program`, listening to `cancel` (audit M4). A SEPARATE ENTRY rather than
+/// a new parameter on `run_program`, so the shield measurement — which runs
+/// outside any turn, with no stop to listen to — keeps compiling unchanged.
+/// Every call made FOR a turn comes here: `run_code`, and both of `write_code`'s
+/// stages, whose syntax check was once thought too short to need a Ctrl-C
+/// while its execution stage runs the model's own, possibly looping, code.
+pub fn run_program_until(
+    shield: &NetworkShield,
+    runtime: &Path,
+    program: &Path,
+    args: &[OsString],
+    timeout: Duration,
+    cancel: &CancelToken,
+) -> ToolResult<CodeOutcome> {
+    let mut command = shielded_command(shield, runtime, program, args, std::env::var_os("HOME"))?;
 
     let start = Instant::now();
     let mut child = command.spawn()?;
@@ -684,6 +1226,7 @@ pub fn run_program(
     };
 
     let mut timed_out = false;
+    let mut stopped = false;
     let exit = loop {
         match child.try_wait() {
             Ok(Some(state)) => break Some(state),
@@ -699,10 +1242,37 @@ pub fn run_program(
             timed_out = true;
             break None;
         }
+        // THE STOP IS READ ON THE CLOCK'S TICK (audit M4). Before, a Ctrl-C
+        // could not reach a running script at all: it ran to its own timeout
+        // while the screen said "cancelling".
+        if cancel.is_cancelled() {
+            stopped = true;
+            break None;
+        }
         std::thread::sleep(POLL_INTERVAL);
     };
 
-    if timed_out {
+    if stopped {
+        // SIGTERM to the group, a bounded wait, SIGKILL, reap — `shell`'s
+        // order, for the same reasons (see `TERM_GRACE`).
+        #[cfg(unix)]
+        unsafe {
+            killpg(group, SIGTERM);
+        }
+        let asked = Instant::now();
+        while asked.elapsed() < TERM_GRACE {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                break;
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
+        #[cfg(unix)]
+        unsafe {
+            killpg(group, SIGKILL);
+        }
+        child.kill().ok();
+        child.wait().ok();
+    } else if timed_out {
         // KILL THE WHOLE GROUP, then reap. `child.kill()` alone signals only the
         // process we spawned; anything it left behind survives. `kill` without
         // `wait` leaves a zombie and in a long session the process table fills up.
@@ -757,6 +1327,12 @@ pub fn run_program(
     let (output, truncated_out) = drain(&out_sink);
     let (error_text, truncated_err) = drain(&err_sink);
 
+    if stopped {
+        // AN ERROR, NOT A NEW `CodeOutcome` VARIANT: `write_code` matches that
+        // enum exhaustively, and a stopped run is, from its side, a run that
+        // produced nothing to check.
+        return Err(ToolError::Other(STOPPED.into()));
+    }
     if timed_out {
         return Ok(CodeOutcome::Timeout);
     }
@@ -980,7 +1556,7 @@ impl RunCodeTool {
                 BWRAP_PATHS.join(" | ")
             );
         };
-        if !verify_shield(&shield, &interpreters[0]) {
+        if let Err(reason) = measure_shield(&shield, &interpreters[0]) {
             // THE MOST LIKELY CAUSE IS NAMED FIRST, and on the most common Linux
             // it is not any of the three this message used to list.
             //
@@ -1007,8 +1583,7 @@ impl RunCodeTool {
                 ""
             };
             return format!(
-                "run_code is off: {} was found but the measurement did not pass — either the \
-                 script never ran under the shield, or the network COULD NOT BE SEEN as cut \
+                "run_code is off: {} was found but the measurement did not pass: {reason} \
                  (see verify_shield){hint}",
                 shield.name()
             );
@@ -1129,39 +1704,323 @@ pub fn language_from_source(code: &str) -> Option<&'static str> {
 /// the shield as valid while the network is UP — IS NOT POSSIBLE, because if the
 /// connection succeeds the measurement fails.
 fn verify_shield(shield: &NetworkShield, interpreter: &Interpreter) -> bool {
-    let Ok(sandbox) = temp_measurement_dir() else {
-        return false;
-    };
+    measure_shield(shield, interpreter).is_ok()
+}
+
+/// `verify_shield` with the reason kept, so `diagnose()` can name the gate that
+/// did not close instead of leaving the user to guess.
+fn measure_shield(shield: &NetworkShield, interpreter: &Interpreter) -> Result<(), String> {
+    let sandbox = temp_measurement_dir()
+        .map_err(|e| format!("the measurement directory could not be made: {e}"))?;
     let script = sandbox.join(format!("measurement.{}", interpreter.extension));
-    let body = measurement_script(interpreter.key);
-    let outcome = std::fs::write(&script, body).is_ok()
-        && match run_program(
+    let body = measurement_script(interpreter.key, &ProbeTargets::from_host(&sandbox));
+    let outcome = match std::fs::write(&script, body) {
+        Err(e) => Err(format!("the measurement script could not be written: {e}")),
+        Ok(()) => match run_program(
             shield,
             &sandbox,
             &interpreter.path,
             &[script.clone().into_os_string()],
             Duration::from_secs(15),
         ) {
-            // Both "the script runs" and "the network did not open" are read
-            // from the SAME output: measuring them in two separate runs would
-            // double the startup time.
-            Ok(CodeOutcome::Succeeded { output, .. }) => {
-                let network = output.contains("NET_BLOCKED") && !output.contains("NET_OPEN");
-                // THE CLIPBOARD IS MEASURED TOO, on the same run. Only measuring
-                // the network is what let `(allow mach-lookup)` sit there
-                // unfiltered for so long: the sentence "NO access to this
-                // device" was checked against exactly one of the things it
-                // claims. If someone loosens the profile again the tool now
-                // DISAPPEARS from the catalog instead of quietly handing the
-                // user's clipboard to the model.
-                let clipboard = !cfg!(target_os = "macos")
-                    || (output.contains("PB_BLOCKED") && !output.contains("PB_OPEN"));
-                network && clipboard
-            }
-            _ => false,
-        };
+            // Every gate is read from the SAME output: measuring them in
+            // separate runs would multiply the startup time.
+            Ok(CodeOutcome::Succeeded { output, .. }) => shield_verdict(&output)
+                .map_err(|gate| format!("{gate} could NOT BE SEEN as closed")),
+            Ok(other) => Err(format!(
+                "the measurement script did not run cleanly under the shield: {other:?}"
+            )),
+            Err(e) => Err(format!("the shield could not be started: {e}")),
+        },
+    };
     let _ = std::fs::remove_dir_all(&sandbox);
     outcome
+}
+
+/// Reads the measurement's output. `Err` names the FIRST gate that is not
+/// closed.
+///
+/// Each gate has two markers and BOTH are checked: the "blocked" one must be
+/// there (so a probe that never ran does not count as a pass) and the "open"
+/// one must not.
+///
+/// THE CLIPBOARD WAS THE SECOND GATE HERE, and the reason it was added is the
+/// reason for every gate after it: only measuring the network is what let
+/// `(allow mach-lookup)` sit there unfiltered for so long — the sentence "NO
+/// access to this device" was checked against exactly one of the things it
+/// claims. The same held for unix sockets (audit H7: bwrap left them all
+/// reachable), the home directory (audit M2: a symlinked `$HOME` made the deny
+/// rule dead) and signals (audit M1: `(allow signal)` reached every process of
+/// the user). If someone loosens the shield again the tool now DISAPPEARS from
+/// the catalog instead of quietly handing that gate to the model.
+fn shield_verdict(output: &str) -> Result<(), &'static str> {
+    let closed = |blocked: &str, open: &str| output.contains(blocked) && !output.contains(open);
+    if !closed("NET_BLOCKED", "NET_OPEN") {
+        return Err("the network");
+    }
+    if !closed("UNIX_BLOCKED", "UNIX_OPEN") {
+        return Err("a unix socket outside the sandbox");
+    }
+    if !closed("HOME_BLOCKED", "HOME_OPEN") {
+        return Err("the home directory");
+    }
+    if cfg!(target_os = "macos") {
+        if !closed("PB_BLOCKED", "PB_OPEN") {
+            return Err("the clipboard");
+        }
+        if !closed("SIG_BLOCKED", "SIG_OPEN") {
+            return Err("signals to processes outside the sandbox");
+        }
+    }
+    Ok(())
+}
+
+/// What the measurement aims at, read from the HOST before the script runs —
+/// the child cannot name the user's home or the host's sockets any other way.
+#[derive(Debug, Clone, Default)]
+struct ProbeTargets {
+    /// `$HOME` as written AND as resolved. Both, because M2 was exactly the case
+    /// where they differ and only one of them was denied.
+    home: Vec<PathBuf>,
+    /// A name that REALLY IS in the home directory. Listing the directory is
+    /// not enough on its own: bwrap's `--tmpfs` makes it list successfully and
+    /// EMPTY, so "the listing worked" would fail a shield that works. What is
+    /// asked is whether THIS name can be seen.
+    home_sentinel: Option<String>,
+    /// Unix sockets that exist on the host (see `probe_sockets`).
+    sockets: Vec<PathBuf>,
+    /// A process outside the sandbox the child must not be able to signal.
+    /// `kill(pid, 0)` delivers nothing; it only asks whether a signal WOULD be
+    /// allowed. macOS only: under bwrap `--unshare-pid` an outside pid is not
+    /// nameable, and the same number may be a process inside the namespace.
+    outside_pid: u32,
+}
+
+impl ProbeTargets {
+    fn from_host(sandbox: &Path) -> ProbeTargets {
+        let raw = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|h| h.is_absolute() && h != Path::new("/"));
+        let mut home = Vec::new();
+        if let Some(raw) = raw {
+            let real = raw.canonicalize().unwrap_or_else(|_| raw.clone());
+            home.push(raw);
+            if !home.contains(&real) {
+                home.push(real);
+            }
+        }
+        let home_sentinel = home.last().and_then(|real| home_sentinel(real, sandbox));
+        let sockets = probe_sockets(sandbox, home.last().map(PathBuf::as_path));
+        ProbeTargets {
+            home,
+            home_sentinel,
+            sockets,
+            outside_pid: std::process::id(),
+        }
+    }
+}
+
+/// A name in `home` that the measurement can look for, skipping the one entry
+/// the shield itself puts there: if the measurement directory lives under the
+/// home directory (`TMPDIR` inside it), bwrap recreates its first component
+/// inside the tmpfs, and finding THAT would fail a working shield. Sorted, so
+/// the choice is the same on every start.
+fn home_sentinel(home: &Path, sandbox: &Path) -> Option<String> {
+    let mut names: Vec<String> = std::fs::read_dir(home)
+        .ok()?
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .filter(|name| !sandbox.starts_with(home.join(name)))
+        .collect();
+    names.sort();
+    names.into_iter().next()
+}
+
+/// The most sockets one measurement tries. Each refused `connect` is
+/// immediate, but a socket that ACCEPTS costs nothing either — this only
+/// bounds the script's length.
+const PROBE_SOCKET_CAP: usize = 12;
+
+/// Unix sockets that exist on this host and that a script must not reach.
+///
+/// The well-known ones first — the session and system bus, docker, LXD and
+/// Incus (`DAEMON_SOCKETS`), the ssh agent, an X11 display, macOS's
+/// mDNSResponder — then whatever loose sockets `/tmp` holds. Only paths that ARE sockets right now are kept (`metadata` +
+/// `is_socket`: a stat, no connection is made from this process). A host with
+/// none of them measures nothing here, and that is stated rather than hidden:
+/// there is then nothing for the gate to protect.
+///
+/// THE SAME ROOTS AS THE PLAN. It scanned `/tmp` and `$TMPDIR` with no working
+/// folder while every call's plan scanned the working folder too, so a hole in
+/// the plan's handling of that third root (the shared budget it starved, review
+/// of 10 Oct 2026) could not show here. `sandbox` is the measurement's own
+/// folder, and its parent is scanned as a call's would be.
+fn probe_sockets(sandbox: &Path, home: Option<&Path>) -> Vec<PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        let host = ShadowHost::from_env();
+        let mut candidates = probe_socket_candidates(&host);
+        candidates.extend(scan_sockets(
+            &socket_scan_roots(host.tmpdir.as_deref(), sandbox.parent(), home),
+            home,
+        ));
+        let mut found: Vec<PathBuf> = Vec::new();
+        for candidate in candidates {
+            let is_socket = std::fs::metadata(&candidate)
+                .map(|m| m.file_type().is_socket())
+                .unwrap_or(false);
+            if is_socket && candidate.to_str().is_some() && !found.contains(&candidate) {
+                found.push(candidate);
+            }
+            if found.len() >= PROBE_SOCKET_CAP {
+                break;
+            }
+        }
+        found
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (sandbox, home);
+        Vec::new()
+    }
+}
+
+/// The well-known sockets `probe_sockets` stats, before the `/tmp` scan.
+#[cfg(unix)]
+///
+/// The daemon sockets are the SAME list the shield covers, read from the same
+/// constant: a socket the shield shadows but the measurement never tries is a
+/// shadow nobody has seen work, and one the measurement tries but the shield
+/// does not cover fails `verify_shield` — which is the point.
+fn probe_socket_candidates(host: &ShadowHost) -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = [
+        "/run/dbus/system_bus_socket",
+        "/var/run/dbus/system_bus_socket",
+        "/run/docker.sock",
+        "/var/run/docker.sock",
+        "/var/run/mDNSResponder",
+        "/tmp/.X11-unix/X0",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .collect();
+    candidates.extend(host.daemon_sockets.iter().cloned());
+    candidates.extend(host.bound_sockets.iter().cloned());
+    if let Some(xdg) = host.xdg_runtime.as_ref().filter(|x| !x.is_empty()) {
+        candidates.push(Path::new(xdg).join("bus"));
+    }
+    if let Some(agent) = host.ssh_auth_sock.as_ref().filter(|x| !x.is_empty()) {
+        candidates.push(PathBuf::from(agent));
+    }
+    candidates
+}
+
+/// A string as a literal that is valid in BOTH probe languages. JSON's string
+/// syntax is a subset of both JavaScript's and Python's, so the host's paths go
+/// in through `serde_json` and never through hand-written escaping — the same
+/// lesson as the SBPL profile, where hand-splicing a path was the hole.
+fn literal(text: &str) -> String {
+    serde_json::to_string(text).unwrap_or_else(|_| "\"\"".to_string())
+}
+
+/// A list of paths as a literal list valid in both languages (strings only:
+/// JSON's `null` is not Python). A path that is not UTF-8 is left out.
+fn literal_paths(paths: &[PathBuf]) -> String {
+    let texts: Vec<&str> = paths.iter().filter_map(|p| p.to_str()).collect();
+    serde_json::to_string(&texts).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// The probes that touch nothing outside this machine: the home directory,
+/// signals (macOS) and unix sockets.
+///
+/// SEPARATE FROM THE NETWORK PROBE so a test can run them WITHOUT the shield
+/// and watch each one report "open" — a probe that can only ever say "blocked"
+/// measures nothing. The network probe is never run unshielded: it would open a
+/// real connection.
+///
+/// `then_js` is what the js version runs after its last (asynchronous) socket
+/// probe: the network probe in production, an exit in that test. The python
+/// version is synchronous and the caller appends what follows.
+fn local_probes(key: &str, targets: &ProbeTargets, then_js: &str) -> String {
+    let home = literal_paths(&targets.home);
+    let sentinel = literal(targets.home_sentinel.as_deref().unwrap_or(""));
+    let sockets = literal_paths(&targets.sockets);
+    let pid = targets.outside_pid;
+    let macos = cfg!(target_os = "macos");
+    match key {
+        "python" => {
+            let signal = if macos {
+                format!(
+                    "try:\n\
+                     \x20   os.kill({pid}, 0)\n\
+                     \x20   print('SIG_OPEN')\n\
+                     except PermissionError:\n\
+                     \x20   print('SIG_BLOCKED')\n\
+                     except Exception:\n\
+                     \x20   print('SIG_UNCERTAIN')\n"
+                )
+            } else {
+                String::new()
+            };
+            format!(
+                "import os, socket\n\
+                 _ho = False\n\
+                 if {sentinel}:\n\
+                 \x20   for _h in {home}:\n\
+                 \x20       try:\n\
+                 \x20           if {sentinel} in os.listdir(_h):\n\
+                 \x20               _ho = True\n\
+                 \x20       except Exception:\n\
+                 \x20           pass\n\
+                 print('HOME_OPEN' if _ho else 'HOME_BLOCKED')\n\
+                 {signal}\
+                 _uo = False\n\
+                 for _p in {sockets}:\n\
+                 \x20   _s = None\n\
+                 \x20   try:\n\
+                 \x20       _s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n\
+                 \x20       _s.settimeout(1)\n\
+                 \x20       _s.connect(_p)\n\
+                 \x20       _uo = True\n\
+                 \x20   except socket.timeout:\n\
+                 \x20       _uo = True\n\
+                 \x20   except Exception:\n\
+                 \x20       pass\n\
+                 \x20   finally:\n\
+                 \x20       if _s:\n\
+                 \x20           _s.close()\n\
+                 print('UNIX_OPEN' if _uo else 'UNIX_BLOCKED')\n"
+            )
+        }
+        _ => {
+            let signal = if macos {
+                format!(
+                    "try{{process.kill({pid},0);console.log('SIG_OPEN')}}\
+                     catch(e){{console.log(e.code==='EPERM'?'SIG_BLOCKED':'SIG_UNCERTAIN')}}\n"
+                )
+            } else {
+                String::new()
+            };
+            // A connect left HANGING counts as open: the path was reachable.
+            // Fail-closed, the same rule as `NET_UNCERTAIN`.
+            format!(
+                "{{let o=false;const S={sentinel};\
+                 if(S){{for(const h of {home}){{try{{if(require('fs').readdirSync(h)\
+                 .includes(S))o=true}}catch(e){{}}}}}}\
+                 console.log(o?'HOME_OPEN':'HOME_BLOCKED')}}\n\
+                 {signal}\
+                 function __after(){{{then_js}}}\n\
+                 const __U={sockets};\n\
+                 (function __u(i,o){{if(o||i>=__U.length){{\
+                 console.log(o?'UNIX_OPEN':'UNIX_BLOCKED');__after();return}}\
+                 let d=false;const s=require('net').connect(__U[i]);\
+                 const f=(x)=>{{if(d)return;d=true;s.destroy();__u(i+1,x)}};\
+                 s.on('connect',()=>f(true));s.on('error',()=>f(false));\
+                 s.setTimeout(1000,()=>f(true))}})(0,false);\n"
+            )
+        }
+    }
 }
 
 /// The script of the discovery measurement: it tries a connection under the shield and prints the result.
@@ -1178,8 +2037,23 @@ fn verify_shield(shield: &NetworkShield, interpreter: &Interpreter) -> bool {
 /// the error comes at once and startup is not delayed; if it does not, 2
 /// seconds are added to startup — but in that case the tool will leave the
 /// catalog anyway, so the price is paid once.
-fn measurement_script(key: &str) -> String {
-    format!("{}{}", clipboard_probe(key), network_probe(key))
+///
+/// The local probes (`local_probes`) run between the clipboard and the network:
+/// the js network probe exits the process, so it has to be last.
+fn measurement_script(key: &str, targets: &ProbeTargets) -> String {
+    match key {
+        "python" => format!(
+            "{}{}{}",
+            clipboard_probe(key),
+            local_probes(key, targets, ""),
+            network_probe(key)
+        ),
+        _ => format!(
+            "{}{}",
+            clipboard_probe(key),
+            local_probes(key, targets, network_probe(key))
+        ),
+    }
 }
 
 /// The clipboard half of the measurement — macOS only, because `pbpaste` and the
@@ -1236,18 +2110,95 @@ fn network_probe(key: &str) -> &'static str {
 /// `canonicalize` IS REQUIRED: on macOS `std::env::temp_dir()` gives something
 /// under `/var/folders/...`, and `/var` is a link to `/private/var`. Written
 /// unresolved into the sandbox profile, the rule matches nothing.
+///
+/// THE NAME COMES FROM `nonce()` AND THE DIRECTORY MUST BE NEW. It used to be
+/// `{pid}-{wall-clock nanoseconds}` with `create_dir_all`, and the macOS wall
+/// clock moves in whole microseconds (MEASURED: `time.time_ns() % 1000` is 0 on
+/// every read, macOS 26.5.2): two discoveries started in the same
+/// microsecond — the test suite starts dozens at once — got the SAME directory,
+/// and the first to finish deleted the other's script before it ran. Seen
+/// while writing the audit fixes of 9 Oct 2026: one discovery in a full
+/// `cargo test` run failed while `diagnose()`, measuring again a moment later,
+/// reported the shield on. Reproduced by `parallel_measurements_never_share_a_directory`
+/// on the old code: 16 threads released together, 3, 2 and 4 of them shared a
+/// directory in three runs out of three. `nonce()` carries a process-wide counter, and
+/// `create_dir` refuses a name that already exists instead of sharing it.
 fn temp_measurement_dir() -> std::io::Result<PathBuf> {
-    let root = std::env::temp_dir().join(format!(
-        "tacet-code-measurement-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
-    std::fs::create_dir_all(&root)?;
+    let root = std::env::temp_dir().join(format!("tacet-code-measurement-{}", nonce()));
+    std::fs::create_dir(&root)?;
     root.canonicalize()
 }
+
+/// The part of the description both shields share.
+///
+/// The sentences close two failures measured in Swift: the model was calling
+/// the tool to inspect a server/container, and it took scripts that printed
+/// nothing for a success.
+macro_rules! run_code_usage {
+    () => {
+        "To run logic from a saved file, put the CODE ITSELF into this call instead of trying \
+         to execute the file. Call this for any calculation or transformation too complex for \
+         the calculate tool (loops, dates, text processing, simulations), and whenever the user \
+         asks you to PRODUCE A LIST OR A SEQUENCE - prime numbers, Fibonacci terms, sorting, \
+         filtering, counting - instead of writing the items out from memory. Never call it to \
+         inspect servers, containers, ports, processes, disks or the operating system — it \
+         cannot see them. The LAST LINE of the script must be print(...) in python or \
+         console.log(...) in js: a bare expression is NOT output and a script that prints \
+         nothing returns an error. If the tool returns an error, fix the code and call it ONCE \
+         more."
+    };
+}
+
+/// What the model is told under `sandbox-exec`.
+///
+/// EACH CLAIM IS A MEASURED FACT (see `verify_shield` and the macOS-only tests
+/// below), and the wording is no wider than the measurement. It used to say "NO
+/// access to ANY file on this device" while the profile let the script read
+/// everything outside the home directory — temp folders, /Users/Shared,
+/// db_write's temporary copies (audit L20). Reading is now an allowlist, and
+/// what the allowlist still opens is NAMED rather than denied. That is "system
+/// files", not "system libraries": the review of 10 Oct 2026 read /etc/hosts
+/// from inside, listed /usr/local and /opt/homebrew/share, and stat'ed files in
+/// $HOME (`file-read-metadata` is unfiltered, so names and sizes show, never
+/// contents); every probe at user data — $HOME and its case and `..` aliases,
+/// /Users/Shared, $TMPDIR, /private/tmp, /Volumes, Homebrew's var and etc —
+/// was refused. "A new, empty folder" is true since M5: the folder is created
+/// for the call and deleted after it.
+///
+/// It is also SHORT on purpose: `catalog.rs` caps every description at ~420
+/// tokens because the block is re-sent on every turn of the tool loop.
+///
+/// AND EVERY WORD ROUTES. The router breaks ties on shared four-letter stems
+/// (`router::overlap`, two needed), and the usage text already carries "call".
+/// MEASURED with `every_benchmark_step_can_pass`: "nothing else BUT system
+/// libraries" here, and "read-ONLY" in the bwrap text, each made a second stem
+/// with "…375 grams of flour but I only want a third…" and pushed `calculate`
+/// out of the nine. Hence "except" and "can still read".
+const DESCRIPTION_SANDBOX_EXEC: &str = concat!(
+    "Runs a short script in an isolated sandbox with NO network and NO access to your files: \
+     it starts in a new, empty folder and can read nothing except system files - not \
+     even a file just saved with write_code, so open('file') always fails. ",
+    run_code_usage!()
+);
+
+/// What the model is told under `bwrap`.
+///
+/// NARROWER THAN THE macOS TEXT, ON PURPOSE. bwrap binds the whole root READ
+/// ONLY and covers the home directory and the socket directories (see
+/// `bwrap_args`); everything else outside the home directory — /tmp, /srv, a
+/// working folder that is not under home — is still readable. Saying "your
+/// files" there would be the exact overclaim L20 was about, so the text says
+/// what is covered and what is not. The same goes for sockets: only the known
+/// ones are shadowed (see `bwrap_args`, "WHAT IS STILL OPEN"), so the text
+/// says "known" rather than promising that no local service can be reached.
+/// (Not "read-only": see the routing note above.)
+const DESCRIPTION_BWRAP: &str = concat!(
+    "Runs a short script in an isolated sandbox with NO network and NO access to your home \
+     folder: it starts in a new, empty folder, can write nowhere else, and can still read other \
+     system files; only known sockets are hidden. Never open a saved file, not even one \
+     just saved with write_code. ",
+    run_code_usage!()
+);
 
 impl Tool for RunCodeTool {
     fn name(&self) -> &str {
@@ -1255,23 +2206,10 @@ impl Tool for RunCodeTool {
     }
 
     fn description(&self) -> &str {
-        // The sentence "NO network, NO filesystem, NO access to this device" is
-        // not a promise but a MEASURED fact (see `verify_shield`) — that is why
-        // it can be written. The last sentences close two failures measured in
-        // Swift: the model was calling the tool to inspect a server/container,
-        // and it took scripts that printed nothing for a success.
-        "Runs a short script in an isolated sandbox with NO network access and NO access to ANY \
-         file on this device — not even a file that was just saved with write_code: the sandbox \
-         is an empty folder, so open('file') always fails. To run logic from a saved file, put \
-         the CODE ITSELF into this call instead of trying to execute the file. Call this \
-         for any calculation or transformation too complex for the calculate tool (loops, dates, \
-         text processing, simulations), and whenever the user asks you to PRODUCE A LIST OR A \
-         SEQUENCE - prime numbers, Fibonacci terms, sorting, filtering, counting - instead of \
-         writing the items out from memory. Never call it to inspect servers, containers, ports, \
-         processes, disks or the operating system — it cannot see them. The LAST LINE of the \
-         script must be print(...) in python or console.log(...) in js: a bare expression is \
-         NOT output and a script that prints nothing returns an error. If the tool returns an \
-         error, fix the code and call it ONCE more."
+        match self.shield {
+            NetworkShield::SandboxExec { .. } => DESCRIPTION_SANDBOX_EXEC,
+            NetworkShield::Bwrap { .. } => DESCRIPTION_BWRAP,
+        }
     }
 
     fn schema(&self) -> ArgSchema {
@@ -1392,7 +2330,14 @@ impl RunCodeTool {
             Err(h) => return ToolOutcome::failed(&h),
         };
 
-        let raw = match run(&self.shield, interpreter, &sandbox, code, timeout) {
+        let raw = match run_until(
+            &self.shield,
+            interpreter,
+            &sandbox,
+            code,
+            timeout,
+            ctx.cancel_token(),
+        ) {
             Ok(s) => s,
             Err(h) => return ToolOutcome::failed(&h),
         };
@@ -1724,12 +2669,116 @@ mod tests {
         // NO PATH MAY BE SPLICED INTO THE PROFILE TEXT. This is the claim that
         // keeps the SBPL-injection fix from being undone by a well-meaning
         // "simplification" back to `format!` (see `profile`).
-        // EVERY `subpath` MUST BE A PARAMETER. `(literal "/dev/null")` is a
-        // fixed device node and carries no attacker-controlled text, so it is
-        // deliberately not covered by this claim.
+        //
+        // IT USED TO READ "no `(subpath \"` at all", which the read allowlist
+        // (audit L20) makes impossible: that allowlist IS a list of literal
+        // system paths. The claim is kept, made exact instead: every literal
+        // subpath must be one of the FIXED system roots below, so the sandbox
+        // or the home directory spliced in as text — the attack — is still a
+        // literal that is not on the list and still turns this red. The two
+        // lists are compared both ways, so neither can change alone.
+        // `(literal "/dev/null")` and `(literal "/")` are fixed too.
+        const SYSTEM_READ_ROOTS: &[&str] = &[
+            "/System",
+            "/usr",
+            "/bin",
+            "/sbin",
+            "/private/etc",
+            "/private/var/db/timezone",
+            "/private/var/db/dyld",
+            "/dev",
+            "/opt/homebrew/Cellar",
+            "/opt/homebrew/opt",
+            "/opt/homebrew/bin",
+            "/opt/homebrew/lib",
+            "/opt/homebrew/Frameworks",
+            "/opt/homebrew/share",
+            "/Library/Frameworks",
+            "/Library/Developer/CommandLineTools",
+        ];
+        // The data directories of the Intel Homebrew prefix, which `/usr`
+        // covers and which are therefore denied by name (see `profile`).
+        const DENIED_DATA_ROOTS: &[&str] = &["/usr/local/var", "/usr/local/etc"];
+        let literal_subpaths: Vec<&str> = p
+            .split("(subpath \"")
+            .skip(1)
+            .filter_map(|rest| rest.split('"').next())
+            .collect();
+        let fixed: Vec<&str> = SYSTEM_READ_ROOTS
+            .iter()
+            .chain(DENIED_DATA_ROOTS)
+            .copied()
+            .collect();
+        assert_eq!(
+            literal_subpaths, fixed,
+            "a literal path that is not a fixed system root is in a subpath rule: {p}"
+        );
+        // NO ALLOWED ROOT MAY CONTAIN A DIRECTORY THAT HOLDS USER DATA unless
+        // that directory is denied after it. This is the claim the old
+        // `(subpath "/opt/homebrew")` broke — the review read a live postgres
+        // database out of `/opt/homebrew/var` — and it is checked here, on the
+        // TEXT, so it goes red on every machine and not only on one that
+        // happens to have Homebrew services installed.
+        let deny_data = p
+            .find("(deny file-read* (subpath \"/usr/local/var\")")
+            .expect("the Intel Homebrew data deny");
+        let allow_system = p.find("(allow file-read* ").expect("the system allow");
         assert!(
-            !p.contains("(subpath \""),
-            "a literal path leaked into a subpath rule: {p}"
+            allow_system < deny_data,
+            "the data deny comes before the allow it narrows, so the allow wins: {p}"
+        );
+        for data in [
+            "/opt/homebrew/var",
+            "/opt/homebrew/etc",
+            "/usr/local/var",
+            "/usr/local/etc",
+        ] {
+            let opened_by: Vec<&&str> = SYSTEM_READ_ROOTS
+                .iter()
+                .filter(|root| Path::new(data).starts_with(root))
+                .collect();
+            assert!(
+                opened_by.is_empty() || DENIED_DATA_ROOTS.contains(&data),
+                "{data} holds Homebrew services' data and is readable through {opened_by:?}"
+            );
+        }
+        // THE ONE FILE LET BACK IN under `etc/` is OpenSSL's config, and it
+        // must come AFTER the deny or the deny takes it away again and node
+        // stops starting (see `profile`).
+        let openssl = p
+            .find("(allow file-read* (regex #\"^/(opt/homebrew|usr/local)/etc/openssl@[0-9.]+/openssl\\.cnf$\"))")
+            .expect("the openssl.cnf exception");
+        assert!(
+            deny_data < openssl,
+            "openssl.cnf is re-allowed before the deny: {p}"
+        );
+        assert_eq!(p.matches("(regex ").count(), 1, "another regex rule: {p}");
+        // READING IS AN ALLOWLIST (L20): no unfiltered `(allow file-read*)`.
+        assert!(
+            !p.contains("(allow file-read*)"),
+            "file reading is unfiltered again — temp folders and /Users/Shared are readable"
+        );
+        // THE METADATA ALLOW COMES AFTER THE HOME DENY — the order the
+        // `realpathSync` fix (see `profile`) was measured in, when the other
+        // order gave node `EPERM: lstat '/Users/...'`. It was swapped by
+        // accident while the L20 allowlist was written and nothing went red.
+        // HONEST LIMIT: on macOS 26.5.2 (9 Oct 2026) BOTH orders let node lstat
+        // the home directory and a sibling in it and run, so this pins the
+        // documented order rather than reproducing the failure on this OS.
+        let deny_home = p
+            .find("(deny file-read* (subpath (param \"HOMEDIR\")))")
+            .expect("the home deny");
+        let metadata = p
+            .find("(allow file-read-metadata)")
+            .expect("the metadata allow");
+        assert!(
+            deny_home < metadata,
+            "the home deny comes after the metadata allow — node cannot lstat its own path: {p}"
+        );
+        // SIGNALS ONLY TO ITSELF (M1).
+        assert!(
+            p.contains("(allow signal (target self))") && !p.contains("(allow signal)"),
+            "the script can signal processes outside the sandbox: {p}"
         );
         // The clipboard: `(allow mach-lookup)` MUST NOT stand unfiltered.
         assert!(
@@ -1851,7 +2900,7 @@ mod tests {
     ///
     /// `sandbox_must_run()` is what turns every `tool_or_skip()` in this crate
     /// from a skip into a failure, and it is switched on by three lines of YAML.
-    /// Delete them — or rename the variable on one side only — and 23 tests go
+    /// Delete them — or rename the variable on one side only — and 26 tests go
     /// back to passing without measuring anything, exactly as they did before
     /// this work, with nothing anywhere going red. That figure is not asserted
     /// from memory: `the_skip_count_the_documents_quote_is_the_count_in_the_source`
@@ -1926,7 +2975,11 @@ mod tests {
             // THE CALL SHAPE, NOT THE NAME. Matching the name alone made the
             // scanner count its own matcher line and every doc comment that
             // mentions the helper — measured: 16 in this file instead of 15.
-            } else if line.starts_with("let Some(tool) =") && line.contains("tool_or_skip") {
+            // `let Some(` rather than `let Some(tool) =`: write_code's stage-1
+            // stop test binds `mut tool` to swap the interpreter, and the
+            // narrower match left it uncounted — a Linux figure one too LOW,
+            // the quiet direction, while this test stayed green.
+            } else if line.starts_with("let Some(") && line.contains("tool_or_skip()") {
                 total += 1;
                 if in_macos_fn {
                     macos_only += 1;
@@ -1936,16 +2989,48 @@ mod tests {
         (total, macos_only)
     }
 
+    /// H7, review of 10 Oct 2026: SECURITY.md's statement of the socket gap
+    /// names both limits of the scan, read from the constants. It named the
+    /// depth and not the entry budget, so a container's socket at depth 1 of
+    /// a 5,000-entry working folder — unshadowed, reachable — read as covered,
+    /// and a reporter could have been told it was out of scope.
+    #[test]
+    fn security_states_both_limits_of_the_socket_scan() {
+        let security = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../SECURITY.md"),
+        )
+        .expect("SECURITY.md");
+        let security = security.split_whitespace().collect::<Vec<_>>().join(" ");
+        let budget = SOCKET_SCAN_BUDGET.to_string();
+        let (head, tail) = budget.split_at(budget.len() - 3);
+        let budget = format!("{head},{tail}");
+        let depth = ["zero", "one", "two", "three", "four"][SOCKET_SCAN_DEPTH];
+        for claim in [
+            format!("up to {depth} levels deep"),
+            format!("within the first {budget} entries"),
+            format!("deeper than {depth} levels, past an entry budget"),
+        ] {
+            assert!(
+                security.contains(&claim),
+                "SECURITY.md does not say {claim:?}; the scan is {SOCKET_SCAN_DEPTH} levels \
+                 and {SOCKET_SCAN_BUDGET} entries per root"
+            );
+        }
+    }
+
     /// 4b-iii) THE NUMBER IN THE PROSE IS THE NUMBER IN THE SOURCE.
     ///
     /// "TWENTY-FOUR tests go back to skipping" was written in four places and
-    /// branded COUNTED rather than estimated. It was wrong: the real figure on
-    /// Linux is 22 (14 here after excluding the macOS-only
+    /// branded COUNTED rather than estimated. It was wrong at the time: the
+    /// figure on Linux was then 22 (14 here after excluding the macOS-only
     /// `the_clipboard_is_really_cut`, 8 in write_code.rs). A number a reader is
     /// told was counted is the one number that must not be off, so it is no
     /// longer typed anywhere without this test deriving it from the source and
-    /// checking the four documents that quote it. Add a sandbox test tomorrow
-    /// and this goes red naming the figure to move.
+    /// checking the documents that quote it — this comment included, which is
+    /// why it names no current figure. Add a sandbox test tomorrow and this
+    /// goes red naming the figure to move. (The review of 10 Oct 2026 found
+    /// ci.yml saying "those 22 real" fourteen lines under "24 on Linux": only
+    /// the first spelling was checked.)
     #[test]
     fn the_skip_count_the_documents_quote_is_the_count_in_the_source() {
         let (run_total, run_macos) = skipping_tests(include_str!("run_code.rs"));
@@ -1968,8 +3053,9 @@ mod tests {
             .and_then(Path::parent)
             .expect("the workflow lives under .github/workflows")
             .to_path_buf();
-        let claims: [(&str, String); 6] = [
+        let claims: [(&str, String); 7] = [
             (".github/workflows/ci.yml", format!("{total} on Linux")),
+            (".github/workflows/ci.yml", format!("those {total} real")),
             (
                 ".github/workflows/ci.yml",
                 format!("{run_linux} in run_code.rs"),
@@ -2019,7 +3105,7 @@ mod tests {
     #[test]
     fn the_bwrap_arguments_cover_the_home_directory_before_the_sandbox() {
         let sandbox = Path::new("/home/user/.tacet/sandbox");
-        let args: Vec<String> = bwrap_args(sandbox, Some(Path::new("/home/user")))
+        let args: Vec<String> = bwrap_args(sandbox, Some(Path::new("/home/user")), &[])
             .into_iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
@@ -2058,14 +3144,16 @@ mod tests {
     /// 4d) `--tmpfs /` IS A DISASTER: it empties the root directory and the
     ///     interpreter does not start at all. `HOME=/` or a broken/missing
     ///     `HOME` must not produce it — and even if the home directory cannot be
-    ///     covered, the network and write gates must stay CLOSED.
+    ///     covered, the network and write gates must stay CLOSED. A socket
+    ///     directory that resolved to `/` is refused by the same guard.
     #[test]
     fn bwrap_gives_up_on_the_root_when_the_home_directory_is_broken() {
         for home in [Some(Path::new("/")), Some(Path::new("relative/path")), None] {
-            let args: Vec<String> = bwrap_args(Path::new("/tmp/sandbox"), home)
-                .into_iter()
-                .map(|a| a.to_string_lossy().into_owned())
-                .collect();
+            let args: Vec<String> =
+                bwrap_args(Path::new("/tmp/sandbox"), home, &[Shadow::Dir("/".into())])
+                    .into_iter()
+                    .map(|a| a.to_string_lossy().into_owned())
+                    .collect();
             assert!(
                 !args.iter().any(|a| a == "--tmpfs"),
                 "a tmpfs was produced for {home:?}: {args:?}"
@@ -2079,6 +3167,639 @@ mod tests {
                 "{home:?}: the root was left writable"
             );
         }
+    }
+
+    /// 4d-ii) THE SOCKET DIRECTORIES ARE COVERED (audit H7).
+    ///
+    /// `--unshare-net` does not touch a unix socket that is a FILE, and
+    /// `--ro-bind / /` made all of them reachable — `connect` is not a write.
+    /// What is checked is the argv, because that is all this machine can run:
+    /// each runtime directory gets a tmpfs, a loose socket gets `/dev/null`
+    /// bound over it, and both come AFTER the home tmpfs and BEFORE the sandbox
+    /// bind (in the reverse order the tmpfs would cover the sandbox when it
+    /// lives under `/run` or `/tmp`). The kernel accepting it is measured by
+    /// the ubuntu CI leg, where `verify_shield`'s socket probe runs against the
+    /// runner's own sockets.
+    #[cfg(unix)]
+    #[test]
+    fn the_bwrap_arguments_cover_the_socket_directories() {
+        let sandbox = Path::new("/home/user/project/.tacet-sandbox-x");
+        let shadows = [
+            Shadow::Dir("/run".into()),
+            Shadow::Dir("/tmp/.X11-unix".into()),
+            Shadow::Socket("/tmp/tmux-1000/default".into()),
+            Shadow::Socket("/var/lib/incus/unix.socket".into()),
+        ];
+        let args: Vec<String> = bwrap_args(sandbox, Some(Path::new("/home/user")), &shadows)
+            .into_iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let at = |pair: [&str; 2]| {
+            args.windows(2)
+                .position(|w| w[0] == pair[0] && w[1] == pair[1])
+                .unwrap_or_else(|| panic!("{pair:?} is missing: {args:?}"))
+        };
+        let home = at(["--tmpfs", "/home/user"]);
+        let run = at(["--tmpfs", "/run"]);
+        let x11 = at(["--tmpfs", "/tmp/.X11-unix"]);
+        let tmux = args
+            .windows(3)
+            .position(|w| w == ["--ro-bind", "/dev/null", "/tmp/tmux-1000/default"])
+            .unwrap_or_else(|| panic!("the tmux socket is not shadowed: {args:?}"));
+        let incus = args
+            .windows(3)
+            .position(|w| w == ["--ro-bind", "/dev/null", "/var/lib/incus/unix.socket"])
+            .unwrap_or_else(|| panic!("the Incus socket is not shadowed: {args:?}"));
+        let bind = at(["--bind", &sandbox.to_string_lossy()]);
+        assert!(
+            home < run && run < bind && x11 < bind && tmux < bind && incus < bind,
+            "{args:?}"
+        );
+    }
+
+    /// 4d-iii) THE CANDIDATES BECOME A PLAN: resolved, existing, deduplicated,
+    ///         and nothing listed twice. A missing directory MUST be dropped —
+    ///         bwrap `mkdir`s a missing `--tmpfs` target inside the read-only
+    ///         root and dies — and a socket under a covered directory or under
+    ///         the home directory is dropped because it no longer exists there.
+    #[cfg(unix)]
+    #[test]
+    fn the_socket_plan_resolves_dedupes_and_skips_what_is_covered() {
+        let root = temp_dir("plan");
+        let run = root.join("run");
+        let user = run.join("user-1000");
+        let x11 = root.join("x11");
+        let home = root.join("home");
+        let loose = root.join("loose");
+        for dir in [&user, &x11, &home, &loose] {
+            std::fs::create_dir_all(dir).expect("fixture");
+        }
+        // `var-run -> run`, the way every current distribution has it.
+        std::os::unix::fs::symlink(&run, root.join("var-run")).expect("link");
+        // Stand-ins for sockets: the plan only needs them to EXIST.
+        for f in [
+            loose.join("agent.sock"),
+            user.join("bus"),
+            home.join("gpg.sock"),
+        ] {
+            std::fs::write(f, "").expect("fixture");
+        }
+
+        let plan = plan_shadows(
+            vec![
+                root.join("var-run"),
+                run.clone(),
+                user.clone(),
+                x11.clone(),
+                root.join("missing"),
+            ],
+            vec![user.join("bus"), home.join("gpg.sock"), loose.join("gone")],
+            Some(loose.join("agent.sock")),
+            Some(&home),
+        );
+        assert_eq!(
+            plan,
+            vec![
+                Shadow::Dir(run.clone()),
+                Shadow::Dir(x11.clone()),
+                Shadow::Socket(loose.join("agent.sock")),
+            ],
+            "the plan for {}",
+            root.display()
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 4d-iv) `socket_dirs` names the directories the audit lists, and the
+    ///        user's `$XDG_RUNTIME_DIR` when there is one.
+    #[test]
+    fn the_runtime_directories_the_audit_names_are_candidates() {
+        let dirs = socket_dirs(Some(std::ffi::OsStr::new("/run/user/1000")));
+        for expected in ["/run", "/var/run", "/tmp/.X11-unix", "/run/user/1000"] {
+            assert!(
+                dirs.contains(&PathBuf::from(expected)),
+                "{expected} is not covered: {dirs:?}"
+            );
+        }
+        assert_eq!(socket_dirs(Some(std::ffi::OsStr::new(""))).len(), 3);
+    }
+
+    /// 4d-iv-b) THE SOCKETS OUTSIDE /run AND /tmp ARE IN THE PLAN (audit H7,
+    ///          review of 10 Oct 2026). LXD's and Incus's API sockets live under
+    ///          `/var/snap` and `/var/lib`, and a working folder outside the
+    ///          home directory (`/srv/app`) shows its own sockets through
+    ///          `--ro-bind / /`; none of them was in the plan. The fixture puts
+    ///          a stand-in daemon socket and two working-folder sockets deeper
+    ///          than the `/tmp` scan reaches, so only the new sources can find
+    ///          them.
+    ///
+    ///          The sockets are REAL socket files because `scan_sockets` keeps
+    ///          only `is_socket` entries: `bind` creates the file and dropping
+    ///          the listener at once leaves it behind. Nothing listens and no
+    ///          connection is made. `/tmp` rather than `temp_dir()` because a
+    ///          socket path has a 104-byte ceiling on macOS and `$TMPDIR` there
+    ///          eats half of it.
+    #[cfg(unix)]
+    #[test]
+    fn the_socket_plan_covers_daemon_sockets_and_the_working_folder() {
+        let root = PathBuf::from("/tmp").join(format!("tcs-{}", nonce()));
+        std::fs::create_dir_all(&root).expect("fixture");
+        let root = root.canonicalize().expect("resolved");
+        let work = root.join("srv").join("app");
+        let sandbox = work.join("run-1");
+        let daemon = root.join("var").join("lib").join("incus");
+        let home = root.join("home");
+        for dir in [&sandbox, &work.join("pg"), &daemon, &home.join("w")] {
+            std::fs::create_dir_all(dir).expect("fixture");
+        }
+        let socket = |path: &Path| {
+            drop(std::os::unix::net::UnixListener::bind(path).expect("a socket file"));
+        };
+        let gunicorn = work.join("g.sock");
+        let postgres = work.join("pg").join(".s.PGSQL.5432");
+        let incus = daemon.join("unix.socket");
+        for path in [&gunicorn, &postgres, &incus] {
+            socket(path);
+        }
+
+        let host = ShadowHost {
+            daemon_sockets: vec![incus.clone(), root.join("absent").join("unix.socket")],
+            ..ShadowHost::default()
+        };
+        let plan = shadows_for(&sandbox, Some(&home), &host);
+        for expected in [&gunicorn, &postgres, &incus] {
+            assert!(
+                plan.contains(&Shadow::Socket(expected.clone())),
+                "{} IS REACHABLE UNDER bwrap — it is not in the plan: {plan:?}",
+                expected.display()
+            );
+        }
+        assert!(
+            !plan
+                .iter()
+                .any(|s| matches!(s, Shadow::Socket(p) if p.starts_with(root.join("absent")))),
+            "a daemon socket this host does not have was planned: {plan:?}"
+        );
+
+        // A working folder under the home directory is not scanned: the home
+        // tmpfs hides it already, and scanning it would only cost a walk.
+        let roots = socket_scan_roots(None, Some(&home.join("w")), Some(&home));
+        assert!(!roots.contains(&home.join("w")), "{roots:?}");
+        let roots = socket_scan_roots(None, Some(&work), Some(&home));
+        assert!(roots.contains(&work), "{roots:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 4d-iv-c) THE KNOWN DAEMON SOCKETS ARE BOTH SHADOWED AND MEASURED. The
+    ///          plan reads them from `ShadowHost::from_env` and the measurement
+    ///          from `probe_socket_candidates`; one without the other is either
+    ///          a shadow nobody has seen work or a gap `verify_shield` cannot
+    ///          see — the reviewer's second point.
+    #[cfg(unix)]
+    #[test]
+    fn the_known_daemon_sockets_are_shadowed_and_probed() {
+        let host = ShadowHost::from_env();
+        let probed = probe_socket_candidates(&host);
+        for expected in [
+            "/var/snap/lxd/common/lxd/unix.socket",
+            "/var/lib/lxd/unix.socket",
+            "/var/lib/incus/unix.socket",
+        ] {
+            let expected = PathBuf::from(expected);
+            assert!(
+                host.daemon_sockets.contains(&expected),
+                "{} is not shadowed: {:?}",
+                expected.display(),
+                host.daemon_sockets
+            );
+            assert!(
+                probed.contains(&expected),
+                "{} is not measured by verify_shield: {probed:?}",
+                expected.display()
+            );
+        }
+    }
+
+    /// 4d-iv-d) A BIG WORKING FOLDER DOES NOT STARVE /tmp (audit H7, review
+    ///          of 10 Oct 2026). The scan budget was shared and the working
+    ///          folder walked first, so 5,000 files beside the sandbox spent it
+    ///          and a socket in /tmp left the plan. The comparison is against
+    ///          the same socket beside a SMALL folder, so a /tmp that is itself
+    ///          over budget on some machine reads as "skipped", not as a pass.
+    #[cfg(unix)]
+    #[test]
+    fn a_big_working_folder_does_not_starve_the_tmp_scan() {
+        let tmp_dir = PathBuf::from("/tmp").join(format!("tcr-{}", nonce()));
+        std::fs::create_dir_all(&tmp_dir).expect("fixture");
+        let tmp_dir = tmp_dir.canonicalize().expect("resolved");
+        let tmp_socket = tmp_dir.join("s.sock");
+        drop(std::os::unix::net::UnixListener::bind(&tmp_socket).expect("a socket file"));
+
+        let base = temp_dir("big-workdir");
+        let small = base.join("small");
+        let big = base.join("big");
+        for dir in [
+            &small.join("run-1"),
+            &big.join("run-1"),
+            &big.join("node_modules"),
+        ] {
+            std::fs::create_dir_all(dir).expect("fixture");
+        }
+        for i in 0..5_000 {
+            std::fs::write(big.join("node_modules").join(format!("f{i}")), b"").expect("fixture");
+        }
+        let shadowed = |work: &Path| {
+            shadows_for(&work.join("run-1"), None, &ShadowHost::default())
+                .contains(&Shadow::Socket(tmp_socket.clone()))
+        };
+        let beside_small = shadowed(&small);
+        let beside_big = shadowed(&big);
+        std::fs::remove_dir_all(&base).ok();
+        std::fs::remove_dir_all(&tmp_dir).ok();
+        if !beside_small {
+            eprintln!("skipped: /tmp on this machine is over the scan budget on its own");
+            return;
+        }
+        assert!(
+            beside_big,
+            "a /tmp socket is shadowed beside a small working folder and NOT beside one \
+             with 5,000 entries — the folder spent the scan budget"
+        );
+    }
+
+    /// 4d-iv-e) EVERY SOCKET THE KERNEL LISTS IS IN THE PLAN, wherever it is
+    ///          (review of 10 Oct 2026: Multipass and MicroK8s sockets were
+    ///          outside every hand-kept rule). The parser reads the fixture's
+    ///          format — header, abstract names, a path with a space, a row
+    ///          with no path — and a real socket three levels below a folder
+    ///          no rule scans is planned once the host lists it.
+    #[test]
+    fn every_bound_socket_the_kernel_lists_is_shadowed() {
+        let fixture = "\
+Num       RefCount Protocol Flags    Type St Inode Path
+0000000000000000: 00000002 00000000 00010000 0001 01 23456 /run/systemd/private
+0000000000000000: 00000002 00000000 00010000 0001 01 23457 @/tmp/.X11-unix/X0
+0000000000000000: 00000002 00000000 00010000 0001 01 23458 /var/snap/multipass/common/multipass_socket
+0000000000000000: 00000003 00000000 00000000 0001 03 23459
+0000000000000000: 00000002 00000000 00010000 0001 01 23460 /srv/my app/run/x.sock
+0000000000000000: 00000002 00000000 00010000 0001 01 23456 /run/systemd/private
+";
+        assert_eq!(
+            bound_sockets_from(fixture),
+            [
+                PathBuf::from("/run/systemd/private"),
+                PathBuf::from("/var/snap/multipass/common/multipass_socket"),
+                PathBuf::from("/srv/my app/run/x.sock"),
+            ]
+        );
+        assert!(bound_sockets_from("").is_empty());
+
+        #[cfg(unix)]
+        {
+            let root = PathBuf::from("/tmp").join(format!("tcb-{}", nonce()));
+            let deep = root.join("a").join("b").join("c");
+            std::fs::create_dir_all(&deep).expect("fixture");
+            let deep = deep.canonicalize().expect("resolved");
+            let socket = deep.join("d.sock");
+            drop(std::os::unix::net::UnixListener::bind(&socket).expect("a socket file"));
+            let sandbox = root.join("work").join("run-1");
+            std::fs::create_dir_all(&sandbox).expect("fixture");
+            let without = shadows_for(&sandbox, None, &ShadowHost::default());
+            let with = shadows_for(
+                &sandbox,
+                None,
+                &ShadowHost {
+                    bound_sockets: vec![socket.clone()],
+                    ..ShadowHost::default()
+                },
+            );
+            std::fs::remove_dir_all(&root).ok();
+            assert!(
+                !without.contains(&Shadow::Socket(socket.clone())),
+                "the fixture must be out of the scan's reach, or it measures the scan"
+            );
+            assert!(
+                with.contains(&Shadow::Socket(socket.clone())),
+                "a socket the kernel lists is not in the plan: {with:?}"
+            );
+        }
+    }
+
+    /// 4d-v) THE HOME RULE NAMES THE RESOLVED DIRECTORY (audit M2).
+    ///
+    /// `sandbox-exec` matches rules against the RESOLVED path of an access, so a
+    /// `$HOME` that is a link made `(deny file-read* (subpath HOMEDIR))` match
+    /// nothing — measured by the audit with a symlinked home and a dummy secret,
+    /// which was read. The fake home here is a link to a directory, the way a
+    /// moved home is.
+    #[cfg(unix)]
+    #[test]
+    fn the_home_rule_names_the_resolved_directory() {
+        let root = temp_dir("home-link");
+        let real = root.join("real-home");
+        std::fs::create_dir_all(&real).expect("fixture");
+        let alias = root.join("alias-home");
+        std::os::unix::fs::symlink(&real, &alias).expect("link");
+
+        assert_eq!(
+            canonical_home(Some(alias.clone().into_os_string())),
+            real.canonicalize().expect("resolved"),
+            "a symlinked $HOME went into the profile unresolved — the deny rule matches nothing"
+        );
+        // A home behind a link to a link resolves all the way.
+        let alias2 = root.join("alias-of-alias");
+        std::os::unix::fs::symlink(&alias, &alias2).expect("link");
+        assert_eq!(
+            canonical_home(Some(alias2.into_os_string())),
+            real.canonicalize().expect("resolved")
+        );
+        // Unusable values fall back to the directory every home lives under.
+        assert_eq!(canonical_home(None), PathBuf::from(FALLBACK_HOME));
+        assert_eq!(
+            canonical_home(Some(OsString::new())),
+            PathBuf::from(FALLBACK_HOME)
+        );
+        assert_eq!(
+            canonical_home(Some("relative/home".into())),
+            PathBuf::from(FALLBACK_HOME)
+        );
+        // A home that does not exist keeps its raw value: nothing behind it.
+        let ghost = root.join("ghost-home");
+        assert_eq!(canonical_home(Some(ghost.clone().into_os_string())), ghost);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 4d-v-b) AND THE COMMAND `run_program` SPAWNS CARRIES IT (review of 10
+    ///         Oct 2026). The test above checks `canonical_home` alone; this
+    ///         one builds the command through `shielded_command` — the path
+    ///         `run_program` takes — with a symlinked raw `$HOME`, for both
+    ///         shields, and reads the home back out of the argv. Splicing the
+    ///         raw value there again turns this red on a CI machine whose own
+    ///         home is not a link.
+    #[cfg(unix)]
+    #[test]
+    fn the_spawned_command_names_the_resolved_home() {
+        let root = temp_dir("home-link-argv");
+        let real = root.join("real-home");
+        std::fs::create_dir_all(&real).expect("fixture");
+        let alias = root.join("alias-home");
+        std::os::unix::fs::symlink(&real, &alias).expect("link");
+        let real = real.canonicalize().expect("resolved");
+        let runtime = temp_dir("home-link-argv-sandbox")
+            .canonicalize()
+            .expect("resolved");
+
+        let argv = |shield: &NetworkShield| -> Vec<OsString> {
+            shielded_command(
+                shield,
+                &runtime,
+                Path::new("/usr/bin/true"),
+                &[],
+                Some(alias.clone().into_os_string()),
+            )
+            .expect("a safe path builds a command")
+            .get_args()
+            .map(OsString::from)
+            .collect()
+        };
+
+        let seatbelt = argv(&NetworkShield::SandboxExec {
+            tool: PathBuf::from("/usr/bin/sandbox-exec"),
+        });
+        let mut want = OsString::from(format!("{PARAM_HOME}="));
+        want.push(&real);
+        assert!(
+            seatbelt.contains(&want),
+            "sandbox-exec was not handed the resolved home: {seatbelt:?}"
+        );
+
+        let bwrap = argv(&NetworkShield::Bwrap {
+            tool: PathBuf::from("/usr/bin/bwrap"),
+        });
+        assert!(
+            bwrap
+                .windows(2)
+                .any(|w| w[0] == "--tmpfs" && Path::new(&w[1]) == real),
+            "bwrap did not cover the resolved home: {bwrap:?}"
+        );
+
+        // Neither command names the link: a rule written with it matches
+        // nothing the kernel resolves.
+        for arg in seatbelt.iter().chain(&bwrap) {
+            assert!(
+                !arg.to_string_lossy().contains("alias-home"),
+                "the symlinked home reached the shield unresolved: {arg:?}"
+            );
+        }
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&runtime).ok();
+    }
+
+    /// 4d-vi) THE VERDICT DEMANDS EVERY GATE. A probe that never printed counts
+    ///        as a failure, not a pass, and an "open" marker fails it even next
+    ///        to a "blocked" one. Unix sockets (H7) and the home directory (M2)
+    ///        are gates on every platform; the clipboard and signals (M1) on
+    ///        macOS, where they are the shield's job.
+    #[test]
+    fn the_verdict_demands_every_gate() {
+        let mut all = vec![
+            "NET_BLOCKED",
+            "UNIX_BLOCKED",
+            "HOME_BLOCKED",
+            "PB_BLOCKED",
+            "SIG_BLOCKED",
+        ];
+        assert_eq!(shield_verdict(&all.join("\n")), Ok(()));
+
+        let always = ["NET_BLOCKED", "UNIX_BLOCKED", "HOME_BLOCKED"];
+        let macos = ["PB_BLOCKED", "SIG_BLOCKED"];
+        for marker in always
+            .iter()
+            .chain(macos.iter().filter(|_| cfg!(target_os = "macos")))
+        {
+            let without: Vec<&str> = all.iter().copied().filter(|m| m != marker).collect();
+            assert!(
+                shield_verdict(&without.join("\n")).is_err(),
+                "a measurement without {marker} passed"
+            );
+            let opened = marker.replace("BLOCKED", "OPEN");
+            assert!(
+                shield_verdict(&format!("{}\n{opened}", all.join("\n"))).is_err(),
+                "a measurement that printed {opened} passed"
+            );
+        }
+        // The uncertain answers are failures too.
+        all.retain(|m| *m != "SIG_BLOCKED");
+        all.push("SIG_UNCERTAIN");
+        assert_eq!(
+            shield_verdict(&all.join("\n")).is_err(),
+            cfg!(target_os = "macos")
+        );
+        assert_eq!(
+            shield_verdict(&["NET_UNCERTAIN", "UNIX_BLOCKED", "HOME_BLOCKED"].join("\n")),
+            Err("the network")
+        );
+    }
+
+    /// 4d-vii) THE HOME SENTINEL IS A NAME THAT IS REALLY THERE, and never the
+    ///         component of the measurement directory's own path — bwrap
+    ///         recreates that one inside the tmpfs, and finding it would fail a
+    ///         working shield.
+    #[test]
+    fn the_home_sentinel_is_real_and_not_on_the_sandbox_path() {
+        let home = temp_dir("sentinel");
+        std::fs::create_dir_all(home.join("aaa-tmp/measure")).expect("fixture");
+        std::fs::write(home.join("bbb-secret"), "x").expect("fixture");
+        let sandbox = home.join("aaa-tmp/measure");
+        assert_eq!(
+            home_sentinel(&home, &sandbox).as_deref(),
+            Some("bbb-secret")
+        );
+        // Elsewhere, the first name in sorted order.
+        assert_eq!(
+            home_sentinel(&home, Path::new("/elsewhere")).as_deref(),
+            Some("aaa-tmp")
+        );
+        assert_eq!(home_sentinel(&home.join("missing"), &sandbox), None);
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 4d-viii) A HOST PATH NEVER BREAKS OUT OF THE PROBE'S STRING. The probes
+    ///          carry host paths into a script; a home or socket path with a
+    ///          quote or a newline must arrive as DATA. JSON's string syntax is
+    ///          a subset of both languages', so a JSON round trip is the proof.
+    #[test]
+    fn a_host_path_stays_a_string_in_the_probe() {
+        let hostile = "/tmp/a\"b\\c\nd'e";
+        let lit = literal(hostile);
+        assert_eq!(
+            serde_json::from_str::<String>(&lit).expect("valid"),
+            hostile
+        );
+        let list = literal_paths(&[PathBuf::from(hostile), PathBuf::from("/x")]);
+        assert_eq!(
+            serde_json::from_str::<Vec<String>>(&list).expect("valid"),
+            vec![hostile.to_string(), "/x".to_string()]
+        );
+        // No `null`: it is not Python.
+        assert!(!list.contains("null"));
+    }
+
+    /// The shield-free stand-in for M5 tests: `/bin/echo` "runs" the command
+    /// line it is given and prints it, so the test can read where the sandbox
+    /// directory and the script were put without needing a real shield.
+    #[cfg(unix)]
+    fn echo_shield() -> (NetworkShield, Interpreter) {
+        (
+            NetworkShield::SandboxExec {
+                tool: PathBuf::from("/bin/echo"),
+            },
+            Interpreter {
+                key: "python",
+                path: PathBuf::from("/usr/bin/true"),
+                extension: "py",
+            },
+        )
+    }
+
+    /// The `SBOX=` value in an echoed command line.
+    #[cfg(unix)]
+    fn echoed_sandbox(output: &str) -> PathBuf {
+        output
+            .split_whitespace()
+            .find_map(|w| w.strip_prefix(&format!("{PARAM_SANDBOX}=")))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| panic!("no {PARAM_SANDBOX}= in {output}"))
+    }
+
+    /// 4d-ix) THE SANDBOX IS A FRESH DIRECTORY, NOT THE USER'S `code/` (M5).
+    ///
+    /// The root used to be `<cwd>/code`: the user's real `code/` directory was
+    /// readable and writable by the model's script, and a `code` that was a
+    /// link sent the script into the link's target. Now every call gets a new
+    /// `.tacet-sandbox-<nonce>` that is gone afterwards.
+    #[cfg(unix)]
+    #[test]
+    fn the_sandbox_is_a_fresh_directory_not_the_users_code_folder() {
+        let (shield, interpreter) = echo_shield();
+        let root = temp_dir("fresh-sbx");
+        std::fs::create_dir_all(root.join("code")).expect("the user's own folder");
+        std::fs::write(root.join("code/notes.txt"), "mine").expect("fixture");
+
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            let outcome = run(
+                &shield,
+                &interpreter,
+                &root,
+                "print(1)",
+                Duration::from_secs(5),
+            )
+            .expect("echo runs");
+            let CodeOutcome::Succeeded { output, .. } = outcome else {
+                panic!("{outcome:?}")
+            };
+            let sandbox = echoed_sandbox(&output);
+            assert_ne!(
+                sandbox,
+                root.join("code"),
+                "the user's code/ is the sandbox"
+            );
+            assert_eq!(
+                sandbox.parent(),
+                Some(root.as_path()),
+                "{}",
+                sandbox.display()
+            );
+            assert!(
+                sandbox
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with(crate::sandbox_path::SANDBOX_PREFIX)),
+                "{}",
+                sandbox.display()
+            );
+            assert!(
+                output.contains(&format!("{}/script-", sandbox.display())),
+                "the script is not inside the sandbox: {output}"
+            );
+            assert!(!sandbox.exists(), "the sandbox was left behind");
+            seen.push(sandbox);
+        }
+        assert_ne!(seen[0], seen[1], "the sandbox was reused");
+        let names: Vec<_> = std::fs::read_dir(root.join("code"))
+            .expect("list")
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("notes.txt")]);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 4d-x) A WORKING DIRECTORY BEHIND A LINK IS REFUSED, and nothing is
+    ///       created in the link's target (M5, "every component").
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_working_directory_gets_no_sandbox() {
+        let (shield, interpreter) = echo_shield();
+        let root = temp_dir("linked-cwd");
+        let outside = temp_dir("linked-cwd-target");
+        std::os::unix::fs::symlink(&outside, root.join("work")).expect("link");
+
+        let result = run(
+            &shield,
+            &interpreter,
+            &root.join("work"),
+            "print(1)",
+            Duration::from_secs(5),
+        );
+        assert!(
+            matches!(result, Err(ToolError::SandboxViolation(_))),
+            "{result:?}"
+        );
+        assert_eq!(std::fs::read_dir(&outside).expect("list").count(), 0);
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&outside).ok();
     }
 
     /// 4e) THE SCRIPT WRITE NEVER FOLLOWS A PLANTED LINK.
@@ -2129,6 +3850,87 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&fresh).expect("read"),
             "console.log(3)"
+        );
+    }
+
+    /// 4e-ii) PARALLEL DISCOVERIES NEVER SHARE A MEASUREMENT DIRECTORY.
+    ///
+    /// Sixteen threads released together, the way the test suite starts its
+    /// discoveries. With the old `{pid}-{nanoseconds}` name and a microsecond
+    /// wall clock, some of them landed in the same directory and one deleted
+    /// another's script mid-measurement.
+    #[test]
+    fn parallel_measurements_never_share_a_directory() {
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(16));
+        let handles: Vec<_> = (0..16)
+            .map(|_| {
+                let gate = gate.clone();
+                std::thread::spawn(move || {
+                    gate.wait();
+                    temp_measurement_dir()
+                })
+            })
+            .collect();
+        let mut dirs = Vec::new();
+        for handle in handles {
+            match handle.join().expect("thread") {
+                Ok(dir) => dirs.push(dir),
+                Err(e) => panic!("a measurement directory could not be made: {e}"),
+            }
+        }
+        let unique: std::collections::HashSet<_> = dirs.iter().collect();
+        let shared = dirs.len() - unique.len();
+        for dir in &unique {
+            std::fs::remove_dir_all(dir).ok();
+        }
+        assert_eq!(shared, 0, "{shared} measurements shared a directory");
+    }
+
+    /// 4e-iii) BOTH DESCRIPTIONS FIT THE CATALOG'S CEILING, and neither
+    ///         overclaims. `catalog.rs` only ever measures the description of
+    ///         the shield THIS machine discovered, so on macOS nothing would
+    ///         notice the bwrap text growing past the budget until the Linux
+    ///         leg of CI did. The two phrases asserted absent are the L20
+    ///         overclaim ("ANY file") and, for bwrap, the macOS-only promise
+    ///         about temp folders, which bwrap does not keep.
+    #[test]
+    fn both_descriptions_fit_the_ceiling_and_claim_only_what_is_measured() {
+        // `catalog.rs`'s estimator and ceiling: 2 bytes per 5 tokens, 420.
+        let tokens = |text: &str| text.len().saturating_mul(2).div_ceil(5);
+        for text in [DESCRIPTION_SANDBOX_EXEC, DESCRIPTION_BWRAP] {
+            assert!(tokens(text) <= 420, "~{} tokens: {text}", tokens(text));
+            assert!(!text.contains("ANY file"), "{text}");
+        }
+        assert!(!DESCRIPTION_BWRAP.contains("NO access to your files"));
+        assert!(DESCRIPTION_BWRAP.contains("can still read other system files"));
+        // L20, the macOS half: /etc is readable under the profile, so "system
+        // libraries" was narrower than what the script can read.
+        assert!(
+            DESCRIPTION_SANDBOX_EXEC.contains("can read nothing except system files"),
+            "{DESCRIPTION_SANDBOX_EXEC}"
+        );
+        assert!(!DESCRIPTION_SANDBOX_EXEC.contains("system libraries"));
+    }
+
+    /// 4e-bis) THE SCRIPT'S `O_NOFOLLOW` IS THE PER-ARCHITECTURE BIT (audit
+    ///         L15 review). A source guard, because the defect is a constant
+    ///         that is right on the machine running the test: on macOS and
+    ///         x86_64 Linux the old `0x20000`-for-every-Linux table gives the
+    ///         right bit, and only an aarch64 Linux run would show it wrong.
+    #[test]
+    fn the_script_belt_uses_the_per_architecture_table() {
+        let body = include_str!("run_code.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the file has a body");
+        assert!(
+            !body.contains("const O_NOFOLLOW"),
+            "run_code.rs keeps its own O_NOFOLLOW again; on aarch64 Linux 0x20000 is \
+             O_LARGEFILE"
+        );
+        assert!(
+            body.contains("crate::create_document::o_nofollow_for("),
+            "create_script no longer takes its bit from the per-architecture table"
         );
     }
 
@@ -2563,10 +4365,18 @@ mod tests {
         );
     }
 
-    /// 9) AN INFINITE LOOP: on the timeout the process is KILLED and the
-    ///    duration really is cut at the cap (no silent hang).
+    /// 9) AN INFINITE LOOP ENDS AT ONE OF TWO THINGS, and both are measured: on
+    ///    the timeout the process is KILLED and the duration really is cut at
+    ///    the cap (no silent hang); on a STOP (audit M4) it ends within about a
+    ///    second, whatever the timeout says. The second half is new — before
+    ///    it, nothing read the stop, and an endless loop ran to its full timeout
+    ///    while the screen said "cancelling".
+    ///
+    ///    ONE TEST FOR BOTH, not two: the subject is "what ends a looping
+    ///    script", and the setup (the tool, the loop) is the same.
     #[test]
-    fn an_infinite_loop_is_killed_on_timeout() {
+    fn an_infinite_loop_is_killed_on_timeout_or_on_a_stop() {
+        use tacet_kernel::context::CancelToken;
         let Some(tool) = tool_or_skip() else { return };
         let root = temp_dir("loop");
         let mut ctx = context(&root);
@@ -2596,6 +4406,34 @@ mod tests {
             elapsed >= Duration::from_secs(2),
             "it returned before the cap: {elapsed:?}"
         );
+
+        // THE STOP. A fresh turn (the tool allows two attempts per turn), the
+        // longest timeout the schema permits, and a stop after 300 ms.
+        tool.turn_state().new_turn();
+        let token = CancelToken::new();
+        let mut ctx = context(&root).with_cancel_token(token.clone());
+        let stopper = {
+            let token = token.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(300));
+                token.cancel();
+            })
+        };
+        let started = Instant::now();
+        let outcome = hold(tool.run(json!({ "code": code, "timeout_s": MAX_TIMEOUT }), &mut ctx));
+        let elapsed = started.elapsed();
+        stopper.join().expect("stopper");
+        assert!(
+            elapsed < Duration::from_millis(300) + Duration::from_millis(1500),
+            "the stop took {elapsed:?}"
+        );
+        assert_eq!(
+            outcome.state,
+            ToolState::Failed(STOPPED.into()),
+            "{}",
+            outcome.to_model
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// 9b) THE TIMEOUT REALLY BOUNDS THE CALL, even when the script tries to
@@ -2730,6 +4568,561 @@ mod tests {
             "unexpected output: {output} / {}",
             outcome.to_model
         );
+    }
+
+    /// A process OUTSIDE the sandbox that the test owns: killed and reaped on
+    /// every path, an assert panicking included.
+    #[cfg(unix)]
+    struct Outsider(std::process::Child);
+    #[cfg(unix)]
+    impl Drop for Outsider {
+        fn drop(&mut self) {
+            self.0.kill().ok();
+            self.0.wait().ok();
+        }
+    }
+
+    /// A unix-socket listener started OUTSIDE the sandbox with the same
+    /// interpreter, so the probes have something real to reach. Started with
+    /// the interpreter rather than from Rust on purpose: this crate is outside
+    /// the network monopoly (`crates/tacet-cli/tests/network_monopoly.rs`), and
+    /// a socket opened by its own code — even a local one, even in a test —
+    /// is the thing that file exists to keep out.
+    #[cfg(unix)]
+    fn unix_listener(interpreter: &Interpreter, path: &Path) -> Outsider {
+        use std::io::BufRead;
+        let code = match interpreter.key {
+            "python" => {
+                "import socket,sys\n\
+                 s=socket.socket(socket.AF_UNIX)\n\
+                 s.bind(sys.argv[1])\n\
+                 s.listen(8)\n\
+                 print('READY',flush=True)\n\
+                 while True:\n\
+                 \x20   c,_=s.accept()\n\
+                 \x20   c.close()\n"
+            }
+            _ => {
+                "require('net').createServer(c=>c.end())\
+                 .listen(process.argv[1],()=>console.log('READY'))"
+            }
+        };
+        let flag = if interpreter.key == "python" {
+            "-c"
+        } else {
+            "-e"
+        };
+        let mut child = Command::new(&interpreter.path)
+            .arg(flag)
+            .arg(code)
+            .arg(path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("the listener starts");
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().expect("stdout"))
+            .read_line(&mut line)
+            .expect("the listener reports");
+        assert_eq!(line.trim(), "READY", "the listener did not come up");
+        Outsider(child)
+    }
+
+    /// 9d-ii) THE PROBES CAN SEE AN OPEN GATE, AND THE SHIELD CLOSES IT.
+    ///
+    /// A probe that can only ever print "blocked" measures nothing — the
+    /// repository rule about a green test that cannot go red applies to
+    /// `verify_shield` too. So the local probes (`local_probes`: home
+    /// directory, signals, unix sockets) are run TWICE over the same targets:
+    /// WITHOUT the shield, where each of them must report OPEN, and under it,
+    /// where each must report BLOCKED. The targets are the test's own: a
+    /// listening socket and a fake home with a file in it in the temp
+    /// directory, and a `sleep` it started — signal 0 delivers nothing. The
+    /// network probe is NOT in the unshielded run: it would open a real
+    /// connection.
+    ///
+    /// EVERY INTERPRETER, NOT ONLY THE FIRST. This test used to probe
+    /// `interpreters()[0]` — node, on every machine that has it — so the
+    /// PYTHON probe never ran anywhere: the review flipped its socket check to
+    /// "never open" and this stayed green. On a machine whose only interpreter
+    /// is python, that unproven probe is the whole of `verify_shield`. The
+    /// loop also takes Homebrew's python when it is installed but not linked
+    /// (`probe_interpreters`), because the python discovery finds on a Mac is
+    /// usually the Xcode shim, which cannot start under the shield at all.
+    ///
+    /// macOS ONLY, and why: under bwrap the temp directory is visible, so the
+    /// fake home and the listener's socket would be reachable for a reason that
+    /// has nothing to do with the gates being measured. The Linux half of H7
+    /// is `a_loose_socket_in_tmp_is_shadowed_under_bwrap`, and `verify_shield`
+    /// itself, which probes the runner's real sockets under
+    /// `TACET_SANDBOX_MUST_RUN`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_probes_see_an_open_gate_and_the_shield_closes_it() {
+        let Some(tool) = tool_or_skip() else { return };
+        let root = temp_dir("probes");
+        let fake_home = root.join("fake-home");
+        std::fs::create_dir_all(&fake_home).expect("fixture");
+        std::fs::write(fake_home.join("TOP-SECRET-DUMMY"), "x").expect("fixture");
+        // Short: a unix socket path is limited to 104 bytes on macOS.
+        let socket = std::env::temp_dir().join(format!("tacet-us-{}", nonce()));
+        let _listener = unix_listener(&tool.interpreters()[0], &socket);
+        let sleeper = Outsider(
+            Command::new("/bin/sleep")
+                .arg("60")
+                .spawn()
+                .expect("an outside process"),
+        );
+        let targets = ProbeTargets {
+            home: vec![fake_home.clone()],
+            home_sentinel: Some("TOP-SECRET-DUMMY".into()),
+            sockets: vec![socket.clone()],
+            outside_pid: sleeper.0.id(),
+        };
+        let gates = [
+            ("HOME_BLOCKED", "HOME_OPEN"),
+            ("SIG_BLOCKED", "SIG_OPEN"),
+            ("UNIX_BLOCKED", "UNIX_OPEN"),
+        ];
+        let mut keys_shielded = Vec::new();
+        let mut keys_open = Vec::new();
+        for interpreter in probe_interpreters(&tool) {
+            let (open, shielded) = probe_both_ways(&tool, &interpreter, &targets, &root);
+            for (_, opened) in gates {
+                assert!(
+                    open.contains(opened),
+                    "{}: without the shield the probe did not see {opened} — it cannot \
+                     detect an open gate: {open}",
+                    interpreter.path.display()
+                );
+            }
+            keys_open.push(interpreter.key);
+            let Some(shielded) = shielded else { continue };
+            for (blocked, opened) in gates {
+                assert!(
+                    shielded.contains(blocked) && !shielded.contains(opened),
+                    "{}: under the shield the gate is open ({blocked} expected): {shielded}",
+                    interpreter.path.display()
+                );
+            }
+            keys_shielded.push(interpreter.key);
+        }
+        // `verify_shield` measured with `interpreters()[0]` for discovery to
+        // succeed at all, so that one at least must have been seen shielded.
+        assert!(
+            keys_shielded.contains(&tool.interpreters()[0].key),
+            "the interpreter discovery verified with was never run under the shield"
+        );
+        eprintln!("probed open: {keys_open:?}, probed shielded: {keys_shielded:?}");
+        std::fs::remove_file(&socket).ok();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The interpreters the probe tests run: every one discovery found, then
+    /// Homebrew's python if it is installed but not linked into `bin` (where
+    /// discovery does not look). Paths that do not exist are left out.
+    #[cfg(unix)]
+    fn probe_interpreters(tool: &RunCodeTool) -> Vec<Interpreter> {
+        let mut all: Vec<Interpreter> = tool.interpreters().to_vec();
+        for prefix in ["/opt/homebrew/opt", "/usr/local/opt"] {
+            let Ok(entries) = std::fs::read_dir(prefix) else {
+                continue;
+            };
+            let mut found: Vec<PathBuf> = entries
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().starts_with("python@3"))
+                .map(|e| e.path().join("libexec/bin/python3"))
+                .filter(|p| p.is_file())
+                .collect();
+            found.sort();
+            if let Some(path) = found.pop()
+                && !all.iter().any(|y| y.path == path)
+            {
+                all.push(Interpreter {
+                    key: "python",
+                    path,
+                    extension: "py",
+                });
+            }
+        }
+        all
+    }
+
+    /// Runs `local_probes` for one interpreter WITHOUT the shield and then
+    /// UNDER it, over the same targets, and returns both outputs.
+    ///
+    /// The shielded output is `None` only when the interpreter cannot start
+    /// under the shield AT ALL — a control script that prints one line fails
+    /// too. That is the Xcode shim (`/usr/bin/python3` needs fork, see
+    /// `profile`): a process that never starts reads nothing, and its probe has
+    /// already been shown to see open gates in the unshielded run. A probe that
+    /// fails while the control runs is a panic, not a skip.
+    #[cfg(unix)]
+    fn probe_both_ways(
+        tool: &RunCodeTool,
+        interpreter: &Interpreter,
+        targets: &ProbeTargets,
+        root: &Path,
+    ) -> (String, Option<String>) {
+        let exit = if interpreter.key == "python" {
+            ""
+        } else {
+            "process.exit(0)"
+        };
+        let body = local_probes(interpreter.key, targets, exit);
+        let script = root.join(format!("probe-{}.{}", nonce(), interpreter.extension));
+        std::fs::write(&script, &body).expect("script");
+        let open = Command::new(&interpreter.path)
+            .arg(&script)
+            .output()
+            .expect("the unshielded probe runs");
+        let open = String::from_utf8_lossy(&open.stdout).into_owned();
+
+        let sandbox = temp_dir("probes-sbx");
+        let inside = sandbox.join(format!("probe.{}", interpreter.extension));
+        std::fs::write(&inside, &body).expect("copy");
+        let run = |path: &Path| {
+            run_program(
+                &tool.shield,
+                &sandbox,
+                &interpreter.path,
+                &[path.as_os_str().to_os_string()],
+                Duration::from_secs(15),
+            )
+        };
+        let shielded = match run(&inside).expect("the shield starts") {
+            CodeOutcome::Succeeded { output, .. } => Some(output),
+            other => {
+                let control = sandbox.join(format!("control.{}", interpreter.extension));
+                let line = if interpreter.key == "python" {
+                    "print('CONTROL')"
+                } else {
+                    "console.log('CONTROL')"
+                };
+                std::fs::write(&control, line).expect("control");
+                let started = matches!(
+                    run(&control),
+                    Ok(CodeOutcome::Succeeded { ref output, .. }) if output.contains("CONTROL")
+                );
+                assert!(
+                    !started,
+                    "{} starts under the shield but its probe failed: {other:?}",
+                    interpreter.path.display()
+                );
+                eprintln!(
+                    "{} does not start under the shield at all; its shielded half was not measured",
+                    interpreter.path.display()
+                );
+                None
+            }
+        };
+        std::fs::remove_dir_all(&sandbox).ok();
+        (open, shielded)
+    }
+
+    /// 9d-ii-linux) A LOOSE SOCKET IN /tmp IS SHADOWED UNDER bwrap (audit H7).
+    ///
+    /// The `Shadow::Socket` branch — `--ro-bind /dev/null <socket>` — had
+    /// never run against a real bwrap: on a CI runner whose `/tmp` holds no
+    /// socket, nothing exercised it, and if bwrap rejected that bind `run_code`
+    /// would leave the catalog for every Linux user with a tmux or ssh-agent
+    /// socket in `/tmp` — fail-closed, but unseen. So the test puts one there
+    /// itself, at depth 1 where `scan_sockets` must find it, checks that the
+    /// unshielded probe REACHES it (so a blocked result means something), and
+    /// that under bwrap it does not. Every discovered interpreter is probed.
+    /// Under `TACET_SANDBOX_MUST_RUN` — the ubuntu CI leg — a missing bwrap is
+    /// a failure, not a skip.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_loose_socket_in_tmp_is_shadowed_under_bwrap() {
+        let Some(tool) = tool_or_skip() else { return };
+        let root = temp_dir("probes-linux");
+        let socket = PathBuf::from("/tmp").join(format!("tacet-us-{}", nonce()));
+        let _listener = unix_listener(&tool.interpreters()[0], &socket);
+        let targets = ProbeTargets {
+            home: Vec::new(),
+            home_sentinel: None,
+            sockets: vec![socket.clone()],
+            outside_pid: 0,
+        };
+        let mut measured = 0;
+        for interpreter in probe_interpreters(&tool) {
+            let (open, shielded) = probe_both_ways(&tool, &interpreter, &targets, &root);
+            assert!(
+                open.contains("UNIX_OPEN"),
+                "{}: without the shield the probe did not reach {} — it cannot detect an \
+                 open socket: {open}",
+                interpreter.path.display(),
+                socket.display()
+            );
+            let shielded = shielded.unwrap_or_else(|| {
+                panic!(
+                    "{} did not start under bwrap with a socket in /tmp — the \
+                     `--ro-bind /dev/null` shadow is what bwrap refused",
+                    interpreter.path.display()
+                )
+            });
+            assert!(
+                shielded.contains("UNIX_BLOCKED") && !shielded.contains("UNIX_OPEN"),
+                "{}: THE SOCKET IN /tmp IS REACHABLE UNDER bwrap: {shielded}",
+                interpreter.path.display()
+            );
+            measured += 1;
+        }
+        assert!(measured > 0, "no interpreter was probed");
+        std::fs::remove_file(&socket).ok();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 9d-iii) A SIGNAL CANNOT REACH A PROCESS OUTSIDE THE SANDBOX (audit M1).
+    ///
+    /// The audit's measurement, as a test: a `sleep` started outside, a SIGTERM
+    /// sent from inside. Under the old `(allow signal)` the sleep died with 143.
+    /// What is asserted is the END STATE — the outside process is still alive —
+    /// and not only the script's report of it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_signal_cannot_reach_a_process_outside() {
+        let Some(tool) = tool_or_skip() else { return };
+        let root = temp_dir("signal");
+        let mut ctx = context(&root);
+        let mut victim = Outsider(
+            Command::new("/bin/sleep")
+                .arg("60")
+                .spawn()
+                .expect("an outside process"),
+        );
+        let pid = victim.0.id();
+        let code = match tool.interpreters()[0].key {
+            "python" => format!(
+                "import os, signal\n\
+                 try:\n\
+                 \x20   os.kill({pid}, signal.SIGTERM)\n\
+                 \x20   print('SIGNAL_SENT')\n\
+                 except Exception as e:\n\
+                 \x20   print('SIGNAL_REFUSED', type(e).__name__)\n"
+            ),
+            _ => format!(
+                "try{{process.kill({pid},'SIGTERM');console.log('SIGNAL_SENT')}}\
+                 catch(e){{console.log('SIGNAL_REFUSED '+e.code)}}"
+            ),
+        };
+        let outcome = hold(tool.run(json!({"code": code, "timeout_s": 20}), &mut ctx));
+        let output = outcome.raw_output.clone().unwrap_or_default();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            matches!(victim.0.try_wait(), Ok(None)),
+            "THE PROCESS OUTSIDE THE SANDBOX WAS KILLED from inside it: {output}"
+        );
+        assert!(output.contains("SIGNAL_REFUSED"), "{output}");
+    }
+
+    /// 9d-iv) FILES OUTSIDE THE SANDBOX ARE NOT READABLE — not only the home
+    ///        directory (audit L20).
+    ///
+    /// The audit read the user's temp directory (46,797 entries), `/Users/Shared`
+    /// and `/private/tmp` from inside the sandbox, while the description said
+    /// "NO access to ANY file". A canary with an unguessable body is planted in
+    /// the temp directory OUTSIDE the sandbox, and in the WORKING directory —
+    /// which, since M5, is outside the sandbox too. `/usr/bin` is the control:
+    /// the allowlist still opens the system, so a probe that fails on
+    /// everything is caught here instead of passing.
+    ///
+    /// HOMEBREW'S DATA DIRECTORIES ARE PROBED TOO, wherever they exist: the
+    /// review that followed the allowlist read a live postgres database out of
+    /// `/opt/homebrew/var` through `(subpath "/opt/homebrew")`, and the four
+    /// probes above never looked there. Each existing `var/`/`etc/` is listed,
+    /// and one file found inside it (by the HOST, before the script runs) is
+    /// opened; only whether that worked is printed, never a byte of it. A
+    /// machine without them measures nothing here, and says so.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn files_outside_the_sandbox_are_not_readable() {
+        let Some(tool) = tool_or_skip() else { return };
+        let root = temp_dir("read-outside");
+        let mut ctx = context(&root);
+        let body = format!("OUTSIDE-CANARY-{}", nonce());
+        let canary = std::env::temp_dir()
+            .canonicalize()
+            .expect("temp")
+            .join(format!("tacet-read-canary-{}", nonce()));
+        std::fs::write(&canary, &body).expect("canary");
+        std::fs::write(root.join("cwd-canary.txt"), &body).expect("canary");
+        struct Gone(PathBuf);
+        impl Drop for Gone {
+            fn drop(&mut self) {
+                std::fs::remove_file(&self.0).ok();
+            }
+        }
+        let _gone = Gone(canary.clone());
+        let cwd_canary = root.join("cwd-canary.txt");
+        let data = homebrew_data_targets();
+        if data.is_empty() {
+            eprintln!("no Homebrew var/ or etc/ on this machine, that half was not measured");
+        }
+        let data_literal = serde_json::to_string(&data).expect("json");
+
+        let code = match tool.interpreters()[0].key {
+            "python" => format!(
+                "import os\n\
+                 for tag, p in [('TMP', {canary:?}), ('CWD', {cwd_canary:?})]:\n\
+                 \x20   try:\n\
+                 \x20       print(tag + '_READ:' + open(p).read())\n\
+                 \x20   except Exception:\n\
+                 \x20       print(tag + '_HIDDEN')\n\
+                 for tag, p in [('SHARED', '/Users/Shared'), ('PTMP', '/private/tmp'), ('USRBIN', '/usr/bin')]:\n\
+                 \x20   try:\n\
+                 \x20       os.listdir(p)\n\
+                 \x20       print(tag + '_LISTED')\n\
+                 \x20   except Exception:\n\
+                 \x20       print(tag + '_HIDDEN')\n\
+                 for d, f in {data_literal}:\n\
+                 \x20   try:\n\
+                 \x20       os.listdir(d)\n\
+                 \x20       print('DATA_LISTED ' + d)\n\
+                 \x20   except Exception:\n\
+                 \x20       print('DATA_HIDDEN ' + d)\n\
+                 \x20   try:\n\
+                 \x20       open(f, 'rb').read(1)\n\
+                 \x20       print('DATA_READ ' + f)\n\
+                 \x20   except Exception:\n\
+                 \x20       print('DATA_HIDDEN ' + f)\n"
+            ),
+            _ => format!(
+                "const fs=require('fs');\
+                 for(const [t,p] of [['TMP',{canary:?}],['CWD',{cwd_canary:?}]]){{\
+                 try{{console.log(t+'_READ:'+fs.readFileSync(p,'utf8'))}}\
+                 catch(e){{console.log(t+'_HIDDEN')}}}}\
+                 for(const [t,p] of [['SHARED','/Users/Shared'],['PTMP','/private/tmp'],['USRBIN','/usr/bin']]){{\
+                 try{{fs.readdirSync(p);console.log(t+'_LISTED')}}\
+                 catch(e){{console.log(t+'_HIDDEN')}}}}\
+                 for(const [d,f] of {data_literal}){{\
+                 try{{fs.readdirSync(d);console.log('DATA_LISTED '+d)}}\
+                 catch(e){{console.log('DATA_HIDDEN '+d)}}\
+                 try{{fs.readFileSync(f).subarray(0,1);console.log('DATA_READ '+f)}}\
+                 catch(e){{console.log('DATA_HIDDEN '+f)}}}}"
+            ),
+        };
+        let outcome = hold(tool.run(json!({"code": code, "timeout_s": 20}), &mut ctx));
+        let output = outcome.raw_output.clone().unwrap_or_default();
+        assert!(
+            !output.contains(&body),
+            "A FILE OUTSIDE THE SANDBOX WAS READ — its body came back through the script: {output}"
+        );
+        for hidden in ["TMP_HIDDEN", "CWD_HIDDEN", "SHARED_HIDDEN", "PTMP_HIDDEN"] {
+            assert!(output.contains(hidden), "{hidden} expected: {output}");
+        }
+        assert!(
+            output.contains("USRBIN_LISTED"),
+            "the control failed — the probe fails on everything, so it measured nothing: {output}"
+        );
+        assert!(
+            !output.contains("DATA_LISTED") && !output.contains("DATA_READ"),
+            "HOMEBREW'S DATA IS READABLE FROM INSIDE THE SANDBOX: {output}"
+        );
+        for (dir, file) in &data {
+            for path in [dir, file] {
+                assert!(
+                    output.contains(&format!("DATA_HIDDEN {path}")),
+                    "the probe of {path} did not run: {output}"
+                );
+            }
+        }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The Homebrew data directories that exist here, each with one regular
+    /// file found inside it — `[dir, file]` pairs, for
+    /// `files_outside_the_sandbox_are_not_readable`. A directory with no file
+    /// in reach is left out rather than half-probed. The walk is metadata only
+    /// (`symlink_metadata`, nothing followed, nothing opened) and stops at the
+    /// first file; `openssl.cnf` is skipped because the profile lets that one
+    /// file back in on purpose.
+    #[cfg(target_os = "macos")]
+    fn homebrew_data_targets() -> Vec<(String, String)> {
+        let mut targets = Vec::new();
+        for dir in [
+            "/opt/homebrew/var",
+            "/opt/homebrew/etc",
+            "/usr/local/var",
+            "/usr/local/etc",
+        ] {
+            let mut queue = vec![(PathBuf::from(dir), 0usize)];
+            let mut file = None;
+            while let Some((at, depth)) = queue.pop() {
+                let Ok(entries) = std::fs::read_dir(&at) else {
+                    continue;
+                };
+                let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+                entries.sort();
+                for entry in entries {
+                    let Ok(meta) = entry.symlink_metadata() else {
+                        continue;
+                    };
+                    if meta.is_file() && entry.file_name() != Some("openssl.cnf".as_ref()) {
+                        file = Some(entry);
+                        break;
+                    }
+                    if meta.is_dir() && depth < 3 {
+                        queue.push((entry, depth + 1));
+                    }
+                }
+                if file.is_some() {
+                    break;
+                }
+            }
+            if let Some(file) = file.and_then(|f| f.to_str().map(str::to_string)) {
+                targets.push((dir.to_string(), file));
+            }
+        }
+        targets
+    }
+
+    /// 9d-v) A SANDBOX UNDER THE HOME DIRECTORY STILL RUNS.
+    ///
+    /// The production case — the working folder is somewhere in the user's
+    /// home — and the one no other test here exercises: they all put the
+    /// sandbox in the temp directory. The read allowlist (L20) and the per-call
+    /// folder (M5) both changed what a script under `$HOME` can see; this is
+    /// the measurement that it still starts there, which the temp-directory
+    /// tests cannot give. The folder is made in the real `$HOME` (the same
+    /// place the escape test plants its canary) and removed on every path.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_sandbox_under_the_home_directory_still_runs() {
+        let Some(tool) = tool_or_skip() else { return };
+        let Some(home) = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|h| h.is_absolute() && h.is_dir())
+        else {
+            eprintln!("$HOME is unusable, the home case was not measured");
+            return;
+        };
+        let work = home.join(format!(".tacet-home-sandbox-test-{}", nonce()));
+        std::fs::create_dir_all(&work).expect("a folder in $HOME");
+        struct Gone(PathBuf);
+        impl Drop for Gone {
+            fn drop(&mut self) {
+                std::fs::remove_dir_all(&self.0).ok();
+            }
+        }
+        let _gone = Gone(work.clone());
+        let work = work.canonicalize().expect("resolved");
+        let mut ctx = context(&work);
+        let code = match tool.interpreters()[0].key {
+            "python" => "print(6*7)",
+            _ => "console.log(6*7)",
+        };
+        let outcome = hold(tool.run(json!({"code": code}), &mut ctx));
+        assert_eq!(
+            outcome.state,
+            ToolState::Read,
+            "a script in a folder under $HOME did not run: {} / {:?}",
+            outcome.to_model,
+            outcome.raw_output
+        );
+        assert!(outcome.to_model.contains("42"), "{}", outcome.to_model);
     }
 
     /// 9e) A WORKING DIRECTORY WHOSE NAME CAN BREAK OUT OF THE PROFILE STRING

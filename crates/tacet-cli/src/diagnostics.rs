@@ -336,11 +336,7 @@ pub fn mcp_try(name: &str, call: Option<String>, args: &str) -> ExitCode {
                 // WHAT IS ABOUT TO BE SENT IS SHOWN FIRST, the same rule the
                 // approval gate follows: this command has no gate in front of
                 // it, so the transparency has to be here.
-                println!(
-                    "  {} {tool} {}",
-                    color.paint(DIM, "→"),
-                    color.paint(DIM, &crate::ui::one_line(&parsed.to_string()))
-                );
+                println!("{}", mcp_try_sending_line(&tool, &parsed, &color));
                 Some((tool, parsed))
             }
             Err(error) => {
@@ -355,42 +351,81 @@ pub fn mcp_try(name: &str, call: Option<String>, args: &str) -> ExitCode {
     let outcome = match mcp::try_connection(name, Arc::new(TerminalAsk), call) {
         Ok(outcome) => outcome,
         Err(message) => {
-            eprintln!("  {}", color.paint(YELLOW, &message));
+            eprintln!("{}", mcp_try_error_line(&message, &color));
             return ExitCode::FAILURE;
         }
     };
-    println!(
+    for line in mcp_try_lines(&outcome, &color) {
+        println!("{line}");
+    }
+    ExitCode::SUCCESS
+}
+
+/// The `→ tool {args}` line `tacet mcp try` prints before it sends anything.
+/// The tool name is the user's own typing, but it is echoed next to JSON that
+/// may have been pasted from anywhere; both go through `one_line`, and the
+/// function is pure so that can be measured.
+fn mcp_try_sending_line(tool: &str, args: &serde_json::Value, color: &Color) -> String {
+    use crate::ui::one_line;
+    format!(
+        "  {} {} {}",
+        color.paint(DIM, "→"),
+        one_line(tool),
+        color.paint(DIM, &one_line(&args.to_string()))
+    )
+}
+
+/// The line `tacet mcp try` prints when the connection fails. The message can
+/// quote the server (an error body, a refused revision), so it goes through
+/// the same funnel as every other far-side string.
+fn mcp_try_error_line(message: &str, color: &Color) -> String {
+    format!("  {}", color.paint(YELLOW, &crate::ui::one_line(message)))
+}
+
+/// What `tacet mcp try` prints for an outcome. PURE, so the bytes can be
+/// measured without a server or a terminal.
+///
+/// EVERY STRING THE FAR SIDE WROTE GOES THROUGH `one_line` (audit M14). The
+/// descriptions and the call output already did; the tool NAMES, the revision
+/// string and the called tool's name did not, and a server is free to name a
+/// tool `"y\u{1b}[31mRED"` — which this command printed raw, in BOLD.
+fn mcp_try_lines(outcome: &mcp::TryOutcome, color: &Color) -> Vec<String> {
+    use crate::ui::one_line;
+    let mut lines = vec![format!(
         "  {}  {}  {}",
-        color.paint(BOLD, &outcome.revision),
+        color.paint(BOLD, &one_line(&outcome.revision)),
         color.paint(DIM, &format!("{} ms", outcome.millis)),
         color.paint(DIM, &format!("{} tools", outcome.tools.len())),
-    );
+    )];
     if outcome.fell_back {
-        println!(
+        lines.push(format!(
             "  {}",
             color.paint(
                 YELLOW,
                 "the server did not accept the current revision; the frozen path was used"
             )
-        );
+        ));
     }
     for (tool, description) in &outcome.tools {
         // A description the far side wrote, on its way to a terminal: one line,
         // capped, escapes gone.
-        println!(
+        lines.push(format!(
             "    {}  {}",
-            tool,
-            color.paint(DIM, &crate::ui::one_line(description))
-        );
+            one_line(tool),
+            color.paint(DIM, &one_line(description))
+        ));
     }
     if outcome.tools.is_empty() {
-        println!("  {}", color.paint(DIM, "(the server offers no tools)"));
+        lines.push(format!(
+            "  {}",
+            color.paint(DIM, "(the server offers no tools)")
+        ));
     }
     if let Some((tool, text, is_error)) = &outcome.called {
-        println!();
-        println!(
+        lines.push(String::new());
+        lines.push(format!(
             "  {} {}",
-            color.paint(BOLD, tool),
+            color.paint(BOLD, &one_line(tool)),
             color.paint(
                 DIM,
                 if *is_error {
@@ -399,12 +434,12 @@ pub fn mcp_try(name: &str, call: Option<String>, args: &str) -> ExitCode {
                     ""
                 }
             )
-        );
+        ));
         for line in text.lines().take(20) {
-            println!("    {}", crate::ui::one_line(line));
+            lines.push(format!("    {}", one_line(line)));
         }
     }
-    ExitCode::SUCCESS
+    lines
 }
 
 /// `tacet doctor` — one screen that answers "is this machine set up right".
@@ -814,4 +849,52 @@ fn write_grammar(
     }
 
     true
+}
+
+#[cfg(test)]
+mod mcp_try_tests {
+    use super::*;
+
+    /// AUDIT M14, the `mcp try` half: a hostile server's names and revision
+    /// are printed as text. `Color::plain()` so that the only escapes that
+    /// could appear are ones the server smuggled in.
+    #[test]
+    fn a_hostile_server_cannot_write_escapes_through_mcp_try() {
+        let hostile = "y\u{1b}[31mRED\u{7}\u{9b}2J\r\nfake";
+        let outcome = mcp::TryOutcome {
+            revision: hostile.into(),
+            fell_back: false,
+            millis: 3,
+            tools: vec![(hostile.into(), hostile.into())],
+            called: Some((hostile.into(), hostile.into(), true)),
+        };
+        let color = Color::plain();
+        let mut lines = mcp_try_lines(&outcome, &color);
+        // The two lines printed outside the outcome: what is about to be sent,
+        // and the failure.
+        lines.push(mcp_try_sending_line(
+            hostile,
+            &serde_json::json!({ "q": hostile }),
+            &color,
+        ));
+        lines.push(mcp_try_error_line(hostile, &color));
+        // PER LINE, so a `\n` that paints a second, fake line is caught too:
+        // on the joined text every line break looks the same.
+        for line in &lines {
+            for bad in ['\u{1b}', '\u{7}', '\u{9b}', '\r', '\n'] {
+                assert!(
+                    !line.contains(bad),
+                    "{bad:?} reached the terminal: {line:?}"
+                );
+            }
+        }
+        // Still readable, field by field: the revision, the tool row, the
+        // called tool's name, the first line of its output, the arrow line and
+        // the error. Hiding what the server said would hide the error.
+        assert_eq!(
+            lines.iter().filter(|l| l.contains("RED")).count(),
+            6,
+            "{lines:#?}"
+        );
+    }
 }

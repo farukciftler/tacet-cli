@@ -67,22 +67,46 @@ cargo build --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo test --workspace --features candle --no-run   # SEE BELOW — this one is not optional
-cargo fmt --all
+cargo fmt --all -- --check                  # what CI runs; `cargo fmt --all` fixes it
 cargo run -p tacet-cli -- eval              # behavioural cases, deterministic, no model needed
 cargo run -p tacet-cli -- eval --routing    # the router's own choice, no model needed
+cargo run -p tacet-cli -- eval --routing --routing-pressure 20   # the same, with 20 extra tools competing
 ```
 
-CI runs all of it on macOS, Linux and Windows. Neither of these loads weights or opens a socket.
+CI runs every line of it on each pull request, and three more things there can
+fail one. `cargo deny check` (see *The supply chain* below) runs through its own
+action. On Linux, before anything compiles, a step installs bubblewrap and
+starts one `bwrap --unshare-net` sandbox, and stops the job if the runner cannot
+make one. And on Linux `cargo test --workspace` runs under
+`TACET_SANDBOX_MUST_RUN=1`, which turns the sandbox tests that skip on a machine
+without a working `bwrap` into failures; on a Linux box with bubblewrap
+installed, `TACET_SANDBOX_MUST_RUN=1 cargo test --workspace` is that step. CI
+sets the variable on Linux only. Not every line runs everywhere: `cargo build` and
+`cargo test` run on macOS, Linux and Windows; clippy, fmt, the candle
+`--no-run` compile and the three evals run on Linux only. A clippy lint that
+fires only under `cfg(windows)` is therefore yours to find. None of it loads
+weights or opens a socket. The list and `ci.yml` are held together in both
+directions: `the_workflows_keep_their_promises` fails if a line here is not a
+gate there, and `the_docs_match_the_tree` fails if a `cargo` step there is
+missing here, or if a step there can fail a pull request in a way this
+paragraph does not name. (Until 10 Oct 2026 this list left out the pressure run and
+spelled the fmt check as the command that rewrites files.)
 
 **The fourth line is the one people skip, and it is the one that bites.**
 `tacet-engine`'s whole `candle_engine` module — the decode loop, the loop
 backstop, the call budget, the greedy sampler and every test over them — is
 behind `#[cfg(feature = "candle")]`. A plain `cargo test --workspace` does not
 compile a line of it, so a change there can pass the local gate completely and
-fail to COMPILE in the nightly job. That has happened: a test module gained two
-tests referencing constants it did not import, `cargo test --workspace` was
-green, and the failure arrived hours later from CI. `--no-run` is enough — the
-cost is a compile, not the tests.
+fail to COMPILE. That has happened: a test module gained two tests referencing
+constants it did not import, `cargo test --workspace` was green, and the failure
+arrived hours later from the nightly job — the only place it ran then. It is now
+the `candle-compiles` job in `ci.yml` too, so a pull request finds out before it
+merges; running it locally finds out before you push. `--no-run` is enough — the
+cost is a compile, not the tests. The nightly job also RUNS the candle-gated tests
+that need no weights: every test in `candle_engine` and the fixture half of
+`tests/a_marker_is_not_text.rs`. To run the same check locally:
+`cargo test -p tacet-engine --features candle --lib -- candle_engine::` and
+`cargo test -p tacet-engine --features candle --test a_marker_is_not_text`.
 
 ### The measurements, and which one to reach for
 
@@ -90,8 +114,8 @@ cost is a compile, not the tests.
 |---|---|---|---|
 | `eval` | Tacet's LOGIC, on a mock engine | milliseconds | yes |
 | `eval --routing` | which tools the ROUTER puts in the prompt | milliseconds | yes |
-| `scripts/smoke.sh [model-dir]` | whether the answer is READABLE, on real weights | ~4 min | no |
-| `eval --tool-selection --model <name>` | the MODEL's choice, on real weights | ~48 min on Metal (~6 min on a 3090) | no |
+| `scripts/smoke.sh [model-dir]` | whether the answer is READABLE, on real weights | ~4 min on a built tree (it builds first) | no |
+| `eval --tool-selection --model <name>` | the MODEL's choice, on real weights | ~48 min on Metal (~7 min on a 3090) | no |
 
 Reach for `--routing` first when a tool "stops being called". The router shows the
 model at most nine tools out of the catalog, and **a tool that is not in those
@@ -123,10 +147,21 @@ single character stuck in a loop. Its exit code is the number of failing
 messages, so it gates.
 
 ```bash
-scripts/smoke-selftest.sh            # ~5 s, no weights: does the check go red?
-scripts/smoke.sh                     # ~4 min, the configured model
-scripts/smoke.sh ~/models/qwen3-4b   # ~4 min, a named one
+scripts/smoke-selftest.sh            # ~5 s on a built tree, no weights: does the check go red?
+scripts/smoke.sh                     # ~4 min on a built tree, the configured model
+scripts/smoke.sh ~/models/qwen3-4b   # ~4 min on a built tree, a named one
 ```
+
+**It builds before it measures.** Both scripts run `cargo build --release` from
+the checkout first (metal on macOS, cuda on Linux, `TACET_SMOKE_FEATURES=candle`
+for a CPU-only box) and then ask the binary `--print-features`. They used to
+measure whatever `target/release/tacet` held — and `nightly-eval.sh` writes that
+same path from whatever was checked out at 03:07, so the release gate could pass
+on last night's binary. The path they run is the `executable` cargo reports for
+that build (`--message-format=json`), not a hard-coded `target/release/tacet`:
+with `CARGO_TARGET_DIR`, `build.target-dir` or `build.target` set, the fresh
+build lands elsewhere and the old file in `target/` would otherwise be measured.
+They need `jq` for that; `smoke.sh` already needed it.
 
 **Run the self-test too, and run it first.** A guard nobody has watched fail is
 not a guard, and this one is easy to break silently — read the wrong stream,
@@ -187,19 +222,24 @@ builds first (a run against a stale binary produces a number attributed to a
 commit it did not measure — that has happened here once already, on a line
 saying `cargo: command not found` that nobody read); it passes `--journal`, so a
 closed lid at case 180 costs one case rather than the 47 minutes behind it, and
-re-running the script continues where it stopped; and it writes everything to
-`~/.tacet/nightly/<date>-<commit>/run.log`, with `~/.tacet/nightly/latest.log`
-pointing at the newest, so `tail -f` is the live view and a number found later
-can be traced to what produced it.
+re-running the script continues where it stopped, the next morning included;
+and it writes everything to
+`~/.tacet/nightly/<commit>[-dirty-<hash>]-<model>-<features>/run.log`, with
+`~/.tacet/nightly/latest.log` pointing at the newest, so `tail -f` is the live
+view and a number found later can be traced to what produced it.
+`scripts/nightly-eval.sh --print-run-dir` prints that path and touches nothing.
 
 ```bash
 scripts/nightly-eval.sh            # resumes if it can; safe to re-run
 tail -f ~/.tacet/nightly/latest.log
 ```
 
-The journal directory is keyed by commit, and its own stamp refuses a model or
-catalog it was not started with — so a report can never be half one build and
-half another.
+The journal directory is keyed by what was built — the commit, a hash of any
+uncommitted changes (untracked files included), the model and the features — and
+never by the date, so a run cut off before midnight resumes after it. The
+directory is what keeps two builds apart; the journal's own stamp additionally
+refuses a model, engine or catalog it was not started with. A report can never be
+half one build and half another.
 
 **And every night, if you want it.** `scripts/com.tacet.nightly-eval.plist` is
 the same script as a `launchd` job at 03:07 — off the hour on purpose, because
@@ -244,6 +284,19 @@ public. `cargo test -p tacet-eval --test baselines` refuses a baseline that
 carries one, and refuses one whose case names no longer match the suite — a
 baseline nobody can pair against still prints a verdict, which is worse than
 having none.
+
+### Widening an agent's version range is a measurement too
+
+The session readers and `tacet handoff` trust a version of Claude Code, Codex or
+Antigravity only inside a range somebody measured (`version::KNOWN` in
+`crates/tacet-tools/src/sessions/version.rs`, the same table as
+`docs/adr/0001-agent-sessions.md`, and a test fails if the two disagree). A
+read range widens when the fixture corpus under
+`crates/tacet-tools/tests/fixtures/sessions/corpus/` parses that version with no
+unparsed line; a write range widens only when `scripts/session-roundtrip.sh`
+passes on it. That script runs real `claude -p` turns, costs about a dollar,
+and is run by a person — never in CI, for the same reasons as the model
+measurement above. Paste its output into the PR that moves the range.
 
 ### Writing benchmark cases, and the two ways they go wrong silently
 
@@ -444,15 +497,20 @@ writing about it publicly.
 
 ## The supply chain
 
-`cargo deny check` runs on every push (`deny.toml`, and the `supply chain` job in
-`ci.yml`) over the full graph with all features on. Run it locally with
+`cargo deny check` runs on every push (`deny.toml`, and the two `supply chain`
+jobs in `ci.yml`) over the full graph with all features on. Run it locally with
 `cargo install cargo-deny && cargo deny check`.
 
-Two of its four checks are hard failures and two are not, deliberately.
-`unknown-git`, `unknown-registry` and `wildcards` can only be caused from inside
-this repository, so they gate. An advisory filed against a crate four levels down
-is news about the world rather than a defect in your pull request, so the CI job
-carries `continue-on-error` and the value is the annotation.
+Three of its four checks are a hard gate and one is not, deliberately — split by
+who can cause the failure. `sources`, `bans` and `licenses` change only when a
+manifest or the lockfile here changes, so `unknown-git`, `unknown-registry`,
+`wildcards` and an unlisted licence fail the `supply chain` job and block the
+merge. An advisory filed against a crate four levels down is news about the world
+rather than a defect in your pull request, so `supply chain (advisories)` carries
+`continue-on-error` and the value is the annotation. Until 10 Oct 2026 this was
+one job with `continue-on-error`, which made every one of those "hard failures"
+a green tick; `the_workflows_keep_their_promises.rs` now fails if a soft job
+checks anything but advisories.
 
 **An entry in `deny.toml`'s `ignore` list needs a sentence and a date.** There
 are two, both from its first run, both with the reason written next to them.
@@ -460,8 +518,17 @@ Silencing something without saying why is how this file stops meaning anything �
 and then it is worse than not having it, because it looks like an audit.
 
 Releases carry a Sigstore build-provenance attestation over every asset and an
-SPDX SBOM. `SHA256SUMS`, which was there before, proves only that the release job
+SPDX SBOM, which is generated first so that both `SHA256SUMS` and the attestation
+cover it. `SHA256SUMS`, which was there before, proves only that the release job
 agreed with itself.
+
+**The workflows themselves.** Every `uses:` is pinned to a full commit SHA with
+its tag in a trailing comment, and `.github/dependabot.yml` proposes the bumps.
+Every workflow is `contents: read` by default; in `release.yml` only `publish` —
+which compiles nothing — holds `contents: write`, `id-token: write` and
+`attestations: write`. The release runs `cargo test --workspace` on all three
+platforms against the tagged commit and `publish` waits for it, and it builds
+with no shared cache.
 
 ## Licence
 

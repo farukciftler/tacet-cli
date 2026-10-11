@@ -227,6 +227,12 @@ impl TimeResolver {
     /// `now` is given from outside (testability + a single clock reading point).
     /// `now` is the wall clock read in the caller's time zone; the resolution
     /// comes back in the same zone.
+    ///
+    /// THIS FORM ASSUMES THE CALLER IS ON UTC. An input carrying its own offset
+    /// ("…T18:00+03:00") is converted to UTC, which is right only if `now` was
+    /// read on UTC too. `calendar` called this with a LOCAL `now` and set a
+    /// "18:00+03:00" reminder for a +03:00 user at 15:00 (audit M18); a caller
+    /// whose `now` is a local wall clock uses `resolve_in_zone`.
     pub fn resolve(raw: &str, now: DateTime) -> Option<Resolution> {
         Self::resolve_with_offset(raw, now, 0)
     }
@@ -240,13 +246,30 @@ impl TimeResolver {
         now: DateTime,
         local_offset_min: i64,
     ) -> Option<Resolution> {
+        Self::resolve_in_zone(raw, now, &|_| local_offset_min)
+    }
+
+    /// `zone(utc_epoch)` = the caller's UTC offset in minutes AT THAT INSTANT.
+    ///
+    /// WHY A FUNCTION AND NOT A NUMBER: the offset that converts an explicit
+    /// "2026-12-01T18:00+03:00" into the caller's wall clock is the one in force
+    /// on 1 December, not the one in force while the question is being asked.
+    /// Across a daylight-saving change the two differ by an hour, and a fixed
+    /// number would set a December reminder an hour off for every user in a
+    /// zone that observes DST (measured: Europe/Berlin is +0200 on 2026-07-20
+    /// and +0100 on 2026-12-01 per `/bin/date -r`).
+    pub fn resolve_in_zone(
+        raw: &str,
+        now: DateTime,
+        zone: &dyn Fn(i64) -> i64,
+    ) -> Option<Resolution> {
         let text = raw.trim();
         if text.is_empty() {
             return None;
         }
         // 1) ISO 8601 and language-neutral numeric patterns (both use the same
         //    resolver: the only difference is the separator and field order).
-        if let Some(c) = resolve_absolute(text, local_offset_min) {
+        if let Some(c) = resolve_absolute(text, zone) {
             return Some(c);
         }
         // 2) Relative-day shorthands ("tomorrow 14:00", "tuesday", "next week friday").
@@ -281,7 +304,7 @@ impl TimeResolver {
 }
 
 /// "2026-07-20T18:00:00+03:00", "2026-07-20 18:00", "20.07.2026", "20/07/2026 09:30".
-fn resolve_absolute(text: &str, local_offset_min: i64) -> Option<Resolution> {
+fn resolve_absolute(text: &str, zone: &dyn Fn(i64) -> i64) -> Option<Resolution> {
     let mut body = text;
     let mut external_offset_min: Option<i64> = None;
 
@@ -318,7 +341,8 @@ fn resolve_absolute(text: &str, local_offset_min: i64) -> Option<Resolution> {
     // instant, then read it back in the caller's zone.
     let an = match external_offset_min {
         Some(external) if has_clock => {
-            DateTime::from_epoch(an.epoch() - external * 60 + local_offset_min * 60)
+            let utc = an.epoch() - external * 60;
+            DateTime::from_epoch(utc + zone(utc) * 60)
         }
         _ => an,
     };
@@ -333,6 +357,16 @@ fn last_offset(s: &str) -> Option<(&str, i64)> {
     let emit = t + p;
     let sign: i64 = if s.as_bytes()[emit] == b'+' { 1 } else { -1 };
     let o = &s[emit + 1..];
+    // ASCII OR NOTHING, checked BEFORE any byte index is taken. `o.len()` counts
+    // bytes, so "1é1" is four of them and `&o[..2]` cut the `é` in half — a
+    // panic, measured with "2026-07-20T10:00+1é1" and "tonight-🎉" (the 't' of
+    // "tonight" is taken for the ISO separator). Both reach here as free text
+    // from `time` diff and `calendar` day/when, and nothing above the tool
+    // catches an unwind, so one emoji in a reminder ended the session. An
+    // offset is digits and at most one ':'; anything else is not one.
+    if !o.bytes().all(|b| b.is_ascii_digit() || b == b':') {
+        return None;
+    }
     let (h, m) = if let Some((a, b)) = o.split_once(':') {
         (a, b)
     } else if o.len() == 4 {
@@ -757,6 +791,71 @@ pub fn local_offset_minutes() -> Option<i64> {
         }
         if let Some(min) = parse_offset(String::from_utf8_lossy(&output.stdout).trim()) {
             return Some(min);
+        }
+    }
+    None
+}
+
+/// The local UTC offset (minutes) in force AT `epoch`, not now. `None` if the
+/// system cannot say.
+///
+/// WHY NOT `local_offset_minutes`: that is the offset of the moment the
+/// question is asked. Converting an explicit "…T18:00+03:00" for a date on the
+/// other side of a daylight-saving change with it lands an hour off — see
+/// `TimeResolver::resolve_in_zone`. The system is asked about the instant
+/// itself, with the same rules as above: `TACET_TZ_OFFSET` wins (it is a fixed
+/// offset by definition), the paths are fixed, nothing is guessed.
+pub fn local_offset_minutes_at(epoch: i64) -> Option<i64> {
+    if let Some(raw) = tacet_kernel::env_var("TACET_TZ_OFFSET")
+        && let Ok(min) = raw.to_string_lossy().trim().parse::<i64>()
+        && min.abs() <= 14 * 60
+    {
+        return Some(min);
+    }
+    offset_at_in_zone(epoch, None)
+}
+
+/// `local_offset_minutes_at` without the override, with an optional `TZ` for
+/// the child only. The `TZ` parameter exists for the test: setting the
+/// variable on THIS process would race every other test that reads the clock,
+/// while `Command::env` scopes it to one `date`.
+///
+/// BSD AND GNU `date` DISAGREE ON THE FLAG and both are tried: BSD/macOS takes
+/// `-r <seconds>`, GNU takes `-d @<seconds>` (GNU's `-r` means "reference
+/// FILE" and fails on a number, so a wrong guess costs one failed spawn, not a
+/// wrong answer). The platform's own flavour is tried first.
+fn offset_at_in_zone(epoch: i64, tz: Option<&str>) -> Option<i64> {
+    if cfg!(windows) {
+        // NOT MEASURED, and not attempted: the only caller that needs the
+        // instant's offset is the macOS-only calendar bridge. Windows keeps the
+        // present offset, which is what it had before.
+        return local_offset_minutes();
+    }
+    let seconds = epoch.to_string();
+    let at = format!("@{epoch}");
+    let bsd = vec!["-r", seconds.as_str(), "+%z"];
+    let gnu = vec!["-d", at.as_str(), "+%z"];
+    let flags = if cfg!(target_os = "linux") {
+        [gnu, bsd]
+    } else {
+        [bsd, gnu]
+    };
+    for program in ["/bin/date", "/usr/bin/date"] {
+        for args in &flags {
+            let mut command = std::process::Command::new(program);
+            command.args(args);
+            if let Some(tz) = tz {
+                command.env("TZ", tz);
+            }
+            let Ok(output) = command.output() else {
+                continue;
+            };
+            if !output.status.success() {
+                continue;
+            }
+            if let Some(min) = parse_offset(String::from_utf8_lossy(&output.stdout).trim()) {
+                return Some(min);
+            }
         }
     }
     None
@@ -1390,6 +1489,91 @@ mod tests {
                 TimeResolver::resolve(raw, now()).is_none(),
                 "should not have resolved: {raw:?}"
             );
+        }
+    }
+
+    /// AUDIT M9: two inputs measured to PANIC the resolver — `&o[..2]` in
+    /// `last_offset` cut a multi-byte character in half. Both arrive as free
+    /// text (`time` diff target, `calendar` day/when) and nothing catches an
+    /// unwind, so a panic here ended the session.
+    #[test]
+    fn a_multibyte_character_in_the_offset_position_is_not_a_panic() {
+        assert!(TimeResolver::resolve("2026-07-20T10:00+1é1", now()).is_none());
+        assert!(TimeResolver::resolve("tonight-🎉", now()).is_none());
+        let tool = TimeTool::new().fixed_epoch(NOW);
+        assert!(tool.diff_text("tonight-🎉").is_err());
+    }
+
+    /// The two measured inputs are two points; the defect was a CLASS — any
+    /// byte index taken on text that may hold a multi-byte character. So every
+    /// insertion point of a 2-, 3- and 4-byte character into strings that walk
+    /// each branch of the resolver is tried. Not a fuzzer, but it covers every
+    /// byte index the ISO, offset, clock and shorthand paths take.
+    #[test]
+    fn no_insertion_point_of_a_multibyte_character_panics_the_resolver() {
+        let bases = [
+            "2026-07-20T10:00+0300",
+            "2026-07-20T10:00:00-05:30",
+            "20.07.2026 09:30",
+            "tomorrow 18:00",
+            "yarin 9",
+            "2 december 2026 18.30",
+            "tonight-1",
+        ];
+        for base in bases {
+            let chars: Vec<char> = base.chars().collect();
+            for at in 0..=chars.len() {
+                for wide in ['é', '€', '🎉'] {
+                    let mut probe = chars.clone();
+                    probe.insert(at, wide);
+                    let probe: String = probe.into_iter().collect();
+                    // The answer does not matter here; returning one does.
+                    let _ = TimeResolver::resolve(&probe, now());
+                    let _ = TimeResolver::clock_trace(&probe);
+                }
+            }
+        }
+    }
+
+    /// AUDIT M18 (the resolver half): an explicit offset is converted with the
+    /// caller's offset AT THAT INSTANT. The zone below is Berlin's shape —
+    /// +02:00 in summer, +01:00 from the end of October — so the same "18:00
+    /// +03:00" is 17:00 in July and 16:00 in December. A single number would
+    /// get one of them wrong.
+    #[test]
+    fn an_explicit_offset_lands_in_the_callers_zone_at_that_instant() {
+        // 2026-10-25T01:00Z, when Central European summer time ends.
+        let dst_ends = an(2026, 10, 25, 1, 0).epoch();
+        let berlin = |utc: i64| if utc < dst_ends { 120 } else { 60 };
+        let summer =
+            TimeResolver::resolve_in_zone("2026-07-20T18:00+03:00", now(), &berlin).unwrap();
+        assert_eq!(summer.an, an(2026, 7, 20, 17, 0));
+        let winter =
+            TimeResolver::resolve_in_zone("2026-12-01T18:00+03:00", now(), &berlin).unwrap();
+        assert_eq!(winter.an, an(2026, 12, 1, 16, 0));
+        // Text with no offset of its own is already the caller's wall clock.
+        let plain = TimeResolver::resolve_in_zone("2026-12-01T18:00", now(), &berlin).unwrap();
+        assert_eq!(plain.an, an(2026, 12, 1, 18, 0));
+    }
+
+    /// The system is asked about the INSTANT, not about now. `TZ` is set on the
+    /// child `date` only (see `offset_at_in_zone`), so the answer is the
+    /// zone database's and does not depend on where this machine is.
+    #[cfg(unix)]
+    #[test]
+    fn the_offset_at_an_instant_follows_daylight_saving() {
+        let july = an(2026, 7, 20, 12, 0).epoch();
+        let december = an(2026, 12, 1, 12, 0).epoch();
+        assert_eq!(offset_at_in_zone(july, Some("Europe/Berlin")), Some(120));
+        assert_eq!(offset_at_in_zone(december, Some("Europe/Berlin")), Some(60));
+        assert_eq!(offset_at_in_zone(july, Some("UTC")), Some(0));
+        // With no TZ override the instant "now" agrees with the present offset.
+        if std::env::var_os("TACET_TZ_OFFSET").is_none() {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            assert_eq!(offset_at_in_zone(now, None), local_offset_minutes());
         }
     }
 

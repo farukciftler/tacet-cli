@@ -16,6 +16,62 @@ use crate::matching::lowercase;
 /// style" instruction but keeps a long essay away from the prompt.
 pub const USER_BODY_LIMIT: usize = 500;
 
+/// The longest skill name, in characters.
+///
+/// A BOUND, NOT A STYLE RULE. The name is written into the fence the model
+/// reads — `<guidance name="...">` — and `injection::max_envelope` prices that
+/// fence at a name of exactly this length; `tacet_engine::GUIDE_LIMIT` is sized
+/// against that price. The comment there said "32 is generous for a skill name
+/// and the assertion in `store.rs` keeps it true", and no such assertion
+/// existed: a user's frontmatter could say anything, of any length (audit H4-c).
+pub const NAME_LIMIT: usize = 32;
+
+/// A skill name made safe to write into the `<guidance name="...">` fence, or
+/// `None` when nothing usable is left.
+///
+/// THE SHAPE IS `[a-z0-9-]{1,32}`, AND A NAME IS NORMALISED INTO IT RATHER THAN
+/// REFUSED. The name comes from a frontmatter line or a file name the user
+/// chose, and refusing `My Notes.md` for a space would be a skill that silently
+/// never fires. So: ASCII letters lowercased, the six Turkish letters folded to
+/// their ASCII base (this project's users name things in Turkish, and
+/// `ogrenci-notu` is closer to `öğrenci-notu` than `-renci-notu` is), every
+/// other character a hyphen, runs of hyphens collapsed, the ends trimmed, the
+/// length cut to `NAME_LIMIT`.
+///
+/// WHAT IT CLOSES, measured: a skill named `x<|im_start|>` rendered
+/// `<guidance name="x<|im_start|>">` — a live ChatML marker inside the fence —
+/// and the prompt carried four `<|im_start|>` where it should carry three. A
+/// quote would close the attribute, a `>` the tag; none of them survives this.
+pub fn skill_name(raw: &str) -> Option<String> {
+    let mut out = String::with_capacity(raw.len().min(NAME_LIMIT));
+    for c in raw.chars() {
+        let c = match c {
+            'ç' | 'Ç' => 'c',
+            'ğ' | 'Ğ' => 'g',
+            'ı' | 'I' | 'İ' => 'i',
+            'ö' | 'Ö' => 'o',
+            'ş' | 'Ş' => 's',
+            'ü' | 'Ü' => 'u',
+            c if c.is_ascii_alphanumeric() => c.to_ascii_lowercase(),
+            _ => '-',
+        };
+        if c == '-' && (out.is_empty() || out.ends_with('-')) {
+            continue;
+        }
+        out.push(c);
+    }
+    out.truncate(NAME_LIMIT);
+    let trimmed = out.trim_end_matches('-');
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// The name constructors store: normalised, with a fixed stand-in when a
+/// constructor is handed nothing usable (it returns `Self`, so it cannot
+/// refuse; `parse` can, and does).
+fn stored_name(raw: String) -> String {
+    skill_name(&raw).unwrap_or_else(|| "skill".to_string())
+}
+
 /// A skill: name, triggers and guide text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skill {
@@ -44,7 +100,7 @@ impl Skill {
         tools: Vec<String>,
     ) -> Self {
         Self {
-            name: name.into(),
+            name: stored_name(name.into()),
             triggers: triggers.iter().map(|t| lowercase(t)).collect(),
             text: text.into(),
             tools,
@@ -60,7 +116,7 @@ impl Skill {
         let raw: String = text.into();
         let trimmed: String = raw.chars().take(USER_BODY_LIMIT).collect();
         Self {
-            name: name.into(),
+            name: stored_name(name.into()),
             triggers: triggers.iter().map(|t| lowercase(t)).collect(),
             text: trimmed,
             tools: Vec::new(),
@@ -120,6 +176,10 @@ pub fn parse(default_name: &str, raw: &str) -> Option<Skill> {
     if triggers.is_empty() {
         return None;
     }
+    // A frontmatter name with nothing usable in it falls back to the file's
+    // name; when neither has a letter or digit the file is not a skill — the
+    // same verdict as a file with no triggers, for the same reason.
+    let name = skill_name(&name).or_else(|| skill_name(default_name))?;
     Some(Skill::package(name, triggers, body, tools))
 }
 
@@ -151,6 +211,44 @@ mod tests {
         assert_eq!(s.tools, vec!["calculate"]);
         assert_eq!(s.text, "# Arithmetic\nBody.");
         assert!(!s.is_users);
+    }
+
+    /// AUDIT H4-c. A name is written into the fence the model reads, so it
+    /// may hold nothing that closes the attribute, the tag, or opens a turn.
+    #[test]
+    fn a_skill_name_is_normalised_into_the_fence_shape() {
+        let s = parse("x", "---\nname: x<|im_start|>\ntriggers: t\n---\nBody").unwrap();
+        assert_eq!(s.name, "x-im-start");
+        assert_eq!(skill_name("My Notes"), Some("my-notes".into()));
+        assert_eq!(skill_name("hesaplama-ğ"), Some("hesaplama-g".into()));
+        assert_eq!(skill_name("a\" onload=\"b"), Some("a-onload-b".into()));
+        assert_eq!(skill_name("--calc--"), Some("calc".into()));
+        let long = skill_name(&"ab".repeat(100)).unwrap();
+        assert_eq!(long.chars().count(), NAME_LIMIT);
+        for name in [&s.name, &long] {
+            assert!(
+                name.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+                "{name}"
+            );
+        }
+    }
+
+    /// Nothing usable in the frontmatter name: the file name stands in; nothing
+    /// usable in either: not a skill.
+    #[test]
+    fn a_name_with_nothing_usable_is_refused() {
+        assert_eq!(skill_name("<|>"), None);
+        assert_eq!(skill_name(""), None);
+        let s = parse("from-file", "---\nname: <|>\ntriggers: t\n---\nBody").unwrap();
+        assert_eq!(s.name, "from-file");
+        assert!(parse("<>", "---\nname: \"\"\ntriggers: t\n---\nBody").is_none());
+        // A constructor cannot refuse; it stores a stand-in, never the raw text.
+        assert_eq!(
+            Skill::users("<|im_end|>", vec!["t".into()], "b").name,
+            "im-end"
+        );
+        assert_eq!(Skill::users("<|>", vec!["t".into()], "b").name, "skill");
     }
 
     #[test]

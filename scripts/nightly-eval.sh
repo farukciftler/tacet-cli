@@ -10,22 +10,26 @@
 # same command every night rather than whatever was in the shell history.
 #
 # WHAT IT GUARANTEES:
-#   * RESUMABLE. `--journal` keeps every finished case, keyed by the commit. A
-#     closed lid at case 180 costs one case, not the 47 minutes behind it.
-#     Running this script again continues; running it twice in a row is a no-op
-#     that re-reports.
-#   * LOGGED. Everything the run prints goes to a dated file, with the commit,
-#     the machine and the model fingerprint at the top, so a number found later
-#     can be traced to what produced it.
+#   * RESUMABLE. `--journal` keeps every finished case, keyed by the commit,
+#     the uncommitted diff, the model and the features — never by the date. A
+#     closed lid at case 180 costs one case, not the 47 minutes behind it, and
+#     that stays true across midnight. Running this script again continues;
+#     running it twice in a row is a no-op that re-reports.
+#   * LOGGED. Everything the run prints goes to `run.log` in that directory,
+#     each attempt headed by its start time, the commit, the machine and the
+#     model, so a number found later can be traced to what produced it.
 #   * LIVE. The eval's own progress line ("[103/184] case · 31m elapsed · ~20m
 #     left") is in the log as it happens; `tail -f` is the live view.
-#   * IT REFUSES TO MIX. A journal stamped for a different model or catalog
-#     stops the run (see `CaseJournal::open`), so a report can never be half one
-#     build and half another.
+#   * IT REFUSES TO MIX. Different code gets a different directory (below), and
+#     a journal stamped for a different model, catalog, commit, set of
+#     uncommitted edits, prompt text or router options, or holding a case that
+#     has since been rewritten, stops the run (see `JournalStamp`), so a report
+#     can never be half one build and half another.
 #
 # USAGE
 #   scripts/nightly-eval.sh                 # tonight's run, resuming if it can
 #   scripts/nightly-eval.sh --model qwen2.5-3b
+#   scripts/nightly-eval.sh --print-run-dir # where it would go; touches nothing
 #   tail -f ~/.tacet/nightly/latest.log     # the live view
 #
 # The exit code is the eval's, so cron mail says whether it passed.
@@ -37,10 +41,12 @@ FEATURES="metal"
 case "$(uname -s)" in
   Linux) FEATURES="cuda" ;;
 esac
+PRINT_RUN_DIR=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --model) MODEL="$2"; shift 2 ;;
     --features) FEATURES="$2"; shift 2 ;;
+    --print-run-dir) PRINT_RUN_DIR=1; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -48,16 +54,55 @@ done
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO" || exit 1
 
-# THE COMMIT IS PART OF THE DIRECTORY NAME, and that is the resume key. Two
-# runs of the same commit share a journal and continue each other; a new commit
-# starts a new one, because the cases are not comparable across a code change
-# and the journal's own stamp would refuse them anyway.
+# THE DIRECTORY NAME IS THE RESUME KEY, and it names exactly what was built:
+# the commit, the uncommitted changes if there are any, the model and the
+# features. Two runs of the same code share a journal and continue each other;
+# different code starts a new one, because the cases are not comparable across
+# a code change.
+#
+# THIS DIRECTORY IS WHAT KEEPS TWO BUILDS APART. The journal's own stamp
+# (`JournalStamp`) now also hashes the commit, the uncommitted edits (untracked
+# files included), the prompt text and every case, and refuses a journal
+# stamped for anything else — a second lock, not the one this key leans on: a
+# stamp that once held no commit at all is how two builds were mixed before.
+#
+# NO DATE IN IT. It used to be `<yyyymmdd>-<commit>`, so a run interrupted at
+# 02:00 and re-run after midnight — the common case for a job that starts at
+# 03:07 and takes most of an hour — opened a fresh directory and started from
+# case 1, while the header above promised it would continue. The log carries
+# the start time of every attempt instead.
+#
+# `-dirty` CARRIES A HASH OF THE DIFF. A bare `-dirty` flag made every
+# uncommitted state of one commit share a journal, so a run could be half one
+# edit and half the next. The hash covers tracked changes against HEAD and the
+# content of untracked, non-ignored files (a new module is an untracked file:
+# code the binary was built from, which `git diff` alone missed), and it is
+# computed without writing anything into the repository.
 COMMIT="$(git rev-parse --short HEAD)"
+working_copy_hash() {
+  {
+    git diff HEAD --binary
+    git ls-files --others --exclude-standard -z | while IFS= read -r -d '' f; do
+      printf '%s\0' "$f"
+      git hash-object -- "$f"
+    done
+  } | git hash-object --stdin | cut -c1-12
+}
 DIRTY=""
-if ! git diff --quiet || ! git diff --cached --quiet; then DIRTY="-dirty"; fi
-STAMP="$(date +%Y%m%d)"
+if ! git diff HEAD --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+  DIRTY="-dirty-$(working_copy_hash)"
+fi
 OUT="$HOME/.tacet/nightly"
-RUN="$OUT/$STAMP-$COMMIT$DIRTY"
+RUN="$OUT/$COMMIT$DIRTY-${MODEL//\//_}-$FEATURES"
+
+# `--print-run-dir` answers "where would tonight's run go" and stops before
+# touching anything — no directory, no build, no model. It exists so the resume
+# key can be tested by running the script instead of by reading it:
+# `the_journal_directory_survives_midnight_and_tells_edits_apart`.
+if [ "$PRINT_RUN_DIR" = 1 ]; then
+  echo "$RUN"
+  exit 0
+fi
 mkdir -p "$RUN"
 
 LOG="$RUN/run.log"
@@ -86,14 +131,34 @@ fi
 
 # THE BUILD IS PART OF THE MEASUREMENT. A run against a stale binary is worse
 # than no run: it produces a number attributed to a commit it did not measure.
+#
+# AND THE BINARY RUN IS THE ONE CARGO REPORTS BUILDING, not a hard-coded
+# `./target/release/tacet`: `CARGO_TARGET_DIR`, `build.target-dir` and
+# `build.target` each move a release build elsewhere, and the run would then
+# measure whatever older binary was left in `target/` — the stale-binary number
+# this build step exists to prevent. smoke.sh had the same hole (audit M29).
 echo "--- building" >> "$LOG"
-if ! cargo build --release -p tacet-cli --features "$FEATURES" >> "$LOG" 2>&1; then
+if ! command -v jq >/dev/null 2>&1; then
+  echo "jq is not on PATH; the built binary cannot be located" >> "$LOG"
+  exit 127
+fi
+if ! build_json="$(cargo build --release -p tacet-cli --bin tacet --features "$FEATURES" \
+  --message-format=json-render-diagnostics 2>> "$LOG")"; then
   echo "the build failed; nothing was measured" >> "$LOG"
   exit 1
 fi
+BIN="$(printf '%s\n' "$build_json" \
+  | jq -r 'select(.reason == "compiler-artifact" and .target.name == "tacet"
+             and (.target.kind | index("bin"))) | .executable // empty' \
+  | tail -1)"
+if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
+  echo "cargo did not report a tacet executable; nothing was measured" >> "$LOG"
+  exit 1
+fi
+echo "binary    $BIN" >> "$LOG"
 
 echo "--- running (resumable; $(ls "$RUN/cases" 2>/dev/null | grep -c '\.json$') files already there)" >> "$LOG"
-./target/release/tacet eval --tool-selection --model "$MODEL" --json \
+"$BIN" eval --tool-selection --model "$MODEL" --json \
   --journal "$RUN/cases" \
   > "$RUN/report.json" 2>> "$LOG"
 CODE=$?
@@ -114,7 +179,7 @@ BASE="crates/tacet-eval/baselines/qwen3-4b-both.json"
 if [ -f "$BASE" ]; then
   echo >> "$LOG"
   echo "--- against $BASE" >> "$LOG"
-  ./target/release/tacet eval --compare "$BASE" "$RUN/report.json" >> "$LOG" 2>&1
+  "$BIN" eval --compare "$BASE" "$RUN/report.json" >> "$LOG" 2>&1
 fi
 
 echo >> "$LOG"

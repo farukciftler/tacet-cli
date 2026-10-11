@@ -4,20 +4,60 @@ on:
   push:
     tags: ["v*"]
 
+# READ-ONLY BY DEFAULT; THE WRITE IS GRANTED TO ONE JOB.
+#
+# This block used to give `contents: write`, `id-token: write` and
+# `attestations: write` to the whole workflow, which meant the BUILD jobs held
+# them too — and the build jobs are where other people's code runs: every
+# dependency's `build.rs` (`ring` and `onig_sys` compile C), plus third-party
+# actions. A build script that can mint an OIDC token can get Sigstore to sign
+# provenance for a binary it swapped in, and the attestation below would then
+# vouch for exactly the thing it exists to catch. `publish` runs no Rust build
+# and no dependency code; it is the only job that needs to write, so it is the
+# only one that can.
 permissions:
-  contents: write
-  # PROVENANCE NEEDS TWO MORE, and neither is optional for it to mean anything.
-  # `id-token: write` lets the job get an OIDC token so Sigstore can bind the
-  # attestation to THIS workflow at THIS commit; `attestations: write` lets it
-  # be stored. Without them `actions/attest-build-provenance` fails rather than
-  # silently producing nothing, which is the correct direction.
-  id-token: write
-  attestations: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
+# EVERY `uses:` IS A COMMIT SHA with its tag in the comment, for the same reason
+# as ci.yml but with more at stake: these actions handle the release assets and
+# hold the publish token. `.github/dependabot.yml` proposes the bumps.
+#
+# NO `rust-cache` IN THIS FILE, ON PURPOSE. A cache restored here was written by
+# whichever branch last saved under the same key, so a release could link
+# objects produced by a run nobody reviewed. A release is rare and slow is fine;
+# the build starts from nothing.
+
 jobs:
+  # THE TESTS RUN AGAINST THE TAGGED COMMIT, HERE, BEFORE ANYTHING IS PUBLISHED.
+  #
+  # Pushing a tag ran no tests at all, and nothing checked that CI had been
+  # green on the commit the tag names — a tag on a red commit, or on a commit
+  # that never went through `main`, shipped. `publish` needs this job, so a red
+  # test now means no release rather than a release and an apology.
+  #
+  # It runs beside `build`, not before it: nothing leaves the runners until
+  # `publish`, so gating there costs no safety and saves a full build's wait.
+  # The Linux sandbox preflight from ci.yml is not repeated; without bubblewrap
+  # those tests print a skip here, and the measurement of them stays ci.yml's.
+  verify:
+    name: tests on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+      - run: cargo test --workspace
+      - run: cargo test --workspace --features candle --no-run
+        if: runner.os == 'Linux'
+
   build:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -53,11 +93,11 @@ jobs:
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, ext: "", features: candle }
           - { os: windows-latest, target: x86_64-pc-windows-msvc,    ext: ".exe", features: candle }
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
 
       # WITH the inference feature for the platform. This costs build time and
       # binary size; the alternative cost was users losing model inference on
@@ -68,24 +108,45 @@ jobs:
       # --install` runs exactly this on the downloaded file and refuses to swap
       # if the answer is weaker than the running build. A release that ships the
       # wrong answer here would defeat that guard, so it is checked at build time.
+      #
+      # ON EVERY PLATFORM, WINDOWS INCLUDED. This step used to carry
+      # `if: matrix.os != 'windows-latest'`, so the one binary built with a
+      # different extension and a different shell was the one nobody asked —
+      # a Windows asset built without `candle` would have shipped, and every
+      # Windows `tacet update --install` would then have refused it or fallen
+      # back to the fake engine. `pwsh` is on all three runner images, so one
+      # step covers all five targets. GitHub runs pwsh steps with
+      # `$ErrorActionPreference = 'stop'`, so a missing binary fails the step
+      # rather than reading as an empty answer.
       - name: The binary reports its features
-        if: matrix.os != 'windows-latest'
-        shell: bash
+        shell: pwsh
+        env:
+          BIN: target/${{ matrix.target }}/release/tacet${{ matrix.ext }}
+          EXPECTED: ${{ matrix.features }}
         run: |
-          got=$(./target/${{ matrix.target }}/release/tacet --print-features 2>/dev/null || echo MISSING)
-          echo "reported: $got  expected: ${{ matrix.features }}"
-          [ "$got" = "${{ matrix.features }}" ] || exit 1
+          $got = (& "./$env:BIN" --print-features | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { $got = "MISSING" }
+          Write-Output "reported: $got  expected: $env:EXPECTED"
+          if ($got -ne $env:EXPECTED) { exit 1 }
 
+      # THE TAG NAME GOES THROUGH `env`, NOT INTO THE SCRIPT TEXT. `${{ }}` is
+      # pasted into the shell source before bash reads it, so a ref name
+      # carrying `$(...)` would run; an environment variable is only ever data.
       - name: Package
         shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+          EXT: ${{ matrix.ext }}
+          RUNNER_IMAGE: ${{ matrix.os }}
         run: |
-          bin="target/${{ matrix.target }}/release/tacet${{ matrix.ext }}"
-          name="tacet-${{ github.ref_name }}-${{ matrix.target }}"
+          bin="target/$TARGET/release/tacet$EXT"
+          name="tacet-$REF_NAME-$TARGET"
           mkdir -p "dist/$name"
           cp "$bin" "dist/$name/"
           cp README.md LICENSE "dist/$name/"
           cd dist
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+          if [ "$RUNNER_IMAGE" = "windows-latest" ]; then
             7z a "$name.zip" "$name" >/dev/null
           else
             tar czf "$name.tar.gz" "$name"
@@ -97,9 +158,9 @@ jobs:
           # The name is a contract with crates/tacet-cli/src/update.rs
           # (`asset_name`) — change one, change both. It carries no version, so
           # it cannot collide with the archive above.
-          cp "$name/tacet${{ matrix.ext }}" "tacet-${{ matrix.target }}${{ matrix.ext }}"
+          cp "$name/tacet$EXT" "tacet-$TARGET$EXT"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.target }}
           path: |
@@ -109,12 +170,44 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: build
+    needs: [verify, build]
     runs-on: ubuntu-latest
+    # THE ONLY JOB THAT CAN WRITE. `contents: write` creates the release.
+    # PROVENANCE NEEDS TWO MORE, and neither is optional for it to mean anything.
+    # `id-token: write` lets the job get an OIDC token so Sigstore can bind the
+    # attestation to THIS workflow at THIS commit; `attestations: write` lets it
+    # be stored. Without them `actions/attest-build-provenance` fails rather than
+    # silently producing nothing, which is the correct direction. Nothing in this
+    # job compiles or runs a dependency.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with: { path: dist, merge-multiple: true }
+
+      # AN SBOM, because "almost no dependencies" is an argument about the
+      # transitive graph and the graph is not in the release. `cargo-deny` checks
+      # it at build time (see ci.yml); this publishes it, so someone downstream
+      # can answer "is this affected by <today's advisory>" without cloning the
+      # repository and resolving it themselves.
+      #
+      # IT COMES FIRST, BEFORE THE CHECKSUMS AND THE ATTESTATION. It used to be
+      # generated after both, so the one release asset describing what the
+      # binaries are made of was the one asset neither covered — anybody able
+      # to replace a release asset could replace the SBOM and nothing would
+      # disagree. Generated here, `dist/*` below includes it.
+      - uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          path: .
+          format: spdx-json
+          artifact-name: tacet-sbom.spdx.json
+          output-file: dist/tacet-sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
       - name: Checksums
         run: |
           cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
@@ -137,28 +230,14 @@ jobs:
       # GitHub API reports (`update.rs`), and says so honestly when it cannot —
       # what was missing was any way to check that GitHub's digest describes
       # something this repository actually built.
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: "dist/*"
-
-      # AN SBOM, because "almost no dependencies" is an argument about the
-      # transitive graph and the graph is not in the release. `cargo-deny` checks
-      # it at build time (see ci.yml); this publishes it, so someone downstream
-      # can answer "is this affected by <today's advisory>" without cloning the
-      # repository and resolving it themselves.
-      - uses: anchore/sbom-action@v0
-        with:
-          path: .
-          format: spdx-json
-          artifact-name: tacet-sbom.spdx.json
-          output-file: dist/tacet-sbom.spdx.json
-          upload-artifact: false
-          upload-release-assets: false
 
       # `tacet update` reads this release's tag and assets. The asset naming
       # scheme above is a contract with src/update.rs — change one, change both.
       # The SBOM and SHA256SUMS do not match that scheme and are ignored by it.
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: dist/*
           generate_release_notes: true

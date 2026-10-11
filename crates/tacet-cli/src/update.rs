@@ -1,5 +1,4 @@
-//! `tacet update` — replaces this binary with the newest release, after asking
-//! replaces this binary with it.
+//! `tacet update` — replaces this binary with the newest release, after asking.
 //!
 //! NOTHING HERE RUNS UNTIL THE USER SAYS SO. There is no check at start-up and
 //! no background ping. A daily check exists, and it is off until the shell has
@@ -262,9 +261,8 @@ pub fn install(color: &Color, no_approval: bool) -> Result<Outcome, String> {
     // present" and returns WITHOUT asking the approval gate and WITHOUT
     // touching the network — which would silently swap in bytes nobody in this
     // run approved (a failed or interrupted earlier update, or a file another
-    // local account dropped next to the binary).
-    let _ = std::fs::remove_file(&staged);
-
+    // local account dropped next to the binary). Its half-file goes too — see
+    // `clear_staging`, and `download_fresh` for why the two are one call.
     let approval = crate::models::TerminalDownloadApproval {
         color: Color::setup(),
         no_approval,
@@ -275,7 +273,7 @@ pub fn install(color: &Color, no_approval: bool) -> Result<Outcome, String> {
     let progress = crate::models::TerminalDownloadProgress {
         color: Color::setup(),
     };
-    let outcome = tacet_web::download(&plan, &approval, &progress)
+    let outcome = download_fresh(&staged, || tacet_web::download(&plan, &approval, &progress))
         .map_err(|e| format!("download failed: {e}"))?;
 
     make_executable(&staged)?;
@@ -337,22 +335,115 @@ pub fn install(color: &Color, no_approval: bool) -> Result<Outcome, String> {
     Ok(Outcome::Updated)
 }
 
+/// Removes what an earlier update left beside the binary: the staged
+/// `<exe>.new`, its half-downloaded `<exe>.new.downloading` and that file's
+/// `.resume` record.
+///
+/// THE HALF-FILE IS NEVER CONTINUED (audit L3, the updater's half). An update
+/// interrupted at v0.2.0 left a prefix of v0.2.0 under the same name a v0.3.0
+/// download would resume into, and the downloader's resume guard — same URL,
+/// a strong ETag, or a published digest — is the only thing between that
+/// prefix and a spliced binary. For a model of gigabytes that guard is worth
+/// trusting; for a binary of tens of megabytes it is not worth needing, so the
+/// updater starts every download from zero. Each update is a different
+/// object anyway, so a resume across runs could only ever be the wrong one.
+fn clear_staging(staged: &Path) {
+    let partial = tacet_web::download::temp_path(staged);
+    let mut record = partial.clone().into_os_string();
+    record.push(".resume");
+    for leftover in [staged.to_path_buf(), partial, PathBuf::from(record)] {
+        let _ = std::fs::remove_file(leftover);
+    }
+}
+
+/// Clears an earlier update's leftovers beside `staged`, then runs `fetch`.
+///
+/// ONE FUNCTION, SO THE ORDER IS TESTABLE (audit L3). The clear used to be a
+/// bare statement in `install`, and deleting it left every test green: the
+/// only test called `clear_staging` itself, and `install` cannot run under
+/// `cargo test` without the network. `the_download_starts_with_no_leftover`
+/// holds this function to clearing first, and
+/// `install_downloads_only_through_download_fresh` holds `install` to having
+/// no other way to the downloader.
+fn download_fresh<T>(staged: &Path, fetch: impl FnOnce() -> T) -> T {
+    clear_staging(staged);
+    fetch()
+}
+
+/// How long the downloaded binary gets to say what it was built with.
+///
+/// `--print-features` is answered before argument parsing, config or model
+/// discovery (see `main`), so a real build answers in milliseconds; ten
+/// seconds is room for a cold disk and an antivirus scan on first execution,
+/// not for anything the binary does.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Runs the downloaded binary once, just to ask what it was built with.
 ///
 /// It is already on disk and about to become the program the user runs, so
-/// executing it here adds no trust that installing it would not. The call is
-/// given a short leash and a failure reads as "unknown", which ranks as no
-/// inference — the safe direction, because the cost of a false alarm is a
-/// message and the cost of a false pass is a silently degraded install.
+/// executing it here adds no trust that installing it would not. A failure
+/// reads as "unknown", which ranks as no inference — the safe direction,
+/// because the cost of a false alarm is a message and the cost of a false pass
+/// is a silently degraded install.
 fn probe_features(path: &Path) -> String {
-    match std::process::Command::new(path)
+    probe_features_within(path, PROBE_TIMEOUT)
+}
+
+/// THE LEASH IS REAL NOW (audit L7). This used to say "a short leash" over a
+/// bare `.output()`, which waits for as long as the child lives: a downloaded
+/// binary that hangs when asked held `tacet update` forever, with the approval
+/// already given and nothing on screen. Its stdin is closed, so a build that
+/// waits for input sees end-of-file rather than the user's terminal.
+///
+/// The child's stdout is read on a thread that is NOT joined on a timeout: a
+/// grandchild the binary forked can hold the pipe open after the child is
+/// killed, and joining would bring the hang straight back.
+fn probe_features_within(path: &Path, timeout: Duration) -> String {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
+    let Ok(mut child) = Command::new(path)
         .arg("--print-features")
-        .output()
-    {
-        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return "unknown".to_string();
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    if let Some(mut out) = child.stdout.take() {
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            // A short answer is all that is wanted; a binary that prints more
+            // than this is not answering the question.
+            let _ = out.by_ref().take(4096).read_to_string(&mut text);
+            let _ = tx.send(text);
+        });
+    }
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    match status {
+        Some(status) if status.success() => rx
+            .recv_timeout(Duration::from_secs(1))
+            .map(|t| t.trim().to_string())
+            .unwrap_or_else(|_| "unknown".to_string()),
         // An older release predates the flag and exits with a usage error. That
         // is exactly the build that has no features to report, so "unknown" is
-        // the honest reading rather than a special case.
+        // the honest reading rather than a special case. A child that ran out
+        // the clock reads the same way.
         _ => "unknown".to_string(),
     }
 }
@@ -494,8 +585,18 @@ fn write_cache(latest: &str) {
 /// A failed check returns `None` and says nothing. This is a courtesy, not a
 /// task: printing "the update check failed" would send the user to investigate a
 /// problem they do not have.
-pub fn daily_notice(color: &Color) -> Option<String> {
-    if crate::config::update_policy() != crate::config::UpdatePolicy::On {
+///
+/// `conversation` is the caller's word that this was a conversation with a
+/// person — an interactive session that printed for a human, not a `--message`
+/// run and not `--json`. See `may_check`.
+pub fn daily_notice(color: &Color, conversation: bool) -> Option<String> {
+    use std::io::IsTerminal;
+    if !may_check(
+        conversation,
+        std::io::stdout().is_terminal(),
+        std::io::stderr().is_terminal(),
+    ) || crate::config::update_policy() != crate::config::UpdatePolicy::On
+    {
         return None;
     }
     let (checked_at, cached) = read_cache();
@@ -516,6 +617,21 @@ pub fn daily_notice(color: &Color) -> Option<String> {
         latest.trim_start_matches('v'),
         color.paint(crate::ui::DIM, "tacet update")
     ))
+}
+
+/// May the end-of-session check run at all: only after a conversation with a
+/// person, and only with both output streams on a terminal.
+///
+/// WHY (audit D7). The README says the check "never runs when output is
+/// piped", and nothing checked: `tacet -m "…" | grep x` and every scripted
+/// `--message` run in a loop asked GitHub once a day from inside somebody's
+/// pipeline, and wrote the "update available" line onto a stderr that a script
+/// was capturing. A script is the place where an unasked network request is
+/// least expected and least visible. Both streams, because the notice goes to
+/// stderr and the README's "output" is what the user reads — a run with either
+/// one redirected is a run somebody is processing, not reading.
+pub fn may_check(conversation: bool, stdout_tty: bool, stderr_tty: bool) -> bool {
+    conversation && stdout_tty && stderr_tty
 }
 
 /// Offers the check once, on the `OFFER_AFTER_TURNS`th turn. Returns `true` when
@@ -668,6 +784,129 @@ mod tests {
         let staged = staging_path(current);
         assert_eq!(staged.parent(), current.parent());
         assert_eq!(staged.file_name().unwrap(), "tacet.new");
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "tacet-update-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// AUDIT L3, the updater's half: an interrupted update's half-file and its
+    /// resume record are removed with the staged binary, so the next update
+    /// never continues a prefix of another release.
+    #[test]
+    fn an_earlier_updates_leftovers_are_all_removed() {
+        let dir = temp_dir("staging");
+        let staged = staging_path(&dir.join("tacet"));
+        let partial = tacet_web::download::temp_path(&staged);
+        let record = PathBuf::from(format!("{}.resume", partial.display()));
+        for f in [&staged, &partial, &record] {
+            std::fs::write(f, b"OLD-RELEASE-PREFIX").unwrap();
+        }
+        assert_eq!(
+            partial.file_name().unwrap(),
+            "tacet.new.downloading",
+            "the premise: this is the name the downloader resumes into"
+        );
+        clear_staging(&staged);
+        for f in [&staged, &partial, &record] {
+            assert!(!f.exists(), "{} survived into the next update", f.display());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// AUDIT L3: by the time the downloader runs, nothing an earlier update
+    /// left is there for it to call "already present" or resume into.
+    #[test]
+    fn the_download_starts_with_no_leftover() {
+        let dir = temp_dir("fresh");
+        let staged = staging_path(&dir.join("tacet"));
+        let partial = tacet_web::download::temp_path(&staged);
+        let record = PathBuf::from(format!("{}.resume", partial.display()));
+        for f in [&staged, &partial, &record] {
+            std::fs::write(f, b"OLD-RELEASE-PREFIX").unwrap();
+        }
+        let seen = download_fresh(&staged, || {
+            [&staged, &partial, &record]
+                .into_iter()
+                .filter(|f| f.exists())
+                .map(|f| f.display().to_string())
+                .collect::<Vec<_>>()
+        });
+        assert!(
+            seen.is_empty(),
+            "the download began with an earlier update's files in place: {seen:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// AUDIT L3: `install` reaches the downloader only through `download_fresh`.
+    /// `install` needs the network, so this reads its source: a second path to
+    /// `tacet_web::download`, or a call that bypasses the wrapper, fails here.
+    #[test]
+    fn install_downloads_only_through_download_fresh() {
+        let source = include_str!("update.rs");
+        let start = source.find("pub fn install(").expect("install exists");
+        let body = &source[start..];
+        let end = body.find("\n}\n").expect("install ends");
+        let flat: String = body[..end].split_whitespace().collect();
+        assert_eq!(
+            flat.matches("tacet_web::download(").count(),
+            1,
+            "install calls the downloader once"
+        );
+        assert!(
+            flat.contains("download_fresh(&staged,||{tacet_web::download(")
+                || flat.contains("download_fresh(&staged,||tacet_web::download("),
+            "install calls the downloader outside download_fresh, so an earlier \
+             update's leftovers may be installed or resumed into"
+        );
+    }
+
+    /// AUDIT L7: a downloaded binary that never answers does not hold the
+    /// update forever; it reads as "unknown" once the leash runs out.
+    #[cfg(unix)]
+    #[test]
+    fn a_binary_that_never_answers_is_given_up_on() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("probe");
+        let hang = dir.join("tacet.new");
+        // `exec`, so the shell IS the sleeper and the kill reaches it.
+        std::fs::write(&hang, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&hang, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let started = std::time::Instant::now();
+        let answer = probe_features_within(&hang, Duration::from_millis(300));
+        let took = started.elapsed();
+        assert_eq!(answer, "unknown");
+        assert!(
+            took < Duration::from_secs(5),
+            "the probe waited {took:?} for a binary that was never going to answer"
+        );
+
+        // And a binary that does answer is still read.
+        let ok = dir.join("tacet.ok");
+        std::fs::write(&ok, "#!/bin/sh\necho metal\n").unwrap();
+        std::fs::set_permissions(&ok, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(probe_features_within(&ok, Duration::from_secs(10)), "metal");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// AUDIT D7: the daily check runs only after a conversation, with both
+    /// streams on a terminal. The binary-level half is
+    /// `tests/a_script_is_never_told_about_updates.rs`.
+    #[test]
+    fn the_daily_check_needs_a_person_and_two_terminals() {
+        assert!(may_check(true, true, true));
+        assert!(!may_check(false, true, true), "a --message run checked");
+        assert!(!may_check(true, false, true), "a piped stdout checked");
+        assert!(!may_check(true, true, false), "a captured stderr checked");
     }
 
     #[test]

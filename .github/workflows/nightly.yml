@@ -60,6 +60,11 @@ on:
         required: false
         default: "fake-engine.json"
 
+# Read-only, and every `uses:` pinned to a commit SHA — the reasons are at the
+# top of ci.yml and release.yml.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -75,9 +80,11 @@ jobs:
     name: routing under every pressure
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: pressure 0 (a default install)
         run: cargo run -p tacet-cli -- eval --routing --routing-pressure 0
@@ -137,14 +144,21 @@ jobs:
   # no measurement — the exact thing this file's header refuses. Measured on the
   # author's machine (macOS arm64, candle tree already built): the command binds
   # and links both test binaries in 4.0 s. A cold CI runner pays for the candle
-  # tree itself, which is why this is nightly and not a PR gate.
+  # tree itself, which is why this was nightly-only at first.
+  #
+  # IT IS NOW ALSO A PR GATE — the `candle-compiles` job in ci.yml runs the
+  # first command below on every pull request, because nightly-only meant a PR
+  # could break the compile and merge green. What stays here is the part ci.yml
+  # does not repeat: clippy with the feature on, and the two weightless tests.
   candle-compiles:
     name: the candle-gated tests still compile
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo test --workspace --features candle --no-run
       - run: cargo clippy --workspace --all-targets --features candle -- -D warnings
       # AND TWO OF THEM DO NOT NEED WEIGHTS, so compiling and not running them
@@ -170,6 +184,27 @@ jobs:
             gguf_tokenizer::tests::an_out_of_order_vocabulary_is_refused \
             | tee /tmp/gguf.txt
           grep -q "2 passed" /tmp/gguf.txt
+      # AND THE ENGINE'S OWN GUARDS BEHIND `candle`, which need no weights either
+      # and until this step ran nowhere in CI (review of audits L21, L23, T1):
+      # the call watch's lexer and its wiring through `run_loop`, the window
+      # candle can really run, and the marker rules on the checked-in tokenizer
+      # fixture. `candle_engine::` is every test in that module — all 21 of them
+      # build their inputs in memory or from `tests/fixtures`, none opens a model
+      # (measured 10 Oct 2026: 0.06 s). The real-file marker tests stay
+      # `#[ignore]`d and are not run here.
+      #
+      # A FLOOR, NOT AN EXACT COUNT, so adding a guard does not turn this red;
+      # a rename that leaves the filter matching nothing still does.
+      - name: the candle-gated engine guards that need no weights actually run
+        run: |
+          cargo test -p tacet-engine --features candle --lib -- candle_engine:: \
+            | tee /tmp/candle-lib.txt
+          passed=$(grep -Eo 'test result: ok\. [0-9]+ passed' /tmp/candle-lib.txt | grep -Eo '[0-9]+' | head -n1)
+          test "${passed:-0}" -ge 21
+          cargo test -p tacet-engine --features candle --test a_marker_is_not_text \
+            | tee /tmp/marker.txt
+          passed=$(grep -Eo 'test result: ok\. [0-9]+ passed' /tmp/marker.txt | grep -Eo '[0-9]+' | head -n1)
+          test "${passed:-0}" -ge 5
 
   # THE BASELINE IS STILL PAIRABLE. Split from the job above so a red tick names
   # the reason without anybody opening the log: "baseline guard" failing means a
@@ -179,9 +214,11 @@ jobs:
     name: baseline guard
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo test -p tacet-eval --test baselines -- --nocapture
 
   # THE MODEL HALF, RUN BY A HUMAN AND COMPARED BY A MACHINE.
@@ -200,14 +237,33 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.report_artifact != ''
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ${{ inputs.report_artifact }}
           path: uploaded
+      # THE INPUT ARRIVES AS AN ENVIRONMENT VARIABLE, NOT AS SCRIPT TEXT.
+      # `${{ inputs.baseline }}` inside `run:` is pasted into the bash source
+      # before bash parses it, so a dispatch with `x"; curl … #` as the
+      # baseline would have run that command. Only someone with write access
+      # can dispatch, which is why this was low rather than high — but the
+      # repair is one `env:` line, and then the name is validated as a plain
+      # file name under baselines/ before it touches a path.
       - name: pair it against the checked-in baseline
+        env:
+          BASELINE: ${{ inputs.baseline }}
         run: |
+          if ! [[ "$BASELINE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.json$ ]]; then
+            echo "baseline must be a plain .json file name under crates/tacet-eval/baselines/, got: $BASELINE" >&2
+            exit 1
+          fi
+          if [ ! -f "crates/tacet-eval/baselines/$BASELINE" ]; then
+            echo "no such baseline: crates/tacet-eval/baselines/$BASELINE" >&2
+            exit 1
+          fi
           shopt -s nullglob
           reports=(uploaded/*.json)
           if [ ${#reports[@]} -eq 0 ]; then
@@ -219,4 +275,4 @@ jobs:
           # the fake-engine report and will refuse to pair — which is the correct
           # and loud failure, not a green tick.
           cargo run -p tacet-cli -- eval --compare \
-            "crates/tacet-eval/baselines/${{ inputs.baseline }}" "${reports[0]}"
+            "crates/tacet-eval/baselines/$BASELINE" "${reports[0]}"

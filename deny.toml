@@ -8,9 +8,13 @@
 #
 #   cargo install cargo-deny && cargo deny check
 #
-# It runs in CI on every push. It is ALLOWED TO FAIL there, deliberately: a new
-# advisory against a transitive crate is news, not a reason to block a
-# documentation fix at 3am. The signal is the annotation, not the gate.
+# It runs in CI on every push as TWO jobs (ci.yml). `sources`, `bans` and
+# `licenses` GATE: they change only when a manifest or the lockfile here
+# changes, so a failure is a defect in the pull request. `advisories` is
+# ALLOWED TO FAIL, deliberately: a new advisory against a transitive crate is
+# news, not a reason to block a documentation fix at 3am, and there the signal
+# is the annotation. It used to be one job allowed to fail as a whole, which
+# quietly turned every `deny` below into a warning.
 
 [graph]
 # The `candle` feature is off by default and pulls the largest subtree in the

@@ -50,9 +50,19 @@ pub enum Command {
         /// Working directory (the sandbox root).
         #[arg(long, default_value = ".")]
         dir: String,
-        /// Run a single message and exit (for scripted diagnostics). In this
-        /// mode the approval gate stays SilentDeny: there is nobody to ask, NO
-        /// DATA LEAVES.
+        /// Run a single message and exit (for scripted diagnostics). Nobody
+        /// can be asked here, so every approval question is answered no: once
+        /// the session holds personal data — piped input, a resumed session,
+        /// an imported agent session, or a tool that read this machine — no
+        /// outbound tool runs. Before that, an installed web addon can still
+        /// send your message out.
+        //
+        // THE OLD TEXT SAID "NO DATA LEAVES" (audit D15), and the audit
+        // measured the opposite: `printf 'AWS_SECRET…' | tacet chat --message …`
+        // sent the piped secret to web_search without a question, because the
+        // pipe never tainted the session (H2-b). The taint is fixed; the
+        // sentence still says only what the gate does, because a clean session
+        // with web search installed does send the message itself.
         #[arg(long)]
         message: Option<String>,
         /// The local model folder to use (`~/models/<name>`). When omitted,
@@ -81,6 +91,20 @@ pub enum Command {
         /// Loads ONE named session (`tacet sessions` prints the names).
         #[arg(long = "session", value_name = "ID")]
         session_id: Option<String>,
+        /// Continues work started in ANOTHER coding agent:
+        /// `claude:<id>`, `codex:<id>` or `antigravity:<id>`. Needs the
+        /// `agent-sessions` addon. A short summary of that session is put in
+        /// front of your first message, the session counts as personal data
+        /// and outside text from the start, Tacet offers to work in the
+        /// session's folder (and asks), and a handoff record is started.
+        /// Nothing is sent anywhere and the other agent is not run.
+        //
+        // NOT `--continue`'s sibling in mechanism: that replays Tacet's own
+        // transcript turn by turn; this reads another program's files and
+        // hands the model a summary of them (RG-18 — the transcript itself
+        // may be tens of megabytes).
+        #[arg(long = "from", value_name = "AGENT:ID")]
+        from: Option<String>,
         /// Sampling temperature. 0 (the default) is GREEDY and reproducible;
         /// raise it to get a different path through the model on a retry.
         ///
@@ -105,11 +129,26 @@ pub enum Command {
         /// JSON instead of a human table — same pattern as every other list.
         #[arg(long)]
         json: bool,
-        /// Deletes EVERY stored session and the folder itself. On a terminal it
+        /// Deletes EVERY stored session, the folder itself, the receipt log
+        /// (`tacet log`) and the handoff records of other agents' sessions
+        /// with their transcript backups (`tacet handoff`). On a terminal it
         /// asks first; piped it does not (a script that typed this flag meant
         /// it, and there is nobody to ask).
         #[arg(long)]
         purge: bool,
+    },
+    /// Reports Tacet's progress back to the coding agent a session came from
+    /// (Claude Code, Codex, Antigravity) — through the shared handoff record
+    /// and each agent's own hook; docs/agent-handoff.md has the protocol.
+    ///
+    /// THE HOOK IS THE DEFAULT PATH and writes nothing of the agent's: `hook`
+    /// is what the agent runs, `install` shows (and, asked, writes) the
+    /// settings entry that makes it run it. `note` and `tasks` write into the
+    /// agent's own storage, each refused unless the version was measured, the
+    /// session is closed, and you say yes.
+    Handoff {
+        #[command(subcommand)]
+        job: HandoffJob,
     },
     /// Runs a BENCHMARK FILE — a measurement somebody else wrote, against the
     /// tools this machine actually has (addons and MCP included).
@@ -261,11 +300,12 @@ pub enum Command {
     /// third what it CAN DO.
     ///
     /// CLOSED BY DEFAULT. On a fresh install NONE of the addon tools are in the
-    /// catalog — not `web_search`/`web_fetch`, not `shell`, `http`, `db` or
-    /// `clipboard`; the "data does not leave the device" default is applied not
-    /// as a setting but as the ABSENCE of the tool.
+    /// catalog — not `web_search`/`web_fetch`, not `shell`, `http`, `db`,
+    /// `clipboard` or the agent-session readers; the "data does not leave the
+    /// device" default is applied not as a setting but as the ABSENCE of the
+    /// tool.
     ///
-    /// THE SIX NAMES ARE THIS BUILD'S WHOLE LIST. Third-party extension is MCP
+    /// THE SEVEN NAMES ARE THIS BUILD'S WHOLE LIST. Third-party extension is MCP
     /// (`mcp.json` in the config directory), not this command.
     Addon {
         #[command(subcommand)]
@@ -297,11 +337,14 @@ pub enum Command {
     /// Health check: hardware, engine features, models, config — and what
     /// this machine can comfortably run.
     Doctor,
-    /// The receipt chain: what ran, when, verified against tampering.
+    /// The receipt chain: which kind of tool ran, when, and how it ended.
     ///
     /// The receipts are written by PURE CODE as tools execute (the model is
-    /// never in that loop) into an append-only, hash-chained file; this
-    /// command prints the tail and re-verifies the whole chain every run.
+    /// never in that loop) into an append-only, hash-chained file with a head
+    /// that records its length; this command prints the tail and re-checks
+    /// the chain and the head every run. That catches damage, an edited or
+    /// deleted line and a cut tail — not someone who can rewrite your config
+    /// directory, because the hash is not keyed. A receipt holds no chip text.
     Log {
         #[arg(long)]
         json: bool,
@@ -343,9 +386,14 @@ pub enum Command {
 
     /// Updates this binary to the newest release.
     ///
-    /// NOTHING CHECKS BY ITSELF. There is no start-up check and no timer: a
-    /// program whose promise is that it stays off the network cannot quietly
-    /// go online to ask about itself. This runs when it is typed.
+    /// NOTHING CHECKS ON ITS OWN UNTIL YOU SAY SO. There is no start-up check:
+    /// a program whose promise is that it stays off the network cannot quietly
+    /// go online to ask about itself. This command runs when it is typed. The
+    /// one other door is opt-in: `tacet config set update.check on` (the shell
+    /// asks once, a few turns into the first session) looks once every 24
+    /// hours, at the end of an interactive session with stdout and stderr on a
+    /// terminal — never after `--message`, under `--json`, or when output is
+    /// piped. `update.check off` closes it.
     ///
     /// THE BARE COMMAND NOW UPDATES, and the reason for the change is that the
     /// old default was a trap of the most ordinary kind: `tacet update` printed
@@ -427,6 +475,96 @@ pub enum ConfigJob {
     Path,
 }
 
+/// The jobs of `tacet handoff` (RG-21..27). `<AGENT>` is `claude`, `codex` or
+/// `antigravity`; `<ID>` the agent's session id.
+#[derive(Subcommand)]
+pub enum HandoffJob {
+    /// What the agent's hook runs: reads the hook event (JSON) on stdin and
+    /// prints the handoff record of that session in the agent's hook format.
+    /// Prints nothing for a session Tacet has no record of; always exits 0, so
+    /// a hook can never stop the agent from starting.
+    Hook { agent: String },
+    /// Shows the hook entry for an agent's settings file. With `--path`, adds
+    /// it to that file — after showing the change and asking.
+    Install {
+        agent: String,
+        /// The settings file to add the entry to (`~/.claude/settings.json`,
+        /// `~/.codex/hooks.json`, `.agents/hooks.json`…). Nothing is written
+        /// without it.
+        #[arg(long)]
+        path: Option<std::path::PathBuf>,
+    },
+    /// Prints a session's handoff record.
+    Show {
+        agent: String,
+        id: String,
+        /// The record itself instead of its markdown.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Writes progress into a session's handoff record — the command the
+    /// other agents run to report back (docs/agent-handoff.md).
+    Update {
+        agent: String,
+        id: String,
+        /// Who is reporting: `tacet`, `claude-code`, `codex`, `antigravity`.
+        #[arg(long)]
+        by: String,
+        #[arg(long)]
+        summary: Option<String>,
+        #[arg(long)]
+        next: Option<String>,
+        /// `ID=STATUS` or `ID=STATUS=TITLE` (repeatable). STATUS is pending,
+        /// in_progress, completed, blocked or cancelled; a new ID needs a
+        /// title.
+        #[arg(long = "task", value_name = "ID=STATUS[=TITLE]")]
+        tasks: Vec<String>,
+        /// `ID=TEXT` (repeatable): the note on a task — why it is blocked.
+        #[arg(long = "note", value_name = "ID=TEXT")]
+        notes: Vec<String>,
+    },
+    /// Writes the record as a note into the agent's own session — the
+    /// opt-in path. Claude Code: appended to the transcript, or `--fork`ed
+    /// into a new session. Codex: through `--program <codex> app-server`, or
+    /// `--append-rollout`. Each one asks first and refuses an open session or
+    /// an unmeasured version.
+    Note {
+        agent: String,
+        id: String,
+        /// Claude Code: write a NEW session (a copy with the note) and leave
+        /// the original untouched.
+        #[arg(long)]
+        fork: bool,
+        /// Codex: the path to the codex binary to run as `app-server`. Never
+        /// looked up on PATH: a bare name is refused, and the question shows
+        /// the resolved file that will run.
+        #[arg(long, value_name = "PATH")]
+        program: Option<std::path::PathBuf>,
+        /// Codex: append to the rollout file instead (refused until a Codex
+        /// version is measured).
+        #[arg(long)]
+        append_rollout: bool,
+        /// The agent's data folder, when it is not the default one.
+        #[arg(long)]
+        root: Option<std::path::PathBuf>,
+    },
+    /// Antigravity, EXPERIMENTAL: sets checkboxes in a conversation's
+    /// `task.md`. Its terms forbid third-party access; the supported path is
+    /// the hook. Refused without the flag, and refused for every version until
+    /// a write is verified by hand.
+    Tasks {
+        agent: String,
+        id: String,
+        /// `TITLE=STATUS` (repeatable): pending, in_progress or completed.
+        #[arg(long = "set", value_name = "TITLE=STATUS")]
+        set: Vec<String>,
+        #[arg(long = "experimental-write-task-md")]
+        experimental: bool,
+        #[arg(long)]
+        root: Option<std::path::PathBuf>,
+    },
+}
+
 /// The jobs of the `addon` subcommand. The shape and the `--json` pattern are
 /// the same as `package`/`model`: context at the top level (the registry path),
 /// the record array under it.
@@ -438,10 +576,11 @@ pub enum AddonJob {
         #[arg(long)]
         json: bool,
     },
-    /// Installs an addon: web-search, shell, workspace, http, db, clipboard.
+    /// Installs an addon: agent-sessions, web-search, shell, workspace, http, db,
+    /// clipboard.
     ///
     /// A FLAGLESS CALL ASKS its questions; the flags are for scripts and skip
-    /// them. `tacet addon list` prints the six names with a line each.
+    /// them. `tacet addon list` prints the seven names with a line each.
     Install {
         /// The addon name (`tacet addon list` prints them).
         name: String,
@@ -556,6 +695,41 @@ mod command_line {
     use crate::config;
     use clap::CommandFactory;
 
+    /// RG-17 review of 10 Oct 2026: the help the user is told to read names
+    /// every addon this build can install, and counts them right. It said
+    /// "six" and listed six after `agent-sessions` made seven, while
+    /// `tacet addon list` printed seven.
+    #[test]
+    fn the_addon_help_names_every_addon_and_counts_them() {
+        let mut shell = Shell::command();
+        let addon = shell.find_subcommand_mut("addon").expect("addon");
+        let addon_help = addon.render_long_help().to_string();
+        let install = addon
+            .find_subcommand_mut("install")
+            .expect("addon install")
+            .render_long_help()
+            .to_string();
+        let names: Vec<&str> = tacet_web::addon::DEFINITIONS
+            .iter()
+            .map(|d| d.name)
+            .collect();
+        for name in &names {
+            assert!(
+                install.contains(&format!("{name},")) || install.contains(&format!("{name}.")),
+                "`tacet addon install --help` does not name {name}:\n{install}"
+            );
+        }
+        let count = [
+            "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+        ][names.len()];
+        for help in [&addon_help, &install] {
+            assert!(
+                help.to_lowercase().contains(&format!("the {count} names")),
+                "the help does not say there are {count} addons:\n{help}"
+            );
+        }
+    }
+
     /// The argument table is a contract with everyone's muscle memory, and clap
     /// only notices a broken one at RUN time — a conflicting flag or a bad
     /// default panics the first user, not the build. This asks it to check.
@@ -581,6 +755,32 @@ mod command_line {
         }
     }
 
+    /// RG-20: `--from <agent>:<id>` is a chat flag, and the reference arrives
+    /// as typed — it is validated where it is used (`model::parse_ref`), once,
+    /// so no second parser can disagree with it.
+    #[test]
+    fn the_from_flag_reaches_the_chat_command() {
+        let parsed = Shell::try_parse_from([
+            "tacet",
+            "chat",
+            "--from",
+            "codex:0199d3a1-7c2e-7a10-9b55-3f2c1d0e4a01",
+        ])
+        .expect("parses");
+        match parsed.command {
+            Some(Command::Chat { from, .. }) => assert_eq!(
+                from.as_deref(),
+                Some("codex:0199d3a1-7c2e-7a10-9b55-3f2c1d0e4a01")
+            ),
+            other => panic!("expected a chat command, got {}", other.is_some()),
+        }
+        let bare = Shell::try_parse_from(["tacet", "chat"]).expect("parses");
+        assert!(matches!(
+            bare.command,
+            Some(Command::Chat { from: None, .. })
+        ));
+    }
+
     /// EVERY CONFIG KEY IS A FLAG. `config.rs` opens with that rule and the two
     /// sampling keys are the newest chance to break it — a key with no flag
     /// behind it is a second settings system growing quietly.
@@ -597,6 +797,36 @@ mod command_line {
             .collect();
         assert!(flags.contains(&"temperature".to_string()), "{flags:?}");
         assert!(flags.contains(&"seed".to_string()), "{flags:?}");
+    }
+
+    /// AUDIT D15: `--message`'s help said "NO DATA LEAVES", and a piped secret
+    /// went to web_search unasked. The help now names the condition under
+    /// which the silent "no" holds — the session holding personal data — and
+    /// the three ways in that `chat::PersonalInput` taints on. The second half
+    /// is what keeps the sentence from drifting from the code: a source taken
+    /// off that list has to come off this help too.
+    #[test]
+    fn the_message_help_promises_only_what_the_gate_does() {
+        let help = Shell::command()
+            .find_subcommand("chat")
+            .expect("chat subcommand")
+            .get_arguments()
+            .find(|a| a.get_id() == "message")
+            .and_then(|a| a.get_long_help().or(a.get_help()))
+            .map(|h| h.to_string())
+            .expect("--message has help");
+        let flat = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            !flat.to_uppercase().contains("NO DATA LEAVES"),
+            "the help promises nothing leaves, and a clean session's message can: {flat}"
+        );
+        for source in crate::chat::PersonalInput::ALL {
+            assert!(
+                flat.contains(source.help_phrase()),
+                "the help does not name `{}` as a taint source: {flat}",
+                source.help_phrase()
+            );
+        }
     }
 
     /// `tacet update` INSTALLS, and the older spelling still parses.
